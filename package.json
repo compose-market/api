@@ -1,0 +1,38 @@
+{
+  "name": "compose-market-lambda",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "esbuild handler.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.js --minify",
+    "deploy": "npm run build && npx serverless deploy --verbose",
+    "deploy:domain": "npx serverless create_domain",
+    "deploy:quick": "tsx deploy.ts",
+    "dev": "tsx index.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.53",
+    "@ai-sdk/google": "^2.0.44",
+    "@ai-sdk/openai": "^2.0.75",
+    "@ai-sdk/openai-compatible": "^1.0.28",
+    "@huggingface/hub": "^2.7.1",
+    "ai": "^5.0.105",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "thirdweb": "^5.114.1",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.159",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.27.0",
+    "serverless": "^4.26.0",
+    "serverless-domain-manager": "^8.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
+

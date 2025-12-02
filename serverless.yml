@@ -1,0 +1,49 @@
+service: compose-market-api
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'prod'}
+  memorySize: 512
+  timeout: 30
+  environment:
+    THIRDWEB_SECRET_KEY: ${env:THIRDWEB_SECRET_KEY}
+    TREASURY_SERVER_WALLET_PUBLIC: ${env:TREASURY_SERVER_WALLET_PUBLIC}
+    GOOGLE_GENERATIVE_AI_API_KEY: ${env:GOOGLE_GENERATIVE_AI_API_KEY}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+    ANTHROPIC_API_KEY: ${env:ANTHROPIC_API_KEY}
+    ASI_API_KEY: ${env:ASI_ONE_API_KEY}
+    HUGGING_FACE_INFERENCE_TOKEN: ${env:HUGGING_FACE_INFERENCE_TOKEN}
+    AGENTVERSE_API_KEY: ${env:AGENTVERSE_API_KEY}
+
+functions:
+  api:
+    handler: dist/index.handler
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+      - httpApi:
+          path: /
+          method: ANY
+
+plugins:
+  - serverless-domain-manager
+
+custom:
+  customDomain:
+    domainName: api.compose.market
+    basePath: ''
+    stage: ${self:provider.stage}
+    certificateName: api.compose.market
+    createRoute53Record: false
+    endpointType: regional
+    securityPolicy: tls_1_2
+    apiType: http
+
+package:
+  patterns:
+    - '!**'
+    - 'dist/**'
+
