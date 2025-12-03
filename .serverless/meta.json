@@ -1,6 +1,6 @@
 {
   "/Users/jabyl/Downloads/compose-market/backend/lambda/serverless.yml": {
-    "versionFramework": "4.26.0",
+    "versionFramework": "4.26.1",
     "servicePath": "/Users/jabyl/Downloads/compose-market/backend/lambda/serverless.yml",
     "serviceConfigFileName": "serverless.yml",
     "service": {
@@ -18,7 +18,8 @@
           "GOOGLE_GENERATIVE_AI_API_KEY": "<REDACTED>",
           "OPENAI_API_KEY": "<REDACTED>",
           "ANTHROPIC_API_KEY": "<REDACTED>",
-          "ASI_API_KEY": "<REDACTED>",
+          "ASI_ONE_API_KEY": "<REDACTED>",
+          "ASI_INFERENCE_API_KEY": "<REDACTED>",
           "HUGGING_FACE_INFERENCE_TOKEN": "<REDACTED>",
           "AGENTVERSE_API_KEY": "<REDACTED>"
         },
@@ -116,7 +117,7 @@
               "Properties": {
                 "Code": {
                   "S3Bucket": "serverless-framework-deployments-us-east-1-dde9bac1-43d8",
-                  "S3Key": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z/compose-market-api.zip"
+                  "S3Key": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z/compose-market-api.zip"
                 },
                 "Handler": "dist/index.handler",
                 "Runtime": "nodejs20.x",
@@ -130,7 +131,8 @@
                     "GOOGLE_GENERATIVE_AI_API_KEY": "<REDACTED>",
                     "OPENAI_API_KEY": "<REDACTED>",
                     "ANTHROPIC_API_KEY": "<REDACTED>",
-                    "ASI_API_KEY": "<REDACTED>",
+                    "ASI_ONE_API_KEY": "<REDACTED>",
+                    "ASI_INFERENCE_API_KEY": "<REDACTED>",
                     "HUGGING_FACE_INFERENCE_TOKEN": "<REDACTED>",
                     "AGENTVERSE_API_KEY": "<REDACTED>"
                   }
@@ -146,14 +148,14 @@
                 "ApiLogGroup"
               ]
             },
-            "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40": {
+            "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY": {
               "Type": "AWS::Lambda::Version",
               "DeletionPolicy": "Retain",
               "Properties": {
                 "FunctionName": {
                   "Ref": "ApiLambdaFunction"
                 },
-                "CodeSha256": "hQYHIQXD3XvZhgqp+Bga2+KidwLbE2jDMCmKvIRnoCo="
+                "CodeSha256": "c7IY3kVzRZoooWy6yaHn3keVvC7Wx4aF6aUH9RZapuU="
               }
             },
             "HttpApi": {
@@ -283,7 +285,7 @@
             "ApiLambdaFunctionQualifiedArn": {
               "Description": "Current Lambda function version",
               "Value": {
-                "Ref": "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40"
+                "Ref": "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY"
               },
               "Export": {
                 "Name": "sls-compose-market-api-prod-ApiLambdaFunctionQualifiedArn"
@@ -354,7 +356,7 @@
           "timeout": 30,
           "runtime": "nodejs20.x",
           "vpc": {},
-          "versionLogicalId": "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40"
+          "versionLogicalId": "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY"
         }
       },
       "plugins": [
@@ -380,7 +382,7 @@
         "artifactsS3KeyDirname": "serverless/compose-market-api/prod/code-artifacts",
         "deploymentBucket": "serverless-framework-deployments-us-east-1-dde9bac1-43d8",
         "artifact": "/Users/jabyl/Downloads/compose-market/backend/lambda/.serverless/compose-market-api.zip",
-        "artifactDirectoryName": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z"
+        "artifactDirectoryName": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z"
       }
     },
     "provider": {
@@ -396,7 +398,8 @@
         "GOOGLE_GENERATIVE_AI_API_KEY": "<REDACTED>",
         "OPENAI_API_KEY": "<REDACTED>",
         "ANTHROPIC_API_KEY": "<REDACTED>",
-        "ASI_API_KEY": "<REDACTED>",
+        "ASI_ONE_API_KEY": "<REDACTED>",
+        "ASI_INFERENCE_API_KEY": "<REDACTED>",
         "HUGGING_FACE_INFERENCE_TOKEN": "<REDACTED>",
         "AGENTVERSE_API_KEY": "<REDACTED>"
       },
@@ -494,7 +497,7 @@
             "Properties": {
               "Code": {
                 "S3Bucket": "serverless-framework-deployments-us-east-1-dde9bac1-43d8",
-                "S3Key": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z/compose-market-api.zip"
+                "S3Key": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z/compose-market-api.zip"
               },
               "Handler": "dist/index.handler",
               "Runtime": "nodejs20.x",
@@ -508,7 +511,8 @@
                   "GOOGLE_GENERATIVE_AI_API_KEY": "<REDACTED>",
                   "OPENAI_API_KEY": "<REDACTED>",
                   "ANTHROPIC_API_KEY": "<REDACTED>",
-                  "ASI_API_KEY": "<REDACTED>",
+                  "ASI_ONE_API_KEY": "<REDACTED>",
+                  "ASI_INFERENCE_API_KEY": "<REDACTED>",
                   "HUGGING_FACE_INFERENCE_TOKEN": "<REDACTED>",
                   "AGENTVERSE_API_KEY": "<REDACTED>"
                 }
@@ -524,14 +528,14 @@
               "ApiLogGroup"
             ]
           },
-          "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40": {
+          "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY": {
             "Type": "AWS::Lambda::Version",
             "DeletionPolicy": "Retain",
             "Properties": {
               "FunctionName": {
                 "Ref": "ApiLambdaFunction"
               },
-              "CodeSha256": "hQYHIQXD3XvZhgqp+Bga2+KidwLbE2jDMCmKvIRnoCo="
+              "CodeSha256": "c7IY3kVzRZoooWy6yaHn3keVvC7Wx4aF6aUH9RZapuU="
             }
           },
           "HttpApi": {
@@ -661,7 +665,7 @@
           "ApiLambdaFunctionQualifiedArn": {
             "Description": "Current Lambda function version",
             "Value": {
-              "Ref": "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40"
+              "Ref": "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY"
             },
             "Export": {
               "Name": "sls-compose-market-api-prod-ApiLambdaFunctionQualifiedArn"
@@ -714,12 +718,12 @@
       "serviceProvider": null,
       "instanceParameters": null
     },
-    "serviceRawFile": "service: compose-market-api\n\nprovider:\n  name: aws\n  runtime: nodejs20.x\n  region: us-east-1\n  stage: ${opt:stage, 'prod'}\n  memorySize: 512\n  timeout: 30\n  environment:\n    THIRDWEB_SECRET_KEY: ${env:THIRDWEB_SECRET_KEY}\n    TREASURY_SERVER_WALLET_PUBLIC: ${env:TREASURY_SERVER_WALLET_PUBLIC}\n    GOOGLE_GENERATIVE_AI_API_KEY: ${env:GOOGLE_GENERATIVE_AI_API_KEY}\n    OPENAI_API_KEY: ${env:OPENAI_API_KEY}\n    ANTHROPIC_API_KEY: ${env:ANTHROPIC_API_KEY}\n    ASI_API_KEY: ${env:ASI_ONE_API_KEY}\n    HUGGING_FACE_INFERENCE_TOKEN: ${env:HUGGING_FACE_INFERENCE_TOKEN}\n    AGENTVERSE_API_KEY: ${env:AGENTVERSE_API_KEY}\n\nfunctions:\n  api:\n    handler: dist/index.handler\n    events:\n      - httpApi:\n          path: /{proxy+}\n          method: ANY\n      - httpApi:\n          path: /\n          method: ANY\n\nplugins:\n  - serverless-domain-manager\n\ncustom:\n  customDomain:\n    domainName: api.compose.market\n    basePath: ''\n    stage: ${self:provider.stage}\n    certificateName: api.compose.market\n    createRoute53Record: false\n    endpointType: regional\n    securityPolicy: tls_1_2\n    apiType: http\n\npackage:\n  patterns:\n    - '!**'\n    - 'dist/**'\n\n",
+    "serviceRawFile": "service: compose-market-api\n\nprovider:\n  name: aws\n  runtime: nodejs20.x\n  region: us-east-1\n  stage: ${opt:stage, 'prod'}\n  memorySize: 512\n  timeout: 30\n  environment:\n    THIRDWEB_SECRET_KEY: ${env:THIRDWEB_SECRET_KEY}\n    TREASURY_SERVER_WALLET_PUBLIC: ${env:TREASURY_SERVER_WALLET_PUBLIC}\n    GOOGLE_GENERATIVE_AI_API_KEY: ${env:GOOGLE_GENERATIVE_AI_API_KEY}\n    OPENAI_API_KEY: ${env:OPENAI_API_KEY}\n    ANTHROPIC_API_KEY: ${env:ANTHROPIC_API_KEY}\n    ASI_ONE_API_KEY: ${env:ASI_ONE_API_KEY}\n    ASI_INFERENCE_API_KEY: ${env:ASI_INFERENCE_API_KEY}\n    HUGGING_FACE_INFERENCE_TOKEN: ${env:HUGGING_FACE_INFERENCE_TOKEN}\n    AGENTVERSE_API_KEY: ${env:AGENTVERSE_API_KEY}\n\nfunctions:\n  api:\n    handler: dist/index.handler\n    events:\n      - httpApi:\n          path: /{proxy+}\n          method: ANY\n      - httpApi:\n          path: /\n          method: ANY\n\nplugins:\n  - serverless-domain-manager\n\ncustom:\n  customDomain:\n    domainName: api.compose.market\n    basePath: ''\n    stage: ${self:provider.stage}\n    certificateName: api.compose.market\n    createRoute53Record: false\n    endpointType: regional\n    securityPolicy: tls_1_2\n    apiType: http\n\npackage:\n  patterns:\n    - '!**'\n    - 'dist/**'\n\n",
     "command": [
       "deploy"
     ],
     "options": {
-      "verbose": true
+      "stage": "prod"
     },
     "orgId": "b92d4fed-0eb8-46aa-b0b6-cc171d0775cc",
     "orgName": "vibesflow",
@@ -729,8 +733,8 @@
     "serviceProviderAwsCfStackName": "compose-market-api-prod",
     "serviceProviderAwsCfStackId": "arn:aws:cloudformation:us-east-1:033905202743:stack/compose-market-api-prod/8abb9260-cf05-11f0-8526-0affd646e8eb",
     "serviceProviderAwsCfStackCreated": "2025-12-01T22:31:55.951Z",
-    "serviceProviderAwsCfStackUpdated": null,
-    "serviceProviderAwsCfStackStatus": "CREATE_COMPLETE",
+    "serviceProviderAwsCfStackUpdated": "2025-12-03T14:01:20.877Z",
+    "serviceProviderAwsCfStackStatus": "UPDATE_COMPLETE",
     "serviceProviderAwsCfStackOutputs": [
       {
         "OutputKey": "DomainNameHttp",
@@ -744,7 +748,7 @@
       },
       {
         "OutputKey": "ApiLambdaFunctionQualifiedArn",
-        "OutputValue": "arn:aws:lambda:us-east-1:033905202743:function:compose-market-api-prod-api:1",
+        "OutputValue": "arn:aws:lambda:us-east-1:033905202743:function:compose-market-api-prod-api:3",
         "Description": "Current Lambda function version",
         "ExportName": "sls-compose-market-api-prod-ApiLambdaFunctionQualifiedArn"
       },
@@ -864,7 +868,7 @@
           "Properties": {
             "Code": {
               "S3Bucket": "serverless-framework-deployments-us-east-1-dde9bac1-43d8",
-              "S3Key": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z/compose-market-api.zip"
+              "S3Key": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z/compose-market-api.zip"
             },
             "Handler": "dist/index.handler",
             "Runtime": "nodejs20.x",
@@ -878,7 +882,8 @@
                 "GOOGLE_GENERATIVE_AI_API_KEY": "<REDACTED>",
                 "OPENAI_API_KEY": "<REDACTED>",
                 "ANTHROPIC_API_KEY": "<REDACTED>",
-                "ASI_API_KEY": "<REDACTED>",
+                "ASI_ONE_API_KEY": "<REDACTED>",
+                "ASI_INFERENCE_API_KEY": "<REDACTED>",
                 "HUGGING_FACE_INFERENCE_TOKEN": "<REDACTED>",
                 "AGENTVERSE_API_KEY": "<REDACTED>"
               }
@@ -894,14 +899,14 @@
             "ApiLogGroup"
           ]
         },
-        "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40": {
+        "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY": {
           "Type": "AWS::Lambda::Version",
           "DeletionPolicy": "Retain",
           "Properties": {
             "FunctionName": {
               "Ref": "ApiLambdaFunction"
             },
-            "CodeSha256": "hQYHIQXD3XvZhgqp+Bga2+KidwLbE2jDMCmKvIRnoCo="
+            "CodeSha256": "c7IY3kVzRZoooWy6yaHn3keVvC7Wx4aF6aUH9RZapuU="
           }
         },
         "HttpApi": {
@@ -1031,7 +1036,7 @@
         "ApiLambdaFunctionQualifiedArn": {
           "Description": "Current Lambda function version",
           "Value": {
-            "Ref": "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40"
+            "Ref": "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY"
           },
           "Export": {
             "Name": "sls-compose-market-api-prod-ApiLambdaFunctionQualifiedArn"

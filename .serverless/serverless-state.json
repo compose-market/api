@@ -17,7 +17,8 @@
         "GOOGLE_GENERATIVE_AI_API_KEY": "AIzaSyCyutZrxOwO8JpCoFZunPqzftrHNh63FDo",
         "OPENAI_API_KEY": "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",
         "ANTHROPIC_API_KEY": "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",
-        "ASI_API_KEY": "sk_298e63ce74154bb9989fbc480a8993eae2411d10cd0f4490ba5e63acd851c3ee // use this for the most advanced models",
+        "ASI_ONE_API_KEY": "sk_298e63ce74154bb9989fbc480a8993eae2411d10cd0f4490ba5e63acd851c3ee // use this for the most advanced models",
+        "ASI_INFERENCE_API_KEY": "sk-7AnjE009FDBKF9vlZShr_jXSkIjg1The5tnvzmgjAa0 // use this for ALL ASI Cloud models, including the default asi-1-mini",
         "HUGGING_FACE_INFERENCE_TOKEN": "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",
         "AGENTVERSE_API_KEY": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3NjcwNjcwNzksImlhdCI6MTc2NDQ3NTA3OSwiaXNzIjoiZmV0Y2guYWkiLCJqdGkiOiJhN2YzMmRkODdlYjI4NDIxN2ZiZDE5YjIiLCJzY29wZSI6ImF2Iiwic3ViIjoiMzdiYzhmMmQ3ZDUzMjAyMzBjZDI0MDVmZDcxOWZkNjRhMzhjOTA5MTI0NjVlYjYyIn0.YUXuJseoMX3AfbL0PPCy7l6Wl18axxAXVRpYu2ZYZxKf1IoVKeI6U_eA1o5_idmdT6qAa2AVcmBLrp_t61gnwqdHzrrFtxVSeSiE_DuEd7fKB4x98p2IPKy0PcEUoJ-Mbvn10I3MCbf1pnjaID_MF9AQ_knLwA79WRIsLJsDW1CyKrGYK_a7B_JRnj_fubSXjA4nFUEj8s-L38bsVnn9piR_fBmfWyGV52wzhlh92lKrrKUQuXmGmAnII9AMByxOJqMOvcv_jo0oFPvwuWe1aAKZU3dQKNOKn1A8Pdgm5LvKlVMKwcTLGmMf3xqS-8zViwnKyNEQezQ__wkg28C3Rg"
       },
@@ -115,7 +116,7 @@
             "Properties": {
               "Code": {
                 "S3Bucket": "serverless-framework-deployments-us-east-1-dde9bac1-43d8",
-                "S3Key": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z/compose-market-api.zip"
+                "S3Key": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z/compose-market-api.zip"
               },
               "Handler": "dist/index.handler",
               "Runtime": "nodejs20.x",
@@ -129,7 +130,8 @@
                   "GOOGLE_GENERATIVE_AI_API_KEY": "AIzaSyCyutZrxOwO8JpCoFZunPqzftrHNh63FDo",
                   "OPENAI_API_KEY": "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",
                   "ANTHROPIC_API_KEY": "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",
-                  "ASI_API_KEY": "sk_298e63ce74154bb9989fbc480a8993eae2411d10cd0f4490ba5e63acd851c3ee // use this for the most advanced models",
+                  "ASI_ONE_API_KEY": "sk_298e63ce74154bb9989fbc480a8993eae2411d10cd0f4490ba5e63acd851c3ee // use this for the most advanced models",
+                  "ASI_INFERENCE_API_KEY": "sk-7AnjE009FDBKF9vlZShr_jXSkIjg1The5tnvzmgjAa0 // use this for ALL ASI Cloud models, including the default asi-1-mini",
                   "HUGGING_FACE_INFERENCE_TOKEN": "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",
                   "AGENTVERSE_API_KEY": "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3NjcwNjcwNzksImlhdCI6MTc2NDQ3NTA3OSwiaXNzIjoiZmV0Y2guYWkiLCJqdGkiOiJhN2YzMmRkODdlYjI4NDIxN2ZiZDE5YjIiLCJzY29wZSI6ImF2Iiwic3ViIjoiMzdiYzhmMmQ3ZDUzMjAyMzBjZDI0MDVmZDcxOWZkNjRhMzhjOTA5MTI0NjVlYjYyIn0.YUXuJseoMX3AfbL0PPCy7l6Wl18axxAXVRpYu2ZYZxKf1IoVKeI6U_eA1o5_idmdT6qAa2AVcmBLrp_t61gnwqdHzrrFtxVSeSiE_DuEd7fKB4x98p2IPKy0PcEUoJ-Mbvn10I3MCbf1pnjaID_MF9AQ_knLwA79WRIsLJsDW1CyKrGYK_a7B_JRnj_fubSXjA4nFUEj8s-L38bsVnn9piR_fBmfWyGV52wzhlh92lKrrKUQuXmGmAnII9AMByxOJqMOvcv_jo0oFPvwuWe1aAKZU3dQKNOKn1A8Pdgm5LvKlVMKwcTLGmMf3xqS-8zViwnKyNEQezQ__wkg28C3Rg"
                 }
@@ -145,14 +147,14 @@
               "ApiLogGroup"
             ]
           },
-          "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40": {
+          "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY": {
             "Type": "AWS::Lambda::Version",
             "DeletionPolicy": "Retain",
             "Properties": {
               "FunctionName": {
                 "Ref": "ApiLambdaFunction"
               },
-              "CodeSha256": "hQYHIQXD3XvZhgqp+Bga2+KidwLbE2jDMCmKvIRnoCo="
+              "CodeSha256": "c7IY3kVzRZoooWy6yaHn3keVvC7Wx4aF6aUH9RZapuU="
             }
           },
           "HttpApi": {
@@ -279,7 +281,7 @@
           "ApiLambdaFunctionQualifiedArn": {
             "Description": "Current Lambda function version",
             "Value": {
-              "Ref": "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40"
+              "Ref": "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY"
             },
             "Export": {
               "Name": "sls-compose-market-api-prod-ApiLambdaFunctionQualifiedArn"
@@ -366,7 +368,7 @@
         "timeout": 30,
         "runtime": "nodejs20.x",
         "vpc": {},
-        "versionLogicalId": "ApiLambdaVersion8kodZlKkZqawHKU9IFHVnjeVDpV9CqythdWi0Rhi40"
+        "versionLogicalId": "ApiLambdaVersionyFPdpFaVI8fBh4LjZaqwMxGRzQNfxEHvz971ULLY"
       }
     },
     "configValidationMode": "warn",
@@ -393,7 +395,7 @@
         "artifactsS3KeyDirname": "serverless/compose-market-api/prod/code-artifacts",
         "deploymentBucket": "serverless-framework-deployments-us-east-1-dde9bac1-43d8",
         "artifact": "/Users/jabyl/Downloads/compose-market/backend/lambda/.serverless/compose-market-api.zip",
-        "artifactDirectoryName": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z"
+        "artifactDirectoryName": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z"
       }
     },
     "appId": null,
@@ -402,7 +404,7 @@
     "artifact": "/Users/jabyl/Downloads/compose-market/backend/lambda/.serverless/compose-market-api.zip"
   },
   "package": {
-    "artifactDirectoryName": "serverless/compose-market-api/prod/1764628307257-2025-12-01T22:31:47.257Z",
+    "artifactDirectoryName": "serverless/compose-market-api/prod/1764770541225-2025-12-03T14:02:21.225Z",
     "artifact": "compose-market-api.zip"
   }
 }

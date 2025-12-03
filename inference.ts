@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { streamText, convertToModelMessages, smoothStream, type UIMessage } from "ai";
 import { facilitator, verifyPayment, settlePayment, type PaymentArgs } from "thirdweb/x402";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { 
   serverClient, 
   serverWalletAddress, 
@@ -9,13 +10,67 @@ import {
   PRICE_PER_TOKEN_WEI,
   MAX_TOKENS_PER_CALL,
 } from "./lib/thirdweb";
-import { modelProvider, calculateModelPrice, type ModelID, DEFAULT_MODEL, MODEL_NAMES, MODEL_PRICE_MULTIPLIERS } from "./lib/models";
+import { 
+  modelProvider, 
+  calculateModelPrice, 
+  type ModelID, 
+  DEFAULT_MODEL, 
+  MODEL_NAMES, 
+  MODEL_PRICE_MULTIPLIERS,
+  MODEL_PROVIDERS,
+  isValidModelId,
+  getAvailableModels,
+  type ModelProviderType,
+} from "./lib/models";
+
+// =============================================================================
+// HuggingFace Provider Setup
+// =============================================================================
+
+const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
+
+/**
+ * Create HuggingFace inference provider for a specific model
+ * Uses HuggingFace Router API (serverless, OpenAI-compatible)
+ * Updated December 2025: Uses router.huggingface.co instead of api-inference
+ */
+function createHuggingFaceProvider(modelId: string) {
+  if (!HF_TOKEN) {
+    throw new Error("HUGGING_FACE_INFERENCE_TOKEN not configured");
+  }
+  
+  // HuggingFace Router is OpenAI-compatible
+  // Use the global /v1 endpoint, model is specified in the request body
+  return createOpenAICompatible({
+    name: "huggingface",
+    apiKey: HF_TOKEN,
+    baseURL: "https://router.huggingface.co/v1",
+  });
+}
+
+/**
+ * Check if a model ID is a HuggingFace model
+ * HuggingFace models typically have format: "org/model-name"
+ */
+function isHuggingFaceModel(modelId: string): boolean {
+  // Check if it's NOT in our built-in models
+  // HuggingFace models have org/name format
+  return !isValidModelId(modelId) && modelId.includes("/");
+}
+
+// =============================================================================
+// x402 Payment Setup
+// =============================================================================
 
 // Create x402 facilitator for payment settlement
 const twFacilitator = facilitator({
   client: serverClient,
   serverWalletAddress,
 });
+
+// =============================================================================
+// Inference Endpoint
+// =============================================================================
 
 /**
  * x402 AI Inference endpoint
@@ -30,6 +85,10 @@ const twFacilitator = facilitator({
  *    - User has pre-approved a session budget via ERC-4337 session key
  *    - Server verifies session → does work → settles via session key
  *    - No per-call wallet signatures needed
+ * 
+ * Model Routing:
+ * - Built-in models (asi1-*, claude-*, gpt-*, gemini-*) → modelProvider
+ * - HuggingFace models (org/name format) → HuggingFace Inference API
  */
 export async function handleInference(req: Request, res: Response) {
   try {
@@ -88,12 +147,49 @@ export async function handleInference(req: Request, res: Response) {
       systemPrompt = "You are a helpful AI assistant.",
     }: {
       messages: UIMessage[];
-      modelId?: ModelID;
+      modelId?: string; // Can be ModelID or HuggingFace model ID
       systemPrompt?: string;
     } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array is required" });
+    }
+
+    // Determine which provider to use
+    let model;
+    let priceMultiplier = 1.0;
+    let modelName = modelId;
+    
+    if (isHuggingFaceModel(modelId)) {
+      // HuggingFace model (org/name format)
+      if (!HF_TOKEN) {
+        return res.status(503).json({
+          error: "huggingface_not_configured",
+          message: "HuggingFace inference is not available. HUGGING_FACE_INFERENCE_TOKEN not set.",
+        });
+      }
+      
+      const hfProvider = createHuggingFaceProvider(modelId);
+      model = hfProvider("tgi"); // HuggingFace TGI endpoint
+      priceMultiplier = 1.0; // Base pricing for HF models
+      modelName = modelId;
+      console.log(`[inference] Using HuggingFace model: ${modelId}`);
+    } else if (isValidModelId(modelId)) {
+      // Built-in model
+      model = modelProvider.languageModel(modelId as ModelID);
+      priceMultiplier = MODEL_PRICE_MULTIPLIERS[modelId as ModelID] || 1.0;
+      modelName = MODEL_NAMES[modelId as ModelID] || modelId;
+      
+      // Log which API key is being used
+      const provider = MODEL_PROVIDERS[modelId as ModelID];
+      console.log(`[inference] Using built-in model: ${modelName} (provider: ${provider})`);
+    } else {
+      // Unknown model
+      return res.status(400).json({
+        error: "invalid_model",
+        message: `Unknown model ID: ${modelId}. Use a built-in model or HuggingFace model (org/name format).`,
+        availableModels: Object.keys(MODEL_NAMES),
+      });
     }
 
     // Set up streaming headers
@@ -103,7 +199,7 @@ export async function handleInference(req: Request, res: Response) {
 
     // Stream AI response
     const stream = streamText({
-      model: modelProvider.languageModel(modelId),
+      model,
       system: systemPrompt,
       messages: convertToModelMessages(messages),
       experimental_transform: [
@@ -117,14 +213,14 @@ export async function handleInference(req: Request, res: Response) {
           return;
         }
 
-        // Calculate final price based on actual tokens and model
-        const finalPrice = calculateModelPrice(modelId, totalTokens, PRICE_PER_TOKEN_WEI);
+        // Calculate final price based on actual tokens and model multiplier
+        const finalPrice = Math.ceil(PRICE_PER_TOKEN_WEI * priceMultiplier * totalTokens);
 
         // Settle payment based on mode
         if (sessionActive) {
           // Session mode: payment is pulled via pre-approved session key
           // The client tracks usage locally and the session key allows treasury to collect
-          console.log(`Session settlement: ${finalPrice} wei for ${totalTokens} tokens (model: ${modelId})`);
+          console.log(`Session settlement: ${finalPrice} wei for ${totalTokens} tokens (model: ${modelName})`);
           // Note: Actual token transfer happens via the session key's pre-approval
           // The client-side recordUsage() tracks this against the session budget
         } else {
@@ -177,14 +273,23 @@ export async function handleInference(req: Request, res: Response) {
   }
 }
 
+// =============================================================================
+// Models Endpoint
+// =============================================================================
+
 /**
  * Get available models endpoint
+ * Returns all built-in models with their pricing and availability
  */
 export function handleGetModels(_req: Request, res: Response) {
+  const availableModelIds = getAvailableModels();
+  
   const models = Object.entries(MODEL_NAMES).map(([id, name]) => ({
     id,
     name,
     priceMultiplier: MODEL_PRICE_MULTIPLIERS[id as ModelID] || 1.0,
+    provider: MODEL_PROVIDERS[id as ModelID],
+    available: availableModelIds.includes(id as ModelID),
   }));
 
   res.json({ 
@@ -193,6 +298,14 @@ export function handleGetModels(_req: Request, res: Response) {
     maxTokensPerCall: MAX_TOKENS_PER_CALL,
     paymentChain: paymentChain.name,
     paymentToken: "USDC",
+    // Provider availability
+    providers: {
+      openai: !!process.env.OPENAI_API_KEY,
+      anthropic: !!process.env.ANTHROPIC_API_KEY,
+      google: !!process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+      "asi-one": !!process.env.ASI_ONE_API_KEY,
+      "asi-cloud": !!process.env.ASI_INFERENCE_API_KEY,
+      huggingface: !!process.env.HUGGING_FACE_INFERENCE_TOKEN,
+    },
   });
 }
-
