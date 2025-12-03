@@ -13,14 +13,14 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.53",
     "@ai-sdk/google": "^2.0.44",
-    "@ai-sdk/openai": "^2.0.75",
+    "@ai-sdk/openai": "^2.0.76",
     "@ai-sdk/openai-compatible": "^1.0.28",
     "@huggingface/hub": "^2.7.1",
-    "ai": "^5.0.105",
+    "ai": "^5.0.106",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "thirdweb": "^5.114.1",
+    "thirdweb": "^5.115.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
@@ -29,7 +29,7 @@
     "@types/express": "^5.0.6",
     "@types/node": "^24.10.1",
     "esbuild": "^0.27.0",
-    "serverless": "^4.26.0",
+    "serverless": "^4.26.1",
     "serverless-domain-manager": "^8.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
