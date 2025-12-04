@@ -55,17 +55,16 @@ export interface SearchAgentsOptions {
 /**
  * Check if an agent conforms to compose structure.
  * An agent is compose-compatible if:
- * - It has at least one protocol defined (callable skill)
  * - It is active
- * - It has a name and description
+ * - It has a name
+ * 
+ * Note: We no longer require protocols as many Agentverse agents
+ * don't have protocols defined but are still usable via A2A
  */
 function isComposeCompatible(agent: AgentverseAgent): boolean {
   return (
     agent.status === "active" &&
-    agent.name.length > 0 &&
-    agent.description.length > 0 &&
-    Array.isArray(agent.protocols) &&
-    agent.protocols.length > 0
+    agent.name.length > 0
   );
 }
 

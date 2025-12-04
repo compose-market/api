@@ -232,6 +232,50 @@ export async function handler(
       };
     }
 
+    // Route: GET /api/agent/:agentId - A2A-compliant Agent Card endpoint
+    // Returns agent card JSON for on-chain Manowar agents
+    if (method === "GET" && path.match(/^\/api\/agent\/\d+$/)) {
+      const agentId = path.replace("/api/agent/", "");
+      
+      // Return A2A Agent Card format
+      // The actual data is fetched from on-chain by the frontend
+      // This endpoint serves as the canonical URL for the agent
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schemaVersion: "1.0.0",
+          agentId: parseInt(agentId, 10),
+          endpoint: `https://api.compose.market/api/agent/${agentId}/invoke`,
+          protocols: [
+            { name: "x402", version: "1.0" },
+            { name: "a2a", version: "1.0" },
+          ],
+          capabilities: ["inference", "workflow"],
+          registry: "manowar",
+          chain: 43113, // Avalanche Fuji
+          contract: "0xb6d62374Ba0076bE2c1020b6a8BBD1b3c67052F7",
+          // Full metadata is stored on IPFS, referenced by agentCardUri on-chain
+        }),
+      };
+    }
+
+    // Route: POST /api/agent/:agentId/invoke - A2A invoke endpoint
+    // This is where agent calls are routed through x402 payment
+    if (method === "POST" && path.match(/^\/api\/agent\/\d+\/invoke$/)) {
+      const agentId = path.replace("/api/agent/", "").replace("/invoke", "");
+      
+      // Forward to inference handler with agent context
+      const req = createMockReq(event);
+      req.body = {
+        ...req.body,
+        agentId: parseInt(agentId, 10),
+      };
+      const res = createMockRes();
+      await inferenceHandler(req as any, res as any);
+      return res.getResult();
+    }
+
     // 404 for unknown routes
     return {
       statusCode: 404,
