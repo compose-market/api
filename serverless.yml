@@ -5,11 +5,12 @@ provider:
   runtime: nodejs20.x
   region: us-east-1
   stage: ${opt:stage, 'prod'}
-  memorySize: 512
-  timeout: 30
+  memorySize: 1024
+  timeout: 60
   environment:
     THIRDWEB_SECRET_KEY: ${env:THIRDWEB_SECRET_KEY}
-    TREASURY_SERVER_WALLET_PUBLIC: ${env:TREASURY_SERVER_WALLET_PUBLIC}
+    THIRDWEB_SERVER_WALLET_ADDRESS: ${env:THIRDWEB_SERVER_WALLET_ADDRESS}
+    MERCHANT_WALLET_ADDRESS: ${env:MERCHANT_WALLET_ADDRESS}
     GOOGLE_GENERATIVE_AI_API_KEY: ${env:GOOGLE_GENERATIVE_AI_API_KEY}
     OPENAI_API_KEY: ${env:OPENAI_API_KEY}
     ANTHROPIC_API_KEY: ${env:ANTHROPIC_API_KEY}
@@ -47,4 +48,3 @@ package:
   patterns:
     - '!**'
     - 'dist/**'
-

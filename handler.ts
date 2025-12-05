@@ -12,6 +12,7 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "a
 
 // Lazy-load heavy modules for cold start optimization
 let inferenceHandler: typeof import("./inference").handleInference;
+let multimodalHandler: typeof import("./inference").handleMultimodalInference;
 let modelsHandler: typeof import("./inference").handleGetModels;
 let hfModelsHandler: typeof import("./huggingface").handleGetHFModels;
 let hfModelDetailsHandler: typeof import("./huggingface").handleGetHFModelDetails;
@@ -20,11 +21,16 @@ let agentverseSearch: typeof import("./agentverse").searchAgents;
 let agentverseGet: typeof import("./agentverse").getAgent;
 let agentverseExtractTags: typeof import("./agentverse").extractUniqueTags;
 let agentverseExtractCategories: typeof import("./agentverse").extractUniqueCategories;
+let models: typeof import("./lib/models");
+
+// MCP Server URL for proxying
+const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
 
 async function loadModules() {
   if (!inferenceHandler) {
     const inference = await import("./inference");
     inferenceHandler = inference.handleInference;
+    multimodalHandler = inference.handleMultimodalInference;
     modelsHandler = inference.handleGetModels;
   }
   if (!hfModelsHandler) {
@@ -40,13 +46,18 @@ async function loadModules() {
     agentverseExtractTags = av.extractUniqueTags;
     agentverseExtractCategories = av.extractUniqueCategories;
   }
+  if (!models) {
+    models = await import("./lib/models");
+  }
 }
 
-// CORS headers
+// CORS headers - x402 needs x-payment header and exposed response headers
+// Session headers for x402 bypass: x-session-active, x-session-budget-remaining
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-payment, x-session-active, x-session-budget-remaining",
+  "Access-Control-Allow-Headers": "Content-Type, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, Access-Control-Expose-Headers",
+  "Access-Control-Expose-Headers": "*",
 };
 
 // Mock Express request/response for handler compatibility
@@ -73,6 +84,7 @@ function createMockRes() {
   const headers: Record<string, string> = { ...corsHeaders };
   let headersSent = false;
   let isStreaming = false;
+  let isBinary = false;
   const chunks: Buffer[] = [];
 
   return {
@@ -83,6 +95,16 @@ function createMockRes() {
     json(data: unknown) {
       body = JSON.stringify(data);
       headers["Content-Type"] = "application/json";
+      return this;
+    },
+    send(data: Buffer | string) {
+      if (Buffer.isBuffer(data)) {
+        isBinary = true;
+        body = data.toString("base64");
+      } else {
+        body = data;
+      }
+      headersSent = true;
       return this;
     },
     setHeader(key: string, value: string) {
@@ -108,6 +130,14 @@ function createMockRes() {
           statusCode,
           headers,
           body: Buffer.concat(chunks).toString("utf-8"),
+        };
+      }
+      if (isBinary) {
+        return {
+          statusCode,
+          headers,
+          body: body as string,
+          isBase64Encoded: true,
         };
       }
       return {
@@ -139,19 +169,106 @@ export async function handler(
   const method = event.requestContext.http.method;
 
   try {
-    // Route: POST /api/inference
+    // Route: POST /api/inference - Uses multimodal handler for all tasks
     if (method === "POST" && path === "/api/inference") {
       const req = createMockReq(event);
       const res = createMockRes();
-      await inferenceHandler(req as any, res as any);
+      // Use multimodal handler which routes based on modelId/task
+      await multimodalHandler(req as any, res as any);
       return res.getResult();
     }
 
-    // Route: GET /api/models
+    // Route: GET /api/models - Legacy endpoint
     if (method === "GET" && path === "/api/models") {
       const req = createMockReq(event);
       const res = createMockRes();
-      modelsHandler(req as any, res as any);
+      await modelsHandler(req as any, res as any);
+      return res.getResult();
+    }
+
+    // ==========================================================================
+    // Dynamic Model Registry Routes
+    // ==========================================================================
+
+    // Route: GET /api/registry/models - Get all models from all providers (dynamic)
+    if (method === "GET" && path === "/api/registry/models") {
+      const registry = await models.getModelRegistry();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify(registry),
+      };
+    }
+
+    // Route: GET /api/registry/models/available - Get only available models
+    if (method === "GET" && path === "/api/registry/models/available") {
+      const availableModels = await models.getAvailableModels();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ models: availableModels, total: availableModels.length }),
+      };
+    }
+
+    // Route: GET /api/registry/models/:source - Get models by source
+    if (method === "GET" && path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google)$/)) {
+      const source = path.replace("/api/registry/models/", "") as any;
+      const sourceModels = await models.getModelsBySource(source);
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ source, models: sourceModels, total: sourceModels.length }),
+      };
+    }
+
+    // Route: GET /api/registry/model/:modelId - Get specific model info
+    if (method === "GET" && path.startsWith("/api/registry/model/")) {
+      const modelId = decodeURIComponent(path.replace("/api/registry/model/", ""));
+      const modelInfo = await models.getModelInfo(modelId);
+
+      if (!modelInfo) {
+        return {
+          statusCode: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "Model not found", modelId }),
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify(modelInfo),
+      };
+    }
+
+    // Route: POST /api/registry/refresh - Force refresh the model registry
+    if (method === "POST" && path === "/api/registry/refresh") {
+      const registry = await models.refreshRegistry();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Registry refreshed",
+          models: registry.models.length,
+          sources: registry.sources,
+          lastUpdated: registry.lastUpdated,
+        }),
+      };
+    }
+
+    // Route: POST /api/inference/:modelId - Inference with dynamic model (supports multimodal)
+    // Model IDs can contain slashes (e.g., "Comfy-Org/flux2-dev")
+    if (method === "POST" && path.startsWith("/api/inference/") && path !== "/api/inference/") {
+      const modelId = decodeURIComponent(path.slice("/api/inference/".length));
+      const req = createMockReq(event);
+      req.params = { modelId };
+      req.body = {
+        ...req.body,
+        modelId, // Override modelId from path
+      };
+      const res = createMockRes();
+      // Use multimodal handler which routes based on task type
+      await multimodalHandler(req as any, res as any);
       return res.getResult();
     }
 
@@ -236,7 +353,7 @@ export async function handler(
     // Returns agent card JSON for on-chain Manowar agents
     if (method === "GET" && path.match(/^\/api\/agent\/\d+$/)) {
       const agentId = path.replace("/api/agent/", "");
-      
+
       // Return A2A Agent Card format
       // The actual data is fetched from on-chain by the frontend
       // This endpoint serves as the canonical URL for the agent
@@ -264,7 +381,7 @@ export async function handler(
     // This is where agent calls are routed through x402 payment
     if (method === "POST" && path.match(/^\/api\/agent\/\d+\/invoke$/)) {
       const agentId = path.replace("/api/agent/", "").replace("/invoke", "");
-      
+
       // Forward to inference handler with agent context
       const req = createMockReq(event);
       req.body = {
@@ -274,6 +391,162 @@ export async function handler(
       const res = createMockRes();
       await inferenceHandler(req as any, res as any);
       return res.getResult();
+    }
+
+    // ==========================================================================
+    // MCP/Plugin Routes - Proxied to MCP Server with x402 payment
+    // ==========================================================================
+
+    // Route: GET /api/mcp/plugins - List available GOAT plugins
+    if (method === "GET" && path === "/api/mcp/plugins") {
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/goat/tools`);
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
+        };
+      }
+    }
+
+    // Route: GET /api/mcp/:pluginId/tools - List tools for a plugin
+    if (method === "GET" && path.match(/^\/api\/mcp\/[^/]+\/tools$/)) {
+      const pluginId = path.replace("/api/mcp/", "").replace("/tools", "");
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools`);
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: `Failed to fetch tools for ${pluginId}`, message: String(error) }),
+        };
+      }
+    }
+
+    // Route: POST /api/mcp/:pluginId/execute - Execute a plugin tool with x402 payment
+    if (method === "POST" && path.match(/^\/api\/mcp\/[^/]+\/execute$/)) {
+      const pluginId = path.replace("/api/mcp/", "").replace("/execute", "");
+      const body = event.body ? JSON.parse(event.body) : {};
+
+      // Verify session payment (1% fee on action cost)
+      const sessionActive = event.headers["x-session-active"] === "true";
+      const sessionBudgetRemaining = parseInt(event.headers["x-session-budget-remaining"] || "0", 10);
+
+      if (!sessionActive || sessionBudgetRemaining < 1000) {
+        return {
+          statusCode: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "payment_required",
+            message: "Start a session with sufficient budget to execute MCP actions.",
+          }),
+        };
+      }
+
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+
+        // Calculate action cost: 1% fee on any gas/fees spent
+        const actionCost = (data as { gasCost?: number }).gasCost || 0;
+        const platformFee = actionCost * 0.01;
+        const totalCost = actionCost + platformFee;
+
+        return {
+          statusCode: response.status,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            "X-Action-Cost": actionCost.toString(),
+            "X-Platform-Fee": platformFee.toFixed(6),
+            "X-Total-Cost": totalCost.toFixed(6),
+          },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: `Failed to execute ${pluginId}`, message: String(error) }),
+        };
+      }
+    }
+
+    // Route: GET /api/mcp/servers - List MCP servers
+    if (method === "GET" && path === "/api/mcp/servers") {
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/servers`);
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
+        };
+      }
+    }
+
+    // Route: POST /api/mcp/servers/:slug/call - Call MCP server tool
+    if (method === "POST" && path.match(/^\/api\/mcp\/servers\/[^/]+\/call$/)) {
+      const slug = path.replace("/api/mcp/servers/", "").replace("/call", "");
+      const body = event.body ? JSON.parse(event.body) : {};
+
+      // Verify session payment
+      const sessionActive = event.headers["x-session-active"] === "true";
+      const sessionBudgetRemaining = parseInt(event.headers["x-session-budget-remaining"] || "0", 10);
+
+      if (!sessionActive || sessionBudgetRemaining < 1000) {
+        return {
+          statusCode: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "payment_required",
+            message: "Start a session with sufficient budget to call MCP tools.",
+          }),
+        };
+      }
+
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/servers/${encodeURIComponent(slug)}/call`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: `Failed to call ${slug}`, message: String(error) }),
+        };
+      }
     }
 
     // 404 for unknown routes
