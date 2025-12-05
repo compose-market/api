@@ -1,6 +1,7 @@
 import { type Request, type Response, type NextFunction } from "express";
 import { createThirdwebClient } from "thirdweb";
-import { verifyPayment, settlePayment } from "thirdweb/x402";
+import { facilitator, settlePayment } from "thirdweb/x402";
+import { defineChain } from "thirdweb";
 import { privateKeyToAccount } from "thirdweb/wallets";
 import { extractPaymentInfo, buildPaymentRequiredHeaders, getChainConfig } from "./payment.js";
 import { THIRDWEB_CHAIN_IDS } from "./schema.js";
@@ -28,6 +29,13 @@ const serverAccount = SERVER_WALLET_PRIVATE_KEY
     ? privateKeyToAccount({
         client,
         privateKey: SERVER_WALLET_PRIVATE_KEY,
+    })
+    : null;
+
+const serverFacilitator = serverAccount
+    ? facilitator({
+        client,
+        serverWalletAddress: serverAccount.address,
     })
     : null;
 
@@ -78,7 +86,7 @@ export function x402Middleware(options: {
         // If paymentData is present, we try to settle it.
         if (paymentData) {
             try {
-                if (!serverAccount) {
+                if (!serverFacilitator || !serverAccount) {
                     throw new Error("Server wallet not configured");
                 }
 
@@ -89,27 +97,26 @@ export function x402Middleware(options: {
                 const chainId = options.pricing?.chainId || 43113; // Fuji
                 const tokenAddress = options.pricing?.tokenAddress || "0x5425890298aed601595a70ab815c96711a31bc65"; // USDC on Fuji
 
-                // Verify
-                const verification = await verifyPayment({
-                    client,
-                    paymentData,
-                    facilitator: serverAccount,
-                });
-
-                if (!verification.valid) {
-                    throw new Error(verification.error || "Invalid payment signature");
-                }
-
-                // Settle (execute the payment)
+                // Settle (verify and execute the payment)
                 // This effectively transfers the funds or updates the allowance usage
                 const settlement = await settlePayment({
-                    client,
+                    resourceUrl: req.protocol + "://" + req.get("host") + req.originalUrl,
+                    method: req.method as any,
                     paymentData,
-                    facilitator: serverAccount,
+                    payTo: serverAccount.address,
+                    network: defineChain(chainId),
+                    price: {
+                        amount: options.pricing?.amount || "0",
+                        asset: {
+                            address: tokenAddress as `0x${string}`,
+                        },
+                    },
+                    facilitator: serverFacilitator,
                 });
 
-                if (!settlement.success) {
-                    throw new Error(settlement.error || "Payment settlement failed");
+                if (settlement.status !== 200) {
+                    const errorMsg = (settlement as any).responseBody?.error || "Payment settlement failed";
+                    throw new Error(errorMsg);
                 }
 
                 // Payment successful, proceed
