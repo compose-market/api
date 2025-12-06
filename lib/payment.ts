@@ -25,10 +25,12 @@ const paymentChain = process.env.USE_MAINNET === "true" ? avalanche : avalancheF
 // USDC token address
 const usdcAddress = USDC_ADDRESSES[paymentChain.id];
 
-// x402 Facilitator - exactly as in starter kit
+// x402 Facilitator - with faster settlement to avoid HTTP timeout
+// Using "submitted" instead of "confirmed" to prevent Lambda timeout causing retries
 const thirdwebFacilitator = facilitator({
   client: serverClient,
   serverWalletAddress,
+  waitUntil: "submitted", // Don't wait for full confirmation - avoids timeout issues
 });
 
 /**

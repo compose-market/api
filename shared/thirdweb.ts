@@ -63,7 +63,11 @@ export const CHAIN_CONFIG: Record<number, {
 // Pricing Configuration
 // =============================================================================
 
-export const PRICE_PER_TOKEN_WEI = 1; // 0.000001 USDC per inference token
+// Fixed price per inference call (in USDC wei - 6 decimals)
+// $0.005 USDC = 5000 wei (USDC has 6 decimals)
+export const INFERENCE_PRICE_WEI = 5_000;
+
+export const PRICE_PER_TOKEN_WEI = 1; // 0.000001 USDC per inference token (legacy)
 export const MAX_TOKENS_PER_CALL = 100000; // 100k tokens max per call
 
 // Session budget presets (in USDC wei - 6 decimals)
@@ -98,8 +102,8 @@ export function getUsdcAddress(chainId: number): `0x${string}` | undefined {
  * Get the active chain based on environment variable
  */
 export function getActiveChainId(): number {
-  return process.env.USE_MAINNET === "true" 
-    ? CHAIN_IDS.avalanche 
+  return process.env.USE_MAINNET === "true"
+    ? CHAIN_IDS.avalanche
     : CHAIN_IDS.avalancheFuji;
 }
 
