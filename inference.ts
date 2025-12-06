@@ -36,11 +36,9 @@ import {
   type ModelInfo,
 } from "./lib/models";
 import { handleX402Payment, extractPaymentInfo } from "./lib/payment";
+import { INFERENCE_PRICE_WEI } from "./shared/thirdweb";
 
 const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
-
-// Max cost estimate for x402 payment verification ($1 max per call)
-const MAX_COST_ESTIMATE_WEI = BigInt(1_000_000);
 
 // =============================================================================
 // Inference Endpoint
@@ -54,35 +52,31 @@ const MAX_COST_ESTIMATE_WEI = BigInt(1_000_000);
  * 2. Server verifies user has approved spending (via session creation)
  * 3. After processing, server pulls actual cost from user's allowance
  */
-export async function handleInference(req: Request, res: Response) {
+export async function handleInference(req: Request, res: Response, paymentVerified = false) {
   try {
-    // Check for active session first (allows bypass of x402 payment)
-    const { paymentData, sessionActive, sessionBudgetRemaining } = extractPaymentInfo(
-      req.headers as Record<string, string | string[] | undefined>
-    );
+    // x402 Payment Verification - skip if already verified by caller
+    if (!paymentVerified) {
+      const { paymentData } = extractPaymentInfo(
+        req.headers as Record<string, string | string[] | undefined>
+      );
 
-    // Session bypass: if session is active and has budget, skip x402 payment
-    if (sessionActive && sessionBudgetRemaining > 0) {
-      console.log(`[inference] Session active, budget remaining: ${sessionBudgetRemaining}`);
-    } else {
-      // x402 payment - exactly as in starter kit
       const resourceUrl = `https://${req.get("host")}${req.originalUrl}`;
-
-      const result = await handleX402Payment(
+      const paymentResult = await handleX402Payment(
         paymentData,
         resourceUrl,
         "POST",
-        MAX_COST_ESTIMATE_WEI.toString(),
+        INFERENCE_PRICE_WEI.toString(),
       );
 
-      if (result.status !== 200) {
-        // Return 402 with x402 response
-        Object.entries(result.responseHeaders).forEach(([key, value]) => {
+      if (paymentResult.status !== 200) {
+        Object.entries(paymentResult.responseHeaders).forEach(([key, value]) => {
           res.setHeader(key, value);
         });
-        return res.status(result.status).json(result.responseBody);
+        return res.status(paymentResult.status).json(paymentResult.responseBody);
       }
-      console.log(`[inference] x402 payment successful`);
+      console.log(`[inference] x402 payment verified`);
+    } else {
+      console.log(`[inference] x402 payment already verified by caller`);
     }
 
     // Parse request body
@@ -475,33 +469,26 @@ export async function handleMultimodalInference(req: Request, res: Response) {
       task = "image-to-image";
     }
 
-    // Check for active session first (allows bypass of x402 payment)
-    const { paymentData, sessionActive, sessionBudgetRemaining } = extractPaymentInfo(
+    // x402 Payment Verification - ALWAYS required, no session bypass
+    const { paymentData } = extractPaymentInfo(
       req.headers as Record<string, string | string[] | undefined>
     );
 
-    // Session bypass: if session is active and has budget, skip x402 payment
-    if (sessionActive && sessionBudgetRemaining > 0) {
-      console.log(`[inference] Multimodal session active, budget remaining: ${sessionBudgetRemaining}`);
-    } else {
-      // x402 payment - exactly as in starter kit
-      const resourceUrl = `https://${req.get("host")}${req.originalUrl}`;
+    const resourceUrl = `https://${req.get("host")}${req.originalUrl}`;
+    const paymentResult = await handleX402Payment(
+      paymentData,
+      resourceUrl,
+      "POST",
+      INFERENCE_PRICE_WEI.toString(),
+    );
 
-      const result = await handleX402Payment(
-        paymentData,
-        resourceUrl,
-        "POST",
-        MAX_COST_ESTIMATE_WEI.toString(),
-      );
-
-      if (result.status !== 200) {
-        Object.entries(result.responseHeaders).forEach(([key, value]) => {
-          res.setHeader(key, value);
-        });
-        return res.status(result.status).json(result.responseBody);
-      }
-      console.log(`[inference] Multimodal x402 payment OK, task: ${task}`);
+    if (paymentResult.status !== 200) {
+      Object.entries(paymentResult.responseHeaders).forEach(([key, value]) => {
+        res.setHeader(key, value);
+      });
+      return res.status(paymentResult.status).json(paymentResult.responseBody);
     }
+    console.log(`[inference] Multimodal x402 payment verified, task: ${task}`);
 
     // Route based on task
     switch (task) {
@@ -602,7 +589,8 @@ export async function handleMultimodalInference(req: Request, res: Response) {
 
       default:
         // Fall back to text-generation (handleInference)
-        return handleInference(req, res);
+        // Pass paymentVerified=true since we already verified payment above
+        return handleInference(req, res, true);
     }
   } catch (error) {
     console.error("[inference] Multimodal error:", error);

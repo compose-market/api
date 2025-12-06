@@ -68,22 +68,10 @@ export function x402Middleware(options: {
         }
 
         // 1. Extract payment info from headers
-        const { paymentData, sessionActive, sessionBudgetRemaining } = extractPaymentInfo(req.headers);
+        // NOTE: Server NEVER trusts client session headers. Always verify payment on-chain.
+        const { paymentData } = extractPaymentInfo(req.headers);
 
-        // 2. Check for Active Session (Client-side budget management)
-        // If the client claims an active session with budget, we trust them for now 
-        // (in a real prod env, we would verify the session token signature here too)
-        // For this implementation, we still require x402 settlement for the "session" usage if possible,
-        // OR we just allow it if the client signed a "session start" tx previously.
-        // 
-        // However, the requirement says "achieve signless txs through active sessions".
-        // This usually means the client has a session key that signs the request.
-        // The x402 protocol supports "upto" schemes where you authorize a cap.
-        if (sessionActive && sessionBudgetRemaining > 0) {
-            return next();
-        }
-
-        // If paymentData is present, we try to settle it.
+        // 2. If paymentData is present, we verify and settle it on-chain
         if (paymentData) {
             try {
                 if (!serverFacilitator || !serverAccount) {

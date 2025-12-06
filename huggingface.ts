@@ -25,6 +25,7 @@ const INFERENCE_PROVIDERS = [
   "fireworks-ai",
   "replicate",
   "cohere",
+  "fal-ai"
 ];
 
 // Cache for HF models (refresh every 30 minutes)
@@ -79,7 +80,7 @@ export async function handleGetHFModels(req: Request, res: Response) {
     // Fetch fresh data from HuggingFace Hub API
     // Filter for models with inference providers available
     const models: HFModel[] = [];
-    
+
     const iterator = listModels({
       search: {
         task: (task && task !== "all") ? task as any : "text-generation",
@@ -99,7 +100,7 @@ export async function handleGetHFModels(req: Request, res: Response) {
         private: model.private,
         gated: model.gated,
       });
-      
+
       if (models.length >= 200) break;
     }
 
@@ -135,7 +136,7 @@ export async function handleGetHFModelDetails(req: Request, res: Response) {
   }
 
   const modelId = req.params.modelId;
-  
+
   if (!modelId) {
     return res.status(400).json({ error: "Model ID required" });
   }
@@ -143,7 +144,7 @@ export async function handleGetHFModelDetails(req: Request, res: Response) {
   try {
     // Decode the model ID (it may contain slashes encoded as %2F)
     const decodedId = decodeURIComponent(modelId);
-    
+
     const metadata = await modelInfo({
       name: decodedId,
       credentials: { accessToken: HF_TOKEN },
@@ -225,7 +226,7 @@ function formatModelName(modelId: string): string {
   // Extract the model name from "org/model-name" format
   const parts = modelId.split("/");
   const name = parts[parts.length - 1];
-  
+
   // Convert kebab-case to Title Case and handle common patterns
   return name
     .split("-")

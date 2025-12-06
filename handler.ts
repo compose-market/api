@@ -397,8 +397,27 @@ export async function handler(
     // MCP/Plugin Routes - Proxied to MCP Server with x402 payment
     // ==========================================================================
 
-    // Route: GET /api/mcp/plugins - List available GOAT plugins
+    // Route: GET /api/mcp/plugins - List all available GOAT plugins (dynamically)
     if (method === "GET" && path === "/api/mcp/plugins") {
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/goat/plugins`);
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
+        };
+      }
+    }
+
+    // Route: GET /api/mcp/tools - List ALL GOAT tools across all plugins
+    if (method === "GET" && path === "/api/mcp/tools") {
       try {
         const response = await fetch(`${MCP_SERVER_URL}/goat/tools`);
         const data = await response.json();
@@ -416,7 +435,26 @@ export async function handler(
       }
     }
 
-    // Route: GET /api/mcp/:pluginId/tools - List tools for a plugin
+    // Route: GET /api/mcp/status - Get GOAT runtime status
+    if (method === "GET" && path === "/api/mcp/status") {
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/goat/status`);
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
+        };
+      }
+    }
+
+    // Route: GET /api/mcp/:pluginId/tools - List tools for a plugin with full JSON schemas
     if (method === "GET" && path.match(/^\/api\/mcp\/[^/]+\/tools$/)) {
       const pluginId = path.replace("/api/mcp/", "").replace("/tools", "");
       try {
@@ -436,48 +474,74 @@ export async function handler(
       }
     }
 
+    // Route: GET /api/mcp/:pluginId/tools/:toolName - Get specific tool schema
+    if (method === "GET" && path.match(/^\/api\/mcp\/[^/]+\/tools\/[^/]+$/)) {
+      const parts = path.replace("/api/mcp/", "").split("/tools/");
+      const pluginId = parts[0];
+      const toolName = parts[1];
+      try {
+        const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools/${encodeURIComponent(toolName)}`);
+        const data = await response.json();
+        return {
+          statusCode: response.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        };
+      } catch (error) {
+        return {
+          statusCode: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: `Failed to fetch tool ${toolName}`, message: String(error) }),
+        };
+      }
+    }
+
     // Route: POST /api/mcp/:pluginId/execute - Execute a plugin tool with x402 payment
     if (method === "POST" && path.match(/^\/api\/mcp\/[^/]+\/execute$/)) {
       const pluginId = path.replace("/api/mcp/", "").replace("/execute", "");
       const body = event.body ? JSON.parse(event.body) : {};
 
-      // Verify session payment (1% fee on action cost)
-      const sessionActive = event.headers["x-session-active"] === "true";
-      const sessionBudgetRemaining = parseInt(event.headers["x-session-budget-remaining"] || "0", 10);
-
-      if (!sessionActive || sessionBudgetRemaining < 1000) {
-        return {
-          statusCode: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            error: "payment_required",
-            message: "Start a session with sufficient budget to execute MCP actions.",
-          }),
-        };
-      }
+      // Forward x-payment header to MCP server for proper x402 handling
+      // The MCP server uses handleX402Payment which returns proper x402 protocol response
+      const paymentHeader = event.headers["x-payment"] || event.headers["X-PAYMENT"];
 
       try {
+        const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        if (paymentHeader) {
+          fetchHeaders["x-payment"] = paymentHeader;
+        }
+
         const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/execute`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: fetchHeaders,
           body: JSON.stringify(body),
         });
+
+        // Collect response headers (includes x402 headers for 402 responses)
+        const responseHeaders: Record<string, string> = { ...corsHeaders };
+        response.headers.forEach((value, key) => {
+          // Preserve x402 protocol headers
+          const lowerKey = key.toLowerCase();
+          if (lowerKey.startsWith("x-") || lowerKey === "content-type" || lowerKey === "access-control-expose-headers") {
+            responseHeaders[key] = value;
+          }
+        });
+
         const data = await response.json();
 
-        // Calculate action cost: 1% fee on any gas/fees spent
-        const actionCost = (data as { gasCost?: number }).gasCost || 0;
-        const platformFee = actionCost * 0.01;
-        const totalCost = actionCost + platformFee;
+        // Calculate action cost: 1% fee on any gas/fees spent (only on success)
+        if (response.status === 200) {
+          const actionCost = (data as { gasCost?: number }).gasCost || 0;
+          const platformFee = actionCost * 0.01;
+          const totalCost = actionCost + platformFee;
+          responseHeaders["X-Action-Cost"] = actionCost.toString();
+          responseHeaders["X-Platform-Fee"] = platformFee.toFixed(6);
+          responseHeaders["X-Total-Cost"] = totalCost.toFixed(6);
+        }
 
         return {
           statusCode: response.status,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-            "X-Action-Cost": actionCost.toString(),
-            "X-Platform-Fee": platformFee.toFixed(6),
-            "X-Total-Cost": totalCost.toFixed(6),
-          },
+          headers: responseHeaders,
           body: JSON.stringify(data),
         };
       } catch (error) {
@@ -513,31 +577,34 @@ export async function handler(
       const slug = path.replace("/api/mcp/servers/", "").replace("/call", "");
       const body = event.body ? JSON.parse(event.body) : {};
 
-      // Verify session payment
-      const sessionActive = event.headers["x-session-active"] === "true";
-      const sessionBudgetRemaining = parseInt(event.headers["x-session-budget-remaining"] || "0", 10);
-
-      if (!sessionActive || sessionBudgetRemaining < 1000) {
-        return {
-          statusCode: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            error: "payment_required",
-            message: "Start a session with sufficient budget to call MCP tools.",
-          }),
-        };
-      }
+      // Forward x-payment header to MCP server for proper x402 handling
+      const paymentHeader = event.headers["x-payment"] || event.headers["X-PAYMENT"];
 
       try {
+        const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        if (paymentHeader) {
+          fetchHeaders["x-payment"] = paymentHeader;
+        }
+
         const response = await fetch(`${MCP_SERVER_URL}/servers/${encodeURIComponent(slug)}/call`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: fetchHeaders,
           body: JSON.stringify(body),
         });
+
+        // Collect response headers (includes x402 headers for 402 responses)
+        const responseHeaders: Record<string, string> = { ...corsHeaders };
+        response.headers.forEach((value, key) => {
+          const lowerKey = key.toLowerCase();
+          if (lowerKey.startsWith("x-") || lowerKey === "content-type" || lowerKey === "access-control-expose-headers") {
+            responseHeaders[key] = value;
+          }
+        });
+
         const data = await response.json();
         return {
           statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          headers: responseHeaders,
           body: JSON.stringify(data),
         };
       } catch (error) {
