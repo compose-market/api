@@ -8,7 +8,7 @@
  * - MEM0_API_KEY: Required
  */
 
-import Mem0 from "mem0ai";
+import * as mem0ai from "mem0ai";
 
 // =============================================================================
 // Configuration
@@ -24,15 +24,26 @@ if (!MEM0_API_KEY) {
 // Client
 // =============================================================================
 
-let mem0Client: Mem0 | null = null;
+// Define a type alias if possible, or use 'any' if types are broken
+type Mem0Client = any;
 
-export function getMem0Client(): Mem0 | null {
+let mem0Client: Mem0Client | null = null;
+
+export function getMem0Client(): Mem0Client | null {
     if (mem0Client) return mem0Client;
 
     if (!MEM0_API_KEY) return null;
 
     try {
-        mem0Client = new Mem0({
+        // Handle CJS/ESM interop
+        const MemoryClass = (mem0ai as any).Memory || (mem0ai as any).default?.Memory || mem0ai;
+
+        if (typeof MemoryClass !== "function") {
+            console.error("[mem0] Memory class not found in import:", mem0ai);
+            return null;
+        }
+
+        mem0Client = new MemoryClass({
             apiKey: MEM0_API_KEY,
         });
         console.log("[mem0] Client initialized");
