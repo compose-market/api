@@ -34,7 +34,7 @@ import {
   getAvailableModels as getAvailableModelsList,
   DEFAULT_MODEL,
   type ModelInfo,
-} from "./lib/models";
+} from "./shared/models";
 import { handleX402Payment, extractPaymentInfo } from "./lib/payment";
 import { INFERENCE_PRICE_WEI } from "./shared/thirdweb";
 
