@@ -21,7 +21,7 @@ let agentverseSearch: typeof import("./agentverse").searchAgents;
 let agentverseGet: typeof import("./agentverse").getAgent;
 let agentverseExtractTags: typeof import("./agentverse").extractUniqueTags;
 let agentverseExtractCategories: typeof import("./agentverse").extractUniqueCategories;
-let models: typeof import("./lib/models");
+let models: typeof import("./shared/models");
 
 // MCP Server URL for proxying
 const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
@@ -47,7 +47,7 @@ async function loadModules() {
     agentverseExtractCategories = av.extractUniqueCategories;
   }
   if (!models) {
-    models = await import("./lib/models");
+    models = await import("./shared/models");
   }
 }
 

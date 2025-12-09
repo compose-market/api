@@ -10,20 +10,31 @@ export async function registerRoutes(
 ): Promise<Server> {
   // x402 AI Inference endpoints
   // POST /api/inference - Pay-per-call AI inference with x402 payments
-  app.post("/api/inference", handleInference);
+  app.post("/api/inference", (req, res, next) => {
+    handleInference(req, res).catch(next);
+  });
 
   // GET /api/models - Get available models and pricing info
-  app.get("/api/models", handleGetModels);
+  app.get("/api/models", (req, res, next) => {
+    handleGetModels(req, res).catch(next);
+  });
 
   // HuggingFace Inference Provider endpoints
   // GET /api/hf/models - Get inferrable models from HuggingFace
-  app.get("/api/hf/models", handleGetHFModels);
+  app.get("/api/hf/models", (req, res, next) => {
+    handleGetHFModels(req, res).catch(next);
+  });
 
   // GET /api/hf/models/:modelId/details - Get detailed model metadata
-  app.get("/api/hf/models/:modelId/details", handleGetHFModelDetails);
+  app.get("/api/hf/models/:modelId/details", (req, res, next) => {
+    handleGetHFModelDetails(req, res).catch(next);
+  });
 
   // GET /api/hf/tasks - Get available inference tasks
-  app.get("/api/hf/tasks", handleGetHFTasks);
+  app.get("/api/hf/tasks", (req, res, next) => {
+    handleGetHFTasks(req, res);
+    // handleGetHFTasks might be sync or async, assuming it handles its own response or errors, or we catch if async
+  });
 
   // Agentverse API endpoints
   // GET /api/agentverse/agents - Search agents from Agentverse marketplace
