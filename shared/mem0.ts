@@ -35,7 +35,7 @@ export function getMem0Client(): Mem0Client | null {
     if (!MEM0_API_KEY) return null;
 
     try {
-        // mem0ai exports MemoryClient, not Memory
+        // exports MemoryClient
         const MemoryClass = (mem0ai as any).MemoryClient || (mem0ai as any).default?.MemoryClient;
 
         if (typeof MemoryClass !== "function") {
@@ -46,7 +46,7 @@ export function getMem0Client(): Mem0Client | null {
         mem0Client = new MemoryClass({
             apiKey: MEM0_API_KEY,
         });
-        console.log("[mem0] Client initialized successfully");
+        console.log("[mem0] Client initialized");
         return mem0Client;
     } catch (error) {
         console.error("[mem0] Failed to initialize client:", error);
