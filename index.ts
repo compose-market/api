@@ -1,6 +1,7 @@
 import "dotenv/config"; // Load .env variables FIRST
-import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
+import express, { type Request, type Response, type NextFunction } from "express";
+import type { Server } from "http";
+import { registerRoutes } from "./routes.js";
 import { createServer } from "http";
 import cors from "cors";
 
@@ -72,7 +73,7 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
         reject(new Error(`Could not find available port after ${maxAttempts} attempts`));
         return;
       }
-      
+
       httpServer.once("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE") {
           log(`Port ${currentPort} in use, trying ${currentPort + 1}...`);
@@ -81,12 +82,12 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
           reject(err);
         }
       });
-      
+
       httpServer.listen({ port: currentPort, host: "0.0.0.0" }, () => {
         resolve(currentPort);
       });
     };
-    
+
     attempt(port, maxAttempts);
   });
 }
@@ -105,7 +106,7 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
 
   const preferredPort = parseInt(process.env.PORT || String(API_PORT), 10);
   const actualPort = await tryListen(preferredPort);
-  
+
   console.log(`\n  ➜  API Server: http://localhost:${actualPort}/`);
   console.log(`  ➜  Endpoints:`);
   console.log(`     POST /api/inference`);

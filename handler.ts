@@ -11,43 +11,43 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "aws-lambda";
 
 // Lazy-load heavy modules for cold start optimization
-let inferenceHandler: typeof import("./inference").handleInference;
-let multimodalHandler: typeof import("./inference").handleMultimodalInference;
-let modelsHandler: typeof import("./inference").handleGetModels;
-let hfModelsHandler: typeof import("./huggingface").handleGetHFModels;
-let hfModelDetailsHandler: typeof import("./huggingface").handleGetHFModelDetails;
-let hfTasksHandler: typeof import("./huggingface").handleGetHFTasks;
-let agentverseSearch: typeof import("./agentverse").searchAgents;
-let agentverseGet: typeof import("./agentverse").getAgent;
-let agentverseExtractTags: typeof import("./agentverse").extractUniqueTags;
-let agentverseExtractCategories: typeof import("./agentverse").extractUniqueCategories;
-let models: typeof import("./shared/models");
+let inferenceHandler: typeof import("./inference.js").handleInference;
+let multimodalHandler: typeof import("./inference.js").handleMultimodalInference;
+let modelsHandler: typeof import("./inference.js").handleGetModels;
+let hfModelsHandler: typeof import("./huggingface.js").handleGetHFModels;
+let hfModelDetailsHandler: typeof import("./huggingface.js").handleGetHFModelDetails;
+let hfTasksHandler: typeof import("./huggingface.js").handleGetHFTasks;
+let agentverseSearch: typeof import("./agentverse.js").searchAgents;
+let agentverseGet: typeof import("./agentverse.js").getAgent;
+let agentverseExtractTags: typeof import("./agentverse.js").extractUniqueTags;
+let agentverseExtractCategories: typeof import("./agentverse.js").extractUniqueCategories;
+let models: typeof import("./shared/models.js");
 
 // MCP Server URL for proxying
 const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
 
 async function loadModules() {
   if (!inferenceHandler) {
-    const inference = await import("./inference");
+    const inference = await import("./inference.js");
     inferenceHandler = inference.handleInference;
     multimodalHandler = inference.handleMultimodalInference;
     modelsHandler = inference.handleGetModels;
   }
   if (!hfModelsHandler) {
-    const hf = await import("./huggingface");
+    const hf = await import("./huggingface.js");
     hfModelsHandler = hf.handleGetHFModels;
     hfModelDetailsHandler = hf.handleGetHFModelDetails;
     hfTasksHandler = hf.handleGetHFTasks;
   }
   if (!agentverseSearch) {
-    const av = await import("./agentverse");
+    const av = await import("./agentverse.js");
     agentverseSearch = av.searchAgents;
     agentverseGet = av.getAgent;
     agentverseExtractTags = av.extractUniqueTags;
     agentverseExtractCategories = av.extractUniqueCategories;
   }
   if (!models) {
-    models = await import("./shared/models");
+    models = await import("./shared/models.js");
   }
 }
 
@@ -612,6 +612,52 @@ export async function handler(
           statusCode: 503,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
           body: JSON.stringify({ error: `Failed to call ${slug}`, message: String(error) }),
+        };
+      }
+    }
+
+    // ==========================================================================
+    // Mem0 Memory API Routes
+    // ==========================================================================
+
+    // Route: POST /api/memory/add - Add memory
+    if (method === "POST" && path === "/api/memory/add") {
+      const body = event.body ? JSON.parse(event.body) : {};
+
+      try {
+        const mem0 = await import("./shared/mem0.js");
+        const result = await mem0.addMemory(body);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(result),
+        };
+      } catch (error) {
+        return {
+          statusCode: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "Failed to add memory", message: String(error) }),
+        };
+      }
+    }
+
+    // Route: POST /api/memory/search - Search memory
+    if (method === "POST" && path === "/api/memory/search") {
+      const body = event.body ? JSON.parse(event.body) : {};
+
+      try {
+        const mem0 = await import("./shared/mem0.js");
+        const result = await mem0.searchMemory(body);
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(result),
+        };
+      } catch (error) {
+        return {
+          statusCode: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "Failed to search memory", message: String(error) }),
         };
       }
     }

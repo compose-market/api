@@ -22,21 +22,29 @@
  */
 import type { Request, Response } from "express";
 import { streamText, smoothStream, type CoreMessage } from "ai";
-import {
-  MAX_TOKENS_PER_CALL,
-} from "./lib/thirdweb";
+
+/**
+ * Model Configuration
+ *
+ * Fetches model pricing and routing information.
+ * Handles multi-provider routing (HuggingFace, ASI, OpenAI, etc.)
+ *
+ * Pricing is in wei per token.
+ * Example: 100 wei/token on HF Router = 0.0000001 AVAX/token
+ */
 import {
   getLanguageModel,
   getModelInfo,
-  calculateInferenceCost,
-  calculateCost,
+  getModelsBySource,
   getModelRegistry,
+  calculateCost,
+  calculateInferenceCost,
   getAvailableModels as getAvailableModelsList,
   DEFAULT_MODEL,
   type ModelInfo,
-} from "./shared/models";
-import { handleX402Payment, extractPaymentInfo } from "./lib/payment";
-import { INFERENCE_PRICE_WEI } from "./shared/thirdweb";
+} from "./shared/models.js";
+import { handleX402Payment, extractPaymentInfo } from "./lib/payment.js";
+import { INFERENCE_PRICE_WEI } from "./shared/thirdweb.js";
 
 const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
 
@@ -46,7 +54,7 @@ const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
 
 /**
  * x402 AI Inference endpoint
- * 
+ *
  * Payment flow:
  * 1. Client sends x-session-user-address header with their wallet address
  * 2. Server verifies user has approved spending (via session creation)
@@ -249,7 +257,7 @@ function getTaskType(modelId: string, modelInfo?: ModelInfo | null): string {
 
 /**
  * Text-to-Image inference (FLUX, Stable Diffusion, etc.)
- * Uses HuggingFace InferenceClient with provider="auto" to automatically 
+ * Uses HuggingFace InferenceClient with provider="auto" to automatically
  * route to the best available provider (hf-inference, fal-ai, replicate, etc.)
  */
 async function handleImageGeneration(modelId: string, prompt: string): Promise<Buffer> {
@@ -296,7 +304,7 @@ async function handleImageGeneration(modelId: string, prompt: string): Promise<B
 
 /**
  * Image-to-Image inference (FLUX.2-dev, etc.)
- * Uses HuggingFace InferenceClient with provider="auto" to route to 
+ * Uses HuggingFace InferenceClient with provider="auto" to route to
  * available providers like wavespeed, fal-ai, replicate, etc.
  */
 async function handleImageToImage(modelId: string, inputImage: string, prompt: string): Promise<Buffer> {
@@ -401,7 +409,7 @@ async function handleASR(modelId: string, audioBuffer: Buffer): Promise<{ text: 
 /**
  * Feature extraction (embeddings) and sentence similarity
  * Uses HuggingFace Router API for embedding models
- * 
+ *
  * For sentence-similarity models (sentence-transformers), use:
  *   { source_sentence: "text", sentences: ["text1", "text2"] }
  * For feature-extraction models, use:
@@ -459,9 +467,15 @@ async function handleEmbeddings(
  */
 export async function handleMultimodalInference(req: Request, res: Response) {
   try {
-    const modelId = req.params.modelId || req.body.modelId || DEFAULT_MODEL;
+    const taskParam = req.query.task || req.body.task;
+    const requestedTask = typeof taskParam === "string" ? taskParam : undefined;
+
+    // Model ID from path or body
+    const modelIdFromPath = req.params?.modelId;
+    const modelId = (typeof modelIdFromPath === "string" ? modelIdFromPath : undefined) || req.body.modelId || DEFAULT_MODEL;
+
     const modelInfo = await getModelInfo(modelId);
-    let task = getTaskType(modelId, modelInfo);
+    let task = requestedTask || getTaskType(modelId, modelInfo);
 
     // Auto-detect image-to-image if image is provided in body
     if (req.body.image && (task === "text-to-image" || task === "text-generation")) {

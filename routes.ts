@@ -1,8 +1,8 @@
 import type { Express, Request, Response } from "express";
 import { type Server } from "http";
-import { handleInference, handleGetModels } from "./inference";
-import { handleGetHFModels, handleGetHFModelDetails, handleGetHFTasks } from "./huggingface";
-import { searchAgents, getAgent, extractUniqueTags, extractUniqueCategories } from "./agentverse";
+import { handleInference, handleGetModels } from "./inference.js";
+import { handleGetHFModels, handleGetHFModelDetails, handleGetHFTasks } from "./huggingface.js";
+import { searchAgents, getAgent, extractUniqueTags, extractUniqueCategories } from "./agentverse.js";
 
 export async function registerRoutes(
   httpServer: Server,

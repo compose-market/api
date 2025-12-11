@@ -35,18 +35,18 @@ export function getMem0Client(): Mem0Client | null {
     if (!MEM0_API_KEY) return null;
 
     try {
-        // Handle CJS/ESM interop
-        const MemoryClass = (mem0ai as any).Memory || (mem0ai as any).default?.Memory || mem0ai;
+        // mem0ai exports MemoryClient, not Memory
+        const MemoryClass = (mem0ai as any).MemoryClient || (mem0ai as any).default?.MemoryClient;
 
         if (typeof MemoryClass !== "function") {
-            console.error("[mem0] Memory class not found in import:", mem0ai);
+            console.error("[mem0] MemoryClient class not found in import. Available exports:", Object.keys(mem0ai));
             return null;
         }
 
         mem0Client = new MemoryClass({
             apiKey: MEM0_API_KEY,
         });
-        console.log("[mem0] Client initialized");
+        console.log("[mem0] Client initialized successfully");
         return mem0Client;
     } catch (error) {
         console.error("[mem0] Failed to initialize client:", error);
