@@ -15,6 +15,7 @@ import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import type { LanguageModel } from "ai";
+import { fetchAllInferenceModels, type HFModel } from "../huggingface.js";
 
 // =============================================================================
 // Types
@@ -136,8 +137,8 @@ function inferTaskFromArchitecture(
 
 /**
  * Fetch all models from HuggingFace Hub with inference providers available
- * Uses the Hub API with inference-provider=all filter to get 11,000+ models
- * Sequential paginated fetch to avoid rate limiting
+ * Uses the new huggingface.ts module which ONLY returns models with inference providers
+ * (inference_provider=all filter)
  */
 async function fetchHuggingFaceModels(): Promise<ModelInfo[]> {
     const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
@@ -146,83 +147,30 @@ async function fetchHuggingFaceModels(): Promise<ModelInfo[]> {
         return [];
     }
 
-    const allModels: ModelInfo[] = [];
-    const seenIds = new Set<string>();
-
     try {
-        // Paginated fetch of all models with inference providers
-        const limit = 1000;
-        const maxPages = 8; // ~8,000 models max (avoid Lambda response limit)
+        // Use the new module to fetch ONLY models with inference providers
+        const hfModels = await fetchAllInferenceModels();
 
-        for (let page = 0; page < maxPages; page++) {
-            const offset = page * limit;
-            const url = `https://huggingface.co/api/models?inference-provider=all&sort=downloads&direction=-1&limit=${limit}&offset=${offset}`;
+        console.log(`[models] Fetched ${hfModels.length} HuggingFace models with inference providers`);
 
-            console.log(`[models] Fetching HF page ${page + 1} (offset=${offset})...`);
-
-            let response: Response;
-            try {
-                response = await fetch(url, {
-                    headers: {
-                        Authorization: `Bearer ${HF_TOKEN}`,
-                        "User-Agent": "compose-market/1.0",
-                    },
-                });
-            } catch (fetchError) {
-                console.error(`[models] HF fetch error on page ${page + 1}:`, fetchError);
-                break;
-            }
-
-            if (!response.ok) {
-                const errText = await response.text();
-                console.error(`[models] HF API error: ${response.status} ${response.statusText} - ${errText}`);
-                break;
-            }
-
-            const models = await response.json() as Array<{
-                id: string;
-                modelId?: string;
-                pipeline_tag?: string;
-                tags?: string[];
-                downloads?: number;
-                likes?: number;
-                library_name?: string;
-                inference?: string;
-            }>;
-
-            console.log(`[models] HF page ${page + 1}: got ${models.length} models`);
-
-            if (models.length === 0) break;
-
-            for (const model of models) {
-                const id = model.id || model.modelId || "";
-                if (!id || seenIds.has(id)) continue;
-                seenIds.add(id);
-
-                const task = model.pipeline_tag || inferTaskFromArchitecture(id, undefined);
-                allModels.push({
-                    id,
-                    name: formatModelName(id),
-                    ownedBy: id.split("/")[0] || "unknown",
-                    source: "huggingface" as const,
-                    task,
-                    providers: [{
-                        provider: "hf-inference",
-                        status: "live" as const,
-                        pricing: getDefaultPricingForTask(task),
-                    }],
-                    available: true,
-                    pricing: {
-                        provider: "hf-inference",
-                        ...getDefaultPricingForTask(task),
-                    },
-                });
-            }
-
-            if (models.length < limit) break;
-        }
-
-        console.log(`[models] Total HuggingFace models: ${allModels.length}`);
+        // Convert to ModelInfo format
+        const models: ModelInfo[] = hfModels.map((model: HFModel) => ({
+            id: model.id,
+            name: model.name,
+            ownedBy: model.id.split("/")[0] || "unknown",
+            source: "huggingface" as const,
+            task: model.task,
+            providers: [{
+                provider: "hf-inference",
+                status: "live" as const,
+                pricing: getDefaultPricingForTask(model.task),
+            }],
+            available: true,
+            pricing: {
+                provider: "hf-inference",
+                ...getDefaultPricingForTask(model.task),
+            },
+        }));
 
         // Also fetch from Router API for pricing info on supported models
         try {
@@ -250,7 +198,7 @@ async function fetchHuggingFaceModels(): Promise<ModelInfo[]> {
                 // Update pricing for models that have router data
                 const routerModelMap = new Map(routerData.data.map(m => [m.id, m]));
 
-                for (const model of allModels) {
+                for (const model of models) {
                     const routerModel = routerModelMap.get(model.id);
                     if (routerModel) {
                         const providers: ProviderPricing[] = routerModel.providers.map((p) => ({
@@ -288,8 +236,7 @@ async function fetchHuggingFaceModels(): Promise<ModelInfo[]> {
             console.warn("[models] Router API unavailable, using default pricing");
         }
 
-        console.log(`[models] Fetched ${allModels.length} HuggingFace models with inference`);
-        return allModels;
+        return models;
     } catch (error) {
         console.error("[models] Failed to fetch HuggingFace models:", error);
         return [];
@@ -412,7 +359,71 @@ async function fetchAnthropicModels(): Promise<ModelInfo[]> {
 }
 
 /**
+ * Detect task type for a Google model based on name and capabilities
+ * 
+ * Google Model Names (December 2025):
+ * - gemini-2.5-flash-image / gemini-3-pro-image-preview = "Nano Banana" / "Nano Banana Pro" (image generation)
+ * - imagen-4.0-generate-001 / imagen-4.0 = Imagen 4 (text-to-image)
+ * - veo-3.0-generate-preview / veo-3.0 = Veo 3 (text-to-video with audio)
+ * - lyria-2.0-generate / lyria-002 = Lyria 2 (music generation)
+ */
+function detectGoogleModelTask(modelId: string, displayName: string, methods: string[]): string {
+    const id = modelId.toLowerCase();
+    const name = (displayName || "").toLowerCase();
+
+    // Embedding models - check methods first as most reliable
+    if (methods.includes("embedContent") || methods.includes("embedText") ||
+        id.includes("embedding") || id.includes("embed") ||
+        id.includes("text-embedding")) {
+        return "feature-extraction";
+    }
+
+    // Video generation models (Veo series)
+    // Check BEFORE image since "video" check might overlap
+    if (id.includes("veo") || id.startsWith("veo-") ||
+        name.includes("veo") || id.includes("-video")) {
+        return "text-to-video";
+    }
+
+    // Audio/Music generation models (Lyria series)
+    if (id.includes("lyria") || id.startsWith("lyria-") ||
+        name.includes("lyria") || name.includes("music generation") ||
+        id.includes("-music") || id.includes("-audio-generate")) {
+        return "text-to-audio";
+    }
+
+    // Image generation models:
+    // - Imagen series: imagen-4.0, imagen-3.0, etc.
+    // - Gemini image models: gemini-*-image, gemini-*-image-preview
+    // - "Nano Banana" models have "image" in the ID
+    if (id.includes("imagen") || id.startsWith("imagen-") ||
+        id.includes("-image") || id.endsWith("-image") ||
+        id.includes("-image-") || id.includes("image-generation") ||
+        name.includes("imagen") || name.includes("image generation") ||
+        name.includes("nano banana")) {
+        return "text-to-image";
+    }
+
+    // TTS (Text-to-Speech) models
+    if (id.includes("tts") || id.includes("text-to-speech") ||
+        name.includes("text-to-speech") || name.includes("speech synthesis")) {
+        return "text-to-speech";
+    }
+
+    // Live/Realtime bidirectional streaming models
+    if (methods.includes("bidiGenerateContent") ||
+        id.includes("-live") || id.includes("realtime") ||
+        name.includes("live") || name.includes("real-time")) {
+        return "conversational";
+    }
+
+    // Default to text generation for all other generateContent models
+    return "text-generation";
+}
+
+/**
  * Fetch models from Google AI API
+ * Includes all models with usable generation methods: generateContent, embedContent, bidiGenerateContent
  */
 async function fetchGoogleModels(): Promise<ModelInfo[]> {
     if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) return [];
@@ -427,22 +438,32 @@ async function fetchGoogleModels(): Promise<ModelInfo[]> {
             models: Array<{
                 name: string;
                 displayName: string;
+                description?: string;
                 inputTokenLimit: number;
+                outputTokenLimit?: number;
                 supportedGenerationMethods: string[];
             }>;
         };
 
-        const genModels = data.models.filter((m) =>
-            m.supportedGenerationMethods?.includes("generateContent")
+        // Include all models with any usable generation method
+        const usableMethods = ["generateContent", "embedContent", "embedText", "bidiGenerateContent"];
+        const usableModels = data.models.filter((m) =>
+            m.supportedGenerationMethods?.some((method) => usableMethods.includes(method))
         );
 
-        return genModels.map((model) => {
+        console.log(`[models] Google API returned ${data.models.length} models, ${usableModels.length} usable`);
+
+        return usableModels.map((model) => {
             const modelId = model.name.replace("models/", "");
+            const methods = model.supportedGenerationMethods || [];
+            const task = detectGoogleModelTask(modelId, model.displayName, methods);
+
             return {
                 id: modelId,
                 name: model.displayName || formatModelName(modelId),
                 ownedBy: "google",
                 source: "google" as const,
+                task,
                 contextLength: model.inputTokenLimit,
                 providers: [{ provider: "google", status: "live" as const, contextLength: model.inputTokenLimit }],
                 available: true,
