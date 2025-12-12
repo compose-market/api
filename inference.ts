@@ -45,6 +45,12 @@ import {
 } from "./shared/models.js";
 import { handleX402Payment, extractPaymentInfo } from "./lib/payment.js";
 import { INFERENCE_PRICE_WEI } from "./shared/thirdweb.js";
+import {
+  generateImage as googleGenerateImage,
+  generateVideo as googleGenerateVideo,
+  generateAudio as googleGenerateAudio,
+  generateSpeech as googleGenerateSpeech,
+} from "./genai.js";
 
 const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
 
@@ -257,8 +263,13 @@ function getTaskType(modelId: string, modelInfo?: ModelInfo | null): string {
 
 /**
  * Text-to-Image inference (FLUX, Stable Diffusion, etc.)
- * Uses HuggingFace InferenceClient with provider="auto" to automatically
- * route to the best available provider (hf-inference, fal-ai, replicate, etc.)
+ * Uses HuggingFace InferenceClient with provider fallback strategy:
+ * 1. Try hf-inference (free HuggingFace inference)
+ * 2. Try wavespeed (usually free)
+ * 3. Try replicate (usually free)
+ * 4. Try auto as last resort
+ * 
+ * Avoids fal-ai which requires PRO subscription
  */
 async function handleImageGeneration(modelId: string, prompt: string): Promise<Buffer> {
   if (!HF_TOKEN) throw new Error("HuggingFace token not configured");
@@ -266,46 +277,67 @@ async function handleImageGeneration(modelId: string, prompt: string): Promise<B
   const { InferenceClient } = await import("@huggingface/inference");
   const client = new InferenceClient(HF_TOKEN);
 
-  try {
-    console.log(`[inference] Text-to-image: ${modelId} with provider=auto`);
+  // Providers to try in order (hf-inference first, avoid fal-ai which needs PRO)
+  const providersToTry = ["hf-inference", "wavespeed", "replicate", "novita"] as const;
 
-    const result = await client.textToImage({
-      provider: "auto",
-      model: modelId,
-      inputs: prompt,
-    });
+  let lastError: Error | null = null;
 
-    // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
-    // Cast to any to handle the union type properly
-    const blob = result as unknown as Blob;
-    if (typeof blob.arrayBuffer === "function") {
-      const arrayBuffer = await blob.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+  for (const provider of providersToTry) {
+    try {
+      console.log(`[inference] Text-to-image: ${modelId} with provider=${provider}`);
+
+      const result = await client.textToImage({
+        provider,
+        model: modelId,
+        inputs: prompt,
+      });
+
+      // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
+      const blob = result as unknown as Blob;
+      if (typeof blob.arrayBuffer === "function") {
+        const arrayBuffer = await blob.arrayBuffer();
+        return Buffer.from(arrayBuffer);
+      }
+      return Buffer.from(result as unknown as ArrayBuffer);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`[inference] Provider ${provider} failed: ${message}`);
+      lastError = error instanceof Error ? error : new Error(message);
+
+      // If it's a PRO requirement error or provider doesn't support model, try next
+      if (message.includes("PRO") || message.includes("not supported") ||
+        message.includes("not available") || message.includes("404")) {
+        continue;
+      }
+
+      // For loading errors, don't retry different providers
+      if (message.includes("loading") || message.includes("503")) {
+        throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
+      }
     }
-    // Fallback for other return types
-    return Buffer.from(result as unknown as ArrayBuffer);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    // Provide better error messages
-    if (message.includes("not found") || message.includes("404") || message.includes("Not Found")) {
-      throw new Error(
-        `Model "${modelId}" is not available for text-to-image inference. ` +
-        `Try "black-forest-labs/FLUX.1-schnell" or "stabilityai/stable-diffusion-xl-base-1.0".`
-      );
-    }
-    if (message.includes("loading") || message.includes("503")) {
-      throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
-    }
-
-    throw new Error(`Image generation failed: ${message}`);
   }
+
+  // All providers failed
+  const errorMessage = lastError?.message || "Unknown error";
+  if (errorMessage.includes("not found") || errorMessage.includes("404")) {
+    throw new Error(
+      `Model "${modelId}" is not available for text-to-image inference. ` +
+      `Try "black-forest-labs/FLUX.1-schnell" or "stabilityai/stable-diffusion-xl-base-1.0".`
+    );
+  }
+
+  throw new Error(`Image generation failed: ${errorMessage}`);
 }
 
 /**
  * Image-to-Image inference (FLUX.2-dev, etc.)
- * Uses HuggingFace InferenceClient with provider="auto" to route to
- * available providers like wavespeed, fal-ai, replicate, etc.
+ * Uses HuggingFace InferenceClient with provider fallback strategy:
+ * 1. Try wavespeed (supports FLUX.2-dev, usually free)
+ * 2. Try hf-inference (free HuggingFace inference)
+ * 3. Try replicate (usually free)
+ * 4. Try novita
+ * 
+ * Avoids fal-ai which requires PRO subscription
  */
 async function handleImageToImage(modelId: string, inputImage: string, prompt: string): Promise<Buffer> {
   if (!HF_TOKEN) throw new Error("HuggingFace token not configured");
@@ -313,44 +345,62 @@ async function handleImageToImage(modelId: string, inputImage: string, prompt: s
   const { InferenceClient } = await import("@huggingface/inference");
   const client = new InferenceClient(HF_TOKEN);
 
-  try {
-    console.log(`[inference] Image-to-image: ${modelId} with provider=auto`);
+  // Convert base64 to Blob for the input image (HF client expects Blob)
+  const imageBuffer = Buffer.from(inputImage, "base64");
+  const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
 
-    // Convert base64 to Blob for the input image (HF client expects Blob)
-    const imageBuffer = Buffer.from(inputImage, "base64");
-    const imageBlob = new Blob([imageBuffer], { type: "image/png" });
+  // Providers to try in order (wavespeed first for FLUX.2-dev, avoid fal-ai which needs PRO)
+  const providersToTry = ["wavespeed", "hf-inference", "replicate", "novita"] as const;
 
-    const result = await client.imageToImage({
-      provider: "auto",
-      model: modelId,
-      inputs: imageBlob,
-      parameters: { prompt },
-    });
+  let lastError: Error | null = null;
 
-    // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
-    // Cast to any to handle the union type properly
-    const blob = result as unknown as Blob;
-    if (typeof blob.arrayBuffer === "function") {
-      const arrayBuffer = await blob.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+  for (const provider of providersToTry) {
+    try {
+      console.log(`[inference] Image-to-image: ${modelId} with provider=${provider}`);
+
+      const result = await client.imageToImage({
+        provider,
+        model: modelId,
+        inputs: imageBlob,
+        parameters: { prompt },
+      });
+
+      // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
+      const blob = result as unknown as Blob;
+      if (typeof blob.arrayBuffer === "function") {
+        const arrayBuffer = await blob.arrayBuffer();
+        return Buffer.from(arrayBuffer);
+      }
+      return Buffer.from(result as unknown as ArrayBuffer);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`[inference] Provider ${provider} failed: ${message}`);
+      lastError = error instanceof Error ? error : new Error(message);
+
+      // If it's a PRO requirement error or provider doesn't support model, try next
+      if (message.includes("PRO") || message.includes("not supported") ||
+        message.includes("not available") || message.includes("404") ||
+        message.includes("Upgrade")) {
+        continue;
+      }
+
+      // For loading errors, don't retry different providers
+      if (message.includes("loading") || message.includes("503")) {
+        throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
+      }
     }
-    // Fallback for other return types
-    return Buffer.from(result as unknown as ArrayBuffer);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    if (message.includes("not found") || message.includes("404") || message.includes("Not Found")) {
-      throw new Error(
-        `Model "${modelId}" is not available for image-to-image inference. ` +
-        `Try "black-forest-labs/FLUX.2-dev" with an input image.`
-      );
-    }
-    if (message.includes("loading") || message.includes("503")) {
-      throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
-    }
-
-    throw new Error(`Image-to-image failed: ${message}`);
   }
+
+  // All providers failed
+  const errorMessage = lastError?.message || "Unknown error";
+  if (errorMessage.includes("not found") || errorMessage.includes("404")) {
+    throw new Error(
+      `Model "${modelId}" is not available for image-to-image inference. ` +
+      `Try "black-forest-labs/FLUX.2-dev" with an input image.`
+    );
+  }
+
+  throw new Error(`Image-to-image failed: ${errorMessage}`);
 }
 
 /**
@@ -385,25 +435,43 @@ async function handleTTS(modelId: string, text: string): Promise<Buffer> {
 
 /**
  * Automatic Speech Recognition (Whisper, etc.)
+ * Uses HuggingFace InferenceClient with provider="auto" for automatic provider routing
+ * See: https://huggingface.co/docs/inference-providers/guides/building-first-app
  */
 async function handleASR(modelId: string, audioBuffer: Buffer): Promise<{ text: string }> {
   if (!HF_TOKEN) throw new Error("HuggingFace token not configured");
 
-  const response = await fetch(`https://router.huggingface.co/hf-inference/models/${modelId}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${HF_TOKEN}`,
-      "Content-Type": "audio/wav",
-    },
-    body: new Uint8Array(audioBuffer),
-  });
+  try {
+    const { InferenceClient } = await import("@huggingface/inference");
+    const client = new InferenceClient(HF_TOKEN);
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`ASR failed: ${error}`);
+    console.log(`[inference] ASR: ${modelId} with provider=auto`);
+
+    // Use provider="auto" to automatically route to the best available provider
+    // Convert Buffer to Blob for the HF client (use Uint8Array to avoid type issues)
+    const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: "audio/wav" });
+    const result = await client.automaticSpeechRecognition({
+      provider: "auto",
+      model: modelId,
+      inputs: audioBlob,
+    });
+
+    return { text: result.text };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("not found") || message.includes("404")) {
+      throw new Error(
+        `ASR model "${modelId}" is not available for inference. ` +
+        `Try "openai/whisper-large-v3" or "openai/whisper-small".`
+      );
+    }
+    if (message.includes("loading") || message.includes("503")) {
+      throw new Error(`ASR model "${modelId}" is loading. Please try again in 20-30 seconds.`);
+    }
+
+    throw new Error(`ASR failed: ${message}`);
   }
-
-  return response.json();
 }
 
 /**
@@ -459,6 +527,221 @@ async function handleEmbeddings(
   }
 
   return response.json();
+}
+
+/**
+ * Text-to-Video generation (Google Veo)
+ * Uses Google's Generative Language API for video generation
+ * 
+ * Note: Veo models (veo-3.0-generate-preview, etc.) use a long-running operation pattern.
+ * This handler initiates the generation and waits for completion.
+ */
+async function handleVideoGeneration(modelId: string, prompt: string, options?: {
+  duration?: number;  // Duration in seconds (default: 5)
+  aspectRatio?: string;  // e.g., "16:9", "9:16", "1:1"
+}): Promise<{ videoUrl: string; operationId?: string }> {
+  const GOOGLE_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  if (!GOOGLE_API_KEY) throw new Error("Google API key not configured");
+
+  // Clean model ID (remove "models/" prefix if present)
+  const cleanModelId = modelId.replace("models/", "");
+
+  console.log(`[inference] Text-to-video: ${cleanModelId}`);
+
+  // Google Veo uses the generateContent endpoint with video output
+  // The actual endpoint may vary based on the model version
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModelId}:generateContent?key=${GOOGLE_API_KEY}`;
+
+  const requestBody = {
+    contents: [{
+      parts: [{ text: prompt }]
+    }],
+    generationConfig: {
+      responseModalities: ["VIDEO"],
+      ...(options?.duration && { videoDuration: options.duration }),
+      ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
+    }
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      // Check for model availability errors
+      if (response.status === 404 || errorText.includes("not found")) {
+        throw new Error(
+          `Video model "${cleanModelId}" is not available. ` +
+          `Veo models may require Vertex AI access. Try "veo-3.0-generate-preview" if available.`
+        );
+      }
+      if (response.status === 400 && errorText.includes("not supported")) {
+        throw new Error(
+          `Model "${cleanModelId}" does not support video generation. ` +
+          `Please select a Veo model for video generation.`
+        );
+      }
+      throw new Error(`Video generation failed: ${errorText}`);
+    }
+
+    const data = await response.json() as {
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{
+            fileData?: { fileUri: string; mimeType: string };
+            text?: string;
+          }>;
+        };
+      }>;
+      error?: { message: string };
+    };
+
+    if (data.error) {
+      throw new Error(`Video generation error: ${data.error.message}`);
+    }
+
+    // Extract video URL from response
+    const videoPart = data.candidates?.[0]?.content?.parts?.find(p => p.fileData);
+    if (!videoPart?.fileData?.fileUri) {
+      throw new Error("No video generated in response");
+    }
+
+    return { videoUrl: videoPart.fileData.fileUri };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    // Provide helpful error messages
+    if (message.includes("PERMISSION_DENIED") || message.includes("403")) {
+      throw new Error(
+        `Access denied to video model "${cleanModelId}". ` +
+        `Veo models may require additional API access or Vertex AI.`
+      );
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Text-to-Audio/Music generation (Google Lyria)
+ * Uses Google's API for audio/music generation
+ * 
+ * Lyria 2 generates high-fidelity instrumental music from text prompts.
+ */
+async function handleAudioGeneration(modelId: string, prompt: string, options?: {
+  duration?: number;  // Duration in seconds
+  negativePrompt?: string;  // What to avoid in the generation
+}): Promise<Buffer> {
+  const GOOGLE_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  if (!GOOGLE_API_KEY) throw new Error("Google API key not configured");
+
+  // Clean model ID
+  const cleanModelId = modelId.replace("models/", "");
+
+  console.log(`[inference] Text-to-audio: ${cleanModelId}`);
+
+  // Google Lyria uses similar pattern to other generative models
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModelId}:generateContent?key=${GOOGLE_API_KEY}`;
+
+  const requestBody = {
+    contents: [{
+      parts: [{ text: prompt }]
+    }],
+    generationConfig: {
+      responseModalities: ["AUDIO"],
+      ...(options?.duration && { audioDuration: options.duration }),
+    },
+    ...(options?.negativePrompt && {
+      safetySettings: [{
+        category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+        threshold: "BLOCK_NONE"
+      }]
+    })
+  };
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      if (response.status === 404 || errorText.includes("not found")) {
+        throw new Error(
+          `Audio model "${cleanModelId}" is not available. ` +
+          `Lyria models may require Vertex AI access. Try "lyria-2.0-generate" if available.`
+        );
+      }
+      if (response.status === 400 && errorText.includes("not supported")) {
+        throw new Error(
+          `Model "${cleanModelId}" does not support audio generation. ` +
+          `Please select a Lyria model for music generation.`
+        );
+      }
+      throw new Error(`Audio generation failed: ${errorText}`);
+    }
+
+    const data = await response.json() as {
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{
+            inlineData?: { data: string; mimeType: string };
+            fileData?: { fileUri: string; mimeType: string };
+          }>;
+        };
+      }>;
+      error?: { message: string };
+    };
+
+    if (data.error) {
+      throw new Error(`Audio generation error: ${data.error.message}`);
+    }
+
+    // Extract audio from response
+    const audioPart = data.candidates?.[0]?.content?.parts?.find(
+      p => p.inlineData || p.fileData
+    );
+
+    if (audioPart?.inlineData?.data) {
+      // Audio returned as base64 inline data
+      return Buffer.from(audioPart.inlineData.data, "base64");
+    }
+
+    if (audioPart?.fileData?.fileUri) {
+      // Audio returned as file URL - fetch it
+      const audioResponse = await fetch(audioPart.fileData.fileUri);
+      if (!audioResponse.ok) {
+        throw new Error("Failed to download generated audio");
+      }
+      const arrayBuffer = await audioResponse.arrayBuffer();
+      return Buffer.from(arrayBuffer);
+    }
+
+    throw new Error("No audio generated in response");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("PERMISSION_DENIED") || message.includes("403")) {
+      throw new Error(
+        `Access denied to audio model "${cleanModelId}". ` +
+        `Lyria models may require additional API access or Vertex AI.`
+      );
+    }
+
+    throw error;
+  }
 }
 
 /**
@@ -526,13 +809,22 @@ export async function handleMultimodalInference(req: Request, res: Response) {
         const { prompt } = req.body;
         if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
-        const imageBuffer = await handleImageGeneration(modelId, prompt);
+        // Route based on model source: Google models use genai.ts, others use HuggingFace
+        let imageBuffer: Buffer;
+        const isGoogleModel = modelInfo?.source === "google" ||
+          modelId.startsWith("gemini") ||
+          modelId.startsWith("imagen") ||
+          modelId.includes("-image");
+
+        if (isGoogleModel) {
+          imageBuffer = await googleGenerateImage(modelId, prompt);
+        } else {
+          imageBuffer = await handleImageGeneration(modelId, prompt);
+        }
 
         // Calculate cost
         const { totalCost, costUsdcWei } = await calculateInferenceCost(modelId, 500, 500);
         console.log(`[inference] Image cost: $${totalCost.toFixed(6)} (${costUsdcWei} wei)`);
-
-        console.log(`[inference] Image: ${costUsdcWei} wei`);
 
         res.setHeader("Content-Type", "image/png");
         res.setHeader("X-Cost-USDC", totalCost.toFixed(6));
@@ -551,6 +843,49 @@ export async function handleMultimodalInference(req: Request, res: Response) {
         console.log(`[inference] TTS cost: $${totalCost.toFixed(6)} (${costUsdcWei} wei)`);
 
         console.log(`[inference] TTS: ${costUsdcWei} wei`);
+
+        res.setHeader("Content-Type", "audio/wav");
+        res.setHeader("X-Cost-USDC", totalCost.toFixed(6));
+        return res.send(audioBuffer);
+      }
+
+      case "text-to-video": {
+        // Google Veo video generation (via genai.ts)
+        const { prompt, duration, aspectRatio } = req.body;
+        if (!prompt) return res.status(400).json({ error: "prompt is required for video generation" });
+
+        const result = await googleGenerateVideo(modelId, prompt, {
+          duration: duration as number | undefined,
+          aspectRatio: aspectRatio as string | undefined,
+        });
+
+        // Calculate cost (video generation is more expensive)
+        const estimatedTokens = Math.ceil(prompt.length / 4);
+        const { totalCost, costUsdcWei } = await calculateInferenceCost(modelId, estimatedTokens * 10, 0);
+        console.log(`[inference] Video generation cost: $${totalCost.toFixed(6)} (${costUsdcWei} wei)`);
+
+        res.setHeader("X-Cost-USDC", totalCost.toFixed(6));
+        return res.json({
+          videoUrl: result.videoUrl,
+          mimeType: result.mimeType,
+          message: "Video generated successfully",
+        });
+      }
+
+      case "text-to-audio": {
+        // Google Lyria music/audio generation (via genai.ts)
+        const { prompt, duration, negativePrompt } = req.body;
+        if (!prompt) return res.status(400).json({ error: "prompt is required for audio generation" });
+
+        const audioBuffer = await googleGenerateAudio(modelId, prompt, {
+          duration: duration as number | undefined,
+          negativePrompt: negativePrompt as string | undefined,
+        });
+
+        // Calculate cost
+        const estimatedTokens = Math.ceil(prompt.length / 4);
+        const { totalCost, costUsdcWei } = await calculateInferenceCost(modelId, estimatedTokens * 5, 0);
+        console.log(`[inference] Audio generation cost: $${totalCost.toFixed(6)} (${costUsdcWei} wei)`);
 
         res.setHeader("Content-Type", "audio/wav");
         res.setHeader("X-Cost-USDC", totalCost.toFixed(6));
