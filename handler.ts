@@ -23,8 +23,9 @@ let agentverseExtractTags: typeof import("./agentverse.js").extractUniqueTags;
 let agentverseExtractCategories: typeof import("./agentverse.js").extractUniqueCategories;
 let models: typeof import("./shared/models.js");
 
-// MCP Server URL for proxying
+// Prod Servers URLs for proxying
 const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
+const MANOWAR_SERVER_URL = process.env.MANOWAR_SERVICE_URL || "https://manowar.compose.market";
 
 async function loadModules() {
   if (!inferenceHandler) {
@@ -363,7 +364,7 @@ export async function handler(
         body: JSON.stringify({
           schemaVersion: "1.0.0",
           agentId: parseInt(agentId, 10),
-          endpoint: `https://api.compose.market/api/agent/${agentId}/invoke`,
+          endpoint: `https://manowar.compose.market/agent/${agentId}/chat`,
           protocols: [
             { name: "x402", version: "1.0" },
             { name: "a2a", version: "1.0" },
