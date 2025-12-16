@@ -481,15 +481,21 @@ async function fetchGoogleModels(): Promise<ModelInfo[]> {
 
 /**
  * Priority for deduplication (lower = higher priority)
- * ASI Cloud > ASI One > HuggingFace > OpenAI > Anthropic > Google
+ * Priority order:
+ * 1. ASI Cloud
+ * 2. ASI:One
+ * 3. Google GenAI
+ * 4. HuggingFace
+ * 5. Anthropic
+ * 6. OpenAI
  */
 const SOURCE_PRIORITY: Record<ModelInfo["source"], number> = {
     "asi-cloud": 1,
     "asi-one": 2,
-    "huggingface": 3,
-    "openai": 4,
+    "google": 3,
+    "huggingface": 4,
     "anthropic": 5,
-    "google": 6,
+    "openai": 6,
 };
 
 /**
@@ -497,16 +503,33 @@ const SOURCE_PRIORITY: Record<ModelInfo["source"], number> = {
  * Strips org prefix and normalizes common variations
  */
 function normalizeModelId(modelId: string): string {
-    // Remove org prefix (e.g., "meta-llama/llama-3.3-70b-instruct" -> "llama-3.3-70b-instruct")
-    const parts = modelId.split("/");
-    const name = parts[parts.length - 1].toLowerCase();
+    // Remove known prefixes to find the "base" model name
+    let name = modelId.toLowerCase();
 
-    // Normalize common variations
-    return name
+    const prefixesToRemove = [
+        "models/", // Google
+        "meta-llama/", "mistralai/", "google/", "qwen/", "openai/", "anthropic/", // Org prefixes
+        "black-forest-labs/", "stabilityai/", "nousresearch/"
+    ];
+
+    for (const prefix of prefixesToRemove) {
+        if (name.startsWith(prefix)) {
+            name = name.substring(prefix.length);
+        }
+    }
+
+    // Special case normalization for common models that appear across providers
+    // e.g. "llama-3.3-70b-instruct" vs "llama-3-3-70b-instruct"
+    name = name
         .replace(/[^a-z0-9]/g, "") // Remove non-alphanumeric
         .replace(/instruct$/, "")
         .replace(/chat$/, "")
-        .replace(/it$/, ""); // Remove "-it" suffix (instruction-tuned)
+        .replace(/it$/, "") // Remove "-it" suffix
+        .replace(/latest$/, "")
+        .replace(/preview$/, "")
+        .replace(/experimental$/, "");
+
+    return name;
 }
 
 /**
@@ -515,10 +538,18 @@ function normalizeModelId(modelId: string): string {
 function deduplicateModels(models: ModelInfo[]): ModelInfo[] {
     const seen = new Map<string, ModelInfo>();
 
+    // Group models by normalized ID to see what we are comparing (debug purpose)
+    // const groups = new Map<string, ModelInfo[]>();
+
     // Sort by priority first (lowest priority number = highest priority)
     const sorted = [...models].sort((a, b) => {
         const aPriority = SOURCE_PRIORITY[a.source] || 99;
         const bPriority = SOURCE_PRIORITY[b.source] || 99;
+
+        // If priority is same (e.g. both from same source?), fallback to ID length or something stable
+        if (aPriority === bPriority) {
+            return a.id.localeCompare(b.id);
+        }
         return aPriority - bPriority;
     });
 
@@ -528,6 +559,10 @@ function deduplicateModels(models: ModelInfo[]): ModelInfo[] {
         // Only add if not already seen (first one wins due to sort order)
         if (!seen.has(normalizedId)) {
             seen.set(normalizedId, model);
+        } else {
+            // Optional: Log duplicates being dropped for debugging
+            // const existing = seen.get(normalizedId);
+            // console.log(`[models] Dropping duplicate ${model.id} (${model.source}) in favor of ${existing?.id} (${existing?.source})`);
         }
     }
 

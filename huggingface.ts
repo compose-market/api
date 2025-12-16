@@ -222,11 +222,11 @@ export async function fetchModelsByTask(task: string, limit = 100): Promise<HFMo
  * This is the main function used by the models registry
  * 
  * @param tasksToFetch - Optional list of specific tasks to fetch. If not provided, fetches all.
- * @param modelsPerTask - Models to fetch per task (default 100)
+ * @param modelsPerTask - Models to fetch per task (default 200 - increased to capture more breadth)
  */
 export async function fetchAllInferenceModels(
   tasksToFetch?: string[],
-  modelsPerTask = 100
+  modelsPerTask = 200
 ): Promise<HFModel[]> {
   if (!HF_TOKEN) {
     console.warn("[huggingface] No token - cannot fetch models");
@@ -236,7 +236,7 @@ export async function fetchAllInferenceModels(
   // Get task list
   const tasks = tasksToFetch || (await fetchAvailableTasks()).map(t => t.id);
 
-  // Prioritize important tasks first
+  // Prioritize important tasks first and ensure we get enough of them
   const priorityTasks = [
     "text-generation",
     "text-to-image",
@@ -259,7 +259,7 @@ export async function fetchAllInferenceModels(
   // Fetch in batches to avoid rate limiting
   const allModels: HFModel[] = [];
   const seenIds = new Set<string>();
-  const batchSize = 5;
+  const batchSize = 3; // Reduced concurrency slightly to be safe
 
   for (let i = 0; i < orderedTasks.length; i += batchSize) {
     const batch = orderedTasks.slice(i, i + batchSize);
@@ -279,7 +279,7 @@ export async function fetchAllInferenceModels(
 
     // Small delay between batches to avoid rate limiting
     if (i + batchSize < orderedTasks.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
   }
 

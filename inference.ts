@@ -263,13 +263,7 @@ function getTaskType(modelId: string, modelInfo?: ModelInfo | null): string {
 
 /**
  * Text-to-Image inference (FLUX, Stable Diffusion, etc.)
- * Uses HuggingFace InferenceClient with provider fallback strategy:
- * 1. Try hf-inference (free HuggingFace inference)
- * 2. Try wavespeed (usually free)
- * 3. Try replicate (usually free)
- * 4. Try auto as last resort
- * 
- * Avoids fal-ai which requires PRO subscription
+ * Uses HuggingFace InferenceClient with automatic provider routing (provider="auto")
  */
 async function handleImageGeneration(modelId: string, prompt: string): Promise<Buffer> {
   if (!HF_TOKEN) throw new Error("HuggingFace token not configured");
@@ -277,67 +271,42 @@ async function handleImageGeneration(modelId: string, prompt: string): Promise<B
   const { InferenceClient } = await import("@huggingface/inference");
   const client = new InferenceClient(HF_TOKEN);
 
-  // Providers to try in order (hf-inference first, avoid fal-ai which needs PRO)
-  const providersToTry = ["hf-inference", "wavespeed", "replicate", "novita"] as const;
+  try {
+    console.log(`[inference] Text-to-image: ${modelId} with provider=auto`);
 
-  let lastError: Error | null = null;
+    const result = await client.textToImage({
+      provider: "auto",
+      model: modelId,
+      inputs: prompt,
+    });
 
-  for (const provider of providersToTry) {
-    try {
-      console.log(`[inference] Text-to-image: ${modelId} with provider=${provider}`);
-
-      const result = await client.textToImage({
-        provider,
-        model: modelId,
-        inputs: prompt,
-      });
-
-      // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
-      const blob = result as unknown as Blob;
-      if (typeof blob.arrayBuffer === "function") {
-        const arrayBuffer = await blob.arrayBuffer();
-        return Buffer.from(arrayBuffer);
-      }
-      return Buffer.from(result as unknown as ArrayBuffer);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.log(`[inference] Provider ${provider} failed: ${message}`);
-      lastError = error instanceof Error ? error : new Error(message);
-
-      // If it's a PRO requirement error or provider doesn't support model, try next
-      if (message.includes("PRO") || message.includes("not supported") ||
-        message.includes("not available") || message.includes("404")) {
-        continue;
-      }
-
-      // For loading errors, don't retry different providers
-      if (message.includes("loading") || message.includes("503")) {
-        throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
-      }
+    // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
+    const blob = result as unknown as Blob;
+    if (typeof blob.arrayBuffer === "function") {
+      const arrayBuffer = await blob.arrayBuffer();
+      return Buffer.from(arrayBuffer);
     }
-  }
+    return Buffer.from(result as unknown as ArrayBuffer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[inference] Text-to-image failed for ${modelId}:`, message);
 
-  // All providers failed
-  const errorMessage = lastError?.message || "Unknown error";
-  if (errorMessage.includes("not found") || errorMessage.includes("404")) {
-    throw new Error(
-      `Model "${modelId}" is not available for text-to-image inference. ` +
-      `Try "black-forest-labs/FLUX.1-schnell" or "stabilityai/stable-diffusion-xl-base-1.0".`
-    );
+    if (message.includes("does not support") || message.includes("404")) {
+      throw new Error(
+        `Model "${modelId}" is not available for text-to-image inference. ` +
+        `Try "black-forest-labs/FLUX.1-schnell" or "stabilityai/stable-diffusion-xl-base-1.0".`
+      );
+    }
+    if (message.includes("loading") || message.includes("503")) {
+      throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
+    }
+    throw error;
   }
-
-  throw new Error(`Image generation failed: ${errorMessage}`);
 }
 
 /**
  * Image-to-Image inference (FLUX.2-dev, etc.)
- * Uses HuggingFace InferenceClient with provider fallback strategy:
- * 1. Try wavespeed (supports FLUX.2-dev, usually free)
- * 2. Try hf-inference (free HuggingFace inference)
- * 3. Try replicate (usually free)
- * 4. Try novita
- * 
- * Avoids fal-ai which requires PRO subscription
+ * Uses HuggingFace InferenceClient with automatic provider routing (provider="auto")
  */
 async function handleImageToImage(modelId: string, inputImage: string, prompt: string): Promise<Buffer> {
   if (!HF_TOKEN) throw new Error("HuggingFace token not configured");
@@ -349,58 +318,38 @@ async function handleImageToImage(modelId: string, inputImage: string, prompt: s
   const imageBuffer = Buffer.from(inputImage, "base64");
   const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
 
-  // Providers to try in order (wavespeed first for FLUX.2-dev, avoid fal-ai which needs PRO)
-  const providersToTry = ["wavespeed", "hf-inference", "replicate", "novita"] as const;
+  try {
+    console.log(`[inference] Image-to-image: ${modelId} with provider=auto`);
 
-  let lastError: Error | null = null;
+    const result = await client.imageToImage({
+      provider: "auto",
+      model: modelId,
+      inputs: imageBlob,
+      parameters: { prompt },
+    });
 
-  for (const provider of providersToTry) {
-    try {
-      console.log(`[inference] Image-to-image: ${modelId} with provider=${provider}`);
-
-      const result = await client.imageToImage({
-        provider,
-        model: modelId,
-        inputs: imageBlob,
-        parameters: { prompt },
-      });
-
-      // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
-      const blob = result as unknown as Blob;
-      if (typeof blob.arrayBuffer === "function") {
-        const arrayBuffer = await blob.arrayBuffer();
-        return Buffer.from(arrayBuffer);
-      }
-      return Buffer.from(result as unknown as ArrayBuffer);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.log(`[inference] Provider ${provider} failed: ${message}`);
-      lastError = error instanceof Error ? error : new Error(message);
-
-      // If it's a PRO requirement error or provider doesn't support model, try next
-      if (message.includes("PRO") || message.includes("not supported") ||
-        message.includes("not available") || message.includes("404") ||
-        message.includes("Upgrade")) {
-        continue;
-      }
-
-      // For loading errors, don't retry different providers
-      if (message.includes("loading") || message.includes("503")) {
-        throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
-      }
+    // Handle different return types (Blob in browser, Buffer/ArrayBuffer in Node)
+    const blob = result as unknown as Blob;
+    if (typeof blob.arrayBuffer === "function") {
+      const arrayBuffer = await blob.arrayBuffer();
+      return Buffer.from(arrayBuffer);
     }
-  }
+    return Buffer.from(result as unknown as ArrayBuffer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[inference] Image-to-image failed for ${modelId}:`, message);
 
-  // All providers failed
-  const errorMessage = lastError?.message || "Unknown error";
-  if (errorMessage.includes("not found") || errorMessage.includes("404")) {
-    throw new Error(
-      `Model "${modelId}" is not available for image-to-image inference. ` +
-      `Try "black-forest-labs/FLUX.2-dev" with an input image.`
-    );
+    if (message.includes("does not support") || message.includes("404")) {
+      throw new Error(
+        `Model "${modelId}" is not available for image-to-image inference. ` +
+        `Try "black-forest-labs/FLUX.2-dev" with an input image.`
+      );
+    }
+    if (message.includes("loading") || message.includes("503")) {
+      throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
+    }
+    throw error;
   }
-
-  throw new Error(`Image-to-image failed: ${errorMessage}`);
 }
 
 /**

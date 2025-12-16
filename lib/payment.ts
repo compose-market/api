@@ -6,7 +6,7 @@
  */
 import { createThirdwebClient } from "thirdweb";
 import { facilitator, settlePayment } from "thirdweb/x402";
-import { avalancheFuji, avalanche, USDC_ADDRESSES } from "../shared/thirdweb";
+import { avalancheFuji, avalanche, USDC_ADDRESSES } from "../shared/thirdweb.js";
 
 // Server-side client with secret key
 const serverClient = createThirdwebClient({

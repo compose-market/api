@@ -1,11 +1,11 @@
 import { createThirdwebClient } from "thirdweb";
-import { 
-  avalancheFuji, 
-  avalanche, 
+import {
+  avalancheFuji,
+  avalanche,
   USDC_ADDRESSES,
   PRICE_PER_TOKEN_WEI,
   MAX_TOKENS_PER_CALL,
-} from "../shared/thirdweb";
+} from "../shared/thirdweb.js";
 
 // Server-side thirdweb client (uses secret key - NEVER expose to client)
 export const serverClient = createThirdwebClient({
@@ -16,8 +16,8 @@ export const serverClient = createThirdwebClient({
 export const serverWalletAddress = process.env.TREASURY_SERVER_WALLET_PUBLIC as `0x${string}`;
 
 // Payment chain configuration
-export const paymentChain = process.env.USE_MAINNET === "true" 
-  ? avalanche 
+export const paymentChain = process.env.USE_MAINNET === "true"
+  ? avalanche
   : avalancheFuji;
 
 export const paymentAsset = {
