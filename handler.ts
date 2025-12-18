@@ -179,6 +179,14 @@ export async function handler(
       return res.getResult();
     }
 
+    // Route: GET /api/pricing - Get pricing table
+    if (method === "GET" && path === "/api/pricing") {
+      const { DYNAMIC_PRICES } = await import("./shared/pricing.js");
+      const res = createMockRes();
+      res.json({ prices: DYNAMIC_PRICES, version: "1.0" });
+      return res.getResult();
+    }
+
     // Route: GET /api/models - Legacy endpoint
     if (method === "GET" && path === "/api/models") {
       const req = createMockReq(event);
