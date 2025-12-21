@@ -585,6 +585,15 @@ export async function handler(
     if (method === "POST" && path.match(/^\/api\/mcp\/servers\/[^/]+\/call$/)) {
       const slug = path.replace("/api/mcp/servers/", "").replace("/call", "");
       const body = event.body ? JSON.parse(event.body) : {};
+      const { tool, args } = body;
+
+      if (!tool) {
+        return {
+          statusCode: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "tool is required in request body" }),
+        };
+      }
 
       // Forward x-payment header to MCP server for proper x402 handling
       const paymentHeader = event.headers["x-payment"] || event.headers["X-PAYMENT"];
@@ -595,10 +604,11 @@ export async function handler(
           fetchHeaders["x-payment"] = paymentHeader;
         }
 
-        const response = await fetch(`${MCP_SERVER_URL}/servers/${encodeURIComponent(slug)}/call`, {
+        // Call MCP server's actual route: /mcp/servers/:serverId/tools/:toolName
+        const response = await fetch(`${MCP_SERVER_URL}/mcp/servers/${encodeURIComponent(slug)}/tools/${encodeURIComponent(tool)}`, {
           method: "POST",
           headers: fetchHeaders,
-          body: JSON.stringify(body),
+          body: JSON.stringify({ args }),
         });
 
         // Collect response headers (includes x402 headers for 402 responses)
