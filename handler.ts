@@ -14,9 +14,9 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "a
 let inferenceHandler: typeof import("./inference.js").handleInference;
 let multimodalHandler: typeof import("./inference.js").handleMultimodalInference;
 let modelsHandler: typeof import("./inference.js").handleGetModels;
-let hfModelsHandler: typeof import("./huggingface.js").handleGetHFModels;
-let hfModelDetailsHandler: typeof import("./huggingface.js").handleGetHFModelDetails;
-let hfTasksHandler: typeof import("./huggingface.js").handleGetHFTasks;
+let hfModelsHandler: typeof import("./providers/huggingface.js").handleGetHFModels;
+let hfModelDetailsHandler: typeof import("./providers/huggingface.js").handleGetHFModelDetails;
+let hfTasksHandler: typeof import("./providers/huggingface.js").handleGetHFTasks;
 let agentverseSearch: typeof import("./agentverse.js").searchAgents;
 let agentverseGet: typeof import("./agentverse.js").getAgent;
 let agentverseExtractTags: typeof import("./agentverse.js").extractUniqueTags;
@@ -35,7 +35,7 @@ async function loadModules() {
     modelsHandler = inference.handleGetModels;
   }
   if (!hfModelsHandler) {
-    const hf = await import("./huggingface.js");
+    const hf = await import("./providers/huggingface.js");
     hfModelsHandler = hf.handleGetHFModels;
     hfModelDetailsHandler = hf.handleGetHFModelDetails;
     hfTasksHandler = hf.handleGetHFTasks;
@@ -210,7 +210,20 @@ export async function handler(
     }
 
     // Route: GET /api/registry/models/available - Get only available models
+    // Supports ?refresh=true to force cache refresh
     if (method === "GET" && path === "/api/registry/models/available") {
+      const query = event.queryStringParameters || {};
+      const forceRefresh = query.refresh === "true";
+
+      if (forceRefresh) {
+        const registry = await models.refreshRegistry();
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ models: registry.models, total: registry.models.length, lastUpdated: registry.lastUpdated, sources: registry.sources }),
+        };
+      }
+
       const availableModels = await models.getAvailableModels();
       return {
         statusCode: 200,
@@ -220,7 +233,7 @@ export async function handler(
     }
 
     // Route: GET /api/registry/models/:source - Get models by source
-    if (method === "GET" && path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google)$/)) {
+    if (method === "GET" && path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google|openrouter|aiml)$/)) {
       const source = path.replace("/api/registry/models/", "") as any;
       const sourceModels = await models.getModelsBySource(source);
       return {

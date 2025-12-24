@@ -21,7 +21,7 @@
  * - feature-extraction (embeddings)
  */
 import type { Request, Response } from "express";
-import { streamText, smoothStream, type CoreMessage } from "ai";
+import { streamText, smoothStream, type ModelMessage } from "ai";
 
 /**
  * Model Configuration
@@ -50,7 +50,7 @@ import {
   generateVideo as googleGenerateVideo,
   generateAudio as googleGenerateAudio,
   generateSpeech as googleGenerateSpeech,
-} from "./genai.js";
+} from "./providers/genai.js";
 
 const HF_TOKEN = process.env.HUGGING_FACE_INFERENCE_TOKEN;
 
@@ -99,7 +99,7 @@ export async function handleInference(req: Request, res: Response, paymentVerifi
       modelId = DEFAULT_MODEL,
       systemPrompt = "You are a helpful AI assistant.",
     }: {
-      messages: CoreMessage[];
+      messages: ModelMessage[];
       modelId?: string;
       systemPrompt?: string;
     } = req.body;
@@ -127,7 +127,7 @@ export async function handleInference(req: Request, res: Response, paymentVerifi
     const stream = streamText({
       model,
       system: systemPrompt,
-      messages: messages as CoreMessage[],
+      messages: messages as ModelMessage[],
       experimental_transform: [
         smoothStream({ chunking: "word" }),
       ],

@@ -1,13 +1,93 @@
 import type { Express, Request, Response } from "express";
 import { type Server } from "http";
 import { handleInference, handleGetModels } from "./inference.js";
-import { handleGetHFModels, handleGetHFModelDetails, handleGetHFTasks } from "./huggingface.js";
+import { handleGetHFModels, handleGetHFModelDetails, handleGetHFTasks } from "./providers/huggingface.js";
 import { searchAgents, getAgent, extractUniqueTags, extractUniqueCategories } from "./agentverse.js";
+import * as models from "./shared/models.js";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // ==========================================================================
+  // Model Registry Routes
+  // ==========================================================================
+
+  // GET /api/registry/models - Get full model registry
+  app.get("/api/registry/models", async (_req: Request, res: Response) => {
+    try {
+      const registry = await models.getModelRegistry();
+      res.json(registry);
+    } catch (error) {
+      console.error("Registry models error:", error);
+      res.status(500).json({ error: "Failed to fetch model registry" });
+    }
+  });
+
+  // GET /api/registry/models/available - Get available models
+  // Supports ?refresh=true to force cache refresh
+  app.get("/api/registry/models/available", async (req: Request, res: Response) => {
+    try {
+      const forceRefresh = req.query.refresh === "true";
+
+      if (forceRefresh) {
+        const registry = await models.refreshRegistry();
+        res.json({
+          models: registry.models,
+          total: registry.models.length,
+          lastUpdated: registry.lastUpdated,
+          sources: registry.sources
+        });
+        return;
+      }
+
+      const availableModels = await models.getAvailableModels();
+      res.json({ models: availableModels, total: availableModels.length });
+    } catch (error) {
+      console.error("Available models error:", error);
+      res.status(500).json({ error: "Failed to fetch available models" });
+    }
+  });
+
+  // GET /api/registry/models/:source - Get models by source
+  app.get("/api/registry/models/:source", async (req: Request, res: Response) => {
+    try {
+      const validSources = ["huggingface", "asi-one", "asi-cloud", "openai", "anthropic", "google", "openrouter", "aiml"];
+      const source = req.params.source;
+
+      if (!validSources.includes(source)) {
+        res.status(400).json({ error: `Invalid source. Valid: ${validSources.join(", ")}` });
+        return;
+      }
+
+      const sourceModels = await models.getModelsBySource(source as any);
+      res.json({ source, models: sourceModels, total: sourceModels.length });
+    } catch (error) {
+      console.error("Models by source error:", error);
+      res.status(500).json({ error: "Failed to fetch models by source" });
+    }
+  });
+
+  // POST /api/registry/refresh - Force refresh the model registry
+  app.post("/api/registry/refresh", async (_req: Request, res: Response) => {
+    try {
+      const registry = await models.refreshRegistry();
+      res.json({
+        message: "Registry refreshed",
+        models: registry.models.length,
+        sources: registry.sources,
+        lastUpdated: registry.lastUpdated,
+      });
+    } catch (error) {
+      console.error("Registry refresh error:", error);
+      res.status(500).json({ error: "Failed to refresh registry" });
+    }
+  });
+
+  // ==========================================================================
+  // Inference Routes
+  // ==========================================================================
+
   // x402 AI Inference endpoints
   // POST /api/inference - Pay-per-call AI inference with x402 payments
   app.post("/api/inference", (req, res, next) => {
