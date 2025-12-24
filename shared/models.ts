@@ -2,12 +2,11 @@
  * Dynamic Model Registry
  * 
  * Fetches models and pricing dynamically from provider APIs:
- * - HuggingFace Router API (/v1/models) - for HF models, picks cheapest inference provider
- * - ASI:One / ASI Cloud - for ASI models
- * - OpenAI, Anthropic, Google - for their respective models
+ * - OpenAI, Anthropic, Google, ASI Cloud, OpenRouter, AI/ML
+ * - HuggingFace Router API for HF models
  * 
- * Routes to the correct provider based on the model chosen by user.
- * For HuggingFace models, auto-selects cheapest inference provider.
+ * All metadata fetched dynamically from APIs - no hardcoding.
+ * Priority: ASI Cloud > Google | OpenAI | Anthropic > HuggingFace > OpenRouter > AI/ML
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -15,7 +14,14 @@ import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import type { LanguageModel } from "ai";
-import { fetchAllInferenceModels, type HFModel } from "../huggingface.js";
+import { fetchAllInferenceModels, type HFModel } from "../providers/huggingface.js";
+import { fetchOpenAIModels, clearOpenAICache } from "../providers/openai.js";
+import { fetchAnthropicModels, clearAnthropicCache } from "../providers/anthropic.js";
+import { fetchASICloudModels, clearASICloudCache } from "../providers/asicloud.js";
+import { fetchOpenRouterModels, clearOpenRouterCache, modalityToTask } from "../providers/openrouter.js";
+import { fetchAIMLModels, clearAIMLCache } from "../providers/aiml.js";
+import { fetchGoogleModels as fetchGoogleGenAIModels } from "../providers/genai.js";
+import { fetchASIOneModels, clearASIOneCache } from "../providers/asione.js";
 
 // =============================================================================
 // Types
@@ -37,8 +43,9 @@ export interface ModelInfo {
     id: string;
     name: string;
     ownedBy: string;
-    source: "huggingface" | "asi-one" | "asi-cloud" | "openai" | "anthropic" | "google";
+    source: "huggingface" | "asi-one" | "asi-cloud" | "openai" | "anthropic" | "google" | "openrouter" | "aiml";
     task?: string;
+    description?: string;
     architecture?: {
         inputModalities: string[];
         outputModalities: string[];
@@ -46,8 +53,6 @@ export interface ModelInfo {
     providers: ProviderPricing[];
     contextLength?: number;
     available: boolean;
-    // For HuggingFace models: cheapest inference provider
-    // For other models: their native provider pricing
     pricing?: {
         provider: string;
         input: number;  // USD per million tokens
@@ -88,11 +93,101 @@ const hfProvider = createOpenAICompatible({
 });
 
 // =============================================================================
+// Dynamic Pricing Loader
+// Loads pricing from data/pricing.json (synced every 6 hours)
+// =============================================================================
+
+interface PricingEntry {
+    input: number;
+    output: number;
+    mode?: string;
+}
+
+interface PricingData {
+    lastUpdated: string;
+    providers: Record<string, Record<string, PricingEntry>>;
+}
+
+let pricingCache: PricingData | null = null;
+let pricingCacheTimestamp = 0;
+
+function loadPricingData(): PricingData | null {
+    // Cache pricing for 6 hours
+    if (pricingCache && Date.now() - pricingCacheTimestamp < 6 * 60 * 60 * 1000) {
+        return pricingCache;
+    }
+
+    try {
+        // Dynamic import for pricing.json
+        const pricingPath = new URL("../data/pricing.json", import.meta.url);
+        const data = JSON.parse(
+            require("fs").readFileSync(pricingPath, "utf-8")
+        ) as PricingData;
+
+        pricingCache = data;
+        pricingCacheTimestamp = Date.now();
+        console.log(`[models] Loaded pricing data from ${data.lastUpdated}`);
+        return data;
+    } catch (error) {
+        console.warn("[models] Failed to load pricing.json:", error);
+        return null;
+    }
+}
+
+/**
+ * Apply pricing to deduplicated models based on their source provider
+ * Called AFTER deduplication so each model shows price from winning provider
+ */
+function applyPricing(models: ModelInfo[]): ModelInfo[] {
+    const pricing = loadPricingData();
+    if (!pricing) return models;
+
+    // Map source to pricing provider key
+    const sourceToProvider: Record<string, string> = {
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "google": "google",
+        "aiml": "aiml",
+        "asi-cloud": "asi-cloud",
+    };
+
+    return models.map((model) => {
+        const providerKey = sourceToProvider[model.source];
+        if (!providerKey) return model;
+
+        const providerPricing = pricing.providers[providerKey];
+        if (!providerPricing) return model;
+
+        // Try exact match first, then try normalized ID
+        let priceEntry = providerPricing[model.id];
+
+        // Fallback: try without version suffixes
+        if (!priceEntry) {
+            const baseId = model.id.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+            priceEntry = providerPricing[baseId];
+        }
+
+        if (priceEntry) {
+            return {
+                ...model,
+                pricing: {
+                    provider: model.source,
+                    input: priceEntry.input,
+                    output: priceEntry.output,
+                },
+            };
+        }
+
+        return model;
+    });
+}
+
+// =============================================================================
 // Cache
 // =============================================================================
 
 let registryCache: ModelRegistry | null = null;
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 
 // =============================================================================
 // API Fetchers - Each provider fetches their own models
@@ -283,79 +378,107 @@ function getDefaultPricingForTask(task: string): { input: number; output: number
 }
 
 /**
- * Fetch models from ASI:One API
+ * Fetch models from ASI:One API (via provider module)
  */
-async function fetchASIOneModels(): Promise<ModelInfo[]> {
-    if (!process.env.ASI_ONE_API_KEY) return [];
-
-    // ASI:One models - their pricing isn't exposed via API
-    return [
-        { id: "asi1-fast", name: "ASI-1 Fast", ownedBy: "asi-one", source: "asi-one" as const, providers: [{ provider: "asi-one", status: "live" as const }], available: true },
-        { id: "asi1-extended", name: "ASI-1 Extended", ownedBy: "asi-one", source: "asi-one" as const, providers: [{ provider: "asi-one", status: "live" as const }], available: true },
-        { id: "asi1-agentic", name: "ASI-1 Agentic", ownedBy: "asi-one", source: "asi-one" as const, providers: [{ provider: "asi-one", status: "live" as const }], available: true },
-        { id: "asi1-graph", name: "ASI-1 Graph", ownedBy: "asi-one", source: "asi-one" as const, providers: [{ provider: "asi-one", status: "live" as const }], available: true },
-    ];
+async function fetchASIOneModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchASIOneModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: model.ownedBy,
+        source: "asi-one" as const,
+        task: model.task,
+        providers: [{ provider: "asi-one", status: "live" as const }],
+        available: true,
+    }));
 }
 
 /**
- * Fetch models from ASI Cloud API
+ * Fetch models from ASI Cloud API (via provider module)
  */
-async function fetchASICloudModels(): Promise<ModelInfo[]> {
-    if (!process.env.ASI_INFERENCE_API_KEY) return [];
-
-    // ASI Cloud models
-    return [
-        { id: "asi1-mini", name: "ASI-1 Mini", ownedBy: "asi-cloud", source: "asi-cloud" as const, providers: [{ provider: "asi-cloud", status: "live" as const }], available: true },
-        { id: "google/gemma-3-27b-it", name: "Gemma 3 27B", ownedBy: "google", source: "asi-cloud" as const, providers: [{ provider: "asi-cloud", status: "live" as const }], available: true },
-        { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B", ownedBy: "meta-llama", source: "asi-cloud" as const, providers: [{ provider: "asi-cloud", status: "live" as const }], available: true },
-        { id: "mistralai/mistral-nemo", name: "Mistral Nemo", ownedBy: "mistralai", source: "asi-cloud" as const, providers: [{ provider: "asi-cloud", status: "live" as const }], available: true },
-        { id: "qwen/qwen3-32b", name: "Qwen3 32B", ownedBy: "qwen", source: "asi-cloud" as const, providers: [{ provider: "asi-cloud", status: "live" as const }], available: true },
-    ];
+async function fetchASICloudModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchASICloudModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: model.ownedBy,
+        source: "asi-cloud" as const,
+        providers: [{ provider: "asi-cloud", status: "live" as const }],
+        available: true,
+    }));
 }
 
 /**
- * Fetch models from OpenAI API
+ * Fetch models from OpenAI API (via provider module)
  */
-async function fetchOpenAIModels(): Promise<ModelInfo[]> {
-    if (!process.env.OPENAI_API_KEY) return [];
-
-    try {
-        const response = await fetch("https://api.openai.com/v1/models", {
-            headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        });
-        if (!response.ok) throw new Error(`OpenAI API error: ${response.status}`);
-
-        const data = await response.json() as { data: Array<{ id: string; owned_by: string }> };
-        const chatModels = data.data.filter((m) =>
-            m.id.includes("gpt") || m.id.startsWith("o1") || m.id.startsWith("o3")
-        );
-
-        return chatModels.map((model) => ({
-            id: model.id,
-            name: formatModelName(model.id),
-            ownedBy: model.owned_by,
-            source: "openai" as const,
-            providers: [{ provider: "openai", status: "live" as const }],
-            available: true,
-        }));
-    } catch (error) {
-        console.error("[models] Failed to fetch OpenAI models:", error);
-        return [];
-    }
+async function fetchOpenAIModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchOpenAIModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: model.ownedBy,
+        source: "openai" as const,
+        task: model.task,
+        providers: [{ provider: "openai", status: "live" as const }],
+        available: true,
+    }));
 }
 
 /**
- * Fetch models from Anthropic
+ * Fetch models from Anthropic API (via provider module)
  */
-async function fetchAnthropicModels(): Promise<ModelInfo[]> {
-    if (!process.env.ANTHROPIC_API_KEY) return [];
+async function fetchAnthropicModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchAnthropicModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: "anthropic",
+        source: "anthropic" as const,
+        task: model.task,
+        providers: [{ provider: "anthropic", status: "live" as const }],
+        available: true,
+    }));
+}
 
-    // Anthropic models
-    return [
-        { id: "claude-opus-4", name: "Claude Opus 4", ownedBy: "anthropic", source: "anthropic" as const, providers: [{ provider: "anthropic", status: "live" as const }], available: true },
-        { id: "claude-sonnet-4", name: "Claude Sonnet 4", ownedBy: "anthropic", source: "anthropic" as const, providers: [{ provider: "anthropic", status: "live" as const }], available: true },
-        { id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet", ownedBy: "anthropic", source: "anthropic" as const, providers: [{ provider: "anthropic", status: "live" as const }], available: true },
-    ];
+/**
+ * Fetch models from OpenRouter API (via provider module)
+ */
+async function fetchOpenRouterModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchOpenRouterModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: model.id.split("/")[0] || "openrouter",
+        source: "openrouter" as const,
+        task: modalityToTask(model.modality),
+        description: model.description,
+        contextLength: model.contextLength,
+        architecture: {
+            inputModalities: model.inputModalities,
+            outputModalities: model.outputModalities,
+        },
+        providers: [{ provider: "openrouter", status: "live" as const, contextLength: model.contextLength, pricing: { input: model.pricing.prompt, output: model.pricing.completion } }],
+        pricing: { provider: "openrouter", input: model.pricing.prompt, output: model.pricing.completion },
+        available: true,
+    }));
+}
+
+/**
+ * Fetch models from AI/ML API (via provider module)
+ */
+async function fetchAIMLModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchAIMLModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        ownedBy: model.ownedBy,
+        source: "aiml" as const,
+        task: model.task, // Now comes directly from aiml.ts with full task detection
+        description: model.description,
+        contextLength: model.contextLength,
+        providers: [{ provider: "aiml", status: "live" as const }],
+        available: true,
+    }));
 }
 
 /**
@@ -422,57 +545,21 @@ function detectGoogleModelTask(modelId: string, displayName: string, methods: st
 }
 
 /**
- * Fetch models from Google AI API
- * Includes all models with usable generation methods: generateContent, embedContent, bidiGenerateContent
+ * Fetch models from Google AI API (via provider module)
  */
-async function fetchGoogleModels(): Promise<ModelInfo[]> {
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) return [];
-
-    try {
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GOOGLE_GENERATIVE_AI_API_KEY}`
-        );
-        if (!response.ok) throw new Error(`Google API error: ${response.status}`);
-
-        const data = await response.json() as {
-            models: Array<{
-                name: string;
-                displayName: string;
-                description?: string;
-                inputTokenLimit: number;
-                outputTokenLimit?: number;
-                supportedGenerationMethods: string[];
-            }>;
-        };
-
-        // Include all models with any usable generation method
-        const usableMethods = ["generateContent", "embedContent", "embedText", "bidiGenerateContent"];
-        const usableModels = data.models.filter((m) =>
-            m.supportedGenerationMethods?.some((method) => usableMethods.includes(method))
-        );
-
-        console.log(`[models] Google API returned ${data.models.length} models, ${usableModels.length} usable`);
-
-        return usableModels.map((model) => {
-            const modelId = model.name.replace("models/", "");
-            const methods = model.supportedGenerationMethods || [];
-            const task = detectGoogleModelTask(modelId, model.displayName, methods);
-
-            return {
-                id: modelId,
-                name: model.displayName || formatModelName(modelId),
-                ownedBy: "google",
-                source: "google" as const,
-                task,
-                contextLength: model.inputTokenLimit,
-                providers: [{ provider: "google", status: "live" as const, contextLength: model.inputTokenLimit }],
-                available: true,
-            };
-        });
-    } catch (error) {
-        console.error("[models] Failed to fetch Google models:", error);
-        return [];
-    }
+async function fetchGoogleModelsInternal(forceRefresh = false): Promise<ModelInfo[]> {
+    const models = await fetchGoogleGenAIModels(forceRefresh);
+    return models.map((model) => ({
+        id: model.id,
+        name: model.displayName || model.name,
+        ownedBy: "google",
+        source: "google" as const,
+        task: model.task,
+        description: model.description,
+        contextLength: model.inputTokenLimit,
+        providers: [{ provider: "google", status: "live" as const, contextLength: model.inputTokenLimit }],
+        available: true,
+    }));
 }
 
 // =============================================================================
@@ -481,21 +568,23 @@ async function fetchGoogleModels(): Promise<ModelInfo[]> {
 
 /**
  * Priority for deduplication (lower = higher priority)
- * Priority order:
- * 1. ASI Cloud
+ * Priority order per user spec:
+ * 1. ASI Cloud (highest priority)
  * 2. ASI:One
- * 3. Google GenAI
+ * 3. Google | OpenAI | Anthropic (same tier)
  * 4. HuggingFace
- * 5. Anthropic
- * 6. OpenAI
+ * 5. OpenRouter
+ * 6. AI/ML (lowest priority)
  */
 const SOURCE_PRIORITY: Record<ModelInfo["source"], number> = {
     "asi-cloud": 1,
     "asi-one": 2,
     "google": 3,
+    "openai": 3,
+    "anthropic": 3,
     "huggingface": 4,
-    "anthropic": 5,
-    "openai": 6,
+    "openrouter": 5,
+    "aiml": 6,
 };
 
 /**
@@ -572,19 +661,31 @@ function deduplicateModels(models: ModelInfo[]): ModelInfo[] {
 /**
  * Fetch all models from all providers
  */
-export async function fetchAllModels(): Promise<ModelRegistry> {
+export async function fetchAllModels(forceRefresh = false): Promise<ModelRegistry> {
     console.log("[models] Fetching from all providers...");
 
-    const [hf, asiOne, asiCloud, oai, anth, goog] = await Promise.all([
+    // Clear all provider caches if force refresh
+    if (forceRefresh) {
+        clearOpenAICache();
+        clearAnthropicCache();
+        clearASICloudCache();
+        clearASIOneCache();
+        clearOpenRouterCache();
+        clearAIMLCache();
+    }
+
+    const [hf, asiOne, asiCloud, oai, anth, goog, openrouter, aiml] = await Promise.all([
         fetchHuggingFaceModels(),
-        fetchASIOneModels(),
-        fetchASICloudModels(),
-        fetchOpenAIModels(),
-        fetchAnthropicModels(),
-        fetchGoogleModels(),
+        fetchASIOneModelsInternal(forceRefresh),
+        fetchASICloudModelsInternal(forceRefresh),
+        fetchOpenAIModelsInternal(forceRefresh),
+        fetchAnthropicModelsInternal(forceRefresh),
+        fetchGoogleModelsInternal(forceRefresh),
+        fetchOpenRouterModelsInternal(forceRefresh),
+        fetchAIMLModelsInternal(forceRefresh),
     ]);
 
-    const allModels = [...hf, ...asiOne, ...asiCloud, ...oai, ...anth, ...goog];
+    const allModels = [...hf, ...asiOne, ...asiCloud, ...oai, ...anth, ...goog, ...openrouter, ...aiml];
     const sources: string[] = [];
     if (hf.length > 0) sources.push("huggingface");
     if (asiOne.length > 0) sources.push("asi-one");
@@ -592,13 +693,19 @@ export async function fetchAllModels(): Promise<ModelRegistry> {
     if (oai.length > 0) sources.push("openai");
     if (anth.length > 0) sources.push("anthropic");
     if (goog.length > 0) sources.push("google");
+    if (openrouter.length > 0) sources.push("openrouter");
+    if (aiml.length > 0) sources.push("aiml");
 
-    // Deduplicate models - ASI Cloud takes priority
+    // Deduplicate models - priority: ASI Cloud > Google|OpenAI|Anthropic > HuggingFace > OpenRouter > AI/ML
     const dedupedModels = deduplicateModels(allModels);
 
-    console.log(`[models] Loaded ${allModels.length} models, ${dedupedModels.length} after deduplication from: ${sources.join(", ")}`);
+    // Apply pricing from data/pricing.json AFTER deduplication
+    // Each model gets pricing from its winning (highest priority) provider
+    const pricedModels = applyPricing(dedupedModels);
 
-    return { models: dedupedModels, lastUpdated: Date.now(), sources };
+    console.log(`[models] Loaded ${allModels.length} models, ${pricedModels.length} after deduplication from: ${sources.join(", ")}`);
+
+    return { models: pricedModels, lastUpdated: Date.now(), sources };
 }
 
 /**
@@ -637,11 +744,12 @@ export async function getAvailableModels(): Promise<ModelInfo[]> {
 }
 
 /**
- * Force refresh
+ * Force refresh - clears all caches and fetches fresh data
  */
 export async function refreshRegistry(): Promise<ModelRegistry> {
     registryCache = null;
-    return getModelRegistry();
+    registryCache = await fetchAllModels(true);
+    return registryCache;
 }
 
 // =============================================================================
