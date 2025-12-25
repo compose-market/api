@@ -92,6 +92,22 @@ const hfProvider = createOpenAICompatible({
     baseURL: "https://router.huggingface.co/v1",
 });
 
+// OpenRouter Provider - uses OPEN_ROUTER_API_KEY
+// Aggregates 300+ models from multiple providers
+const openRouterProvider = createOpenAICompatible({
+    name: "openrouter",
+    apiKey: process.env.OPEN_ROUTER_API_KEY || "",
+    baseURL: "https://openrouter.ai/api/v1",
+});
+
+// AI/ML API Provider - uses AI_ML_API_KEY
+// Access to 200+ models including latest releases
+const aimlProvider = createOpenAICompatible({
+    name: "aiml",
+    apiKey: process.env.AI_ML_API_KEY || "",
+    baseURL: "https://api.aimlapi.com/v1",
+});
+
 // =============================================================================
 // Dynamic Pricing Loader
 // Loads pricing from data/pricing.json (synced every 6 hours)
@@ -774,6 +790,10 @@ export function getLanguageModel(modelId: string, source?: ModelInfo["source"]):
             return asiOneProvider(modelId);
         case "asi-cloud":
             return asiCloudProvider(modelId);
+        case "openrouter":
+            return openRouterProvider(modelId);
+        case "aiml":
+            return aimlProvider(modelId);
         case "huggingface":
         default:
             // HuggingFace Router automatically picks cheapest inference provider
@@ -809,6 +829,15 @@ function inferModelSource(modelId: string): ModelInfo["source"] {
     const asiCloudPrefixes = ["google/gemma", "meta-llama/", "mistralai/", "qwen/"];
     if (asiCloudPrefixes.some((prefix) => modelId.startsWith(prefix))) {
         return "asi-cloud";
+    }
+    // OpenRouter models typically have org/model format with known providers
+    if (modelId.includes("/") && (
+        modelId.includes("openrouter") ||
+        modelId.startsWith("nousresearch/") ||
+        modelId.startsWith("phind/") ||
+        modelId.startsWith("perplexity/")
+    )) {
+        return "openrouter";
     }
     // Default to HuggingFace for org/model format
     return "huggingface";

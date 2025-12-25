@@ -59,7 +59,7 @@ export interface GoogleModelInfo {
 
 /**
  * Fetch all models from Google Generative AI API
- * Dynamically discovers available models with PAGINATION
+ * Dynamically discovers available models with pagination
  * 
  * Per API docs: pageSize max is 1000, use pageToken for next pages
  */

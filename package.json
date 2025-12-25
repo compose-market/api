@@ -21,10 +21,12 @@
     "@huggingface/inference": "^4.13.5",
     "@openrouter/sdk": "^0.3.10",
     "ai": "^6.0.3",
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "mem0ai": "^1.0.39",
+    "puppeteer": "^24.34.0",
     "thirdweb": "^5.116.1",
     "zod": "^4.2.1"
   },
