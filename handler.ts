@@ -633,6 +633,22 @@ export async function handler(
           }
         });
 
+        // Handle non-OK responses with detailed error info
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Unknown MCP error" }));
+          return {
+            statusCode: response.status,
+            headers: responseHeaders,
+            body: JSON.stringify({
+              success: false,
+              error: errorData.error || errorData.message || `MCP tool execution failed`,
+              details: errorData,
+              serverId: slug,
+              tool,
+            }),
+          };
+        }
+
         const data = await response.json();
         return {
           statusCode: response.status,
