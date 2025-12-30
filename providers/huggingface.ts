@@ -503,6 +503,100 @@ export async function handleGetHFTasks(_req: Request, res: Response) {
 }
 
 // =============================================================================
+// HuggingFace Router API - Dynamic Per-Provider Pricing
+// =============================================================================
+
+/**
+ * HuggingFace Router model with per-provider pricing
+ * Source: router.huggingface.co/v1/models
+ */
+export interface HFRouterProvider {
+  provider: string;
+  status: string;
+  context_length?: number;
+  pricing?: {
+    input: number;   // USD per million tokens
+    output: number;  // USD per million tokens
+  };
+  supports_tools?: boolean;
+  supports_structured_output?: boolean;
+  is_model_author?: boolean;
+}
+
+export interface HFRouterModel {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+  architecture?: {
+    input_modalities: string[];
+    output_modalities: string[];
+  };
+  providers: HFRouterProvider[];
+}
+
+// Cache for router models
+let routerModelsCache: HFRouterModel[] | null = null;
+let routerModelsCacheTimestamp = 0;
+const ROUTER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+
+/**
+ * Fetch models with pricing from HuggingFace Router API
+ * This endpoint returns per-model per-provider pricing dynamically
+ */
+export async function fetchHFRouterModels(forceRefresh = false): Promise<HFRouterModel[]> {
+  // Check cache
+  if (!forceRefresh && routerModelsCache && Date.now() - routerModelsCacheTimestamp < ROUTER_CACHE_TTL) {
+    return routerModelsCache;
+  }
+
+  try {
+    const response = await fetch("https://router.huggingface.co/v1/models", {
+      headers: HF_TOKEN ? { Authorization: `Bearer ${HF_TOKEN}` } : {},
+    });
+
+    if (!response.ok) {
+      console.error(`[huggingface] Router API returned ${response.status}`);
+      return routerModelsCache || [];
+    }
+
+    const data = await response.json() as { data: HFRouterModel[] };
+    routerModelsCache = data.data;
+    routerModelsCacheTimestamp = Date.now();
+
+    console.log(`[huggingface] Fetched ${data.data.length} models with pricing from Router API`);
+    return data.data;
+  } catch (error) {
+    console.error("[huggingface] Error fetching from Router API:", error);
+    return routerModelsCache || [];
+  }
+}
+
+/**
+ * Get the cheapest provider for a model from Router API
+ * Returns pricing and provider info for cost estimation
+ */
+export function getCheapestProvider(model: HFRouterModel): HFRouterProvider | null {
+  const providersWithPricing = model.providers.filter(p => p.pricing && p.status === "live");
+  if (providersWithPricing.length === 0) return null;
+
+  // Sort by total cost (input + output) and return cheapest
+  return providersWithPricing.sort((a, b) => {
+    const costA = (a.pricing!.input + a.pricing!.output);
+    const costB = (b.pricing!.input + b.pricing!.output);
+    return costA - costB;
+  })[0];
+}
+
+/**
+ * Clear router models cache
+ */
+export function clearRouterCache(): void {
+  routerModelsCache = null;
+  routerModelsCacheTimestamp = 0;
+}
+
+// =============================================================================
 // Exports for use by other modules
 // =============================================================================
 
