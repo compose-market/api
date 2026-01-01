@@ -1,9 +1,16 @@
 import type { Express, Request, Response } from "express";
 import { type Server } from "http";
-import { handleInference, handleGetModels } from "./inference.js";
-import { handleGetHFModels, handleGetHFModelDetails, handleGetHFTasks } from "./providers/huggingface.js";
-import { searchAgents, getAgent, extractUniqueTags, extractUniqueCategories } from "./agentverse.js";
-import * as models from "./shared/models.js";
+import { handleInference, handleGetModels } from "./shared/models/inference.js";
+import { handleGetHFModels, handleGetHFModelDetails, handleGetHFTasks } from "./shared/models/providers/huggingface.js";
+import {
+  handleGetGoogleModels,
+  handleGoogleGenerate,
+  handleDeepResearch,
+  handlePollResearch,
+  handleCreateEphemeralToken
+} from "./shared/models/providers/genai.js";
+import { searchAgents, getAgent, extractUniqueTags, extractUniqueCategories } from "./external/agentverse.js";
+import * as models from "./shared/models/models.js";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -114,6 +121,35 @@ export async function registerRoutes(
   app.get("/api/hf/tasks", (req, res, next) => {
     handleGetHFTasks(req, res);
     // handleGetHFTasks might be sync or async, assuming it handles its own response or errors, or we catch if async
+  });
+
+  // ==========================================================================
+  // Google GenAI Routes
+  // ==========================================================================
+
+  // GET /api/genai/models - Get Google GenAI models with capabilities
+  app.get("/api/genai/models", (req, res, next) => {
+    handleGetGoogleModels(req, res).catch(next);
+  });
+
+  // POST /api/genai/generate - Generate with Google GenAI (image, video, TTS)
+  app.post("/api/genai/generate", (req, res, next) => {
+    handleGoogleGenerate(req, res).catch(next);
+  });
+
+  // POST /api/genai/research - Start a deep research task
+  app.post("/api/genai/research", (req, res, next) => {
+    handleDeepResearch(req, res).catch(next);
+  });
+
+  // GET /api/genai/research/:id - Poll deep research status
+  app.get("/api/genai/research/:id", (req, res, next) => {
+    handlePollResearch(req, res).catch(next);
+  });
+
+  // POST /api/genai/ephemeral-token - Create ephemeral token for Live API
+  app.post("/api/genai/ephemeral-token", (req, res, next) => {
+    handleCreateEphemeralToken(req, res).catch(next);
   });
 
   // Agentverse API endpoints
