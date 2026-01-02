@@ -63,16 +63,6 @@ function apiTypeToTask(apiType: string, modelId: string): string {
     if (type === "3d" || type === "mesh") return "text-to-3d";
     if (type === "moderation") return "text-classification";
 
-    // Fallback to model ID patterns if type is generic
-    const id = modelId.toLowerCase();
-    if (id.includes("whisper") || id.includes("asr")) return "automatic-speech-recognition";
-    if (id.includes("tts") || id.includes("bark") || id.includes("voice")) return "text-to-speech";
-    if (id.includes("embed") || id.includes("e5") || id.includes("bge")) return "feature-extraction";
-    if (id.includes("flux") || id.includes("sdxl") || id.includes("stable-diffusion") || id.includes("dall")) return "text-to-image";
-    if (id.includes("video") || id.includes("sora") || id.includes("veo")) return "text-to-video";
-    if (id.includes("music") || id.includes("audio") || id.includes("lyria")) return "text-to-audio";
-    if (id.includes("ocr")) return "document-question-answering";
-
     return "text-generation";
 }
 
