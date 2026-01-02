@@ -33,6 +33,8 @@ export interface OpenRouterModel {
         context_length?: number;
         max_completion_tokens?: number;
     };
+    // Capabilities from API
+    supported_parameters?: string[];
 }
 
 export interface OpenRouterModelInfo {
@@ -51,6 +53,13 @@ export interface OpenRouterModelInfo {
     };
     isModerated: boolean;
     maxCompletionTokens?: number;
+    // Capabilities derived from supported_parameters
+    capabilities: {
+        tools: boolean;
+        reasoning: boolean;
+        structuredOutputs: boolean;
+        vision: boolean;
+    };
 }
 
 let modelsCache: OpenRouterModelInfo[] | null = null;
@@ -81,23 +90,36 @@ export async function fetchOpenRouterModels(forceRefresh = false): Promise<OpenR
         const data = await response.json() as { data: OpenRouterModel[] };
 
         // Use name from API directly - NO hardcoded formatting
-        const models: OpenRouterModelInfo[] = data.data.map((model) => ({
-            id: model.id,
-            name: model.name, // Use API name directly
-            description: model.description || "",
-            contextLength: model.context_length,
-            modality: model.architecture?.modality || "text->text",
-            inputModalities: model.architecture?.input_modalities || ["text"],
-            outputModalities: model.architecture?.output_modalities || ["text"],
-            pricing: {
-                prompt: parseFloat(model.pricing?.prompt || "0") * 1_000_000,
-                completion: parseFloat(model.pricing?.completion || "0") * 1_000_000,
-                request: parseFloat(model.pricing?.request || "0"),
-                image: parseFloat(model.pricing?.image || "0"),
-            },
-            isModerated: model.top_provider?.is_moderated || false,
-            maxCompletionTokens: model.top_provider?.max_completion_tokens,
-        }));
+        const models: OpenRouterModelInfo[] = data.data.map((model) => {
+            // Extract capabilities from supported_parameters
+            const params = model.supported_parameters || [];
+            const inputMods = model.architecture?.input_modalities || ["text"];
+
+            return {
+                id: model.id,
+                name: model.name, // Use API name directly
+                description: model.description || "",
+                contextLength: model.context_length,
+                modality: model.architecture?.modality || "text->text",
+                inputModalities: inputMods,
+                outputModalities: model.architecture?.output_modalities || ["text"],
+                pricing: {
+                    prompt: parseFloat(model.pricing?.prompt || "0") * 1_000_000,
+                    completion: parseFloat(model.pricing?.completion || "0") * 1_000_000,
+                    request: parseFloat(model.pricing?.request || "0"),
+                    image: parseFloat(model.pricing?.image || "0"),
+                },
+                isModerated: model.top_provider?.is_moderated || false,
+                maxCompletionTokens: model.top_provider?.max_completion_tokens,
+                // Capabilities from supported_parameters array
+                capabilities: {
+                    tools: params.includes("tools") || params.includes("tool_choice"),
+                    reasoning: params.includes("reasoning") || params.includes("include_reasoning"),
+                    structuredOutputs: params.includes("structured_outputs") || params.includes("response_format"),
+                    vision: inputMods.includes("image") || inputMods.includes("file"),
+                },
+            };
+        });
 
         modelsCache = models;
         modelsCacheTimestamp = Date.now();

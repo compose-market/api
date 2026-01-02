@@ -4,5 +4,5 @@ node_modules
 dist
 function.zip
 phase2-x402-v2-migration.md
-data
-scripts
+shared/models/data
+shared/models/scripts

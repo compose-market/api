@@ -9,19 +9,20 @@
  */
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "aws-lambda";
+import type { ModelCard } from "./shared/models/types.js";
 
 // Lazy-load heavy modules for cold start optimization
-let inferenceHandler: typeof import("./inference.js").handleInference;
-let multimodalHandler: typeof import("./inference.js").handleMultimodalInference;
-let modelsHandler: typeof import("./inference.js").handleGetModels;
-let hfModelsHandler: typeof import("./providers/huggingface.js").handleGetHFModels;
-let hfModelDetailsHandler: typeof import("./providers/huggingface.js").handleGetHFModelDetails;
-let hfTasksHandler: typeof import("./providers/huggingface.js").handleGetHFTasks;
-let agentverseSearch: typeof import("./agentverse.js").searchAgents;
-let agentverseGet: typeof import("./agentverse.js").getAgent;
-let agentverseExtractTags: typeof import("./agentverse.js").extractUniqueTags;
-let agentverseExtractCategories: typeof import("./agentverse.js").extractUniqueCategories;
-let models: typeof import("./shared/models.js");
+let inferenceHandler: typeof import("./shared/models/inference.js").handleInference;
+let multimodalHandler: typeof import("./shared/models/inference.js").handleMultimodalInference;
+let modelsHandler: typeof import("./shared/models/inference.js").handleGetModels;
+let hfModelsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModels;
+let hfModelDetailsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModelDetails;
+let hfTasksHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFTasks;
+let agentverseSearch: typeof import("./external/agentverse.js").searchAgents;
+let agentverseGet: typeof import("./external/agentverse.js").getAgent;
+let agentverseExtractTags: typeof import("./external/agentverse.js").extractUniqueTags;
+let agentverseExtractCategories: typeof import("./external/agentverse.js").extractUniqueCategories;
+let models: typeof import("./shared/models/models.js");
 
 // Prod Servers URLs for proxying
 const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
@@ -29,26 +30,26 @@ const MANOWAR_SERVER_URL = process.env.MANOWAR_SERVICE_URL || "https://manowar.c
 
 async function loadModules() {
   if (!inferenceHandler) {
-    const inference = await import("./inference.js");
+    const inference = await import("./shared/models/inference.js");
     inferenceHandler = inference.handleInference;
     multimodalHandler = inference.handleMultimodalInference;
     modelsHandler = inference.handleGetModels;
   }
   if (!hfModelsHandler) {
-    const hf = await import("./providers/huggingface.js");
+    const hf = await import("./shared/models/providers/huggingface.js");
     hfModelsHandler = hf.handleGetHFModels;
     hfModelDetailsHandler = hf.handleGetHFModelDetails;
     hfTasksHandler = hf.handleGetHFTasks;
   }
   if (!agentverseSearch) {
-    const av = await import("./agentverse.js");
+    const av = await import("./external/agentverse.js");
     agentverseSearch = av.searchAgents;
     agentverseGet = av.getAgent;
     agentverseExtractTags = av.extractUniqueTags;
     agentverseExtractCategories = av.extractUniqueCategories;
   }
   if (!models) {
-    models = await import("./shared/models.js");
+    models = await import("./shared/models/models.js");
   }
 }
 
@@ -199,6 +200,29 @@ export async function handler(
     // Dynamic Model Registry Routes
     // ==========================================================================
 
+    // Route: GET /api/registry/debug - Diagnostic endpoint for debugging model loading
+    if (method === "GET" && path === "/api/registry/debug") {
+      const registry = await models.getModelRegistry();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          totalModels: registry.models.length,
+          sources: registry.sources,
+          lastUpdated: registry.lastUpdated,
+          byProvider: Object.fromEntries(
+            Object.entries(registry.sources || {}).map(([k, v]) => [k, (v as unknown as { count: number })?.count || 0])
+          ),
+          environment: {
+            cwd: process.cwd(),
+            nodeVersion: process.version,
+            platform: process.platform,
+            memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024,
+          },
+        }),
+      };
+    }
+
     // Route: GET /api/registry/models - Get all models from all providers (dynamic)
     if (method === "GET" && path === "/api/registry/models") {
       const registry = await models.getModelRegistry();
@@ -210,25 +234,61 @@ export async function handler(
     }
 
     // Route: GET /api/registry/models/available - Get only available models
+    // Supports pagination: ?page=1&limit=100
+    // Supports filters: ?provider=openai&task=text-generation&search=gpt
     // Supports ?refresh=true to force cache refresh
     if (method === "GET" && path === "/api/registry/models/available") {
       const query = event.queryStringParameters || {};
       const forceRefresh = query.refresh === "true";
 
+      // Pagination params
+      const page = Math.max(1, parseInt(query.page || "1", 10));
+      const limit = Math.min(500, Math.max(1, parseInt(query.limit || "100", 10)));
+      const offset = (page - 1) * limit;
+
+      // Filter params
+      const providerFilter = query.provider;
+      const taskFilter = query.task;
+      const searchQuery = query.search?.toLowerCase();
+
+      // Get models (refresh if requested)
+      let allModels: ModelCard[];
       if (forceRefresh) {
         const registry = await models.refreshRegistry();
-        return {
-          statusCode: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ models: registry.models, total: registry.models.length, lastUpdated: registry.lastUpdated, sources: registry.sources }),
-        };
+        allModels = registry.models;
+      } else {
+        allModels = await models.getAvailableModels();
       }
 
-      const availableModels = await models.getAvailableModels();
+      // Apply filters
+      let filtered = allModels;
+      if (providerFilter) {
+        filtered = filtered.filter(m => m.provider === providerFilter);
+      }
+      if (taskFilter) {
+        filtered = filtered.filter(m => m.taskType === taskFilter);
+      }
+      if (searchQuery) {
+        filtered = filtered.filter(m =>
+          m.modelId.toLowerCase().includes(searchQuery) ||
+          m.name.toLowerCase().includes(searchQuery)
+        );
+      }
+
+      // Paginate
+      const paginated = filtered.slice(offset, offset + limit);
+
       return {
         statusCode: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ models: availableModels, total: availableModels.length }),
+        body: JSON.stringify({
+          models: paginated,
+          total: filtered.length,
+          page,
+          limit,
+          totalPages: Math.ceil(filtered.length / limit),
+          hasMore: offset + limit < filtered.length,
+        }),
       };
     }
 

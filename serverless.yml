@@ -51,3 +51,4 @@ package:
   patterns:
     - '!**'
     - 'dist/**'
+    - 'dist/data/**'

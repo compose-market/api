@@ -597,6 +597,439 @@ export function clearRouterCache(): void {
 }
 
 // =============================================================================
+// Unified HuggingFace Inference Executor
+// Uses @huggingface/inference InferenceClient with provider="auto"
+// =============================================================================
+
+/**
+ * Result type for HF inference - varies by task
+ */
+export interface HFInferenceResult {
+  type: "image" | "video" | "audio" | "text" | "json" | "embedding";
+  data: Buffer | string | number[] | number[][] | object;
+  mimeType?: string;
+}
+
+/**
+ * Input type for HF inference
+ */
+export interface HFInferenceInput {
+  modelId: string;
+  task: string;
+  // Text inputs
+  prompt?: string;
+  text?: string;
+  messages?: Array<{ role: string; content: string }>;
+  systemPrompt?: string;
+  // Media inputs (base64 encoded)
+  image?: string;
+  audio?: string;
+  // Parameters
+  parameters?: Record<string, unknown>;
+}
+
+/**
+ * Get a singleton InferenceClient instance
+ */
+let inferenceClient: InstanceType<typeof import("@huggingface/inference").InferenceClient> | null = null;
+
+async function getInferenceClient() {
+  if (!HF_TOKEN) throw new Error("HuggingFace token not configured (HUGGING_FACE_INFERENCE_TOKEN)");
+
+  if (!inferenceClient) {
+    const { InferenceClient } = await import("@huggingface/inference");
+    inferenceClient = new InferenceClient(HF_TOKEN);
+  }
+  return inferenceClient;
+}
+
+/**
+ * Execute HuggingFace inference for any task type
+ * Routes to the correct InferenceClient method based on task
+ * 
+ * @param input - Inference input with modelId, task, and relevant data
+ * @returns HFInferenceResult with type and data
+ */
+export async function executeHFInference(input: HFInferenceInput): Promise<HFInferenceResult> {
+  const client = await getInferenceClient();
+  const { modelId, task } = input;
+
+  console.log(`[huggingface] Executing inference: ${modelId} (task: ${task})`);
+
+  try {
+    switch (task) {
+      // ===========================================
+      // Text Generation Tasks
+      // ===========================================
+      case "text-generation":
+      case "text2text-generation": {
+        const result = await client.textGeneration({
+          provider: "auto",
+          model: modelId,
+          inputs: input.prompt || input.text || "",
+          parameters: input.parameters as Record<string, unknown>,
+        });
+        return { type: "text", data: result.generated_text };
+      }
+
+      case "conversational": {
+        // Use chat completion for conversational models
+        const result = await client.chatCompletion({
+          provider: "auto",
+          model: modelId,
+          messages: input.messages || [{ role: "user", content: input.prompt || "" }],
+          ...(input.parameters as Record<string, unknown>),
+        });
+        return {
+          type: "text",
+          data: result.choices?.[0]?.message?.content || ""
+        };
+      }
+
+      // ===========================================
+      // Image Generation Tasks
+      // ===========================================
+      case "text-to-image": {
+        const result = await client.textToImage({
+          provider: "auto",
+          model: modelId,
+          inputs: input.prompt || "",
+          parameters: input.parameters as Record<string, unknown>,
+        });
+        const buffer = await blobToBuffer(result as unknown as Blob);
+        return { type: "image", data: buffer, mimeType: "image/png" };
+      }
+
+      case "image-to-image": {
+        if (!input.image) throw new Error("image is required for image-to-image");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.imageToImage({
+          provider: "auto",
+          model: modelId,
+          inputs: imageBlob,
+          parameters: {
+            prompt: input.prompt || "",
+            ...(input.parameters as Record<string, unknown>),
+          },
+        });
+        const buffer = await blobToBuffer(result as unknown as Blob);
+        return { type: "image", data: buffer, mimeType: "image/png" };
+      }
+
+      // ===========================================
+      // Video Generation Tasks
+      // ===========================================
+      case "text-to-video": {
+        const result = await client.textToVideo({
+          provider: "auto",
+          model: modelId,
+          inputs: input.prompt || "",
+          parameters: input.parameters as Record<string, unknown>,
+        });
+        // textToVideo returns a Blob with the video data
+        const buffer = await blobToBuffer(result as unknown as Blob);
+        return { type: "video", data: buffer, mimeType: "video/mp4" };
+      }
+
+      case "image-to-video": {
+        if (!input.image) throw new Error("image is required for image-to-video");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.imageToVideo({
+          provider: "auto",
+          model: modelId,
+          inputs: imageBlob,
+          parameters: {
+            prompt: input.prompt,
+            ...(input.parameters as Record<string, unknown>),
+          },
+        });
+        // imageToVideo returns a Blob with the video data
+        const buffer = await blobToBuffer(result as unknown as Blob);
+        return { type: "video", data: buffer, mimeType: "video/mp4" };
+      }
+
+      // ===========================================
+      // Audio Tasks
+      // ===========================================
+      case "text-to-speech":
+      case "text-to-audio": {
+        const result = await client.textToSpeech({
+          provider: "auto",
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+          parameters: input.parameters as Record<string, unknown>,
+        });
+        const buffer = await blobToBuffer(result as unknown as Blob);
+        return { type: "audio", data: buffer, mimeType: "audio/wav" };
+      }
+
+      case "automatic-speech-recognition": {
+        if (!input.audio) throw new Error("audio is required for ASR");
+        const audioBuffer = Buffer.from(input.audio, "base64");
+        const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: "audio/wav" });
+
+        const result = await client.automaticSpeechRecognition({
+          provider: "auto",
+          model: modelId,
+          inputs: audioBlob,
+        });
+        return { type: "json", data: { text: result.text } };
+      }
+
+      case "audio-classification": {
+        if (!input.audio) throw new Error("audio is required for audio classification");
+        const audioBuffer = Buffer.from(input.audio, "base64");
+        const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: "audio/wav" });
+
+        const result = await client.audioClassification({
+          model: modelId,
+          inputs: audioBlob,
+        });
+        return { type: "json", data: result };
+      }
+
+      // ===========================================
+      // Embedding Tasks
+      // ===========================================
+      case "feature-extraction": {
+        const result = await client.featureExtraction({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+        });
+        return { type: "embedding", data: result as number[] | number[][] };
+      }
+
+      case "sentence-similarity": {
+        const result = await client.sentenceSimilarity({
+          model: modelId,
+          inputs: {
+            source_sentence: input.text || input.prompt || "",
+            sentences: (input.parameters?.sentences as string[]) || [],
+          },
+        });
+        return { type: "json", data: result };
+      }
+
+      // ===========================================
+      // NLP Tasks
+      // ===========================================
+      case "summarization": {
+        const result = await client.summarization({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+          parameters: input.parameters as Record<string, unknown>,
+        });
+        return { type: "text", data: result.summary_text };
+      }
+
+      case "translation": {
+        const result = await client.translation({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+          parameters: input.parameters as Record<string, unknown>,
+        });
+        return { type: "text", data: result.translation_text };
+      }
+
+      case "text-classification": {
+        const result = await client.textClassification({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+        });
+        return { type: "json", data: result };
+      }
+
+      case "token-classification": {
+        const result = await client.tokenClassification({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+        });
+        return { type: "json", data: result };
+      }
+
+      case "question-answering": {
+        const result = await client.questionAnswering({
+          model: modelId,
+          inputs: {
+            question: input.prompt || "",
+            context: input.text || (input.parameters?.context as string) || "",
+          },
+        });
+        return { type: "json", data: result };
+      }
+
+      case "fill-mask": {
+        const result = await client.fillMask({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+        });
+        return { type: "json", data: result };
+      }
+
+      case "zero-shot-classification": {
+        const result = await client.zeroShotClassification({
+          model: modelId,
+          inputs: input.text || input.prompt || "",
+          parameters: {
+            candidate_labels: (input.parameters?.candidate_labels as string[]) || [],
+          },
+        });
+        return { type: "json", data: result };
+      }
+
+      // ===========================================
+      // Vision Tasks
+      // ===========================================
+      case "image-classification": {
+        if (!input.image) throw new Error("image is required for image classification");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.imageClassification({
+          model: modelId,
+          inputs: imageBlob,
+        });
+        return { type: "json", data: result };
+      }
+
+      case "object-detection": {
+        if (!input.image) throw new Error("image is required for object detection");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.objectDetection({
+          model: modelId,
+          inputs: imageBlob,
+        });
+        return { type: "json", data: result };
+      }
+
+      case "image-segmentation": {
+        if (!input.image) throw new Error("image is required for image segmentation");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.imageSegmentation({
+          model: modelId,
+          inputs: imageBlob,
+        });
+        return { type: "json", data: result };
+      }
+
+      case "image-to-text": {
+        if (!input.image) throw new Error("image is required for image-to-text");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.imageToText({
+          model: modelId,
+          inputs: imageBlob,
+        });
+        return { type: "text", data: result.generated_text || "" };
+      }
+
+      // depth-estimation is not supported in the InferenceClient SDK
+      // Users should use a different provider or the raw API for this task
+      case "depth-estimation": {
+        throw new Error(
+          `Task "depth-estimation" is not supported via the HuggingFace InferenceClient. ` +
+          `Please use the HuggingFace Spaces API directly for depth estimation models.`
+        );
+      }
+
+      case "visual-question-answering": {
+        if (!input.image) throw new Error("image is required for VQA");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.visualQuestionAnswering({
+          model: modelId,
+          inputs: {
+            image: imageBlob,
+            question: input.prompt || "",
+          },
+        });
+        return { type: "json", data: result };
+      }
+
+      case "document-question-answering": {
+        if (!input.image) throw new Error("document image is required for DQA");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.documentQuestionAnswering({
+          model: modelId,
+          inputs: {
+            image: imageBlob,
+            question: input.prompt || "",
+          },
+        });
+        return { type: "json", data: result };
+      }
+
+      case "zero-shot-image-classification": {
+        if (!input.image) throw new Error("image is required for zero-shot image classification");
+        const imageBuffer = Buffer.from(input.image, "base64");
+        const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+
+        const result = await client.zeroShotImageClassification({
+          model: modelId,
+          inputs: { image: imageBlob },
+          parameters: {
+            candidate_labels: (input.parameters?.candidate_labels as string[]) || [],
+          },
+        });
+        return { type: "json", data: result };
+      }
+
+      default:
+        throw new Error(`Unsupported task type for HuggingFace inference: ${task}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[huggingface] Inference failed for ${modelId} (${task}):`, message);
+
+    // Provide helpful error messages
+    if (message.includes("does not support") || message.includes("404") || message.includes("not found")) {
+      throw new Error(
+        `Model "${modelId}" is not available for ${task} inference via HuggingFace. ` +
+        `This model may not have inference providers configured, or you may need to select a different model.`
+      );
+    }
+    if (message.includes("loading") || message.includes("503")) {
+      throw new Error(`Model "${modelId}" is loading. Please try again in 20-30 seconds.`);
+    }
+    if (message.includes("rate limit") || message.includes("429")) {
+      throw new Error(`Rate limit exceeded for HuggingFace API. Please try again in a few seconds.`);
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Helper to convert Blob to Buffer
+ */
+async function blobToBuffer(blob: Blob): Promise<Buffer> {
+  if (typeof blob.arrayBuffer === "function") {
+    const arrayBuffer = await blob.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+  return Buffer.from(blob as unknown as ArrayBuffer);
+}
+
+/**
+ * Clear inference client (useful for testing or token refresh)
+ */
+export function clearInferenceClient(): void {
+  inferenceClient = null;
+}
+
+// =============================================================================
 // Exports for use by other modules
 // =============================================================================
 
