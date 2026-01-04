@@ -2,8 +2,8 @@
  * AWS Lambda Handler for Compose Market API
  * 
  * Handles:
- * - /api/inference - AI inference with x402 payments
- * - /api/models - Model listing
+ * - /v1/* - OpenAI-compatible API endpoints (primary)
+ * - /api/registry/* - Model registry routes
  * - /api/hf/* - HuggingFace endpoints
  * - /api/agentverse/* - Agentverse endpoints
  */
@@ -11,10 +11,20 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import type { ModelCard } from "./shared/models/types.js";
 
+// OpenAI-compatible endpoint handlers
+import {
+  handleListModels,
+  handleGetModel,
+  handleChatCompletions,
+  handleImageGeneration,
+  handleImageEdit,
+  handleAudioSpeech,
+  handleAudioTranscription,
+  handleEmbeddings,
+  handleVideoGeneration,
+} from "./shared/api/openai/endpoints.js";
+
 // Lazy-load heavy modules for cold start optimization
-let inferenceHandler: typeof import("./shared/models/inference.js").handleInference;
-let multimodalHandler: typeof import("./shared/models/inference.js").handleMultimodalInference;
-let modelsHandler: typeof import("./shared/models/inference.js").handleGetModels;
 let hfModelsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModels;
 let hfModelDetailsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModelDetails;
 let hfTasksHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFTasks;
@@ -22,19 +32,13 @@ let agentverseSearch: typeof import("./external/agentverse.js").searchAgents;
 let agentverseGet: typeof import("./external/agentverse.js").getAgent;
 let agentverseExtractTags: typeof import("./external/agentverse.js").extractUniqueTags;
 let agentverseExtractCategories: typeof import("./external/agentverse.js").extractUniqueCategories;
-let models: typeof import("./shared/models/models.js");
+let models: typeof import("./shared/models/registry.js");
 
 // Prod Servers URLs for proxying
 const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
 const MANOWAR_SERVER_URL = process.env.MANOWAR_SERVICE_URL || "https://manowar.compose.market";
 
 async function loadModules() {
-  if (!inferenceHandler) {
-    const inference = await import("./shared/models/inference.js");
-    inferenceHandler = inference.handleInference;
-    multimodalHandler = inference.handleMultimodalInference;
-    modelsHandler = inference.handleGetModels;
-  }
   if (!hfModelsHandler) {
     const hf = await import("./shared/models/providers/huggingface.js");
     hfModelsHandler = hf.handleGetHFModels;
@@ -49,16 +53,17 @@ async function loadModules() {
     agentverseExtractCategories = av.extractUniqueCategories;
   }
   if (!models) {
-    models = await import("./shared/models/models.js");
+    models = await import("./shared/models/registry.js");
   }
 }
 
 // CORS headers - x402 needs x-payment header and exposed response headers
 // Session headers for x402 bypass: x-session-active, x-session-budget-remaining
+// Internal bypass: x-manowar-internal (for nested LLM calls from Manowar agents)
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, Access-Control-Expose-Headers",
+  "Access-Control-Allow-Headers": "Content-Type, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, x-manowar-internal, Access-Control-Expose-Headers",
   "Access-Control-Expose-Headers": "*",
 };
 
@@ -171,28 +176,118 @@ export async function handler(
   const method = event.requestContext.http.method;
 
   try {
-    // Route: POST /api/inference - Uses multimodal handler for all tasks
+    // ==========================================================================
+    // OpenAI-Compatible API v1 Routes (STANDARDIZED)
+    // ==========================================================================
+
+    // GET /v1/models - List available models (OpenAI format)
+    if (method === "GET" && path === "/v1/models") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleListModels(req as any, res as any, false);
+      return res.getResult();
+    }
+
+    // GET /v1/models/all - List ALL models including extended catalog
+    if (method === "GET" && (path === "/v1/models/all" || event.queryStringParameters?.extended === "true")) {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleListModels(req as any, res as any, true);
+      return res.getResult();
+    }
+
+    // GET /v1/models/:model - Get specific model details
+    if (method === "GET" && path.startsWith("/v1/models/") && path !== "/v1/models/all") {
+      const modelId = decodeURIComponent(path.replace("/v1/models/", ""));
+      const req = createMockReq(event);
+      (req as any).params = { model: modelId };
+      const res = createMockRes();
+      await handleGetModel(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/chat/completions - Chat completions (text-generation)
+    if (method === "POST" && path === "/v1/chat/completions") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleChatCompletions(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/images/generations - Image generation
+    if (method === "POST" && path === "/v1/images/generations") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleImageGeneration(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/images/edits - Image editing
+    if (method === "POST" && path === "/v1/images/edits") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleImageEdit(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/audio/speech - Text to speech
+    if (method === "POST" && path === "/v1/audio/speech") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleAudioSpeech(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/audio/transcriptions - Speech to text
+    if (method === "POST" && path === "/v1/audio/transcriptions") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleAudioTranscription(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/embeddings - Create embeddings
+    if (method === "POST" && path === "/v1/embeddings") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleEmbeddings(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/videos/generations - Video generation
+    if (method === "POST" && path === "/v1/videos/generations") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleVideoGeneration(req as any, res as any);
+      return res.getResult();
+    }
+
+    // ==========================================================================
+    // Legacy /api/* Routes (Maintained for transition)
+    // ==========================================================================
+
+    // Route: POST /api/inference - Redirect to /v1/chat/completions
     if (method === "POST" && path === "/api/inference") {
       const req = createMockReq(event);
       const res = createMockRes();
-      // Use multimodal handler which routes based on modelId/task
-      await multimodalHandler(req as any, res as any);
+      // Redirect to OpenAI-compatible chat endpoint
+      await handleChatCompletions(req as any, res as any);
       return res.getResult();
     }
 
     // Route: GET /api/pricing - Get pricing table
     if (method === "GET" && path === "/api/pricing") {
-      const { DYNAMIC_PRICES } = await import("./shared/pricing.js");
+      const { DYNAMIC_PRICES } = await import("./shared/x402/pricing.js");
       const res = createMockRes();
       res.json({ prices: DYNAMIC_PRICES, version: "1.0" });
       return res.getResult();
     }
 
-    // Route: GET /api/models - Legacy endpoint
+    // Route: GET /api/models - Redirect to /v1/models
     if (method === "GET" && path === "/api/models") {
       const req = createMockReq(event);
       const res = createMockRes();
-      await modelsHandler(req as any, res as any);
+      await handleListModels(req as any, res as any, false);
       return res.getResult();
     }
 
@@ -346,11 +441,11 @@ export async function handler(
       req.params = { modelId };
       req.body = {
         ...req.body,
-        modelId, // Override modelId from path
+        model: modelId, // Set model for chat completions
       };
       const res = createMockRes();
-      // Use multimodal handler which routes based on task type
-      await multimodalHandler(req as any, res as any);
+      // Redirect to OpenAI-compatible chat endpoint
+      await handleChatCompletions(req as any, res as any);
       return res.getResult();
     }
 
@@ -464,14 +559,14 @@ export async function handler(
     if (method === "POST" && path.match(/^\/api\/agent\/\d+\/invoke$/)) {
       const agentId = path.replace("/api/agent/", "").replace("/invoke", "");
 
-      // Forward to inference handler with agent context
+      // Forward to chat completions handler with agent context
       const req = createMockReq(event);
       req.body = {
         ...req.body,
         agentId: parseInt(agentId, 10),
       };
       const res = createMockRes();
-      await inferenceHandler(req as any, res as any);
+      await handleChatCompletions(req as any, res as any);
       return res.getResult();
     }
 

@@ -5,10 +5,11 @@
   "private": true,
   "scripts": {
     "build": "esbuild handler.ts --bundle --platform=node --target=node25 --format=cjs --outfile=dist/index.js --minify && npm run copy-data",
-    "copy-data": "mkdir -p dist/data && cp -f shared/models/data/models.json dist/data/ 2>/dev/null || echo 'Note: Some data files not found'",
+    "copy-data": "mkdir -p dist/data && cp -f shared/models/data/models.json shared/models/data/models_extended.json dist/data/ 2>/dev/null || echo 'Note: Some data files not found'",
     "deploy": "npm run build && npx serverless deploy --verbose",
     "deploy:domain": "npx serverless create_domain",
     "deploy:quick": "tsx deploy.ts",
+    "sync-models": "cd shared/models/scripts && npx tsx sync-models.ts",
     "dev": "tsx index.ts"
   },
   "dependencies": {

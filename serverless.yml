@@ -2,11 +2,11 @@ service: compose-market-api
 
 provider:
   name: aws
-  runtime: nodejs20.x
+  runtime: nodejs22.x
   region: us-east-1
   stage: ${opt:stage, 'prod'}
-  memorySize: 1024
-  timeout: 60
+  memorySize: 2048
+  timeout: 120
   environment:
     THIRDWEB_SECRET_KEY: ${env:THIRDWEB_SECRET_KEY}
     THIRDWEB_SERVER_WALLET_ADDRESS: ${env:THIRDWEB_SERVER_WALLET_ADDRESS}
@@ -21,6 +21,7 @@ provider:
     AI_ML_API_KEY: ${env:AI_ML_API_KEY}
     AGENTVERSE_API_KEY: ${env:AGENTVERSE_API_KEY}
     MEM0_API_KEY: ${env:MEM0_API_KEY}
+    MANOWAR_INTERNAL_SECRET: ${env:MANOWAR_INTERNAL_SECRET}
 
 functions:
   api:
