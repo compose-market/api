@@ -537,7 +537,6 @@ export async function handleVideoGeneration(
         if (!await requirePayment(req, res)) return;
 
         // Check if this model uses async video generation
-        // All video providers need async to avoid 29s Gateway timeout
         const modelCard = getModelById(body.model);
         const asyncProviders = ["aiml", "openai", "google", "huggingface", "openrouter"];
         const isAsyncProvider = asyncProviders.includes(modelCard?.provider || "");
