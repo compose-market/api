@@ -297,8 +297,15 @@ export async function refreshRegistry(): Promise<{
  * Get language model instance - routes to correct provider
  */
 export function getLanguageModel(modelId: string, provider?: ModelProvider): LanguageModel {
-    const modelProvider = provider || getModelSource(modelId) || "huggingface";
+    const modelProvider = provider || getModelSource(modelId);
+    console.log(`[getLanguageModel] modelId: "${modelId}", resolved provider: "${modelProvider}"`);
 
+    if (!modelProvider) {
+        console.error(`[registry] Model not found in registry: ${modelId}`);
+        throw new Error(`Model not found: ${modelId}. Ensure model is in the compiled registry.`);
+    }
+
+    console.log(`[getLanguageModel] Creating model instance for provider: ${modelProvider}`);
     switch (modelProvider) {
         case "openai":
             return openai(modelId);
@@ -311,12 +318,14 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
         case "asi-cloud":
             return asiCloudProvider(modelId);
         case "openrouter":
+            console.log(`[getLanguageModel] Using openRouterProvider for: ${modelId}`);
             return openRouterProvider(modelId);
         case "aiml":
             return aimlProvider(modelId);
         case "huggingface":
-        default:
             return hfProvider(modelId);
+        default:
+            throw new Error(`Unknown provider: ${modelProvider} for model: ${modelId}`);
     }
 }
 

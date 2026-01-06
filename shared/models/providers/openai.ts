@@ -224,9 +224,8 @@ export async function openaiGenerateVideo(
             body: JSON.stringify({
                 model: modelId,
                 prompt,
-                duration: options?.duration || 5,
-                resolution: options?.resolution || "1080p",
-                aspect_ratio: options?.aspectRatio || "16:9",
+                seconds: String(options?.duration && options.duration >= 8 ? (options.duration >= 12 ? 12 : 8) : 4),
+                size: options?.aspectRatio === "9:16" ? "720x1280" : "1280x720",
             }),
         });
 
