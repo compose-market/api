@@ -262,16 +262,13 @@ export async function handler(
       return res.getResult();
     }
 
-    // ==========================================================================
-    // Legacy /api/* Routes (Maintained for transition)
-    // ==========================================================================
-
-    // Route: POST /api/inference - Redirect to /v1/chat/completions
-    if (method === "POST" && path === "/api/inference") {
-      const req = createMockReq(event);
+    // GET /v1/videos/:id - Check video generation status
+    if (method === "GET" && path.startsWith("/v1/videos/") && path !== "/v1/videos/generations") {
+      const { handleVideoStatus } = await import("./shared/api/openai/endpoints.js");
+      const videoId = decodeURIComponent(path.split("/v1/videos/")[1]);
+      const req = { ...createMockReq(event), params: { id: videoId } };
       const res = createMockRes();
-      // Redirect to OpenAI-compatible chat endpoint
-      await handleChatCompletions(req as any, res as any);
+      await handleVideoStatus(req as any, res as any);
       return res.getResult();
     }
 
@@ -431,48 +428,6 @@ export async function handler(
           lastUpdated: registry.lastUpdated,
         }),
       };
-    }
-
-    // Route: POST /api/inference/:modelId - Inference with dynamic model (supports multimodal)
-    // Model IDs can contain slashes (e.g., "Comfy-Org/flux2-dev")
-    if (method === "POST" && path.startsWith("/api/inference/") && path !== "/api/inference/") {
-      const modelId = decodeURIComponent(path.slice("/api/inference/".length));
-      const req = createMockReq(event);
-      req.params = { modelId };
-      req.body = {
-        ...req.body,
-        model: modelId, // Set model for chat completions
-      };
-      const res = createMockRes();
-      // Redirect to OpenAI-compatible chat endpoint
-      await handleChatCompletions(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/hf/models
-    if (method === "GET" && path === "/api/hf/models") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await hfModelsHandler(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/hf/models/:modelId/details
-    if (method === "GET" && path.startsWith("/api/hf/models/") && path.endsWith("/details")) {
-      const modelId = path.replace("/api/hf/models/", "").replace("/details", "");
-      const req = createMockReq(event);
-      req.params = { modelId };
-      const res = createMockRes();
-      await hfModelDetailsHandler(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/hf/tasks
-    if (method === "GET" && path === "/api/hf/tasks") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      hfTasksHandler(req as any, res as any);
-      return res.getResult();
     }
 
     // Route: GET /api/agentverse/agents
