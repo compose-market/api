@@ -51,7 +51,11 @@ import {
     invokeTTS,
     invokeASR,
     invokeEmbedding,
+    submitVideoJob,
+    checkVideoJobStatus,
     type ChatMessage,
+    type VideoJobResult,
+    type VideoJobStatus,
 } from "../../models/invoke.js";
 
 // =============================================================================
@@ -164,6 +168,17 @@ export async function handleChatCompletions(
                 "missing_model"
             ));
             return;
+        }
+
+        console.log(`[chat] Received request for model: "${body.model}"`);
+
+        // Lookup model to verify it exists and log provider
+        const modelCard = getModelById(body.model);
+        console.log(`[chat] Model lookup result: ${modelCard ? `found (provider: ${modelCard.provider})` : "NOT FOUND"}`);
+        if (!modelCard) {
+            console.error(`[chat] Available model IDs (first 10):`);
+            const compiled = getCompiledModels();
+            compiled.models.slice(0, 10).forEach(m => console.error(`  - ${m.modelId}`));
         }
 
         if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
@@ -490,6 +505,8 @@ export async function handleEmbeddings(
 
 /**
  * POST /v1/videos/generations - Generate videos
+ * Returns job ID immediately for async providers (AIML, etc.)
+ * Returns video directly for sync providers
  */
 export async function handleVideoGeneration(
     req: Request,
@@ -519,6 +536,32 @@ export async function handleVideoGeneration(
         // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
+        // Check if this model uses async video generation
+        // All video providers need async to avoid 29s Gateway timeout
+        const modelCard = getModelById(body.model);
+        const asyncProviders = ["aiml", "openai", "google", "huggingface", "openrouter"];
+        const isAsyncProvider = asyncProviders.includes(modelCard?.provider || "");
+
+        if (isAsyncProvider) {
+            // Async path: submit job and return ID immediately
+            console.log(`[video] Using async generation for ${body.model} (provider: ${modelCard?.provider})`);
+            const jobResult = await submitVideoJob(body.model, body.prompt, {
+                duration: body.duration,
+                aspectRatio: body.aspect_ratio,
+            });
+
+            // Return OpenAI-style async response
+            res.status(202).json({
+                id: jobResult.jobId,
+                object: "video.generation",
+                status: jobResult.status,
+                created: Math.floor(Date.now() / 1000),
+                model: body.model,
+            });
+            return;
+        }
+
+        // Sync path: wait for video and return directly
         const result = await invokeVideo(body.model, body.prompt, {
             duration: body.duration,
             aspectRatio: body.aspect_ratio,
@@ -534,6 +577,41 @@ export async function handleVideoGeneration(
         }, body.model);
 
         res.status(200).json(response);
+    } catch (error) {
+        const { status, body: errBody } = adaptError(error, 500);
+        res.status(status).json(errBody);
+    }
+}
+
+/**
+ * GET /v1/videos/:id - Check video generation status
+ * Polls the provider and returns current status
+ */
+export async function handleVideoStatus(
+    req: Request,
+    res: Response
+): Promise<void> {
+    try {
+        const jobId = req.params.id;
+        if (!jobId) {
+            res.status(400).json(createErrorResponse(
+                "Video job ID is required",
+                "invalid_request_error",
+                "missing_job_id"
+            ));
+            return;
+        }
+
+        const status = await checkVideoJobStatus(jobId);
+
+        res.status(200).json({
+            id: status.jobId,
+            object: "video.generation",
+            status: status.status,
+            url: status.url,
+            error: status.error,
+            progress: status.progress,
+        });
     } catch (error) {
         const { status, body: errBody } = adaptError(error, 500);
         res.status(status).json(errBody);

@@ -25,6 +25,7 @@ import {
     handleAudioTranscription,
     handleEmbeddings,
     handleVideoGeneration,
+    handleVideoStatus,
 } from "./openai/endpoints.js";
 
 // Model registry
@@ -265,6 +266,7 @@ export const API_ROUTES: RouteHandler[] = [
 
     // Video
     { method: "POST", path: "/v1/videos/generations", handler: handleVideoGeneration, description: "Generate video" },
+    { method: "GET", path: "/v1/videos/:id", handler: handleVideoStatus, description: "Check video generation status" },
 
     // ==========================================================================
     // API Routes (/api/*)
@@ -567,6 +569,7 @@ export {
     handleAudioTranscription,
     handleEmbeddings,
     handleVideoGeneration,
+    handleVideoStatus,
 } from "./openai/endpoints.js";
 
 // Types
