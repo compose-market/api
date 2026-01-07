@@ -197,10 +197,14 @@ export async function handleChatCompletions(
 
         const requestId = generateCompletionId();
 
-        // Convert messages to ChatMessage format
+        // Convert messages to ChatMessage format - preserve all fields
         const messages: ChatMessage[] = body.messages.map(m => ({
             role: m.role as "system" | "user" | "assistant" | "tool",
-            content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+            content: typeof m.content === "string" ? m.content : (m.content ? JSON.stringify(m.content) : null),
+            // Preserve tool-related fields
+            tool_calls: m.tool_calls,
+            tool_call_id: m.tool_call_id,
+            name: m.name,
         }));
 
         // Check if streaming
@@ -215,6 +219,8 @@ export async function handleChatCompletions(
                     stream: true,
                     maxTokens: body.max_tokens || body.max_completion_tokens,
                     temperature: body.temperature,
+                    tools: body.tools,
+                    tool_choice: body.tool_choice,
                     onToken: (token: string) => {
                         const chunk = adaptStreamChunk(token, body.model, requestId, false);
                         res.write(formatSSE(chunk));
@@ -237,6 +243,8 @@ export async function handleChatCompletions(
             const result = await invokeChat(body.model, messages, {
                 maxTokens: body.max_tokens || body.max_completion_tokens,
                 temperature: body.temperature,
+                tools: body.tools,
+                tool_choice: body.tool_choice,
             });
             if (result) {
                 const response = adaptChatResponse(result, body.model, requestId);

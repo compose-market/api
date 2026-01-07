@@ -47,13 +47,35 @@ import { GoogleGenAI } from "@google/genai";
 
 export interface ChatMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string;
+    content: string | null;
+    // For assistant messages with tool calls
+    tool_calls?: Array<{
+        id: string;
+        type: "function";
+        function: {
+            name: string;
+            arguments: string;
+        };
+    }>;
+    // For tool response messages
+    tool_call_id?: string;
+    name?: string;
 }
 
 export interface ChatOptions {
     stream?: boolean;
     maxTokens?: number;
     temperature?: number;
+    // Function calling support
+    tools?: Array<{
+        type: "function";
+        function: {
+            name: string;
+            description?: string;
+            parameters?: Record<string, unknown>;
+        };
+    }>;
+    tool_choice?: "none" | "auto" | "required" | { type: "function"; function: { name: string } };
     onToken?: (token: string) => void;
     onComplete?: (result: { usage: TokenUsage }) => void;
 }
@@ -68,6 +90,11 @@ export interface ChatResult {
     content: string;
     usage: TokenUsage;
     finishReason?: string;
+    toolCalls?: Array<{
+        id?: string;
+        name: string;
+        arguments: string | object;
+    }>;
 }
 
 export interface ImageOptions {
@@ -151,6 +178,47 @@ function getProvider(modelId: string): { provider: ModelProvider; card: ModelCar
 // Chat/Text Generation
 // =============================================================================
 
+import { jsonSchema } from "ai";
+
+/**
+ * Convert OpenAI-format tools to AI SDK format
+ * OpenAI: { type: "function", function: { name, description, parameters } }
+ * AI SDK: { toolName: { description, inputSchema: jsonSchema(...) } }
+ */
+function convertToolsForAISDK(tools: ChatOptions["tools"]) {
+    if (!tools || tools.length === 0) return undefined;
+
+    const converted: Record<string, { description?: string; inputSchema: ReturnType<typeof jsonSchema> }> = {};
+
+    for (const t of tools) {
+        if (t.type === "function" && t.function) {
+            // Convert OpenAI JSON Schema parameters to AI SDK format
+            converted[t.function.name] = {
+                description: t.function.description || undefined,
+                inputSchema: jsonSchema(t.function.parameters || { type: "object", properties: {} }),
+            };
+        }
+    }
+
+    return Object.keys(converted).length > 0 ? converted : undefined;
+}
+
+/**
+ * Convert OpenAI tool_choice to AI SDK toolChoice format
+ */
+function convertToolChoice(toolChoice: ChatOptions["tool_choice"]): "auto" | "none" | "required" | { type: "tool"; toolName: string } | undefined {
+    if (!toolChoice) return undefined;
+    if (typeof toolChoice === "string") {
+        return toolChoice as "auto" | "none" | "required";
+    }
+    // OpenAI: { type: "function", function: { name } }
+    // AI SDK: { type: "tool", toolName: string }
+    if (toolChoice.type === "function" && toolChoice.function) {
+        return { type: "tool", toolName: toolChoice.function.name };
+    }
+    return undefined;
+}
+
 /**
  * Invoke chat/text generation for any provider
  */
@@ -163,10 +231,61 @@ export async function invokeChat(
     const modelInstance = getLanguageModel(modelId);
     console.log(`[invokeChat] Got model instance, modelId in instance: ${(modelInstance as any).modelId || "unknown"}`);
 
-    const mappedMessages = messages.map(m => ({
-        role: m.role as "system" | "user" | "assistant",
-        content: m.content,
-    }));
+    // Convert OpenAI format messages to AI SDK format
+    // AI SDK uses: { role, content } where content can be string or array of parts
+    // For tool calls: assistant message with content array containing tool-call parts
+    // For tool responses: tool message with content array containing tool-result parts
+    const mappedMessages: any[] = messages.map(m => {
+        // System, User, basic Assistant messages
+        if (m.role === "system" || m.role === "user") {
+            return { role: m.role, content: m.content || "" };
+        }
+
+        // Assistant message with tool calls
+        if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+            // AI SDK format: content is array with tool-call parts
+            const content: any[] = [];
+
+            // Add text content if present
+            if (m.content) {
+                content.push({ type: "text", text: m.content });
+            }
+
+            // Add tool call parts
+            for (const tc of m.tool_calls) {
+                content.push({
+                    type: "tool-call",
+                    toolCallId: tc.id,
+                    toolName: tc.function.name,
+                    args: JSON.parse(tc.function.arguments || "{}"),
+                });
+            }
+
+            return { role: "assistant", content };
+        }
+
+        // Plain assistant message (no tool calls)
+        if (m.role === "assistant") {
+            return { role: "assistant", content: m.content || "" };
+        }
+
+        // Tool response message
+        if (m.role === "tool") {
+            // AI SDK format: tool message with tool-result parts
+            return {
+                role: "tool",
+                content: [{
+                    type: "tool-result",
+                    toolCallId: m.tool_call_id || "",
+                    toolName: m.name || "",
+                    result: m.content || "",
+                }],
+            };
+        }
+
+        // Fallback
+        return { role: m.role as any, content: m.content || "" };
+    });
 
     if (options.stream) {
         console.log(`[invokeChat] Starting streaming mode`);
@@ -181,6 +300,9 @@ export async function invokeChat(
         const result = streamText({
             model: modelInstance,
             messages: mappedMessages,
+            // Forward function calling tools if provided
+            ...(options.tools && { tools: convertToolsForAISDK(options.tools) }),
+            ...(options.tool_choice && { toolChoice: convertToolChoice(options.tool_choice) }),
         });
 
         let chunkCount = 0;
@@ -210,6 +332,27 @@ export async function invokeChat(
     const result = await generateText({
         model: modelInstance,
         messages: mappedMessages,
+        // Forward function calling tools if provided
+        ...(options.tools && { tools: convertToolsForAISDK(options.tools) }),
+        ...(options.tool_choice && { toolChoice: convertToolChoice(options.tool_choice) }),
+    });
+
+    // Extract tool calls from AI SDK result
+    // AI SDK uses toolCalls array with: { toolCallId, toolName, args }
+    // OpenAI expects: { id, name, arguments (as JSON string) }
+    const toolCalls = result.toolCalls?.map((tc: any, i: number) => {
+        // Ensure arguments is a valid JSON string (not undefined)
+        let args = tc.args;
+        if (args === undefined || args === null) {
+            args = {};
+        }
+        const argsString = typeof args === "string" ? args : JSON.stringify(args);
+
+        return {
+            id: tc.toolCallId || `call_${i}`,
+            name: tc.toolName,
+            arguments: argsString,
+        };
     });
 
     return {
@@ -220,6 +363,7 @@ export async function invokeChat(
             totalTokens: (result.usage as any)?.totalTokens || 0,
         },
         finishReason: result.finishReason,
+        toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
     };
 }
 
