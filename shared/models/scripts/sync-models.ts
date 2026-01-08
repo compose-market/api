@@ -413,6 +413,8 @@ function transformHuggingFace(jsonPath: string): RawModel[] {
             capabilities,
             pricing,
             ownedBy: model.modelId.split("/")[0] || "huggingface",
+            hfInferenceProvider: model.provider,  // e.g., "fal-ai"
+            hfProviderId: model.providerId,       // e.g., "fal-ai/flux/schnell"
         });
     }
 
@@ -505,6 +507,8 @@ function toModelCard(raw: RawModel): ModelCard {
         inputModalities: raw.inputModalities,
         outputModalities: raw.outputModalities,
         available: true,
+        hfInferenceProvider: raw.hfInferenceProvider,
+        hfProviderId: raw.hfProviderId,
     };
 }
 
@@ -516,7 +520,8 @@ const HF_TOP_N_PER_TASK = 100;
 
 /**
  * Select top N most popular HuggingFace models per task type
- * Popularity is determined by: having pricing (indicates usage), model name recognition
+ * Models are already sorted by trendingScore from sync-hf.ts
+ * We just prioritize those with pricing and take top N
  */
 function selectPopularHFModels(models: ModelCard[]): ModelCard[] {
     const hfModels = models.filter(m => m.provider === "huggingface");
@@ -533,15 +538,13 @@ function selectPopularHFModels(models: ModelCard[]): ModelCard[] {
     // Select top N per task type
     const popularHF: ModelCard[] = [];
     for (const [task, taskModels] of hfByTask) {
-        // Sort by: 1) has pricing (more popular), 2) name length (shorter = more well-known)
+        // Sort by: 1) has pricing (more popular), 2) keep original trending order
         const sorted = taskModels.sort((a, b) => {
             // Prefer models with pricing (indicates they're actively used)
             const aHasPricing = a.pricing !== null ? 1 : 0;
             const bHasPricing = b.pricing !== null ? 1 : 0;
-            if (bHasPricing !== aHasPricing) return bHasPricing - aHasPricing;
-
-            // Then prefer models with shorter names (tend to be more popular)
-            return a.name.length - b.name.length;
+            return bHasPricing - aHasPricing;
+            // NOTE: Removed broken name-length sort - models already sorted by trendingScore
         });
 
         popularHF.push(...sorted.slice(0, HF_TOP_N_PER_TASK));
@@ -606,12 +609,13 @@ async function main() {
     // Convert to ModelCard format
     const allModelCards = dedupedModels.map(toModelCard);
 
-    // Sort by provider priority, then by name
+    // Sort by provider priority ONLY - preserve original order within each provider
+    // This keeps HuggingFace models in their trending order from sync-hf.ts
     allModelCards.sort((a, b) => {
         const priorityA = PROVIDER_PRIORITY[a.provider] || 99;
         const priorityB = PROVIDER_PRIORITY[b.provider] || 99;
-        if (priorityA !== priorityB) return priorityA - priorityB;
-        return a.name.localeCompare(b.name);
+        return priorityA - priorityB;
+        // NOTE: Removed alphabetical sort - HF models should stay in trending order
     });
 
     // Compute global stats (for extended output)
