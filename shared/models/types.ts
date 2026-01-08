@@ -172,6 +172,16 @@ export interface ModelCard {
     outputModalities?: string[];
 
     // =========================================================================
+    // HuggingFace Inference Provider Routing
+    // =========================================================================
+
+    /** HuggingFace Inference Provider (e.g., "fal-ai", "replicate", "together") */
+    hfInferenceProvider?: string;
+
+    /** Provider-specific model ID for HF Router (e.g., "fal-ai/flux/schnell") */
+    hfProviderId?: string;
+
+    // =========================================================================
     // Availability & Source Tracking
     // =========================================================================
 
@@ -377,4 +387,8 @@ export interface RawModel {
     createdAt?: string | number;
     inputModalities?: string[];
     outputModalities?: string[];
+    /** HuggingFace Inference Provider (e.g., "fal-ai", "replicate", "together") */
+    hfInferenceProvider?: string;
+    /** Provider-specific model ID for HF Router */
+    hfProviderId?: string;
 }

@@ -442,10 +442,13 @@ export async function invokeImage(
 
         case "huggingface":
         default:
+            // Get the model card to access hfInferenceProvider
+            const imgCard = getModelById(modelId);
             const hfInput: HFInferenceInput = {
                 modelId: modelId,
                 task: "text-to-image",
                 prompt,
+                inferenceProvider: imgCard?.hfInferenceProvider,
             };
             const hfResult = await executeHFInference(hfInput);
             return { buffer: hfResult.data as Buffer, mimeType: "image/png" };
@@ -584,10 +587,12 @@ export async function invokeVideo(
 
         case "huggingface":
         default:
+            const videoCard = getModelById(modelId);
             const hfInput: HFInferenceInput = {
                 modelId: modelId,
                 task: "text-to-video",
                 prompt,
+                inferenceProvider: videoCard?.hfInferenceProvider,
             };
             const hfResult = await executeHFInference(hfInput);
             return { buffer: hfResult.data as Buffer, mimeType: "video/mp4" };
@@ -623,10 +628,12 @@ export async function invokeTTS(
 
         case "huggingface":
         default:
+            const ttsCard = getModelById(modelId);
             const hfInput: HFInferenceInput = {
                 modelId: modelId,
                 task: "text-to-speech",
                 prompt: text,
+                inferenceProvider: ttsCard?.hfInferenceProvider,
             };
             const hfResult = await executeHFInference(hfInput);
             return hfResult.data as Buffer;
@@ -663,10 +670,12 @@ export async function invokeASR(
 
         case "huggingface":
         default:
+            const asrCard = getModelById(modelId);
             const hfInput: HFInferenceInput = {
                 modelId: modelId,
                 task: "automatic-speech-recognition",
                 audio: audio.toString("base64"),
+                inferenceProvider: asrCard?.hfInferenceProvider,
             };
             const hfASRResult = await executeHFInference(hfInput);
             // HFInferenceResult doesn't have text, check result type
@@ -697,6 +706,29 @@ export async function invokeEmbedding(
         case "google":
             embeddingModel = google.textEmbeddingModel(modelId);
             break;
+        case "huggingface": {
+            // Use HuggingFace InferenceClient for feature-extraction
+            const embCard = getModelById(modelId);
+            const hfInput: HFInferenceInput = {
+                modelId: modelId,
+                task: "feature-extraction",
+                text: inputs.join(" "),  // Join inputs for single embedding
+                inferenceProvider: embCard?.hfInferenceProvider,
+            };
+            const hfResult = await executeHFInference(hfInput);
+            // HF returns embeddings as array or nested array
+            const embData = hfResult.data as number[] | number[][];
+            const embeddings = Array.isArray(embData[0])
+                ? (embData as number[][])
+                : [embData as number[]];
+            return {
+                embeddings,
+                usage: {
+                    promptTokens: inputs.join("").length / 4,
+                    totalTokens: inputs.join("").length / 4,
+                },
+            };
+        }
         case "openai":
         default:
             embeddingModel = openai.embedding(modelId);
@@ -864,7 +896,7 @@ export async function submitVideoJob(
             console.log(`[huggingface] Submitting video job for ${modelId}: "${prompt.slice(0, 50)}..."`);
 
             // HuggingFace uses the Inference API with async mode
-            const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+            const response = await fetch(`https://router.huggingface.co/models/${modelId}`, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${apiKey}`,
@@ -1172,7 +1204,7 @@ export async function checkVideoJobStatus(jobId: string): Promise<VideoJobStatus
             const [modelId] = providerJobId.split(":");
 
             // Re-query the model - HuggingFace will return the result if ready
-            const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+            const response = await fetch(`https://router.huggingface.co/models/${modelId}`, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${apiKey}`,
