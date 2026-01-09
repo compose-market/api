@@ -28,6 +28,8 @@ import {
     handleVideoStatus,
 } from "./openai/endpoints.js";
 
+import { handleGetModelParams } from "./openai/paramsHandler.js";
+
 // Model registry
 import { getCompiledModels, getExtendedModels, getModelById } from "../models/registry.js";
 
@@ -248,6 +250,7 @@ export const API_ROUTES: RouteHandler[] = [
     // Models
     { method: "GET", path: "/v1/models", handler: handleListModels, description: "List models" },
     { method: "GET", path: "/v1/models/all", handler: (req, res) => handleListModels(req, res, true), description: "List all models" },
+    { method: "GET", path: "/v1/models/:model/params", handler: handleGetModelParams, description: "Get model optional params" },
     { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model details" },
 
     // Chat Completions
