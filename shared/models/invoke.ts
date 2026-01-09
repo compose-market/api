@@ -112,6 +112,7 @@ export interface VideoOptions {
     duration?: number;
     aspectRatio?: string;
     resolution?: string;
+    imageUrl?: string;  // For image-to-video models
 }
 
 export interface VideoResult {
@@ -493,7 +494,8 @@ export async function invokeVideo(
             }
             console.log(`[aiml] Generating video with ${modelId}: "${prompt.slice(0, 50)}..."`);
 
-            const aimlVideoResponse = await fetch("https://api.aimlapi.com/v2/generate/video/kling/generation", {
+            // Use universal video endpoint that works for all AI/ML video models
+            const aimlVideoResponse = await fetch("https://api.aimlapi.com/v2/video/generations", {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${aimlVideoApiKey}`,
@@ -503,7 +505,10 @@ export async function invokeVideo(
                     model: modelId,
                     prompt,
                     aspect_ratio: options.aspectRatio || "16:9",
-                    duration: options.duration?.toString() || "5",
+                    // Only include duration if explicitly set by user (each model has different valid durations)
+                    ...(options.duration && { duration: options.duration.toString() }),
+                    // Pass image URL for image-to-video models if provided
+                    ...(options.imageUrl && { image_url: options.imageUrl }),
                 }),
             });
 
@@ -536,7 +541,8 @@ export async function invokeVideo(
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
                     attempts++;
 
-                    const pollResponse = await fetch(`https://api.aimlapi.com/v2/generate/video/kling/generation?generation_id=${jobId}`, {
+                    // Use universal video endpoint for polling too
+                    const pollResponse = await fetch(`https://api.aimlapi.com/v2/video/generations?generation_id=${jobId}`, {
                         method: "GET",
                         headers: {
                             "Authorization": `Bearer ${aimlVideoApiKey}`,
@@ -773,7 +779,8 @@ export async function submitVideoJob(
 
             console.log(`[aiml] Submitting video job for ${modelId}: "${prompt.slice(0, 50)}..."`);
 
-            const response = await fetch("https://api.aimlapi.com/v2/generate/video/kling/generation", {
+            // Use universal video endpoint
+            const response = await fetch("https://api.aimlapi.com/v2/video/generations", {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${apiKey}`,
@@ -783,7 +790,10 @@ export async function submitVideoJob(
                     model: modelId,
                     prompt,
                     aspect_ratio: options.aspectRatio || "16:9",
-                    duration: options.duration?.toString() || "5",
+                    // Only include duration if explicitly set (each model has different valid durations)
+                    ...(options.duration && { duration: options.duration.toString() }),
+                    // Pass image URL for image-to-video models if provided
+                    ...(options.imageUrl && { image_url: options.imageUrl }),
                 }),
             });
 
@@ -1007,7 +1017,8 @@ export async function checkVideoJobStatus(jobId: string): Promise<VideoJobStatus
                 throw new Error("AI_ML_API_KEY not configured");
             }
 
-            const response = await fetch(`https://api.aimlapi.com/v2/generate/video/kling/generation?generation_id=${providerJobId}`, {
+            // Use universal video endpoint
+            const response = await fetch(`https://api.aimlapi.com/v2/video/generations?generation_id=${providerJobId}`, {
                 method: "GET",
                 headers: {
                     "Authorization": `Bearer ${apiKey}`,
