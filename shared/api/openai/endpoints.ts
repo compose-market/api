@@ -555,6 +555,7 @@ export async function handleVideoGeneration(
             const jobResult = await submitVideoJob(body.model, body.prompt, {
                 duration: body.duration,
                 aspectRatio: body.aspect_ratio,
+                imageUrl: body.image_url || body.image,  // Support both URL and base64
             });
 
             // Return OpenAI-style async response
@@ -573,6 +574,7 @@ export async function handleVideoGeneration(
             duration: body.duration,
             aspectRatio: body.aspect_ratio,
             resolution: body.size,
+            imageUrl: body.image_url || body.image,  // Support both URL and base64
         });
 
         // Adapt to OpenAI format

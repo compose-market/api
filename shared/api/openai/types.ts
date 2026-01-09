@@ -291,7 +291,8 @@ export interface EmbeddingResponse {
 export interface VideoGenerationRequest {
     prompt: string;
     model: string;
-    image?: string;  // base64 for image-to-video
+    image?: string;  // base64 for image-to-video (OpenAI style)
+    image_url?: string;  // URL for image-to-video (AIML style)
     duration?: number;  // seconds
     fps?: number;
     size?: string;  // e.g., "1920x1080"
