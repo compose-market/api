@@ -60,11 +60,12 @@ async function loadModules() {
 // CORS headers - x402 needs x-payment header and exposed response headers
 // Session headers for x402 bypass: x-session-active, x-session-budget-remaining
 // Internal bypass: x-manowar-internal (for nested LLM calls from Manowar agents)
+// Compose Keys: Authorization header for external clients
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, x-manowar-internal, Access-Control-Expose-Headers",
-  "Access-Control-Expose-Headers": "*",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, x-session-user-address, x-manowar-internal, Access-Control-Expose-Headers",
+  "Access-Control-Expose-Headers": "x-compose-key-budget-limit, x-compose-key-budget-used, x-compose-key-budget-remaining, *",
 };
 
 // Mock Express request/response for handler compatibility
@@ -278,6 +279,112 @@ export async function handler(
       const res = createMockRes();
       res.json({ prices: DYNAMIC_PRICES, version: "1.0" });
       return res.getResult();
+    }
+
+    // ==========================================================================
+    // Compose Keys API Routes
+    // ==========================================================================
+
+    // POST /api/keys - Create a new Compose Key
+    if (method === "POST" && path === "/api/keys") {
+      const { createComposeKey } = await import("./shared/keys/index.js");
+      const userAddress = event.headers["x-session-user-address"];
+      const sessionActive = event.headers["x-session-active"] === "true";
+
+      if (!userAddress || !sessionActive) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Active session required to create Compose Key" }),
+        };
+      }
+
+      const body = event.body ? JSON.parse(event.body) : {};
+      if (!body.budgetLimit || !body.expiresAt) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "budgetLimit and expiresAt are required" }),
+        };
+      }
+
+      const result = await createComposeKey(userAddress, {
+        budgetLimit: body.budgetLimit,
+        expiresAt: body.expiresAt,
+        name: body.name,
+      });
+
+      return {
+        statusCode: 201,
+        headers: corsHeaders,
+        body: JSON.stringify(result),
+      };
+    }
+
+    // GET /api/keys - List user's Compose Keys
+    if (method === "GET" && path === "/api/keys") {
+      const { listUserKeys } = await import("./shared/keys/index.js");
+      const userAddress = event.headers["x-session-user-address"];
+
+      if (!userAddress) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
+      }
+
+      const keys = await listUserKeys(userAddress);
+
+      // Return keys without tokens (security)
+      const safeKeys = keys.map(k => ({
+        keyId: k.keyId,
+        budgetLimit: k.budgetLimit,
+        budgetUsed: k.budgetUsed,
+        budgetRemaining: Math.max(0, k.budgetLimit - k.budgetUsed),
+        createdAt: k.createdAt,
+        expiresAt: k.expiresAt,
+        revokedAt: k.revokedAt,
+        name: k.name,
+        lastUsedAt: k.lastUsedAt,
+      }));
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({ keys: safeKeys }),
+      };
+    }
+
+    // DELETE /api/keys/:keyId - Revoke a Compose Key
+    if (method === "DELETE" && path.startsWith("/api/keys/")) {
+      const { revokeKey } = await import("./shared/keys/index.js");
+      const keyId = path.replace("/api/keys/", "");
+      const userAddress = event.headers["x-session-user-address"];
+
+      if (!userAddress) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
+      }
+
+      const success = await revokeKey(keyId, userAddress);
+
+      if (!success) {
+        return {
+          statusCode: 404,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Key not found or not authorized" }),
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: true, keyId }),
+      };
     }
 
     // Route: GET /api/models - Redirect to /v1/models
