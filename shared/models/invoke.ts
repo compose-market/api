@@ -47,7 +47,14 @@ import { GoogleGenAI } from "@google/genai";
 
 export interface ChatMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string | null;
+    // Content can be string, null, or multipart array for vision/audio models
+    content: string | null | Array<{
+        type: "text" | "image_url" | "input_audio" | "video_url";
+        text?: string;
+        image_url?: { url: string };
+        input_audio?: { url: string };
+        video_url?: { url: string };
+    }>;
     // For assistant messages with tool calls
     tool_calls?: Array<{
         id: string;
@@ -101,6 +108,7 @@ export interface ImageOptions {
     size?: string;
     quality?: string;
     n?: number;
+    imageUrl?: string;  // For image-to-image models (Pinata/IPFS URL)
 }
 
 export interface ImageResult {
@@ -158,6 +166,36 @@ export interface EmbeddingOptions {
 export interface EmbeddingResult {
     embeddings: number[][];
     usage: { promptTokens: number; totalTokens: number };
+}
+
+// =============================================================================
+// Helper: Fetch URL as Base64
+// =============================================================================
+
+/**
+ * Fetch content from a URL and convert to base64
+ * Used for converting Pinata/IPFS URLs to base64 for providers that need it
+ */
+export async function fetchUrlAsBase64(url: string): Promise<string> {
+    console.log(`[invoke] Fetching URL for base64 conversion: ${url.slice(0, 80)}...`);
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch URL ${url}: ${response.status}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.toString("base64");
+}
+
+/**
+ * Normalize image data - either already base64 or URL that needs fetching
+ */
+export async function normalizeImageData(input: string): Promise<string> {
+    // Check if it's a URL (starts with http:// or https://)
+    if (input.startsWith('http://') || input.startsWith('https://')) {
+        return fetchUrlAsBase64(input);
+    }
+    // Already base64
+    return input;
 }
 
 // =============================================================================
@@ -237,8 +275,42 @@ export async function invokeChat(
     // For tool calls: assistant message with content array containing tool-call parts
     // For tool responses: tool message with content array containing tool-result parts
     const mappedMessages: any[] = messages.map(m => {
-        // System, User, basic Assistant messages
-        if (m.role === "system" || m.role === "user") {
+        // System messages - always string
+        if (m.role === "system") {
+            return { role: m.role, content: m.content || "" };
+        }
+
+        // User messages - may have multipart content (text + images/audio/video)
+        if (m.role === "user") {
+            // Check if content is an array (multipart with media)
+            if (Array.isArray(m.content)) {
+                console.log(`[invokeChat] Processing multipart user message with ${m.content.length} parts`);
+                const parts: any[] = [];
+                for (const part of m.content as any[]) {
+                    if (part.type === "text") {
+                        parts.push({ type: "text", text: part.text });
+                    } else if (part.type === "image_url") {
+                        // AI SDK format: { type: "image", image: URL }
+                        const url = part.image_url?.url || part.image_url;
+                        console.log(`[invokeChat] Adding image from URL: ${url?.slice(0, 60)}...`);
+                        parts.push({ type: "image", image: url });
+                    } else if (part.type === "input_audio") {
+                        // AI SDK doesn't have native audio support yet - pass as file
+                        // Some providers may ignore this, but we forward it for future compatibility
+                        const url = part.input_audio?.url || part.input_audio;
+                        console.log(`[invokeChat] Adding audio from URL: ${url?.slice(0, 60)}...`);
+                        // Use file type for audio URLs
+                        parts.push({ type: "file", data: url, mimeType: "audio/mpeg" });
+                    } else if (part.type === "video_url") {
+                        // AI SDK doesn't have native video support - pass as file
+                        const url = part.video_url?.url || part.video_url;
+                        console.log(`[invokeChat] Adding video from URL: ${url?.slice(0, 60)}...`);
+                        // Use file type for video URLs
+                        parts.push({ type: "file", data: url, mimeType: "video/mp4" });
+                    }
+                }
+                return { role: "user", content: parts };
+            }
             return { role: m.role, content: m.content || "" };
         }
 

@@ -197,15 +197,49 @@ export async function handleChatCompletions(
 
         const requestId = generateCompletionId();
 
+        // Check for image/audio attachment URLs
+        const imageUrl = (body as any).image_url;
+        const audioUrl = (body as any).audio_url;
+
         // Convert messages to ChatMessage format - preserve all fields
-        const messages: ChatMessage[] = body.messages.map(m => ({
-            role: m.role as "system" | "user" | "assistant" | "tool",
-            content: typeof m.content === "string" ? m.content : (m.content ? JSON.stringify(m.content) : null),
-            // Preserve tool-related fields
-            tool_calls: m.tool_calls,
-            tool_call_id: m.tool_call_id,
-            name: m.name,
-        }));
+        // For vision/audio models, inject image_url or audio_url into the last user message
+        const messages: ChatMessage[] = body.messages.map((m, idx) => {
+            const isLastUserMessage = m.role === "user" && idx === body.messages.length - 1;
+
+            // If this is the last user message and we have media attachments, use multipart content
+            if (isLastUserMessage && (imageUrl || audioUrl)) {
+                const contentParts: any[] = [
+                    { type: "text" as const, text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) },
+                ];
+
+                if (imageUrl) {
+                    console.log(`[chat] Injecting image_url into last user message: ${imageUrl.slice(0, 60)}...`);
+                    contentParts.push({ type: "image_url" as const, image_url: { url: imageUrl } });
+                }
+                if (audioUrl) {
+                    console.log(`[chat] Injecting audio_url into last user message: ${audioUrl.slice(0, 60)}...`);
+                    // Use input_audio format for audio attachments (per OpenAI Realtime/GPT-4o-audio format)
+                    contentParts.push({ type: "input_audio" as const, input_audio: { url: audioUrl } });
+                }
+
+                return {
+                    role: m.role as "system" | "user" | "assistant" | "tool",
+                    content: contentParts,
+                    tool_calls: m.tool_calls,
+                    tool_call_id: m.tool_call_id,
+                    name: m.name,
+                };
+            }
+
+            return {
+                role: m.role as "system" | "user" | "assistant" | "tool",
+                content: typeof m.content === "string" ? m.content : (m.content ? JSON.stringify(m.content) : null),
+                // Preserve tool-related fields
+                tool_calls: m.tool_calls,
+                tool_call_id: m.tool_call_id,
+                name: m.name,
+            };
+        });
 
         // Check if streaming
         if (body.stream) {
@@ -285,10 +319,14 @@ export async function handleImageGeneration(
         // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
+        // Support image_url for image-to-image workflows (from frontend IPFS attachments)
+        const imageUrl = (body as any).image_url || (body as any).image;
+
         const result = await invokeImage(model, body.prompt, {
             n: body.n,
             size: body.size,
             quality: body.quality,
+            imageUrl: imageUrl,  // Pass URL for image-to-image
         });
 
         // Adapt buffer to OpenAI format
