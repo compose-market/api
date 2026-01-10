@@ -19,6 +19,14 @@ import {
 import { INFERENCE_PRICE_WEI, DEFAULT_PRICES, DYNAMIC_PRICES, getPriceForRequest } from "./pricing.js";
 import type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 
+// Compose Keys integration
+import {
+    extractComposeKeyFromHeader,
+    validateComposeKey,
+    consumeKeyBudget,
+    getKeyBudgetInfo,
+} from "../keys/index.js";
+
 // Re-export types
 export type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 
@@ -200,6 +208,81 @@ export async function requirePayment(
 
     if (internalMarker === MANOWAR_INTERNAL_MARKER) {
         console.log(`[x402] Internal bypass - Manowar verified payment upstream, session=${sessionActive}`);
+        return true;
+    }
+
+    // ==========================================================================
+    // Compose Key Flow (external clients like Cursor, VSCode)
+    // Performs ACTUAL on-chain USDC settlement using session key authority
+    // ==========================================================================
+    const authHeader = req.headers["authorization"] as string | undefined;
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+
+    if (composeKeyToken) {
+        console.log(`[x402] Compose Key detected, validating...`);
+
+        const validation = await validateComposeKey(composeKeyToken, amountWei);
+
+        if (!validation.valid) {
+            console.log(`[x402] Compose Key invalid: ${validation.error}`);
+            res.status(401).json({
+                error: "Invalid Compose Key",
+                details: validation.error,
+            });
+            return false;
+        }
+
+        // Step 1: Redis fast-path budget check and deduction
+        const newUsed = await consumeKeyBudget(validation.payload!.keyId, amountWei);
+
+        if (newUsed < 0) {
+            console.log(`[x402] Compose Key budget exhausted for ${validation.payload!.keyId}`);
+            res.status(402).json({
+                error: "Compose Key budget exhausted",
+                budgetLimit: validation.record!.budgetLimit,
+                budgetUsed: validation.record!.budgetUsed,
+            });
+            return false;
+        }
+
+        // Step 2: On-chain USDC settlement using session key
+        // The server uses TREASURY_WALLET's session key authority to transfer USDC
+        const { settleComposeKeyPayment } = await import("./settlement.js");
+        const userAddress = validation.payload!.sub;
+
+        console.log(`[x402] Initiating on-chain settlement for ${userAddress}, amount: ${amountWei} wei`);
+
+        const settlementResult = await settleComposeKeyPayment(userAddress, amountWei);
+
+        if (!settlementResult.success) {
+            // Rollback Redis budget on settlement failure
+            console.log(`[x402] On-chain settlement failed: ${settlementResult.error}`);
+            const { rollbackKeyUsage } = await import("../keys/storage.js");
+            await rollbackKeyUsage(validation.payload!.keyId, amountWei);
+
+            res.status(402).json({
+                error: "Payment settlement failed",
+                details: settlementResult.error,
+                hint: "Ensure your session is active and has sufficient USDC balance",
+            });
+            return false;
+        }
+
+        console.log(`[x402] On-chain settlement successful: ${settlementResult.txHash}`);
+
+        // Add budget info to response headers
+        const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
+        if (budgetInfo) {
+            res.setHeader("x-compose-key-budget-limit", String(budgetInfo.budgetLimit));
+            res.setHeader("x-compose-key-budget-used", String(budgetInfo.budgetUsed));
+            res.setHeader("x-compose-key-budget-remaining", String(budgetInfo.budgetRemaining));
+        }
+        // Add settlement tx hash for transparency
+        if (settlementResult.txHash) {
+            res.setHeader("x-compose-key-tx-hash", settlementResult.txHash);
+        }
+
+        console.log(`[x402] Compose Key payment verified: ${validation.payload!.keyId}, user: ${userAddress}, cost: ${amountWei} wei, tx: ${settlementResult.txHash}`);
         return true;
     }
 
