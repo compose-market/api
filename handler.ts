@@ -927,6 +927,112 @@ export async function handler(
       }
     }
 
+    // ==========================================================================
+    // Avatar Generation for Create Agent
+    // ==========================================================================
+
+    // Route: POST /api/generate-avatar - Generate avatar using Flux Schnell
+    if (method === "POST" && path === "/api/generate-avatar") {
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { title, description } = body;
+
+      if (!title || !description) {
+        return {
+          statusCode: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "You should add Name + Description before generating an avatar" }),
+        };
+      }
+
+      try {
+        const { invokeImage } = await import("./shared/models/invoke.js");
+        const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
+        const prompt = `Agent Name: ${title}
+Agent Description: ${description}
+Brand Style: ${brandStyle}
+
+Create a professional square avatar icon for this AI agent. Clean, iconic design suitable for small sizes. No text.`;
+
+        console.log("[generate-avatar] Prompt length:", prompt.length);
+
+        // Generate image using Flux Schnell (routes through HF -> fal-ai fallback)
+        const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
+          size: "1024x1024",
+          n: 1,
+        });
+
+        // Return base64 image
+        const base64Image = result.buffer.toString("base64");
+        const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
+
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl: dataUrl }),
+        };
+      } catch (error) {
+        console.error("[generate-avatar] Error:", error);
+        return {
+          statusCode: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "Avatar generation failed", message: String(error) }),
+        };
+      }
+    }
+
+    // ==========================================================================
+    // Banner Generation for Compose Manowar
+    // ==========================================================================
+
+    // Route: POST /api/generate-banner - Generate banner using Flux Schnell (landscape 1792x1024)
+    if (method === "POST" && path === "/api/generate-banner") {
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { title, description } = body;
+
+      if (!title || !description) {
+        return {
+          statusCode: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "You should add Title + Description before generating a banner" }),
+        };
+      }
+
+      try {
+        const { invokeImage } = await import("./shared/models/invoke.js");
+        const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
+        const prompt = `Workflow Title: ${title}
+Workflow Description: ${description}
+Brand Style: ${brandStyle}
+
+Create a professional wide banner image for an AI workflow orchestration system. Landscape format, abstract tech visualization with connected nodes, data flows, or circuit patterns. No text or logos. Dark background with neon accent highlights.`;
+
+        console.log("[generate-banner] Prompt length:", prompt.length);
+
+        // Generate image using Flux Schnell with landscape dimensions
+        const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
+          size: "1792x1024", // Landscape aspect ratio for banners
+          n: 1,
+        });
+
+        // Return base64 image
+        const base64Image = result.buffer.toString("base64");
+        const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
+
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl: dataUrl }),
+        };
+      } catch (error) {
+        console.error("[generate-banner] Error:", error);
+        return {
+          statusCode: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "Banner generation failed", message: String(error) }),
+        };
+      }
+    }
+
     // 404 for unknown routes
     return {
       statusCode: 404,
