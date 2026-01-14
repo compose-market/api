@@ -157,6 +157,129 @@ function requireEnv(name: string): string {
 }
 
 // Internal marker for Manowar nested calls - the secret IS the proof of payment
+// =============================================================================
+// Deferred Payment Settlement (charge after response starts)
+// =============================================================================
+
+/**
+ * Result of preparePayment - contains validation status and a deferred settlement callback
+ */
+export interface PreparedPayment {
+    valid: boolean;
+    error?: string;
+    /** Call this AFTER first response token to actually charge. Only call once! */
+    settle: () => Promise<{ success: boolean; txHash?: string; error?: string }>;
+    /** For setting response headers */
+    getHeaders: () => Record<string, string>;
+}
+
+/**
+ * Prepare payment without actually charging. Returns a settlement callback.
+ * 
+ * Use this for endpoints where you want to charge AFTER the response starts,
+ * to avoid charging for failed requests.
+ * 
+ * @param req - Express request
+ * @param amountWei - Amount to charge (but don't charge yet)
+ * @returns PreparedPayment with settle() callback
+ */
+export async function preparePayment(
+    req: Request,
+    amountWei: number = INFERENCE_PRICE_WEI,
+): Promise<PreparedPayment> {
+    const authHeader = req.headers["authorization"] as string | undefined;
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+
+    // Check for internal Manowar bypass first
+    const internalMarker = req.headers["x-manowar-internal"] as string | undefined;
+    if (internalMarker === MANOWAR_INTERNAL_MARKER) {
+        console.log(`[x402] preparePayment: Internal bypass - Manowar verified payment upstream`);
+        return {
+            valid: true,
+            settle: async () => ({ success: true }),
+            getHeaders: () => ({}),
+        };
+    }
+
+    if (composeKeyToken) {
+        console.log(`[x402] preparePayment: Compose Key detected, validating...`);
+
+        const validation = await validateComposeKey(composeKeyToken, amountWei);
+
+        if (!validation.valid) {
+            console.log(`[x402] preparePayment: Compose Key invalid: ${validation.error}`);
+            return {
+                valid: false,
+                error: validation.error,
+                settle: async () => ({ success: false, error: "Invalid key" }),
+                getHeaders: () => ({}),
+            };
+        }
+
+        // Pre-flight budget check only
+        const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
+        if (budgetRemaining < amountWei) {
+            console.log(`[x402] preparePayment: Budget exhausted: ${budgetRemaining} < ${amountWei}`);
+            return {
+                valid: false,
+                error: "Budget exhausted",
+                settle: async () => ({ success: false, error: "Budget exhausted" }),
+                getHeaders: () => ({}),
+            };
+        }
+
+        // Return valid with deferred settlement
+        let settled = false;
+        let settlementTxHash: string | undefined;
+
+        return {
+            valid: true,
+            settle: async () => {
+                if (settled) {
+                    console.log(`[x402] preparePayment: Already settled, skipping`);
+                    return { success: true, txHash: settlementTxHash };
+                }
+                settled = true;
+
+                console.log(`[x402] preparePayment: Executing deferred settlement for ${validation.payload!.sub}`);
+                const { settleComposeKeyPayment } = await import("./settlement.js");
+                const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei);
+
+                if (result.success) {
+                    settlementTxHash = result.txHash;
+                    // Update Redis cache
+                    try {
+                        await consumeKeyBudget(validation.payload!.keyId, amountWei);
+                    } catch (e) {
+                        console.warn(`[x402] preparePayment: Redis update failed but on-chain succeeded`);
+                    }
+                }
+
+                return result;
+            },
+            getHeaders: () => {
+                const headers: Record<string, string> = {
+                    "x-compose-key-budget-limit": String(validation.record!.budgetLimit),
+                    "x-compose-key-budget-used": String(validation.record!.budgetUsed),
+                    "x-compose-key-budget-remaining": String(budgetRemaining),
+                };
+                if (settlementTxHash) {
+                    headers["x-compose-key-tx-hash"] = settlementTxHash;
+                }
+                return headers;
+            },
+        };
+    }
+
+    // No valid payment method
+    return {
+        valid: false,
+        error: "No valid payment method - use Compose Key or x-payment header",
+        settle: async () => ({ success: false, error: "No payment" }),
+        getHeaders: () => ({}),
+    };
+}
+
 const MANOWAR_INTERNAL_MARKER = requireEnv("MANOWAR_INTERNAL_SECRET");
 
 /**
@@ -232,20 +355,21 @@ export async function requirePayment(
             return false;
         }
 
-        // Step 1: Redis fast-path budget check and deduction
-        const newUsed = await consumeKeyBudget(validation.payload!.keyId, amountWei);
-
-        if (newUsed < 0) {
-            console.log(`[x402] Compose Key budget exhausted for ${validation.payload!.keyId}`);
+        // Step 1: Pre-flight budget check (no deduction yet - just validation)
+        // Redis is a CACHE, blockchain is source of truth
+        const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
+        if (budgetRemaining < amountWei) {
+            console.log(`[x402] Compose Key budget exhausted for ${validation.payload!.keyId}: ${budgetRemaining} < ${amountWei}`);
             res.status(402).json({
                 error: "Compose Key budget exhausted",
                 budgetLimit: validation.record!.budgetLimit,
                 budgetUsed: validation.record!.budgetUsed,
+                budgetRemaining,
             });
             return false;
         }
 
-        // Step 2: On-chain USDC settlement using session key
+        // Step 2: On-chain USDC settlement FIRST (blockchain is source of truth)
         // The server uses TREASURY_WALLET's session key authority to transfer USDC
         const { settleComposeKeyPayment } = await import("./settlement.js");
         const userAddress = validation.payload!.sub;
@@ -255,11 +379,8 @@ export async function requirePayment(
         const settlementResult = await settleComposeKeyPayment(userAddress, amountWei);
 
         if (!settlementResult.success) {
-            // Rollback Redis budget on settlement failure
+            // On-chain payment failed - no money transferred, no Redis update needed
             console.log(`[x402] On-chain settlement failed: ${settlementResult.error}`);
-            const { rollbackKeyUsage } = await import("../keys/storage.js");
-            await rollbackKeyUsage(validation.payload!.keyId, amountWei);
-
             res.status(402).json({
                 error: "Payment settlement failed",
                 details: settlementResult.error,
@@ -269,6 +390,21 @@ export async function requirePayment(
         }
 
         console.log(`[x402] On-chain settlement successful: ${settlementResult.txHash}`);
+
+        // Step 3: On-chain succeeded! Now update Redis cache (best-effort)
+        // Even if Redis fails, payment was collected on-chain
+        try {
+            const newUsed = await consumeKeyBudget(validation.payload!.keyId, amountWei);
+            if (newUsed < 0) {
+                // Race condition: another request consumed budget concurrently
+                // On-chain payment already collected, log for reconciliation
+                console.warn(`[x402] Redis budget sync issue for ${validation.payload!.keyId} - on-chain payment collected, Redis shows exhausted`);
+            }
+        } catch (redisError) {
+            // Redis failed but on-chain payment succeeded - log for reconciliation
+            console.error(`[x402] Redis update failed for ${validation.payload!.keyId}:`, redisError);
+            console.warn(`[x402] Payment collected on-chain (tx: ${settlementResult.txHash}) but Redis not updated`);
+        }
 
         // Add budget info to response headers
         const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);

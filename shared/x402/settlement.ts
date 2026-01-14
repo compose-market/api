@@ -7,7 +7,7 @@
  * @module shared/x402/settlement
  */
 
-import { getContract, prepareContractCall, sendTransaction } from "thirdweb";
+import { getContract, prepareContractCall, sendTransaction, waitForReceipt } from "thirdweb";
 import { privateKeyToAccount } from "thirdweb/wallets";
 import {
     serverClient,
@@ -106,6 +106,27 @@ export async function settleComposeKeyPayment(
         });
 
         console.log(`[settlement] Transaction submitted: ${result.transactionHash}`);
+
+        // Wait for confirmation (Lambda has 120s timeout, allocate 30s for confirmation)
+        try {
+            const receipt = await waitForReceipt({
+                client: serverClient,
+                chain: paymentChain,
+                transactionHash: result.transactionHash,
+                maxBlocksWaitTime: 15,
+            });
+
+            if (receipt.status === "reverted") {
+                console.error(`[settlement] Transaction reverted: ${result.transactionHash}`);
+                return { success: false, error: "Transaction reverted on-chain" };
+            }
+
+            console.log(`[settlement] Transaction confirmed in block ${receipt.blockNumber}`);
+        } catch (waitError) {
+            // Timeout waiting for confirmation - transaction may still succeed
+            // Log warning but return success since tx was submitted
+            console.warn(`[settlement] Confirmation timeout for ${result.transactionHash}:`, waitError);
+        }
 
         return {
             success: true,
