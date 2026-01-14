@@ -83,7 +83,8 @@ export interface ChatOptions {
         };
     }>;
     tool_choice?: "none" | "auto" | "required" | { type: "function"; function: { name: string } };
-    onToken?: (token: string) => void;
+    onToken?: (token: string) => void | Promise<void>;
+    onToolCall?: (toolCall: { id: string; name: string; arguments: string }) => void | Promise<void>;
     onComplete?: (result: { usage: TokenUsage }) => void;
 }
 
@@ -232,8 +233,9 @@ function convertToolsForAISDK(tools: ChatOptions["tools"]) {
     for (const t of tools) {
         if (t.type === "function" && t.function) {
             // Convert OpenAI JSON Schema parameters to AI SDK format
+            // Description MUST be a string, never undefined (AI SDK validation requires it)
             converted[t.function.name] = {
-                description: t.function.description || undefined,
+                description: t.function.description || "",
                 inputSchema: jsonSchema(t.function.parameters || { type: "object", properties: {} }),
             };
         }
@@ -267,6 +269,20 @@ export async function invokeChat(
     options: ChatOptions = {}
 ): Promise<ChatResult | void> {
     console.log(`[invokeChat] Starting chat for modelId: "${modelId}"`);
+
+    // DEBUG: Log raw messages before any transformation
+    console.log(`[invokeChat] Raw messages count: ${messages.length}`);
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        const contentType = Array.isArray(m.content) ? 'array' : typeof m.content;
+        const contentPreview = Array.isArray(m.content)
+            ? `[${m.content.map((p: any) => p?.type || 'unknown').join(', ')}]`
+            : String(m.content).slice(0, 100);
+        // Also log if tool_calls field exists (OpenAI format)
+        const hasToolCalls = m.tool_calls && m.tool_calls.length > 0;
+        console.log(`[invokeChat] Message ${i}: role=${m.role}, contentType=${contentType}, hasToolCalls=${hasToolCalls}, preview=${contentPreview}`);
+    }
+
     const modelInstance = getLanguageModel(modelId);
     console.log(`[invokeChat] Got model instance, modelId in instance: ${(modelInstance as any).modelId || "unknown"}`);
 
@@ -274,94 +290,207 @@ export async function invokeChat(
     // AI SDK uses: { role, content } where content can be string or array of parts
     // For tool calls: assistant message with content array containing tool-call parts
     // For tool responses: tool message with content array containing tool-result parts
+    // Helper: Normalize content to string (handles array, string, null, undefined)
+    const normalizeContentToString = (content: any): string => {
+        if (content === null || content === undefined) return "";
+        if (typeof content === "string") return content;
+        if (Array.isArray(content)) {
+            // Extract text from array of parts
+            return content
+                .filter((p: any) => p?.type === "text" && p?.text)
+                .map((p: any) => p.text)
+                .join("\n") || JSON.stringify(content);
+        }
+        return String(content);
+    };
+
+    // Helper: Convert array content to AI SDK format parts
+    const normalizeContentParts = (contentArray: any[]): any[] => {
+        const parts: any[] = [];
+        for (const part of contentArray) {
+            if (!part || typeof part !== "object") continue;
+
+            if (part.type === "text" && part.text) {
+                parts.push({ type: "text", text: part.text });
+            } else if (part.type === "image_url") {
+                const url = part.image_url?.url || part.image_url;
+                if (url) parts.push({ type: "image", image: url });
+            } else if (part.type === "input_audio") {
+                const url = part.input_audio?.url || part.input_audio;
+                if (url) parts.push({ type: "file", data: url, mimeType: "audio/mpeg" });
+            } else if (part.type === "video_url") {
+                const url = part.video_url?.url || part.video_url;
+                if (url) parts.push({ type: "file", data: url, mimeType: "video/mp4" });
+            } else if (part.type === "tool-call" || part.type === "tool_call") {
+                // Pass through tool calls
+                parts.push({
+                    type: "tool-call",
+                    toolCallId: part.toolCallId || part.id || "",
+                    toolName: part.toolName || part.name || "",
+                    args: part.args || part.input || {},
+                });
+            } else if (part.type === "tool-result" || part.type === "tool_result") {
+                // Pass through tool results
+                parts.push({
+                    type: "tool-result",
+                    toolCallId: part.toolCallId || "",
+                    toolName: part.toolName || "",
+                    result: typeof part.result === "string" ? part.result : JSON.stringify(part.result || ""),
+                });
+            } else if (part.type === "tool-approval-response" || part.type === "tool_approval_response") {
+                // Convert tool approval responses to tool results
+                // This is an OpenCode-specific message type for approved tool executions
+                console.log(`[invokeChat] Converting tool-approval-response to tool-result`);
+                parts.push({
+                    type: "tool-result",
+                    toolCallId: part.toolCallId || part.approvalId || "",
+                    toolName: part.toolName || "approved_tool",
+                    result: part.result || (part.approved ? "Tool approved and executed" : "Tool rejected"),
+                });
+            } else {
+                // Unknown part types - log and skip (don't crash)
+                console.warn(`[invokeChat] Skipping unknown content part type: ${part.type}`);
+            }
+        }
+        return parts;
+    };
+
+    // Build a map of toolCallId -> toolName from assistant messages
+    // This is needed because tool messages may not include the tool name, only the tool_call_id
+    // AI SDK requires toolName in tool-result parts
+    const toolCallIdToNameMap = new Map<string, string>();
+    for (const m of messages) {
+        if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+            for (const tc of m.tool_calls) {
+                if (tc.id && tc.function?.name) {
+                    toolCallIdToNameMap.set(tc.id, tc.function.name);
+                }
+            }
+        }
+        // Also check content array for tool-call parts
+        if (m.role === "assistant" && Array.isArray(m.content)) {
+            for (const part of m.content) {
+                const p = part as any;
+                if (p.type === "tool-call" && p.toolCallId && p.toolName) {
+                    toolCallIdToNameMap.set(p.toolCallId, p.toolName);
+                }
+            }
+        }
+    }
+    console.log(`[invokeChat] Built toolCallId->toolName map with ${toolCallIdToNameMap.size} entries`);
+
     const mappedMessages: any[] = messages.map(m => {
-        // System messages - always string
+        // System messages - ALWAYS convert to string
         if (m.role === "system") {
-            return { role: m.role, content: m.content || "" };
+            return { role: "system", content: normalizeContentToString(m.content) };
         }
 
-        // User messages - may have multipart content (text + images/audio/video)
+        // User messages - may have multipart content
         if (m.role === "user") {
-            // Check if content is an array (multipart with media)
             if (Array.isArray(m.content)) {
                 console.log(`[invokeChat] Processing multipart user message with ${m.content.length} parts`);
-                const parts: any[] = [];
-                for (const part of m.content as any[]) {
-                    if (part.type === "text") {
-                        parts.push({ type: "text", text: part.text });
-                    } else if (part.type === "image_url") {
-                        // AI SDK format: { type: "image", image: URL }
-                        const url = part.image_url?.url || part.image_url;
-                        console.log(`[invokeChat] Adding image from URL: ${url?.slice(0, 60)}...`);
-                        parts.push({ type: "image", image: url });
-                    } else if (part.type === "input_audio") {
-                        // AI SDK doesn't have native audio support yet - pass as file
-                        // Some providers may ignore this, but we forward it for future compatibility
-                        const url = part.input_audio?.url || part.input_audio;
-                        console.log(`[invokeChat] Adding audio from URL: ${url?.slice(0, 60)}...`);
-                        // Use file type for audio URLs
-                        parts.push({ type: "file", data: url, mimeType: "audio/mpeg" });
-                    } else if (part.type === "video_url") {
-                        // AI SDK doesn't have native video support - pass as file
-                        const url = part.video_url?.url || part.video_url;
-                        console.log(`[invokeChat] Adding video from URL: ${url?.slice(0, 60)}...`);
-                        // Use file type for video URLs
-                        parts.push({ type: "file", data: url, mimeType: "video/mp4" });
-                    }
+                const parts = normalizeContentParts(m.content);
+                // If no valid parts extracted, use text extraction
+                if (parts.length === 0) {
+                    return { role: "user", content: normalizeContentToString(m.content) };
                 }
                 return { role: "user", content: parts };
             }
-            return { role: m.role, content: m.content || "" };
+            return { role: "user", content: normalizeContentToString(m.content) };
         }
 
-        // Assistant message with tool calls
+        // Assistant message with tool_calls field (OpenAI format)
         if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
-            // AI SDK format: content is array with tool-call parts
             const content: any[] = [];
 
-            // Add text content if present
-            if (m.content) {
-                content.push({ type: "text", text: m.content });
+            // Add text content if present (always normalize to string first)
+            const textContent = normalizeContentToString(m.content);
+            if (textContent) {
+                content.push({ type: "text", text: textContent });
             }
 
             // Add tool call parts
             for (const tc of m.tool_calls) {
-                content.push({
-                    type: "tool-call",
-                    toolCallId: tc.id,
-                    toolName: tc.function.name,
-                    args: JSON.parse(tc.function.arguments || "{}"),
-                });
+                try {
+                    content.push({
+                        type: "tool-call",
+                        toolCallId: tc.id || "",
+                        toolName: tc.function?.name || "",
+                        args: typeof tc.function?.arguments === "string"
+                            ? JSON.parse(tc.function.arguments || "{}")
+                            : (tc.function?.arguments || {}),
+                    });
+                } catch (e) {
+                    console.warn(`[invokeChat] Failed to parse tool call arguments:`, e);
+                    content.push({
+                        type: "tool-call",
+                        toolCallId: tc.id || "",
+                        toolName: tc.function?.name || "",
+                        args: {},
+                    });
+                }
             }
 
             return { role: "assistant", content };
         }
 
-        // Plain assistant message (no tool calls)
+        // Plain assistant message (no tool_calls field)
         if (m.role === "assistant") {
-            return { role: "assistant", content: m.content || "" };
+            // Check if content is already in AI SDK array format
+            if (Array.isArray(m.content)) {
+                // Log all part types for debugging
+                const partTypes = m.content.map((p: any) => p?.type || 'unknown');
+                console.log(`[invokeChat] Assistant message with array content, part types: ${JSON.stringify(partTypes)}`);
+
+                // Always normalize array content to convert any unsupported types
+                const parts = normalizeContentParts(m.content);
+                console.log(`[invokeChat] Converted to ${parts.length} valid parts`);
+
+                if (parts.length === 0) {
+                    // If all parts were invalid/unsupported, use text extraction as fallback
+                    const textContent = normalizeContentToString(m.content);
+                    console.log(`[invokeChat] All parts filtered out, using text fallback: ${textContent.slice(0, 100)}`);
+                    return { role: "assistant", content: textContent || "" };
+                }
+
+                // Return normalized parts
+                return { role: "assistant", content: parts };
+            }
+            return { role: "assistant", content: normalizeContentToString(m.content) };
         }
 
         // Tool response message
         if (m.role === "tool") {
-            // AI SDK format: tool message with tool-result parts
+            // Look up toolName from map (built from assistant messages)
+            // Fall back to m.name
+            const toolCallId = m.tool_call_id || "";
+            const toolName = m.name || toolCallIdToNameMap.get(toolCallId) || "";
             return {
                 role: "tool",
                 content: [{
                     type: "tool-result",
-                    toolCallId: m.tool_call_id || "",
-                    toolName: m.name || "",
-                    result: m.content || "",
+                    toolCallId,
+                    toolName,
+                    result: normalizeContentToString(m.content),
                 }],
             };
         }
 
-        // Fallback
-        return { role: m.role as any, content: m.content || "" };
+        // Fallback - normalize content to prevent array issues
+        console.warn(`[invokeChat] Unknown message role: ${m.role}, normalizing content`);
+        return { role: m.role as any, content: normalizeContentToString(m.content) };
     });
 
     if (options.stream) {
         console.log(`[invokeChat] Starting streaming mode`);
+        console.log(`[invokeChat] Messages count: ${mappedMessages.length}`);
+        // Log first and last message to debug format issues
+        if (mappedMessages.length > 0) {
+            console.log(`[invokeChat] First message:`, JSON.stringify(mappedMessages[0]).slice(0, 500));
+            if (mappedMessages.length > 1) {
+                console.log(`[invokeChat] Last message:`, JSON.stringify(mappedMessages[mappedMessages.length - 1]).slice(0, 500));
+            }
+        }
         console.log(`[invokeChat] Model instance config:`, JSON.stringify({
             modelId: (modelInstance as any).modelId,
             provider: (modelInstance as any).provider,
@@ -379,12 +508,46 @@ export async function invokeChat(
         });
 
         let chunkCount = 0;
-        for await (const chunk of result.textStream) {
-            chunkCount++;
-            if (chunkCount <= 3) {
-                console.log(`[invokeChat] Stream chunk ${chunkCount}: "${chunk.substring(0, 100)}"`);
+        let lastChunkTime = Date.now();
+        const STREAM_CHUNK_TIMEOUT_MS = 30_000; // 30 seconds max between chunks
+
+        // Use fullStream to get both text and tool call parts
+        // textStream is empty when model returns tool calls!
+        for await (const part of result.fullStream) {
+            // Check for timeout between chunks
+            const timeSinceLastChunk = Date.now() - lastChunkTime;
+            if (timeSinceLastChunk > STREAM_CHUNK_TIMEOUT_MS) {
+                console.error(`[invokeChat] Stream timeout: ${timeSinceLastChunk}ms since last chunk`);
+                throw new Error(`Stream timeout: no data received for ${Math.floor(timeSinceLastChunk / 1000)}s`);
             }
-            if (options.onToken) options.onToken(chunk);
+            lastChunkTime = Date.now();
+
+            chunkCount++;
+
+            // Handle different part types
+            if (part.type === "text-delta") {
+                if (chunkCount <= 3) {
+                    console.log(`[invokeChat] Text chunk ${chunkCount}: "${(part as any).text?.substring(0, 100) || ""}"`);
+                }
+                if (options.onToken) await options.onToken((part as any).text || "");
+            } else if (part.type === "tool-call") {
+                // Use dedicated onToolCall callback for proper SSE formatting
+                const toolCallData = {
+                    id: (part as any).toolCallId || `call_${chunkCount}`,
+                    name: (part as any).toolName || "",
+                    arguments: JSON.stringify((part as any).input || (part as any).args || {}),
+                };
+                console.log(`[invokeChat] Tool call: ${toolCallData.name}`);
+                if (options.onToolCall) {
+                    await options.onToolCall(toolCallData);
+                }
+            } else if (part.type === "tool-input-start") {
+                console.log(`[invokeChat] Tool input start: ${(part as any).toolName}`);
+            } else if (part.type === "error") {
+                console.error(`[invokeChat] Stream error:`, (part as any).error);
+                throw new Error(`Stream error: ${(part as any).error}`);
+            }
+            // Ignore other part types: tool-call-delta, tool-result, step-finish, finish
         }
         console.log(`[invokeChat] Streaming complete. Total chunks: ${chunkCount}`);
 
