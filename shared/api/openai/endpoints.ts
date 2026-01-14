@@ -26,6 +26,7 @@ import {
 import {
     adaptChatResponse,
     adaptStreamChunk,
+    adaptStreamToolCallChunk,
     adaptImageResponse,
     adaptTranscriptionResponse,
     adaptEmbeddingResponse,
@@ -41,7 +42,7 @@ import {
 import type { ModelCard } from "../../models/types.js";
 
 // x402 Payment handling
-import { requirePayment } from "../../x402/index.js";
+import { requirePayment, preparePayment, type PreparedPayment } from "../../x402/index.js";
 
 // Central invocation layer for all provider calls
 import {
@@ -190,9 +191,15 @@ export async function handleChatCompletions(
             return;
         }
 
-        // Verify x402 payment before processing
-        if (!await requirePayment(req, res)) {
-            return; // Payment required response already sent
+        // Prepare payment (validate without charging yet)
+        // Settlement will happen AFTER first response token
+        const payment = await preparePayment(req);
+        if (!payment.valid) {
+            res.status(402).json({
+                error: "Payment required",
+                details: payment.error,
+            });
+            return;
         }
 
         const requestId = generateCompletionId();
@@ -248,6 +255,14 @@ export async function handleChatCompletions(
             res.setHeader("Connection", "keep-alive");
             res.setHeader("X-Request-Id", requestId);
 
+            // Debug: Log what we're sending to invokeChat
+            console.log(`[chat] Streaming request: model=${body.model}, messages=${messages.length}, tools=${body.tools?.length || 0}, tool_choice=${JSON.stringify(body.tool_choice) || "none"}`);
+
+            // Track if we've settled payment (after first token)
+            let paymentSettled = false;
+            // Track if we've sent any tool calls (for correct finish_reason)
+            let hasToolCalls = false;
+
             try {
                 await invokeChat(body.model, messages, {
                     stream: true,
@@ -255,21 +270,90 @@ export async function handleChatCompletions(
                     temperature: body.temperature,
                     tools: body.tools,
                     tool_choice: body.tool_choice,
-                    onToken: (token: string) => {
-                        const chunk = adaptStreamChunk(token, body.model, requestId, false);
+                    onToken: async (token: string) => {
+                        // Track if this is the first chunk (for role inclusion)
+                        const isFirst = !paymentSettled;
+
+                        // Settle payment on FIRST token (model is responding)
+                        if (!paymentSettled) {
+                            paymentSettled = true;
+                            console.log(`[chat] First token received, settling payment...`);
+                            const settled = await payment.settle();
+                            if (settled.txHash) {
+                                console.log(`[chat] Payment settled: ${settled.txHash}`);
+                            }
+                        }
+
+                        // Pass isFirst to include role: "assistant" in first chunk
+                        const chunk = adaptStreamChunk(token, body.model, requestId, false, null, isFirst);
+                        res.write(formatSSE(chunk));
+                    },
+                    onToolCall: async (toolCall) => {
+                        // Mark that we have tool calls for finish_reason
+                        hasToolCalls = true;
+
+                        // Settle payment on FIRST tool call (model is responding)
+                        if (!paymentSettled) {
+                            paymentSettled = true;
+                            console.log(`[chat] First tool call received, settling payment...`);
+                            const settled = await payment.settle();
+                            if (settled.txHash) {
+                                console.log(`[chat] Payment settled: ${settled.txHash}`);
+                            }
+                        }
+
+                        // Format tool call as proper OpenAI SSE chunk
+                        const chunk = adaptStreamToolCallChunk(toolCall, body.model, requestId);
+                        // Log exact SSE content for debugging
+                        console.log(`[chat] Tool call SSE chunk: ${JSON.stringify(chunk)}`);
                         res.write(formatSSE(chunk));
                     },
                     onComplete: () => {
-                        const finalChunk = adaptStreamChunk("", body.model, requestId, true, "stop");
+                        // Add payment headers at end
+                        const paymentHeaders = payment.getHeaders();
+                        for (const [key, value] of Object.entries(paymentHeaders)) {
+                            // Can't set headers after stream started, log instead
+                            console.log(`[chat] Payment header: ${key}=${value}`);
+                        }
+
+                        // Use "tool_calls" finish_reason if tool calls were sent, otherwise "stop"
+                        const finishReason = hasToolCalls ? "tool_calls" : "stop";
+                        console.log(`[chat] Stream complete, finish_reason: ${finishReason}`);
+                        const finalChunk = adaptStreamChunk("", body.model, requestId, true, finishReason);
                         res.write(formatSSE(finalChunk));
                         res.write(formatSSEDone());
                         res.end();
                     },
                 });
             } catch (error) {
-                if (!res.headersSent) {
-                    const { status, body: errBody } = adaptError(error, 500);
-                    res.status(status).json(errBody);
+                // Headers already sent - send error as SSE event
+                const errorMessage = error instanceof Error ? error.message : "Unknown streaming error";
+                console.error(`[chat] Streaming error: ${errorMessage}`);
+
+                // Send error as final SSE chunk (OpenAI-compatible format)
+                const errorChunk = {
+                    id: requestId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [{
+                        index: 0,
+                        delta: {},
+                        finish_reason: "error",
+                    }],
+                    error: {
+                        message: errorMessage,
+                        type: "streaming_error",
+                    },
+                };
+
+                try {
+                    res.write(formatSSE(errorChunk));
+                    res.write(formatSSEDone());
+                    res.end();
+                } catch (writeError) {
+                    // Connection already closed
+                    console.error(`[chat] Could not send error to client:`, writeError);
                 }
             }
         } else {
@@ -281,6 +365,13 @@ export async function handleChatCompletions(
                 tool_choice: body.tool_choice,
             });
             if (result) {
+                // Model succeeded, now settle payment
+                console.log(`[chat] Non-streaming response ready, settling payment...`);
+                const settled = await payment.settle();
+                if (settled.txHash) {
+                    res.setHeader("x-compose-key-tx-hash", settled.txHash);
+                }
+
                 const response = adaptChatResponse(result, body.model, requestId);
                 res.status(200).json(response);
             }

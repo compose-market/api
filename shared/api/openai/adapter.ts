@@ -135,17 +135,26 @@ export function adaptChatResponse(
 
 /**
  * Adapt streaming text delta to OpenAI chunk format
+ * Note: isFirst should be true for the first chunk to include role: "assistant"
  */
 export function adaptStreamChunk(
     delta: string,
     model: string,
     id: string,
     isLast: boolean = false,
-    finishReason: "stop" | "length" | null = null
+    finishReason: "stop" | "length" | "tool_calls" | null = null,
+    isFirst: boolean = false
 ): ChatCompletionChunk {
+    // Build delta object
+    const deltaObj: any = isLast ? {} : { content: delta };
+    // Include role in first chunk for proper message reconstruction
+    if (isFirst && !isLast) {
+        deltaObj.role = "assistant";
+    }
+
     const choice: ChatCompletionChunkChoice = {
         index: 0,
-        delta: isLast ? {} : { content: delta },
+        delta: deltaObj,
         finish_reason: isLast ? (finishReason || "stop") : null,
         logprobs: null,
     };
@@ -156,6 +165,46 @@ export function adaptStreamChunk(
         created: Math.floor(Date.now() / 1000),
         model,
         choices: [choice],
+    };
+}
+
+/**
+ * Adapt streaming tool call to OpenAI chunk format
+ * Must include role: "assistant" for clients to reconstruct messages correctly
+ */
+export function adaptStreamToolCallChunk(
+    toolCall: {
+        id: string;
+        name: string;
+        arguments: string;
+    },
+    model: string,
+    requestId: string,
+    index: number = 0
+): ChatCompletionChunk {
+    return {
+        id: requestId,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{
+            index: 0,
+            // Include role: "assistant" - omit content for pure tool calls (OpenAI format)
+            delta: {
+                role: "assistant",
+                tool_calls: [{
+                    index,
+                    id: toolCall.id,
+                    type: "function",
+                    function: {
+                        name: toolCall.name,
+                        arguments: toolCall.arguments,
+                    },
+                }],
+            } as any,
+            finish_reason: null,
+            logprobs: null,
+        }],
     };
 }
 
