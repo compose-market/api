@@ -3,6 +3,7 @@
  * 
  * Single entry point for all x402 payment operations.
  * Handles payment verification, settlement, and header management.
+ * Multichain Support: Cronos (via Cronos Labs facilitator) + Avalanche (via ThirdWeb)
  * 
  * @module shared/x402
  */
@@ -11,11 +12,23 @@ import type { Request, Response } from "express";
 import { settlePayment } from "thirdweb/x402";
 import {
     paymentChain,
+    paymentChainId,
     paymentAsset,
     thirdwebFacilitator,
     merchantWalletAddress,
     serverWalletAddress,
+    getChainIdFromPaymentData,
+    getChainObject,
 } from "../config/thirdweb.js";
+import { CHAIN_IDS, isCronosChain, getUsdcAddress, getActiveChainId } from "../config/chains.js";
+import {
+    createCronos402Response,
+    verifyAndSettleCronosPayment,
+    extractCronosPaymentHeader,
+    isCronosPaymentHeader,
+    getChainIdFromCronosHeader,
+    getCronosNetworkString,
+} from "../config/cronos.js";
 import { INFERENCE_PRICE_WEI, DEFAULT_PRICES, DYNAMIC_PRICES, getPriceForRequest } from "./pricing.js";
 import type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 
@@ -44,15 +57,79 @@ export {
     formatPrice,
 } from "./pricing.js";
 
+// getActiveChainId imported from chains.js above
+
+// =============================================================================
+// x402-compatible 402 Response Helper
+// =============================================================================
+
+/**
+ * Create a proper x402-compatible 402 response body
+ * ThirdWeb client expects: { x402Version, error, accepts: [...] }
+ * Network must be in CAIP-2 format: eip155:{chainId}
+ */
+export function createPaymentRequired402Response(params: {
+    error?: string;
+    errorMessage?: string;
+    amountWei?: number;
+    resourceUrl?: string;
+    chainId?: number;
+}): {
+    x402Version: number;
+    error: string;
+    errorMessage?: string;
+    accepts: Array<{
+        scheme: "exact";
+        network: string;
+        maxAmountRequired: string;
+        resource: string;
+        description: string;
+        mimeType: string;
+        payTo: string;
+        maxTimeoutSeconds: number;
+        asset: string;
+    }>;
+} {
+    const chainId = params.chainId || getActiveChainId();
+    const usdcAddress = getUsdcAddress(chainId);
+
+    return {
+        x402Version: 2,
+        error: params.error || "payment_required",
+        errorMessage: params.errorMessage,
+        accepts: [{
+            scheme: "exact",
+            network: `eip155:${chainId}`, // CAIP-2 format required by ThirdWeb
+            maxAmountRequired: String(params.amountWei || INFERENCE_PRICE_WEI),
+            resource: params.resourceUrl || "",
+            description: "Compose.Market AI Agent Inference",
+            mimeType: "application/json",
+            payTo: merchantWalletAddress,
+            maxTimeoutSeconds: 300,
+            asset: usdcAddress,
+        }],
+    };
+}
+
 // =============================================================================
 // Payment Info Extraction
 // =============================================================================
 
 /**
  * Extract payment info from request headers
+ * Supports both ThirdWeb (PAYMENT-SIGNATURE) and Cronos (X-PAYMENT) formats
  */
 export function extractPaymentInfo(headers: Record<string, string | string[] | undefined>): PaymentInfo {
-    const paymentData = typeof headers["x-payment"] === "string" ? headers["x-payment"] : null;
+    // Check ThirdWeb format first (PAYMENT-SIGNATURE)
+    let paymentData = typeof headers["payment-signature"] === "string" ? headers["payment-signature"] :
+        (typeof headers["PAYMENT-SIGNATURE"] === "string" ? headers["PAYMENT-SIGNATURE"] : null);
+
+    // If no ThirdWeb header, check Cronos format (X-PAYMENT)
+    if (!paymentData) {
+        paymentData = typeof headers["x-payment"] === "string" ? headers["x-payment"] :
+            (typeof headers["X-PAYMENT"] === "string" ? headers["X-PAYMENT"] : null);
+    }
+
     const sessionActive = headers["x-session-active"] === "true";
     const sessionBudgetRemaining = parseInt(
         typeof headers["x-session-budget-remaining"] === "string"
@@ -76,7 +153,7 @@ export function validatePaymentDataHeader(header: string | undefined | null): {
     error?: string;
 } {
     if (!header) {
-        return { valid: false, error: "Missing x-payment header" };
+        return { valid: false, error: "Missing PAYMENT-SIGNATURE header" };
     }
 
     // Basic format validation (should be base64-encoded JSON)
@@ -96,11 +173,15 @@ export function validatePaymentDataHeader(header: string | undefined | null): {
 
 /**
  * Handle x402 payment verification and settlement
+ * MULTICHAIN SUPPORT:
+ * - Cronos chains (338, 25): Use Cronos Labs REST API facilitator (@crypto.com/facilitator-client)
+ * - Other EVM chains (Avalanche, Base, etc.): Use ThirdWeb on-chain facilitator
  * 
- * @param paymentData - Signed payment data from x-payment header
+ * @param paymentData - Signed payment data from PAYMENT-SIGNATURE or X-PAYMENT header
  * @param resourceUrl - URL of the resource being accessed
  * @param method - HTTP method
  * @param amountWei - Price in USDC wei (6 decimals)
+ * @param chainId - Optional explicit chain ID (defaults to detecting from paymentData or env)
  * @returns Settlement result with status, body, and headers
  */
 export async function handleX402Payment(
@@ -108,40 +189,142 @@ export async function handleX402Payment(
     resourceUrl: string,
     method: string,
     amountWei: string,
+    chainId?: number,
 ): Promise<X402SettlementResult> {
-    console.log(`[x402] settlePayment for ${resourceUrl}`);
+    console.log(`[x402] handleX402Payment for ${resourceUrl}`);
     console.log(`[x402] paymentData present: ${!!paymentData}`);
     console.log(`[x402] amount: ${amountWei}`);
     console.log(`[x402] payTo: ${merchantWalletAddress}`);
-    console.log(`[x402] facilitator: ${serverWalletAddress}`);
 
-    const result = await settlePayment({
-        resourceUrl,
-        method,
-        paymentData,
-        payTo: merchantWalletAddress,
-        network: paymentChain,
-        price: {
+    // Determine target chain
+    // Priority: explicit chainId > detected from payment header > env default
+    let resolvedChainId = chainId ?? getActiveChainId();
+
+    if (paymentData) {
+        // Try to detect chain from payment header
+        const cronosChainId = getChainIdFromCronosHeader(paymentData);
+        if (cronosChainId) {
+            resolvedChainId = cronosChainId;
+        } else {
+            // Try ThirdWeb format
+            resolvedChainId = chainId ?? getChainIdFromPaymentData(paymentData);
+        }
+    }
+
+    const useCronosFacilitator = isCronosChain(resolvedChainId);
+    console.log(`[x402] chainId: ${resolvedChainId}`);
+    console.log(`[x402] facilitator: ${useCronosFacilitator ? "CRONOS_LABS" : "THIRDWEB"}`);
+
+    // =========================================================================
+    // CASE 1: No payment data - return 402 response with payment requirements
+    // =========================================================================
+    if (!paymentData) {
+        if (useCronosFacilitator) {
+            // Return Cronos x402 V1 format 402 response
+            console.log(`[x402] No payment - returning Cronos x402 V1 402 response`);
+            const cronosResponse = createCronos402Response({
+                payTo: merchantWalletAddress,
+                amount: amountWei,
+                chainId: resolvedChainId,
+                description: "Compose.Market AI Agent Inference",
+                resource: resourceUrl,
+            });
+            return {
+                status: 402,
+                responseBody: cronosResponse,
+                responseHeaders: {
+                    "X402-Version": "1",
+                },
+            };
+        } else {
+            // Use ThirdWeb to generate 402 response
+            console.log(`[x402] No payment - using ThirdWeb for 402 response`);
+            const chainObject = getChainObject(resolvedChainId);
+            const usdcAddress = getUsdcAddress(resolvedChainId);
+
+            const result = await settlePayment({
+                resourceUrl,
+                method,
+                paymentData: null,
+                payTo: merchantWalletAddress,
+                network: chainObject,
+                price: {
+                    amount: amountWei,
+                    asset: {
+                        address: usdcAddress,
+                    },
+                },
+                facilitator: thirdwebFacilitator,
+            });
+
+            return {
+                status: result.status,
+                responseBody: (result as { responseBody: unknown }).responseBody,
+                responseHeaders: result.responseHeaders as Record<string, string>,
+            };
+        }
+    }
+
+    // =========================================================================
+    // CASE 2: Payment data present - verify and settle
+    // =========================================================================
+    if (useCronosFacilitator) {
+        // Use Cronos Labs facilitator (@crypto.com/facilitator-client)
+        console.log(`[x402] Settling via Cronos Labs facilitator`);
+
+        const result = await verifyAndSettleCronosPayment({
+            paymentHeader: paymentData,
+            payTo: merchantWalletAddress,
             amount: amountWei,
-            asset: {
-                address: paymentAsset.address,
+            chainId: resolvedChainId,
+        });
+
+        console.log(`[x402] Cronos result: status=${result.status}, success=${result.success}`);
+
+        return {
+            status: result.status,
+            responseBody: result.success
+                ? { success: true, txHash: result.txHash, blockNumber: result.blockNumber }
+                : { error: result.error },
+            responseHeaders: result.txHash
+                ? { "X-Transaction-Hash": result.txHash, "X-PAYMENT-RESPONSE": result.txHash }
+                : {},
+        };
+    } else {
+        // Use ThirdWeb facilitator for non-Cronos chains
+        console.log(`[x402] Settling via ThirdWeb facilitator`);
+
+        const chainObject = getChainObject(resolvedChainId);
+        const usdcAddress = getUsdcAddress(resolvedChainId);
+
+        const result = await settlePayment({
+            resourceUrl,
+            method,
+            paymentData,
+            payTo: merchantWalletAddress,
+            network: chainObject,
+            price: {
+                amount: amountWei,
+                asset: {
+                    address: usdcAddress,
+                },
             },
-        },
-        facilitator: thirdwebFacilitator,
-    });
+            facilitator: thirdwebFacilitator,
+        });
 
-    console.log(`[x402] result status: ${result.status}`);
+        console.log(`[x402] ThirdWeb result status: ${result.status}`);
 
-    // SettlePaymentResult is a union type:
-    // - status 200: { paymentReceipt: {...} }
-    // - status 402/500/etc: { responseBody: {...} }
-    return {
-        status: result.status,
-        responseBody: result.status === 200
-            ? { success: true, receipt: (result as { paymentReceipt: unknown }).paymentReceipt }
-            : (result as { responseBody: unknown }).responseBody,
-        responseHeaders: result.responseHeaders as Record<string, string>,
-    };
+        // SettlePaymentResult is a union type:
+        // - status 200: { paymentReceipt: {...} }
+        // - status 402/500/etc: { responseBody: {...} }
+        return {
+            status: result.status,
+            responseBody: result.status === 200
+                ? { success: true, receipt: (result as { paymentReceipt: unknown }).paymentReceipt }
+                : (result as { responseBody: unknown }).responseBody,
+            responseHeaders: result.responseHeaders as Record<string, string>,
+        };
+    }
 }
 
 // Universal Payment Wrapper
@@ -271,10 +454,61 @@ export async function preparePayment(
         };
     }
 
-    // No valid payment method
+    // ==========================================================================
+    // x402 PAYMENT-SIGNATURE Flow (standard x402 v2 per-request settlement)
+    // ==========================================================================
+    const { paymentData } = extractPaymentInfo(
+        req.headers as Record<string, string | string[] | undefined>
+    );
+
+    if (paymentData) {
+        console.log(`[x402] preparePayment: PAYMENT-SIGNATURE detected, using x402 flow`);
+
+        // x402 flow: deferred settlement
+        let settled = false;
+        let settleResult: { success: boolean; txHash?: string; error?: string } | null = null;
+
+        return {
+            valid: true,
+            settle: async () => {
+                if (settled && settleResult) {
+                    console.log(`[x402] preparePayment: Already settled, returning cached result`);
+                    return settleResult;
+                }
+                settled = true;
+
+                const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+
+                // Read X-CHAIN-ID header for consistent chain routing
+                const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+                const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : undefined;
+
+                const result = await handleX402Payment(
+                    paymentData,
+                    resourceUrl,
+                    req.method || "POST",
+                    amountWei.toString(),
+                    explicitChainId,
+                );
+
+                if (result.status === 200) {
+                    settleResult = { success: true, txHash: (result.responseBody as any)?.receipt?.transaction };
+                    console.log(`[x402] preparePayment: x402 settlement success`);
+                } else {
+                    settleResult = { success: false, error: (result.responseBody as any)?.error || "Settlement failed" };
+                    console.log(`[x402] preparePayment: x402 settlement failed: ${settleResult.error}`);
+                }
+
+                return settleResult;
+            },
+            getHeaders: () => ({}),
+        };
+    }
+
+    // No valid payment method - return helpful error with payment requirements
     return {
         valid: false,
-        error: "No valid payment method - use Compose Key or x-payment header",
+        error: "No valid payment method - use Compose Key or PAYMENT-SIGNATURE header",
         settle: async () => ({ success: false, error: "No payment" }),
         getHeaders: () => ({}),
     };
@@ -288,7 +522,7 @@ const MANOWAR_INTERNAL_MARKER = requireEnv("MANOWAR_INTERNAL_SECRET");
  * This is the single function all endpoints should use for payment verification.
  * 
  * Payment can be verified in two ways:
- * 1. x-payment header (standard x402 per-request settlement)
+ * 1. PAYMENT-SIGNATURE header (standard x402 v2 per-request settlement)
  * 2. x-manowar-internal + active session (for nested agent/manowar calls)
  * 
  * The session-based bypass ensures:
@@ -424,11 +658,17 @@ export async function requirePayment(
 
     // Standard x402 flow: require payment data header
     const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+
+    // Read X-CHAIN-ID header from client to determine 402 format (Cronos V1 vs ThirdWeb V2)
+    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : undefined;
+
     const result = await handleX402Payment(
         paymentData,
         resourceUrl,
         req.method || "POST",
         amountWei.toString(),
+        explicitChainId, // Pass client-specified chain ID
     );
 
     if (result.status !== 200) {
@@ -469,12 +709,12 @@ export function buildPaymentRequiredHeaders(
     skill: { pricing?: SkillPricing }
 ): Record<string, string> {
     return {
-        "X-Payment-Required": "true",
-        "X-Payment-Network": paymentMethod.network,
-        "X-Payment-Asset": paymentMethod.assetAddress,
-        "X-Payment-Amount": skill.pricing?.amount || "0",
-        "X-Payment-Scheme": paymentMethod.x402?.scheme || "exact",
-        "X-Payment-Payee": paymentMethod.payee,
+        "Payment-Required": "true",
+        "Payment-Network": paymentMethod.network,
+        "Payment-Asset": paymentMethod.assetAddress,
+        "Payment-Amount": skill.pricing?.amount || "0",
+        "Payment-Scheme": paymentMethod.x402?.scheme || "exact",
+        "Payment-Payee": paymentMethod.payee,
     };
 }
 
@@ -489,6 +729,12 @@ export function getPaymentChainConfig(paymentMethod: X402PaymentMethod): {
     const chainId = parseInt(paymentMethod.network, 10);
 
     switch (chainId) {
+        // Cronos (DEFAULT for x402 payments)
+        case 338:
+            return { chainId, name: "Cronos Testnet", isTestnet: true };
+        case 25:
+            return { chainId, name: "Cronos", isTestnet: false };
+        // Avalanche
         case 43113:
             return { chainId, name: "Avalanche Fuji", isTestnet: true };
         case 43114:

@@ -56,7 +56,7 @@ export interface X402SettlementResult {
  * Extracted payment info from request headers
  */
 export interface PaymentInfo {
-    /** Signed payment data from x-payment header */
+    /** Signed payment data from PAYMENT-SIGNATURE header (v2) */
     paymentData: string | null;
     /** Whether session is active */
     sessionActive: boolean;
