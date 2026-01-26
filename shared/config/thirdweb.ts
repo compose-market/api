@@ -2,15 +2,23 @@
  * ThirdWeb Client Configuration
  * 
  * Server-side ThirdWeb client and x402 facilitator setup.
- * Uses environment variables from backend/lambda/.env
+ * Chain objects are defined in chains.ts (single source of truth).
  * 
  * @module shared/config/thirdweb
  */
 
 import { createThirdwebClient } from "thirdweb";
 import { facilitator } from "thirdweb/x402";
-import { avalancheFuji, avalanche } from "thirdweb/chains";
-import { CHAIN_IDS, getActiveChainId, getUsdcAddress } from "./chains.js";
+import {
+    CHAIN_IDS,
+    getActiveChainId,
+    getUsdcAddress,
+    CHAIN_MAP,
+    getChainObject,
+} from "./chains.js";
+
+// Re-export chain utilities for backwards compatibility
+export { CHAIN_MAP, getChainObject };
 
 // =============================================================================
 // ThirdWeb Client (Server-side)
@@ -18,7 +26,6 @@ import { CHAIN_IDS, getActiveChainId, getUsdcAddress } from "./chains.js";
 
 /**
  * Server-side ThirdWeb client
- * Uses THIRDWEB_SECRET_KEY from .env - NEVER expose to client
  */
 export const serverClient = createThirdwebClient({
     secretKey: process.env.THIRDWEB_SECRET_KEY!,
@@ -48,16 +55,14 @@ export const treasuryWalletAddress = process.env.TREASURY_SERVER_WALLET_PUBLIC a
 // =============================================================================
 
 /**
- * Active payment chain based on USE_MAINNET environment variable
- */
-export const paymentChain = process.env.USE_MAINNET === "true"
-    ? avalanche
-    : avalancheFuji;
-
-/**
- * Active payment chain ID
+ * Active payment chain ID (determined by DEFAULT_CHAIN and USE_MAINNET env)
  */
 export const paymentChainId = getActiveChainId();
+
+/**
+ * Active payment chain object resolved from CHAIN_MAP
+ */
+export const paymentChain = CHAIN_MAP[paymentChainId];
 
 /**
  * USDC token configuration for active chain
@@ -69,11 +74,11 @@ export const paymentAsset = {
 };
 
 // =============================================================================
-// x402 Facilitator
+// x402 Facilitators (Chain-Specific)
 // =============================================================================
 
 /**
- * ThirdWeb x402 facilitator
+ * ThirdWeb x402 facilitator (for Avalanche and other ThirdWeb-supported chains)
  * Using "submitted" waitUntil to avoid Lambda timeout issues
  */
 export const thirdwebFacilitator = facilitator({
@@ -81,6 +86,27 @@ export const thirdwebFacilitator = facilitator({
     serverWalletAddress,
     waitUntil: "submitted", // Don't wait for full confirmation - avoids timeout
 });
+
+/**
+ * Extract chain ID from x402 payment data header
+ * The payment header is base64-encoded JSON containing network info
+ */
+export function getChainIdFromPaymentData(paymentData: string | null): number {
+    if (!paymentData) {
+        return getActiveChainId();
+    }
+    try {
+        const decoded = JSON.parse(Buffer.from(paymentData, "base64").toString());
+        // x402 payment header may have chainId directly or in payload
+        if (decoded.chainId) return decoded.chainId;
+        if (decoded.payload?.chainId) return decoded.payload.chainId;
+        if (decoded.network?.chainId) return decoded.network.chainId;
+        // Fall back to default
+        return getActiveChainId();
+    } catch {
+        return getActiveChainId();
+    }
+}
 
 // =============================================================================
 // Pricing Constants
@@ -144,5 +170,4 @@ export function parseUsdcAmount(usdcAmount: string | number): string {
     return wei.toString();
 }
 
-// Re-export chain objects for convenience
-export { avalancheFuji, avalanche };
+// Chain objects are now exported from chains.ts

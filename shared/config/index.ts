@@ -42,17 +42,23 @@ export {
     calculateCostUSDC,
     formatUsdcAmount,
     parseUsdcAmount,
-    avalancheFuji,
-    avalanche,
 } from "./thirdweb.js";
+
+// Chain objects (from chains.js single source of truth)
+export {
+    cronosTestnet,
+    CHAIN_MAP,
+    getChainObject,
+} from "./chains.js";
 
 /**
  * Default payment configuration for Compose Market
+ * Defaults to Cronos Testnet with devUSDC.e token
  */
 export const DEFAULT_PAYMENT_CONFIG = {
-    network: "43113", // Avalanche Fuji (from getActiveChainId in production)
+    network: "338", // Cronos Testnet (default for x402 payments)
     assetSymbol: "USDC",
-    assetAddress: "0x5425890298aed601595a70AB815c96711a31Bc65" as `0x${string}`,
+    assetAddress: "0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0" as `0x${string}`, // devUSDC.e
     scheme: "upto" as const,
 };
 

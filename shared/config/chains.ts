@@ -14,8 +14,12 @@
 /**
  * Supported chain IDs (numeric)
  * Add new chains here to support them across the entire app
+ * Cronos is the default chain for x402 payments
  */
 export const CHAIN_IDS = {
+    // Cronos (default for x402 payments)
+    cronosTestnet: 338,
+    cronos: 25,
     // Avalanche
     avalancheFuji: 43113,
     avalanche: 43114,
@@ -42,6 +46,10 @@ export type ChainId = (typeof CHAIN_IDS)[keyof typeof CHAIN_IDS];
  * Chain IDs as strings (for ThirdWeb/schema compatibility)
  */
 export const CHAIN_ID_STRINGS = {
+    // Cronos (DEFAULT)
+    cronosTestnet: "338",
+    cronos: "25",
+    // Avalanche
     avalancheFuji: "43113",
     avalanche: "43114",
     bscTestnet: "97",
@@ -68,6 +76,9 @@ export const THIRDWEB_CHAIN_IDS = CHAIN_ID_STRINGS;
  * All addresses support ERC-3009 transferWithAuthorization
  */
 export const USDC_ADDRESSES: Record<ChainId, `0x${string}`> = {
+    // Cronos (DEFAULT) - devUSDC.e
+    [CHAIN_IDS.cronosTestnet]: "0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0",
+    [CHAIN_IDS.cronos]: "0xc21223249CA28397B4B6541dfFaEcC539BfF0c59",
     // Avalanche
     [CHAIN_IDS.avalancheFuji]: "0x5425890298aed601595a70AB815c96711a31Bc65",
     [CHAIN_IDS.avalanche]: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
@@ -89,6 +100,56 @@ export const USDC_ADDRESSES: Record<ChainId, `0x${string}`> = {
 };
 
 // =============================================================================
+// x402 Facilitator URLs
+// =============================================================================
+
+/**
+ * Facilitator URLs per chain
+ * - Cronos chains: Cronos Labs facilitator (gasless EIP-3009 transfers)
+ * - Other chains: null = use ThirdWeb facilitator
+ */
+export const FACILITATOR_URLS: Partial<Record<ChainId, string | null>> = {
+    // Cronos - use Cronos Labs facilitator
+    [CHAIN_IDS.cronosTestnet]: "https://facilitator.cronoslabs.org",
+    [CHAIN_IDS.cronos]: "https://facilitator.cronoslabs.org",
+    // Avalanche - use ThirdWeb facilitator (null = SDK default)
+    [CHAIN_IDS.avalancheFuji]: null,
+    [CHAIN_IDS.avalanche]: null,
+    // BNB - use ThirdWeb facilitator
+    [CHAIN_IDS.bscTestnet]: null,
+    [CHAIN_IDS.bsc]: null,
+};
+
+/**
+ * Cronos network identifiers for facilitator API
+ */
+export const CRONOS_NETWORK_MAP: Partial<Record<ChainId, string>> = {
+    [CHAIN_IDS.cronosTestnet]: "cronos-testnet",
+    [CHAIN_IDS.cronos]: "cronos-mainnet",
+};
+
+/**
+ * Check if chain uses Cronos facilitator
+ */
+export function isCronosChain(chainId: number): boolean {
+    return chainId === CHAIN_IDS.cronosTestnet || chainId === CHAIN_IDS.cronos;
+}
+
+/**
+ * Get facilitator URL for chain (null = use ThirdWeb default)
+ */
+export function getFacilitatorUrl(chainId: number): string | null {
+    return FACILITATOR_URLS[chainId as ChainId] ?? null;
+}
+
+/**
+ * Get Cronos network identifier for facilitator API
+ */
+export function getCronosNetwork(chainId: number): string | undefined {
+    return CRONOS_NETWORK_MAP[chainId as ChainId];
+}
+
+// =============================================================================
 // Chain Metadata
 // =============================================================================
 
@@ -104,6 +165,22 @@ export interface ChainConfig {
  * Chain metadata for UI and configuration
  */
 export const CHAIN_CONFIG: Record<ChainId, ChainConfig> = {
+    // Cronos (DEFAULT for x402 payments)
+    [CHAIN_IDS.cronosTestnet]: {
+        name: "Cronos Testnet",
+        shortName: "Cronos Testnet",
+        isTestnet: true,
+        explorer: "https://explorer.cronos.org/testnet",
+        rpcEnvVar: "CRONOS_TESTNET_RPC",
+    },
+    [CHAIN_IDS.cronos]: {
+        name: "Cronos",
+        shortName: "Cronos",
+        isTestnet: false,
+        explorer: "https://explorer.cronos.org",
+        rpcEnvVar: "CRONOS_MAINNET_RPC",
+    },
+    // Avalanche
     [CHAIN_IDS.avalancheFuji]: {
         name: "Avalanche Fuji",
         shortName: "Fuji",
@@ -195,19 +272,31 @@ export const CHAIN_CONFIG: Record<ChainId, ChainConfig> = {
 // =============================================================================
 
 /**
- * Get active chain ID based on USE_MAINNET environment variable
+ * Get active chain ID based on DEFAULT_CHAIN and USE_MAINNET environment variables
+ * Defaults to Cronos Testnet/Mainnet for x402 payments
  */
 export function getActiveChainId(): ChainId {
+    const defaultChain = process.env.DEFAULT_CHAIN?.toLowerCase();
+
+    // Support Avalanche if explicitly set
+    if (defaultChain === "avalanche") {
+        return process.env.USE_MAINNET === "true"
+            ? CHAIN_IDS.avalanche
+            : CHAIN_IDS.avalancheFuji;
+    }
+
+    // Default: Cronos Testnet
     return process.env.USE_MAINNET === "true"
-        ? CHAIN_IDS.avalanche
-        : CHAIN_IDS.avalancheFuji;
+        ? CHAIN_IDS.cronos
+        : CHAIN_IDS.cronosTestnet;
 }
 
 /**
  * Get USDC address for a chain
  */
-export function getUsdcAddress(chainId: ChainId): `0x${string}` {
-    return USDC_ADDRESSES[chainId];
+export function getUsdcAddress(chainId: number): `0x${string}` {
+    const address = USDC_ADDRESSES[chainId as ChainId];
+    return address || USDC_ADDRESSES[CHAIN_IDS.cronosTestnet];
 }
 
 /**
@@ -243,4 +332,39 @@ export function getTestnetChainIds(): ChainId[] {
  */
 export function getMainnetChainIds(): ChainId[] {
     return getSupportedChainIds().filter(id => !CHAIN_CONFIG[id]?.isTestnet);
+}
+
+// =============================================================================
+// ThirdWeb Chain Objects (Server-side)
+// Imported by thirdweb.ts for ThirdWeb SDK operations
+// =============================================================================
+
+import { defineChain, avalancheFuji, avalanche, cronos } from "thirdweb/chains";
+
+/**
+ * Cronos Testnet chain object (not pre-exported from thirdweb/chains)
+ */
+export const cronosTestnet = defineChain({
+    id: 338,
+    name: "Cronos Testnet",
+    nativeCurrency: { name: "Test CRO", symbol: "tCRO", decimals: 18 },
+    rpc: process.env.CRONOS_TESTNET_RPC,
+    blockExplorers: [{ name: "Cronos Explorer", url: "https://explorer.cronos.org/testnet" }],
+});
+
+/**
+ * Chain lookup map for dynamic chain selection
+ */
+export const CHAIN_MAP: Record<number, ReturnType<typeof defineChain>> = {
+    [CHAIN_IDS.cronosTestnet]: cronosTestnet,
+    [CHAIN_IDS.cronos]: cronos,
+    [CHAIN_IDS.avalancheFuji]: avalancheFuji,
+    [CHAIN_IDS.avalanche]: avalanche,
+};
+
+/**
+ * Get ThirdWeb chain object by ID
+ */
+export function getChainObject(chainId: number) {
+    return CHAIN_MAP[chainId] || cronosTestnet;
 }
