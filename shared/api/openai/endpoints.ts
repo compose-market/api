@@ -42,7 +42,7 @@ import {
 import type { ModelCard } from "../../models/types.js";
 
 // x402 Payment handling
-import { requirePayment, preparePayment, type PreparedPayment } from "../../x402/index.js";
+import { requirePayment, preparePayment, handleX402Payment, createPaymentRequired402Response, INFERENCE_PRICE_WEI, type PreparedPayment } from "../../x402/index.js";
 
 // Central invocation layer for all provider calls
 import {
@@ -120,7 +120,8 @@ export async function handleGetModel(
     res: Response
 ): Promise<void> {
     try {
-        const modelId = req.params.model || req.params.id;
+        const modelIdParam = req.params.model || req.params.id;
+        const modelId = Array.isArray(modelIdParam) ? modelIdParam[0] : modelIdParam;
         if (!modelId) {
             res.status(400).json(createErrorResponse(
                 "Model ID is required",
@@ -195,10 +196,25 @@ export async function handleChatCompletions(
         // Settlement will happen AFTER first response token
         const payment = await preparePayment(req);
         if (!payment.valid) {
-            res.status(402).json({
-                error: "Payment required",
-                details: payment.error,
+            // Use handleX402Payment to generate proper ThirdWeb-compatible 402
+            // This allows wrapFetchWithPayment on client to auto-sign payments
+            const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+
+            // Read X-CHAIN-ID header from client to determine 402 format (Cronos V1 vs ThirdWeb V2)
+            const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+            const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : undefined;
+
+            const x402Result = await handleX402Payment(
+                null, // No payment data = generates 402 challenge
+                resourceUrl,
+                req.method || "POST",
+                String(INFERENCE_PRICE_WEI),
+                explicitChainId, // Pass client-specified chain ID
+            );
+            Object.entries(x402Result.responseHeaders).forEach(([key, value]) => {
+                res.setHeader(key, value);
             });
+            res.status(x402Result.status).json(x402Result.responseBody);
             return;
         }
 
@@ -730,7 +746,8 @@ export async function handleVideoStatus(
     res: Response
 ): Promise<void> {
     try {
-        const jobId = req.params.id;
+        const jobIdParam = req.params.id;
+        const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
         if (!jobId) {
             res.status(400).json(createErrorResponse(
                 "Video job ID is required",

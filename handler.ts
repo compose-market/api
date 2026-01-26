@@ -24,6 +24,8 @@ import {
   handleVideoGeneration,
 } from "./shared/api/openai/endpoints.js";
 
+import { handleGetModelParams } from "./shared/api/openai/paramsHandler.js";
+
 // Lazy-load heavy modules for cold start optimization
 let hfModelsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModels;
 let hfModelDetailsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModelDetails;
@@ -57,15 +59,15 @@ async function loadModules() {
   }
 }
 
-// CORS headers - x402 needs x-payment header and exposed response headers
+// CORS headers - x402 needs PAYMENT-SIGNATURE header (v2) and exposed response headers
 // Session headers for x402 bypass: x-session-active, x-session-budget-remaining
 // Internal bypass: x-manowar-internal (for nested LLM calls from Manowar agents)
 // Compose Keys: Authorization header for external clients
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, x-session-user-address, x-manowar-internal, Access-Control-Expose-Headers",
-  "Access-Control-Expose-Headers": "x-compose-key-budget-limit, x-compose-key-budget-used, x-compose-key-budget-remaining, *",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, x-session-user-address, x-manowar-internal, x-chain-id, Access-Control-Expose-Headers",
+  "Access-Control-Expose-Headers": "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, x-compose-key-budget-used, x-compose-key-budget-remaining, *",
 };
 
 // Mock Express request/response for handler compatibility
@@ -194,6 +196,16 @@ export async function handler(
       const req = createMockReq(event);
       const res = createMockRes();
       await handleListModels(req as any, res as any, true);
+      return res.getResult();
+    }
+
+    // GET /v1/models/:model/params - Get model optional parameters (MUST be before generic /:model route)
+    if (method === "GET" && path.match(/^\/v1\/models\/[^/]+\/params$/)) {
+      const modelId = decodeURIComponent(path.replace("/v1/models/", "").replace("/params", ""));
+      const req = createMockReq(event);
+      (req as any).params = { model: modelId };
+      const res = createMockRes();
+      await handleGetModelParams(req as any, res as any);
       return res.getResult();
     }
 
@@ -740,14 +752,14 @@ export async function handler(
       const pluginId = path.replace("/api/mcp/", "").replace("/execute", "");
       const body = event.body ? JSON.parse(event.body) : {};
 
-      // Forward x-payment header to MCP server for proper x402 handling
+      // Forward PAYMENT-SIGNATURE header to MCP server for proper x402 handling
       // The MCP server uses handleX402Payment which returns proper x402 protocol response
-      const paymentHeader = event.headers["x-payment"] || event.headers["X-PAYMENT"];
+      const paymentHeader = event.headers["payment-signature"] || event.headers["PAYMENT-SIGNATURE"];
 
       try {
         const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
         if (paymentHeader) {
-          fetchHeaders["x-payment"] = paymentHeader;
+          fetchHeaders["PAYMENT-SIGNATURE"] = paymentHeader;
         }
 
         const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/execute`, {
@@ -825,13 +837,13 @@ export async function handler(
         };
       }
 
-      // Forward x-payment header to MCP server for proper x402 handling
-      const paymentHeader = event.headers["x-payment"] || event.headers["X-PAYMENT"];
+      // Forward PAYMENT-SIGNATURE header to MCP server for proper x402 handling
+      const paymentHeader = event.headers["payment-signature"] || event.headers["PAYMENT-SIGNATURE"];
 
       try {
         const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
         if (paymentHeader) {
-          fetchHeaders["x-payment"] = paymentHeader;
+          fetchHeaders["PAYMENT-SIGNATURE"] = paymentHeader;
         }
 
         // Call MCP server's actual route: /mcp/servers/:serverId/tools/:toolName

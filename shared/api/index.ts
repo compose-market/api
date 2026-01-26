@@ -49,14 +49,14 @@ export const corsHeaders = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": [
         "Content-Type",
-        "x-payment",
-        "X-PAYMENT",
+        "PAYMENT-SIGNATURE",
+        "payment-signature",
         "x-session-active",
         "x-session-budget-remaining",
         "x-manowar-internal",  // Internal bypass for Manowar agent LLM calls
         "Access-Control-Expose-Headers",
     ].join(", "),
-    "Access-Control-Expose-Headers": "*",
+    "Access-Control-Expose-Headers": "PAYMENT-RESPONSE, payment-response, *",
 };
 
 // =============================================================================
@@ -355,7 +355,8 @@ export const API_ROUTES: RouteHandler[] = [
         method: "GET",
         path: "/agent/:walletAddress",
         handler: async (req, res) => {
-            const walletAddress = req.params.walletAddress;
+            const walletAddressParam = req.params.walletAddress;
+            const walletAddress = Array.isArray(walletAddressParam) ? walletAddressParam[0] : walletAddressParam;
             if (!walletAddress?.match(/^0x[a-fA-F0-9]{40}$/)) {
                 res.status(400).json({ error: "Invalid wallet address format" });
                 return;
@@ -405,7 +406,8 @@ export const API_ROUTES: RouteHandler[] = [
         method: "GET",
         path: "/manowar/:walletAddress",
         handler: async (req, res) => {
-            const walletAddress = req.params.walletAddress;
+            const walletAddressParam = req.params.walletAddress;
+            const walletAddress = Array.isArray(walletAddressParam) ? walletAddressParam[0] : walletAddressParam;
             if (!walletAddress?.match(/^0x[a-fA-F0-9]{40}$/)) {
                 res.status(400).json({ error: "Invalid wallet address format" });
                 return;
