@@ -399,6 +399,376 @@ export async function handler(
       };
     }
 
+    // ==========================================================================
+    // Account Abstraction API Routes (Cronos Gasless Transactions)
+    // ==========================================================================
+
+    // POST /api/aa/prepare - Prepare a UserOperation and return hash for signing
+    // Step 1 of 2-step AA flow: Build UserOp wi paymaster data, return hash to frontend for signing
+    if (method === "POST" && path === "/api/aa/prepare") {
+      const aaModule = await import("./shared/aa/index.js");
+      const {
+        encodeExecute,
+        getNonce,
+        estimateGas,
+        isAccountDeployed,
+        generateInitCode,
+        packAccountGasLimits,
+        packGasFees,
+        getUserOpHash,
+        getEntryPointAddress,
+        buildPaymasterAndData,
+        predictAccountAddress,
+      } = aaModule;
+
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { chainId, smartAccount, to, value, data, adminAddress } = body;
+
+      if (!chainId || !smartAccount || !to || !data) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Missing required fields",
+            required: ["chainId", "smartAccount", "to", "data"],
+          }),
+        };
+      }
+
+      try {
+        console.log(`[aa/prepare] Preparing UserOp for ${smartAccount} on chain ${chainId}`);
+
+        // For Cronos, predict the CORRECT Smart Account address from our factory
+        // ThirdWeb SDK may have computed a different address using a different factory
+        let senderAddress = smartAccount as `0x${string}`;
+        if (adminAddress && (chainId === 338 || chainId === 25)) {
+          const predictedAddress = await predictAccountAddress(adminAddress, "0x", chainId);
+          console.log(`[aa/prepare] Frontend sent: ${smartAccount}`);
+          console.log(`[aa/prepare] Factory predicts: ${predictedAddress}`);
+          senderAddress = predictedAddress;
+        }
+
+        // Check if account is deployed on this chain
+        const deployed = await isAccountDeployed(senderAddress, chainId);
+        console.log(`[aa/prepare] Account deployed on chain ${chainId}: ${deployed}`);
+
+        // Generate initCode if account not deployed
+        let initCode: `0x${string}` = "0x";
+        if (!deployed) {
+          if (!adminAddress) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({
+                error: "Account not deployed on this chain",
+                details: "adminAddress is required to deploy Smart Account on Cronos.",
+                hint: "Include adminAddress (EOA signer from wallet.getPersonalWallet()) in the request",
+              }),
+            };
+          }
+          console.log(`[aa/prepare] Generating initCode for admin ${adminAddress}`);
+          initCode = generateInitCode(adminAddress, "0x", chainId);
+        }
+
+        // Get nonce and gas estimates
+        const [nonce, gas] = await Promise.all([
+          getNonce(senderAddress, chainId),
+          estimateGas(chainId),
+        ]);
+
+        // Encode the execute call
+        const callData = encodeExecute(to, BigInt(value || "0"), data);
+
+        // Increase verificationGasLimit for account deployment
+        // Account deployment uses ~350k gas, plus validation needs extra headroom
+        const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 5n : gas.verificationGasLimit;
+
+        // Build UserOperation (without signature, with paymasterAndData)
+        // paymasterAndData is included before computing the hash
+        const userOp = {
+          sender: senderAddress,
+          nonce,
+          initCode,
+          callData,
+          accountGasLimits: packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
+          preVerificationGas: gas.preVerificationGas,
+          gasFees: packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
+          paymasterAndData: "0x" as `0x${string}`, // Will be set below
+          signature: "0x" as `0x${string}`,
+        };
+
+        // Build paymaster data FIRST (this signs the UserOp with server wallet)
+        userOp.paymasterAndData = await buildPaymasterAndData(userOp, chainId);
+        console.log(`[aa/prepare] PaymasterAndData: ${userOp.paymasterAndData.slice(0, 50)}...`);
+
+        // NOW compute the UserOpHash that the user needs to sign
+        // This hash includes the paymasterAndData, so the signature will be valid
+        const entryPoint = getEntryPointAddress(chainId);
+        const userOpHash = getUserOpHash(userOp, entryPoint, chainId);
+
+        console.log(`[aa/prepare] UserOpHash (with paymaster): ${userOpHash}`);
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            userOpHash,
+            userOp: {
+              sender: userOp.sender,
+              nonce: userOp.nonce.toString(),
+              initCode: userOp.initCode,
+              callData: userOp.callData,
+              accountGasLimits: userOp.accountGasLimits,
+              preVerificationGas: userOp.preVerificationGas.toString(),
+              gasFees: userOp.gasFees,
+              paymasterAndData: userOp.paymasterAndData, // Include in response
+            },
+            accountDeployed: deployed,
+            chainId,
+          }),
+        };
+      } catch (error) {
+        console.error("[aa/prepare] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to prepare UserOperation",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // POST /api/aa/submit - Submit a gasless transaction via Paymaster
+    // Step 2 of 2-step AA flow: Receive signed UserOp, add paymaster, submit
+    if (method === "POST" && path === "/api/aa/submit") {
+      const aaModule = await import("./shared/aa/index.js");
+      const {
+        buildPaymasterAndData,
+        encodeExecute,
+        getNonce,
+        estimateGas,
+        submitUserOperation,
+        isAccountDeployed,
+        generateInitCode,
+        packAccountGasLimits,
+        packGasFees,
+      } = aaModule;
+
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { chainId, smartAccount, to, value, data, signature, adminAddress, userOp: preparedUserOp } = body;
+
+      // Validate required fields
+      if (!chainId || !smartAccount || !signature) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Missing required fields",
+            required: ["chainId", "smartAccount", "signature"],
+            hint: "Use /api/aa/prepare first to get userOpHash, sign it, then call submit with signature",
+          }),
+        };
+      }
+
+      try {
+        console.log(`[aa/submit] Submitting UserOp for ${smartAccount} on chain ${chainId}`);
+
+        let userOp;
+
+        // If preparedUserOp is provided, use it (2-step flow)
+        if (preparedUserOp) {
+          console.log(`[aa/submit] Using prepared UserOp from /api/aa/prepare`);
+          // IMPORTANT: Use the paymasterAndData from prepared UserOp
+          // The user's signature covers the hash that includes this paymasterAndData
+          userOp = {
+            sender: preparedUserOp.sender as `0x${string}`,
+            nonce: BigInt(preparedUserOp.nonce),
+            initCode: preparedUserOp.initCode as `0x${string}`,
+            callData: preparedUserOp.callData as `0x${string}`,
+            accountGasLimits: preparedUserOp.accountGasLimits as `0x${string}`,
+            preVerificationGas: BigInt(preparedUserOp.preVerificationGas),
+            gasFees: preparedUserOp.gasFees as `0x${string}`,
+            paymasterAndData: (preparedUserOp.paymasterAndData || "0x") as `0x${string}`,
+            signature: signature as `0x${string}`,
+          };
+        } else {
+          // Legacy flow: Build UserOp from scratch (backward compatibility)
+          if (!to || !data) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({
+                error: "Missing required fields for legacy flow",
+                required: ["to", "data"],
+                hint: "Either provide preparedUserOp (from /api/aa/prepare) or to+data for legacy flow",
+              }),
+            };
+          }
+
+          console.log(`[aa/submit] Building UserOp from scratch (legacy flow)`);
+
+          // Check if account is deployed
+          const deployed = await isAccountDeployed(smartAccount, chainId);
+
+          let initCode: `0x${string}` = "0x";
+          if (!deployed) {
+            if (!adminAddress) {
+              return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                  error: "Account not deployed on this chain",
+                  details: "adminAddress is required to deploy Smart Account",
+                }),
+              };
+            }
+            initCode = generateInitCode(adminAddress, "0x", chainId);
+          }
+
+          const [nonce, gas] = await Promise.all([
+            getNonce(smartAccount, chainId),
+            estimateGas(chainId),
+          ]);
+
+          const callData = encodeExecute(to, BigInt(value || "0"), data);
+          const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 3n : gas.verificationGasLimit;
+
+          userOp = {
+            sender: smartAccount as `0x${string}`,
+            nonce,
+            initCode,
+            callData,
+            accountGasLimits: packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
+            preVerificationGas: gas.preVerificationGas,
+            gasFees: packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
+            paymasterAndData: "0x" as `0x${string}`,
+            signature: signature as `0x${string}`,
+          };
+        }
+
+        // Build paymaster data only for legacy flow (prepared UserOp already has it)
+        if (!preparedUserOp) {
+          userOp.paymasterAndData = await buildPaymasterAndData(userOp, chainId);
+        }
+
+        // Submit to EntryPoint
+        const result = await submitUserOperation(userOp, chainId);
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            txHash: result.txHash,
+            userOp: {
+              sender: userOp.sender,
+              nonce: userOp.nonce.toString(),
+            },
+          }),
+        };
+      } catch (error) {
+        console.error("[aa/submit] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to submit transaction",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // GET /api/aa/nonce/:address - Get Smart Account nonce
+    if (method === "GET" && path.match(/^\/api\/aa\/nonce\/0x[a-fA-F0-9]{40}$/)) {
+      const { getNonce } = await import("./shared/aa/index.js");
+      const address = path.split("/api/aa/nonce/")[1] as `0x${string}`;
+      const chainId = parseInt(event.queryStringParameters?.chainId || "338");
+
+      try {
+        const nonce = await getNonce(address, chainId);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ address, chainId, nonce: nonce.toString() }),
+        };
+      } catch (error) {
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: String(error) }),
+        };
+      }
+    }
+
+    // POST /api/aa/register-cronos - Register a ThirdWeb/Fuji account on Cronos
+    if (method === "POST" && path === "/api/aa/register-cronos") {
+      const { registerAccountOnCronos } = await import("./shared/aa/index.js");
+
+      try {
+        const body = JSON.parse(event.body || "{}");
+        const { adminAddress } = body;
+
+        if (!adminAddress) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "adminAddress required" }),
+          };
+        }
+
+        const result = await registerAccountOnCronos(adminAddress);
+
+        if (!result.success) {
+          return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: result.error }),
+          };
+        }
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            accountAddress: result.accountAddress,
+            txHash: result.txHash,
+          }),
+        };
+      } catch (error) {
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: String(error) }),
+        };
+      }
+    }
+
+    // GET /api/aa/predict-address/:adminAddress - Get predicted Smart Account address
+    if (method === "GET" && path.match(/^\/api\/aa\/predict-address\/0x[a-fA-F0-9]{40}$/)) {
+      const { getPredictedAccountAddress } = await import("./shared/aa/index.js");
+      const adminAddress = path.split("/api/aa/predict-address/")[1] as `0x${string}`;
+      const chainId = parseInt(event.queryStringParameters?.chainId || "338");
+
+      try {
+        const address = await getPredictedAccountAddress(adminAddress, chainId);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ adminAddress, chainId, predictedAddress: address }),
+        };
+      } catch (error) {
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: String(error) }),
+        };
+      }
+    }
+
     // Route: GET /api/models - Redirect to /v1/models
     if (method === "GET" && path === "/api/models") {
       const req = createMockReq(event);
