@@ -620,7 +620,7 @@ async function main() {
 
     // Compute global stats (for extended output)
     const byProvider: Record<ModelProvider, number> = {
-        google: 0, openai: 0, anthropic: 0,
+        google: 0, openai: 0, anthropic: 0, vertex: 0,
         "asi-cloud": 0, "asi-one": 0,
         openrouter: 0, huggingface: 0, aiml: 0
     };
@@ -654,7 +654,7 @@ async function main() {
 
     // Recompute stats for optimized set
     const optByProvider: Record<ModelProvider, number> = {
-        google: 0, openai: 0, anthropic: 0,
+        google: 0, openai: 0, anthropic: 0, vertex: 0,
         "asi-cloud": 0, "asi-one": 0,
         openrouter: 0, huggingface: 0, aiml: 0
     };

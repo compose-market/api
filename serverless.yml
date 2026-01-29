@@ -22,7 +22,6 @@ provider:
     AI_ML_API_KEY: ${env:AI_ML_API_KEY}
     AGENTVERSE_API_KEY: ${env:AGENTVERSE_API_KEY}
     MEM0_API_KEY: ${env:MEM0_API_KEY}
-    NOT_DIAMOND_API_KEY: ${env:NOT_DIAMOND_API_KEY}
     LANGSMITH_API_KEY: ${env:LANGSMITH_API_KEY}
     PERPLEXITY_API_KEY: ${env:PERPLEXITY_API_KEY}
     DEEPGRAM_API_KEY: ${env:DEEPGRAM_API_KEY}
@@ -33,6 +32,8 @@ provider:
     REDIS_TLS: ${env:REDIS_TLS, 'true'}
     SESSION_SECRET: ${env:SESSION_SECRET}
     DEPLOYER_KEY: ${env:DEPLOYER_KEY}
+    CRONOS_TESTNET_PAYMASTER: ${env:CRONOS_TESTNET_PAYMASTER}
+    SERVER_WALLET_KEY: ${env:SERVER_WALLET_KEY}
 
 functions:
   api:
@@ -52,7 +53,7 @@ custom:
   customDomain:
     domainName: api.compose.market
     basePath: ''
-    stage: ${self:provider.stage}
+    stage: $default
     certificateName: api.compose.market
     createRoute53Record: false
     endpointType: regional

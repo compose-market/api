@@ -433,7 +433,8 @@ export async function handleGetHFModelDetails(req: Request, res: Response) {
     });
   }
 
-  const modelId = req.params.modelId;
+  const modelIdParam = req.params.modelId;
+  const modelId = Array.isArray(modelIdParam) ? modelIdParam[0] : modelIdParam;
 
   if (!modelId) {
     return res.status(400).json({ error: "Model ID required" });

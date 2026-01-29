@@ -1204,7 +1204,8 @@ export async function handlePollResearch(req: Request, res: Response) {
         });
     }
 
-    const interactionId = req.params.id;
+    const interactionIdParam = req.params.id;
+    const interactionId = Array.isArray(interactionIdParam) ? interactionIdParam[0] : interactionIdParam;
     if (!interactionId) {
         return res.status(400).json({ error: "interaction ID required" });
     }

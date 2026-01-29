@@ -197,7 +197,8 @@ export async function handleGetModelParams(
     req: Request,
     res: Response
 ): Promise<void> {
-    const modelId = req.params.model;
+    const modelIdParam = req.params.model;
+    const modelId = Array.isArray(modelIdParam) ? modelIdParam[0] : modelIdParam;
 
     if (!modelId) {
         res.status(400).json({ error: "Model ID is required" });

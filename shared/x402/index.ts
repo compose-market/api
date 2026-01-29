@@ -492,8 +492,13 @@ export async function preparePayment(
                 );
 
                 if (result.status === 200) {
-                    settleResult = { success: true, txHash: (result.responseBody as any)?.receipt?.transaction };
-                    console.log(`[x402] preparePayment: x402 settlement success`);
+                    // Extract txHash from response - handle both Cronos and ThirdWeb formats
+                    // Cronos: { success: true, txHash: "0x..." }
+                    // ThirdWeb: { success: true, receipt: { transaction: "0x..." } }
+                    const responseBody = result.responseBody as any;
+                    const txHash = responseBody?.txHash || responseBody?.receipt?.transaction;
+                    settleResult = { success: true, txHash };
+                    console.log(`[x402] preparePayment: x402 settlement success, tx: ${txHash}`);
                 } else {
                     settleResult = { success: false, error: (result.responseBody as any)?.error || "Settlement failed" };
                     console.log(`[x402] preparePayment: x402 settlement failed: ${settleResult.error}`);

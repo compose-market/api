@@ -218,6 +218,206 @@ function getProvider(modelId: string): { provider: ModelProvider; card: ModelCar
 // Chat/Text Generation
 // =============================================================================
 
+// =============================================================================
+// Direct Provider Streaming (Fallback for Tool Conversations)
+// =============================================================================
+
+/**
+ * Detect if this is a tool-using conversation that needs direct streaming.
+ * AI SDK's @ai-sdk/openai-compatible can't handle tool message transformations.
+ */
+function isToolConversation(messages: ChatMessage[]): boolean {
+    return messages.some(m =>
+        (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) ||
+        m.role === "tool"
+    );
+}
+
+/**
+ * Provider streaming config for direct HTTP calls
+ */
+interface ProviderStreamConfig {
+    endpoint: string;
+    apiKey: string;
+    headers?: Record<string, string>;
+}
+
+function getProviderStreamConfig(provider: ModelProvider): ProviderStreamConfig | null {
+    switch (provider) {
+        case "openrouter":
+            return {
+                endpoint: "https://openrouter.ai/api/v1/chat/completions",
+                apiKey: process.env.OPENROUTER_API_KEY || "",
+            };
+        case "openai":
+            return {
+                endpoint: "https://api.openai.com/v1/chat/completions",
+                apiKey: process.env.OPENAI_API_KEY || "",
+            };
+        case "huggingface":
+            return {
+                endpoint: "https://router.huggingface.co/v1/chat/completions",
+                apiKey: process.env.HUGGING_FACE_INFERENCE_TOKEN || "",
+            };
+        case "aiml":
+            return {
+                endpoint: "https://api.aimlapi.com/v1/chat/completions",
+                apiKey: process.env.AIML_API_KEY || "",
+            };
+        case "asi-one":
+            return {
+                endpoint: "https://api.asi1.ai/v1/chat/completions",
+                apiKey: process.env.ASI_ONE_API_KEY || "",
+            };
+        case "asi-cloud":
+            return {
+                endpoint: "https://inference.asicloud.cudos.org/v1/chat/completions",
+                apiKey: process.env.ASI_INFERENCE_API_KEY || "",
+            };
+        // Anthropic uses different format, Google uses AI SDK - not supported for direct
+        default:
+            return null;
+    }
+}
+
+/**
+ * Stream directly to provider API (bypasses AI SDK transformation issues)
+ * Messages are passed through unchanged - no transformation.
+ */
+async function streamDirectToProvider(
+    modelId: string,
+    provider: ModelProvider,
+    messages: ChatMessage[],
+    options: ChatOptions
+): Promise<void> {
+    const config = getProviderStreamConfig(provider);
+    if (!config) {
+        throw new Error(`Direct streaming not supported for provider: ${provider}`);
+    }
+
+    console.log(`[invokeChat] Direct streaming to ${provider}: ${config.endpoint}`);
+
+    // Convert messages to OpenAI format (pass through mostly unchanged)
+    const openaiMessages = messages.map(m => {
+        const msg: any = {
+            role: m.role,
+            content: m.content,
+        };
+        if (m.tool_calls) msg.tool_calls = m.tool_calls;
+        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+        if (m.name) msg.name = m.name;
+        return msg;
+    });
+
+    const response = await fetch(config.endpoint, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${config.apiKey}`,
+            "Content-Type": "application/json",
+            ...config.headers,
+        },
+        body: JSON.stringify({
+            model: modelId,
+            messages: openaiMessages,
+            stream: true,
+            ...(options.tools && { tools: options.tools }),
+            ...(options.tool_choice && { tool_choice: options.tool_choice }),
+            ...(options.maxTokens && { max_tokens: options.maxTokens }),
+            ...(options.temperature !== undefined && { temperature: options.temperature }),
+        }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[invokeChat] Direct streaming error: ${response.status} - ${errorText}`);
+        throw new Error(`Provider error: ${response.status} - ${errorText.slice(0, 200)}`);
+    }
+
+    if (!response.body) {
+        throw new Error("No response body from provider");
+    }
+
+    // Parse SSE stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentToolCall: { id: string; name: string; arguments: string } | null = null;
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const data = line.slice(6).trim();
+                if (data === "[DONE]") {
+                    // Finalize any pending tool call
+                    if (currentToolCall && options.onToolCall) {
+                        await options.onToolCall(currentToolCall);
+                    }
+                    if (options.onComplete) {
+                        options.onComplete({ usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
+                    }
+                    return;
+                }
+
+                try {
+                    const parsed = JSON.parse(data);
+                    const delta = parsed.choices?.[0]?.delta;
+                    if (!delta) continue;
+
+                    // Handle text content
+                    if (delta.content && options.onToken) {
+                        await options.onToken(delta.content);
+                    }
+
+                    // Handle tool calls
+                    if (delta.tool_calls && delta.tool_calls.length > 0) {
+                        const tc = delta.tool_calls[0];
+                        if (tc.id) {
+                            // New tool call starting
+                            if (currentToolCall && options.onToolCall) {
+                                await options.onToolCall(currentToolCall);
+                            }
+                            currentToolCall = {
+                                id: tc.id,
+                                name: tc.function?.name || "",
+                                arguments: tc.function?.arguments || "",
+                            };
+                        } else if (currentToolCall) {
+                            // Continuing existing tool call (streaming arguments)
+                            if (tc.function?.name) currentToolCall.name += tc.function.name;
+                            if (tc.function?.arguments) currentToolCall.arguments += tc.function.arguments;
+                        }
+                    }
+
+                    // Handle finish reason
+                    if (parsed.choices?.[0]?.finish_reason) {
+                        if (currentToolCall && options.onToolCall) {
+                            await options.onToolCall(currentToolCall);
+                            currentToolCall = null;
+                        }
+                    }
+                } catch (parseError) {
+                    console.warn(`[invokeChat] Failed to parse SSE chunk: ${data.slice(0, 100)}`);
+                }
+            }
+        }
+
+        // Final completion
+        if (options.onComplete) {
+            options.onComplete({ usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } });
+        }
+    } finally {
+        reader.releaseLock();
+    }
+}
+
 import { jsonSchema } from "ai";
 
 /**
@@ -281,6 +481,21 @@ export async function invokeChat(
         // Also log if tool_calls field exists (OpenAI format)
         const hasToolCalls = m.tool_calls && m.tool_calls.length > 0;
         console.log(`[invokeChat] Message ${i}: role=${m.role}, contentType=${contentType}, hasToolCalls=${hasToolCalls}, preview=${contentPreview}`);
+    }
+
+    // Get provider info for routing decisions
+    const { provider, card } = getProvider(modelId);
+    console.log(`[invokeChat] Provider: ${provider}, modelId: ${modelId}`);
+
+    // FALLBACK: Use direct streaming for tool conversations
+    // AI SDK's @ai-sdk/openai-compatible can't handle tool message transformations
+    if (options.stream && isToolConversation(messages)) {
+        const config = getProviderStreamConfig(provider);
+        if (config) {
+            console.log(`[invokeChat] Tool conversation detected, using direct streaming to ${provider}`);
+            return streamDirectToProvider(modelId, provider, messages, options);
+        }
+        console.log(`[invokeChat] Tool conversation detected but direct streaming not available for ${provider}, falling back to AI SDK`);
     }
 
     const modelInstance = getLanguageModel(modelId);
@@ -354,30 +569,6 @@ export async function invokeChat(
         }
         return parts;
     };
-
-    // Build a map of toolCallId -> toolName from assistant messages
-    // This is needed because tool messages may not include the tool name, only the tool_call_id
-    // AI SDK requires toolName in tool-result parts
-    const toolCallIdToNameMap = new Map<string, string>();
-    for (const m of messages) {
-        if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
-            for (const tc of m.tool_calls) {
-                if (tc.id && tc.function?.name) {
-                    toolCallIdToNameMap.set(tc.id, tc.function.name);
-                }
-            }
-        }
-        // Also check content array for tool-call parts
-        if (m.role === "assistant" && Array.isArray(m.content)) {
-            for (const part of m.content) {
-                const p = part as any;
-                if (p.type === "tool-call" && p.toolCallId && p.toolName) {
-                    toolCallIdToNameMap.set(p.toolCallId, p.toolName);
-                }
-            }
-        }
-    }
-    console.log(`[invokeChat] Built toolCallId->toolName map with ${toolCallIdToNameMap.size} entries`);
 
     const mappedMessages: any[] = messages.map(m => {
         // System messages - ALWAYS convert to string
@@ -461,16 +652,12 @@ export async function invokeChat(
 
         // Tool response message
         if (m.role === "tool") {
-            // Look up toolName from map (built from assistant messages)
-            // Fall back to m.name
-            const toolCallId = m.tool_call_id || "";
-            const toolName = m.name || toolCallIdToNameMap.get(toolCallId) || "";
             return {
                 role: "tool",
                 content: [{
                     type: "tool-result",
-                    toolCallId,
-                    toolName,
+                    toolCallId: m.tool_call_id || "",
+                    toolName: m.name || "",
                     result: normalizeContentToString(m.content),
                 }],
             };
