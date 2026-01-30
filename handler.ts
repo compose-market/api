@@ -368,6 +368,69 @@ export async function handler(
       };
     }
 
+    // POST /api/keys/settle - Settle payment using Compose Key (for external apps like Manowar)
+    if (method === "POST" && path === "/api/keys/settle") {
+      const { extractComposeKeyFromHeader, validateComposeKey, consumeKeyBudget, getKeyBudgetInfo } = await import("./shared/keys/index.js");
+      const { settleComposeKeyPayment } = await import("./shared/x402/settlement.js");
+
+      const authHeader = event.headers["authorization"];
+      const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+
+      if (!composeKeyToken) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Missing Compose Key in Authorization header" }),
+        };
+      }
+
+      const body = event.body ? JSON.parse(event.body) : {};
+      const amountWei = parseInt(body.amount || "5000", 10);
+
+      const validation = await validateComposeKey(composeKeyToken, amountWei);
+      if (!validation.valid) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: validation.error }),
+        };
+      }
+
+      // Budget check
+      const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
+      if (budgetRemaining < amountWei) {
+        return {
+          statusCode: 402,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Budget exhausted", budgetRemaining }),
+        };
+      }
+
+      // On-chain settlement via transferFrom
+      const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei);
+      if (!result.success) {
+        return {
+          statusCode: 402,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: result.error }),
+        };
+      }
+
+      // Update Redis budget cache
+      await consumeKeyBudget(validation.payload!.keyId, amountWei);
+      const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          txHash: result.txHash,
+          budgetRemaining: budgetInfo?.budgetRemaining || 0,
+        }),
+      };
+    }
+
     // DELETE /api/keys/:keyId - Revoke a Compose Key
     if (method === "DELETE" && path.startsWith("/api/keys/")) {
       const { revokeKey } = await import("./shared/keys/index.js");

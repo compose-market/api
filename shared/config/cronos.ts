@@ -311,7 +311,9 @@ export async function settleCronosPayment(params: {
 
 /**
  * Verify and settle a Cronos x402 payment in one call
- * Convenience function that combines verify + settle
+ * 
+ * The Facilitator SDK only verifies the signature - it does not execute the on-chain transfer.
+ * We must call settleCronosX402Payment to actually move the USDC via transferWithAuthorization.
  */
 export async function verifyAndSettleCronosPayment(params: {
     paymentHeader: string;
@@ -319,7 +321,39 @@ export async function verifyAndSettleCronosPayment(params: {
     amount: string;
     chainId: number;
 }): Promise<CronosSettlementResult> {
-    // First verify
+    const { paymentHeader, payTo, amount, chainId } = params;
+
+    // Import settlement functions
+    const { settleCronosX402Payment, parseX402PaymentHeader } = await import("../x402/settlement.js");
+
+    // Parse the payment header to extract signature components
+    const payload = parseX402PaymentHeader(paymentHeader);
+    if (!payload) {
+        return {
+            status: 400,
+            success: false,
+            error: "Invalid X-PAYMENT header format",
+        };
+    }
+
+    // Verify the signature matches the expected amounts
+    if (payload.to.toLowerCase() !== payTo.toLowerCase()) {
+        return {
+            status: 400,
+            success: false,
+            error: `Payment recipient mismatch: expected ${payTo}, got ${payload.to}`,
+        };
+    }
+
+    if (payload.value !== amount) {
+        return {
+            status: 400,
+            success: false,
+            error: `Payment amount mismatch: expected ${amount}, got ${payload.value}`,
+        };
+    }
+
+    // Verify with SDK (validates signature, nonce, expiry)
     const verifyResult = await verifyCronosPayment(params);
 
     if (!verifyResult.isValid) {
@@ -330,9 +364,29 @@ export async function verifyAndSettleCronosPayment(params: {
         };
     }
 
-    // Then settle
-    return settleCronosPayment(params);
+    console.log(`[cronos-x402] SDK verification passed, executing on-chain transfer...`);
+
+    // Execute actual on-chain transfer
+    const onChainResult = await settleCronosX402Payment(payload, chainId);
+
+    if (!onChainResult.success) {
+        console.error(`[cronos-x402] On-chain settlement failed:`, onChainResult.error);
+        return {
+            status: 500,
+            success: false,
+            error: onChainResult.error,
+        };
+    }
+
+    console.log(`[cronos-x402] On-chain settlement complete: ${onChainResult.txHash}`);
+
+    return {
+        status: 200,
+        success: true,
+        txHash: onChainResult.txHash,
+    };
 }
+
 
 // =============================================================================
 // Payment Header Extraction

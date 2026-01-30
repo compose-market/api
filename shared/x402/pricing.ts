@@ -16,22 +16,22 @@ import type { PriceResult, PriceLookupParams } from "./types.js";
 
 export const DYNAMIC_PRICES = {
     // Agent Inference
-    AGENT_CHAT: "5000",              // $0.005 per message
+    AGENT_CHAT: "15000",              // $0.015 per message
 
     // Tool Execution - Simple (read-only operations)
-    GOAT_SIMPLE: "1000",             // $0.001 - price check, balance query
-    MCP_TOOL_READ: "1000",           // $0.001 - read operations
+    GOAT_SIMPLE: "5000",             // $0.005 - price check, balance query
+    MCP_TOOL_READ: "5000",           // $0.005 - read operations
 
     // Tool Execution - Transactions (on-chain writes)
-    GOAT_TRANSACTION: "5000",        // $0.005 - swap, transfer, approve
+    GOAT_TRANSACTION: "10000",        // $0.01 - swap, transfer, approve
     GOAT_COMPLEX: "10000",           // $0.01 - multi-step operations
 
     // MCP Server Tools
-    MCP_TOOL_CALL: "1000",           // $0.001 - default MCP tool
+    MCP_TOOL_CALL: "5000",           // $0.005 - default MCP tool
 
     // Workflow Orchestration
-    MANOWAR_ORCHESTRATION: "10000",  // $0.01 - coordinator fee
-    MANOWAR_DELEGATION: "2000",      // $0.002 - per agent delegation
+    MANOWAR_ORCHESTRATION: "20000",  // $0.02 - coordinator fee
+    MANOWAR_DELEGATION: "20000",      // $0.02 - per agent delegation
 
     // Multimodal Generation
     IMAGE_GEN_SDXL: "50000",         // $0.05 - Stable Diffusion XL
@@ -45,8 +45,8 @@ export const DYNAMIC_PRICES = {
     MEM0_ADD: "1000",                // $0.001 - memory addition
 
     // ElizaOS Actions
-    ELIZA_MESSAGE: "1000",           // $0.001 - message processing
-    ELIZA_ACTION: "2000",            // $0.002 - action execution
+    ELIZA_MESSAGE: "10000",           // $0.01 - message processing
+    ELIZA_ACTION: "10000",            // $0.01 - action execution
 } as const;
 
 /**
