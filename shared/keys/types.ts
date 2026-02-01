@@ -2,7 +2,7 @@
  * Compose Keys Types
  * 
  * Type definitions for externally-usable API keys that enable
- * Cursor, VSCode, and other external clients to access Compose Market.
+ * Cursor, OpenClaw, OpenCode, and other external clients to access Compose Market.
  * 
  * @module shared/keys/types
  */
@@ -56,6 +56,8 @@ export interface ComposeKeyRecord {
     name?: string;
     /** Last usage timestamp */
     lastUsedAt?: number;
+    /** Chain ID for multi-chain support */
+    chainId?: number;
 }
 
 // =============================================================================
@@ -72,6 +74,8 @@ export interface CreateKeyRequest {
     expiresAt: number;
     /** Optional name */
     name?: string;
+    /** Optional chain ID */
+    chainId?: number;
 }
 
 /**

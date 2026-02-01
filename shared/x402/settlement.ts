@@ -11,8 +11,6 @@ import { getContract, prepareContractCall, sendTransaction, waitForReceipt } fro
 import { privateKeyToAccount } from "thirdweb/wallets";
 import {
     serverClient,
-    paymentChain,
-    paymentAsset,
     merchantWalletAddress,
     treasuryWalletAddress,
 } from "../config/thirdweb.js";
@@ -62,17 +60,6 @@ function getTreasuryAccount() {
 }
 
 /**
- * Get USDC contract instance
- */
-function getUsdcContract() {
-    return getContract({
-        client: serverClient,
-        chain: paymentChain,
-        address: paymentAsset.address,
-    });
-}
-
-/**
  * Get USDC contract instance for a specific chain
  */
 function getUsdcContractForChain(chainId: number) {
@@ -96,22 +83,30 @@ function getUsdcContractForChain(chainId: number) {
  * to execute a USDC transfer to the merchant wallet.
  * 
  * @param userAddress - User's smart wallet address (source)
- * @param amountWei - Amount in USDC wei (6 decimals)
+ * @param amountWei - Amount in USDC wei (6 decimals) - can be number or string
+ * @param chainId - Chain ID (match user's session chain)
  * @returns Settlement result with tx hash or error
  */
 export async function settleComposeKeyPayment(
     userAddress: string,
-    amountWei: number,
+    amountWei: number | string,
+    chainId: number,
 ): Promise<SettlementResult> {
+    const amount = typeof amountWei === "string" ? BigInt(amountWei) : BigInt(amountWei);
+
     console.log(`[settlement] Initiating on-chain settlement:`);
     console.log(`[settlement]   From: ${userAddress}`);
     console.log(`[settlement]   To: ${merchantWalletAddress}`);
-    console.log(`[settlement]   Amount: ${amountWei} wei ($${(amountWei / 1_000_000).toFixed(6)})`);
+    console.log(`[settlement]   Amount: ${amount.toString()} wei ($${(Number(amount) / 1_000_000).toFixed(6)})`);
+    console.log(`[settlement]   Chain: ${chainId}`);
     console.log(`[settlement]   Session Key: ${treasuryWalletAddress}`);
 
     try {
         const treasuryAccount = getTreasuryAccount();
-        const usdcContract = getUsdcContract();
+
+        // Use chain-specific USDC contract
+        const usdcContract = getUsdcContractForChain(chainId);
+        const chain = getChainObject(chainId);
 
         console.log(`[settlement]   Treasury: ${treasuryAccount.address}`);
 
@@ -122,7 +117,7 @@ export async function settleComposeKeyPayment(
             params: [
                 userAddress as `0x${string}`,
                 merchantWalletAddress,
-                BigInt(amountWei),
+                amount,
             ],
         });
 
@@ -139,7 +134,7 @@ export async function settleComposeKeyPayment(
         try {
             const receipt = await waitForReceipt({
                 client: serverClient,
-                chain: paymentChain,
+                chain,
                 transactionHash: result.transactionHash,
                 maxBlocksWaitTime: 15,
             });

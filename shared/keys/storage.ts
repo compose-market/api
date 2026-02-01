@@ -69,6 +69,7 @@ export async function createComposeKey(
         createdAt: now,
         expiresAt: request.expiresAt,
         name: request.name,
+        chainId: request.chainId,
     };
 
     // Generate token
@@ -80,13 +81,15 @@ export async function createComposeKey(
         exp: Math.floor(request.expiresAt / 1000), // Convert to seconds
     });
 
-    // Store record in Redis
+    // Store record in Redis (including token for session restoration)
     const recordKey = keyRecordKey(keyId);
     for (const [field, value] of Object.entries(record)) {
         if (value !== undefined) {
             await redisHSet(recordKey, field, String(value));
         }
     }
+    // Store token securely for session restoration
+    await redisHSet(recordKey, "token", token);
 
     // Set TTL based on expiration
     const ttlSeconds = Math.ceil((request.expiresAt - now) / 1000);
@@ -128,6 +131,7 @@ export async function getKeyRecord(keyId: string): Promise<ComposeKeyRecord | nu
         revokedAt: data.revokedAt ? parseInt(data.revokedAt, 10) : undefined,
         name: data.name || undefined,
         lastUsedAt: data.lastUsedAt ? parseInt(data.lastUsedAt, 10) : undefined,
+        chainId: data.chainId ? parseInt(data.chainId, 10) : undefined,
     };
 }
 
@@ -248,4 +252,62 @@ export async function rollbackKeyUsage(keyId: string, amountWei: number): Promis
     const recordKey = keyRecordKey(keyId);
     await redisHIncrBy(recordKey, "budgetUsed", -amountWei);
     console.log(`[keys/storage] Key ${keyId} budget rolled back by ${amountWei} wei`);
+}
+
+/**
+ * Get active session for a user (most recent non-expired, non-revoked key with budget)
+ * Returns the key WITH token for session restoration
+ * 
+ * @param userAddress - User's wallet address
+ * @param chainId - Optional chain ID filter
+ * @returns Active session with token, or null if none found
+ */
+export async function getActiveSession(userAddress: string, chainId?: number): Promise<{
+    keyId: string;
+    token: string;
+    budgetLimit: number;
+    budgetUsed: number;
+    budgetRemaining: number;
+    expiresAt: number;
+    chainId?: number;
+    name?: string;
+} | null> {
+    const normalizedAddress = userAddress.toLowerCase();
+    const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
+    const now = Date.now();
+
+    for (const keyId of keyIds) {
+        const data = await redisHGetAll(keyRecordKey(keyId));
+        if (!data || Object.keys(data).length === 0) continue;
+
+        const expiresAt = parseInt(data.expiresAt, 10);
+        const budgetLimit = parseInt(data.budgetLimit, 10);
+        const budgetUsed = parseInt(data.budgetUsed, 10);
+        const budgetRemaining = budgetLimit - budgetUsed;
+        const isRevoked = data.revokedAt ? true : false;
+
+        // Skip expired, revoked, or depleted keys
+        if (expiresAt <= now || isRevoked || budgetRemaining <= 0) continue;
+
+        // Optional chain filter
+        if (chainId && data.chainId && parseInt(data.chainId, 10) !== chainId) continue;
+
+        // Return the first valid session (they're sorted by creation, newest first)
+        if (data.token) {
+            console.log(`[keys/storage] Found active session ${keyId} for ${normalizedAddress}`);
+            return {
+                keyId,
+                token: data.token,
+                budgetLimit,
+                budgetUsed,
+                budgetRemaining,
+                expiresAt,
+                chainId: data.chainId ? parseInt(data.chainId, 10) : undefined,
+                name: data.name || undefined,
+            };
+        }
+    }
+
+    console.log(`[keys/storage] No active session found for ${normalizedAddress}`);
+    return null;
 }

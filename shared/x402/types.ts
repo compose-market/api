@@ -62,6 +62,8 @@ export interface PaymentInfo {
     sessionActive: boolean;
     /** Remaining session budget in wei */
     sessionBudgetRemaining: number;
+    /** User wallet address from session (for session bypass) */
+    sessionUserAddress: string | null;
 }
 
 // =============================================================================

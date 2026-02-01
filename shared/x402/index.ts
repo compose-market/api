@@ -40,6 +40,15 @@ import {
     getKeyBudgetInfo,
 } from "../keys/index.js";
 
+// Session Budget - Deferred Settlement
+import {
+    lockBudget,
+    unlockBudget,
+    shouldTriggerImmediateSettlement,
+    getSessionBudget,
+    ensureSessionBudgetInitialized,
+} from "./session-budget.js";
+
 // Re-export types
 export type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 
@@ -116,7 +125,7 @@ export function createPaymentRequired402Response(params: {
 // =============================================================================
 
 /**
- * Extract payment info from request headers
+ * Extract payment-related info from request headers
  * Supports both ThirdWeb (PAYMENT-SIGNATURE) and Cronos (X-PAYMENT) formats
  */
 export function extractPaymentInfo(headers: Record<string, string | string[] | undefined>): PaymentInfo {
@@ -138,10 +147,16 @@ export function extractPaymentInfo(headers: Record<string, string | string[] | u
         10
     );
 
+    // Extract user wallet for session bypass
+    const sessionUserAddress = typeof headers["x-session-user-address"] === "string"
+        ? headers["x-session-user-address"]
+        : null;
+
     return {
         paymentData,
         sessionActive,
         sessionBudgetRemaining,
+        sessionUserAddress,
     };
 }
 
@@ -546,7 +561,7 @@ export async function requirePayment(
     res: Response,
     amountWei: number = INFERENCE_PRICE_WEI,
 ): Promise<boolean> {
-    const { paymentData, sessionActive, sessionBudgetRemaining } = extractPaymentInfo(
+    const { paymentData, sessionActive, sessionBudgetRemaining, sessionUserAddress } = extractPaymentInfo(
         req.headers as Record<string, string | string[] | undefined>
     );
 
@@ -574,7 +589,62 @@ export async function requirePayment(
     }
 
     // ==========================================================================
-    // Compose Key Flow (external clients like Cursor, VSCode)
+    // TIER 1: Session Budget Bypass - Deferred Settlement
+    // Lock budget in Redis, skip on-chain settlement (batch settles every 2 min)
+    // ==========================================================================
+    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
+
+    if (hasValidSession && sessionUserAddress) {
+        console.log(`[x402] Session bypass attempt: ${sessionUserAddress}, chain=${explicitChainId}, amount=${amountWei}`);
+
+        // Ensure session budget is initialized in Redis
+        // Lazy initialization from session headers if not already present
+        await ensureSessionBudgetInitialized(
+            sessionUserAddress,
+            explicitChainId,
+            sessionBudgetRemaining,
+        );
+
+        // Generate unique request ID
+        const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+        // Attempt to lock budget atomically
+        const lockResult = await lockBudget(
+            sessionUserAddress,
+            explicitChainId,
+            String(amountWei),
+            merchantWalletAddress,
+            requestId,
+            req.body?.model, // Optional model for tracking
+        );
+
+        if (lockResult.success) {
+            console.log(`[x402] Session bypass SUCCESS: locked ${amountWei} wei, available: ${lockResult.availableWei}`);
+
+            // Check if we need to trigger immediate settlement ($1 threshold)
+            const shouldSettle = await shouldTriggerImmediateSettlement(sessionUserAddress, explicitChainId);
+            if (shouldSettle) {
+                console.log(`[x402] Threshold reached - triggering immediate settlement for ${sessionUserAddress}`);
+                // Note: Actual settlement happens via batch worker or separate trigger
+                // For now we just log - Tier 2 will implement the actual settlement
+            }
+
+            // Set response headers for client tracking
+            res.setHeader("x-payment-method", "session-bypass");
+            res.setHeader("x-budget-remaining", lockResult.availableWei);
+            res.setHeader("x-settlement", "deferred");
+
+            return true;
+        } else {
+            // Budget insufficient or no session - fall through to standard flows
+            console.log(`[x402] Session bypass FAILED: ${lockResult.error}`);
+            // Don't return false yet - let it try other payment methods
+        }
+    }
+
+    // ==========================================================================
+    // Compose Key Flow (external clients like Cursor, OpenClaw, OpenCode, ...)
     // Performs ACTUAL on-chain USDC settlement using session key authority
     // ==========================================================================
     const authHeader = req.headers["authorization"] as string | undefined;
@@ -664,10 +734,7 @@ export async function requirePayment(
     // Standard x402 flow: require payment data header
     const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
 
-    // Read X-CHAIN-ID header from client to determine 402 format (Cronos V1 vs ThirdWeb V2)
-    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
-    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : undefined;
-
+    // Note: explicitChainId already extracted above for session bypass
     const result = await handleX402Payment(
         paymentData,
         resourceUrl,

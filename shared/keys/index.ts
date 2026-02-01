@@ -2,7 +2,7 @@
  * Compose Keys Module
  * 
  * Public API for Compose Key operations.
- * Enables external clients (Cursor, VSCode) to access Compose Market.
+ * Enables external clients (Cursor, OpenClaw, OpenCode, ...) to access Compose Market.
  * 
  * @module shared/keys
  */
@@ -28,6 +28,7 @@ export {
     isKeyRevoked,
     revokeKey,
     getKeyBudgetRemaining,
+    getActiveSession,
 } from "./storage.js";
 
 // Middleware
