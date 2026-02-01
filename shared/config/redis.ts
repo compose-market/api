@@ -129,11 +129,28 @@ export async function redisExists(key: string): Promise<boolean> {
 }
 
 /**
- * Set a hash field
+ * Set hash field(s)
+ * Supports both single field/value and object of multiple fields
  */
-export async function redisHSet(key: string, field: string, value: string): Promise<void> {
+export async function redisHSet(
+    key: string,
+    fieldOrData: string | Record<string, string>,
+    value?: string
+): Promise<void> {
     const redis = await getRedisClient();
-    await redis.hSet(key, field, value);
+
+    if (typeof fieldOrData === "string") {
+        // Single field/value mode
+        if (value === undefined) {
+            throw new Error("redisHSet: value required when field is string");
+        }
+        await redis.hSet(key, fieldOrData, value);
+    } else {
+        // Object mode - set multiple fields at once
+        for (const [field, val] of Object.entries(fieldOrData)) {
+            await redis.hSet(key, field, val);
+        }
+    }
 }
 
 /**
@@ -184,6 +201,14 @@ export async function redisSIsMember(key: string, member: string): Promise<boole
     const redis = await getRedisClient();
     const result = await redis.sIsMember(key, member);
     return Boolean(result);
+}
+
+/**
+ * Remove from a set
+ */
+export async function redisSRem(key: string, ...members: string[]): Promise<number> {
+    const redis = await getRedisClient();
+    return redis.sRem(key, members);
 }
 
 /**

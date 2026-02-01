@@ -45,6 +45,19 @@ functions:
       - httpApi:
           path: /
           method: ANY
+  
+  # Batch Settlement Worker - runs every 2 minutes
+  # Settles accumulated payment intents for deferred settlement
+  batchSettlement:
+    handler: dist/index.batchSettlementHandler
+    timeout: 60
+    memorySize: 512
+    events:
+      - schedule:
+          rate: rate(2 minutes)
+          enabled: true
+          input:
+            source: "scheduled"
 
 plugins:
   - serverless-domain-manager

@@ -297,6 +297,48 @@ export async function handler(
     // Compose Keys API Routes
     // ==========================================================================
 
+    // GET /api/session - Get active session for user (includes token for restoration)
+    if (method === "GET" && path === "/api/session") {
+      const { getActiveSession } = await import("./shared/keys/index.js");
+      const userAddress = event.headers["x-session-user-address"];
+      const chainIdHeader = event.headers["x-chain-id"];
+      const chainId = chainIdHeader ? parseInt(chainIdHeader, 10) : undefined;
+
+      if (!userAddress) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
+      }
+
+      const session = await getActiveSession(userAddress, chainId);
+
+      if (!session) {
+        return {
+          statusCode: 404,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "No active session found", hasSession: false }),
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          hasSession: true,
+          keyId: session.keyId,
+          token: session.token,
+          budgetLimit: session.budgetLimit,
+          budgetUsed: session.budgetUsed,
+          budgetRemaining: session.budgetRemaining,
+          expiresAt: session.expiresAt,
+          chainId: session.chainId,
+          name: session.name,
+        }),
+      };
+    }
+
     // POST /api/keys - Create a new Compose Key
     if (method === "POST" && path === "/api/keys") {
       const { createComposeKey } = await import("./shared/keys/index.js");
@@ -324,6 +366,7 @@ export async function handler(
         budgetLimit: body.budgetLimit,
         expiresAt: body.expiresAt,
         name: body.name,
+        chainId: body.chainId,
       });
 
       return {
@@ -385,7 +428,7 @@ export async function handler(
       }
 
       const body = event.body ? JSON.parse(event.body) : {};
-      const amountWei = parseInt(body.amount || "5000", 10);
+      const amountWei = parseInt(body.amount, 10);
 
       const validation = await validateComposeKey(composeKeyToken, amountWei);
       if (!validation.valid) {
@@ -407,7 +450,9 @@ export async function handler(
       }
 
       // On-chain settlement via transferFrom
-      const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei);
+      const keyChainId = validation.record!.chainId!;
+      console.log(`[keys/settle] Settling on chain ${keyChainId} for user ${validation.payload!.sub}`);
+      const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, keyChainId);
       if (!result.success) {
         return {
           statusCode: 402,
@@ -1478,6 +1523,99 @@ Create a professional wide banner image for an AI workflow orchestration system.
       }
     }
 
+    // ==========================================================================
+    // Batch Settlement Routes (Deferred Payment System)
+    // ==========================================================================
+
+    // POST /api/settlement/batch - Trigger batch settlement (scheduled or manual)
+    // Protected endpoint - only for internal use or admin
+    if (method === "POST" && path === "/api/settlement/batch") {
+      const internalSecret = event.headers["x-internal-secret"] || event.headers["X-Internal-Secret"];
+      const expectedSecret = process.env.MANOWAR_INTERNAL_SECRET;
+
+      // Security: Only allow internal calls
+      if (internalSecret !== expectedSecret) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "Unauthorized" }),
+        };
+      }
+
+      try {
+        const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+
+        console.log("[batch-settlement] Triggered manually via API");
+        const result = await runBatchSettlement();
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify(result),
+        };
+      } catch (error) {
+        console.error("[batch-settlement] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Batch settlement failed",
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // GET /api/settlement/status - Get pending settlement info for a user
+    if (method === "GET" && path === "/api/settlement/status") {
+      const userAddress = event.headers["x-session-user-address"];
+      const chainId = parseInt(event.queryStringParameters?.chainId || "338");
+
+      if (!userAddress) {
+        return {
+          statusCode: 401,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
+      }
+
+      try {
+        const { getBudgetInfo } = await import("./shared/x402/session-budget.js");
+
+        const info = await getBudgetInfo(userAddress, chainId);
+
+        if (!info) {
+          return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              hasActiveBudget: false,
+              message: "No active session budget found",
+            }),
+          };
+        }
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            hasActiveBudget: true,
+            budget: info,
+          }),
+        };
+      } catch (error) {
+        console.error("[settlement/status] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to get status",
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
     // 404 for unknown routes
     return {
       statusCode: 404,
@@ -1497,3 +1635,35 @@ Create a professional wide banner image for an AI workflow orchestration system.
   }
 }
 
+
+/**
+ * Batch Settlement Handler - Scheduled Lambda
+ * 
+ * Triggered by CloudWatch Events every 2 minutes.
+ * Processes accumulated payment intents for deferred settlement.
+ */
+export async function batchSettlementHandler(
+  event: { source?: string } | unknown,
+  _context: Context
+): Promise<void> {
+  console.log("[batch-settlement] Scheduled handler invoked", JSON.stringify(event));
+
+  try {
+    const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+
+    const result = await runBatchSettlement();
+
+    console.log("[batch-settlement] Completed:", {
+      runId: result.runId,
+      totalUsers: result.totalUsers,
+      totalIntents: result.totalIntents,
+      successCount: result.successCount,
+      failCount: result.failCount,
+      duration: `${result.endTime - result.startTime}ms`,
+    });
+  } catch (error) {
+    console.error("[batch-settlement] Fatal error:", error);
+    // Don't throw - let CloudWatch know the Lambda succeeded (error is logged)
+    // Throwing would trigger retries which could cause duplicate settlements
+  }
+}
