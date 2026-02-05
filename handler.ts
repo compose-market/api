@@ -37,7 +37,7 @@ let agentverseExtractCategories: typeof import("./external/agentverse.js").extra
 let models: typeof import("./shared/models/registry.js");
 
 // Prod Servers URLs for proxying
-const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
+const RUNTIME_SERVER_URL = process.env.RUNTIME_SERVICE_URL || "https://runtime.compose.market";
 const MANOWAR_SERVER_URL = process.env.MANOWAR_SERVICE_URL || "https://manowar.compose.market";
 
 async function loadModules() {
@@ -1123,13 +1123,13 @@ export async function handler(
     }
 
     // ==========================================================================
-    // MCP/Plugin Routes - Proxied to MCP Server with x402 payment
+    // MCP/Plugin Routes - Proxied to Runtime Server with x402 payment
     // ==========================================================================
 
     // Route: GET /api/mcp/plugins - List all available GOAT plugins (dynamically)
     if (method === "GET" && path === "/api/mcp/plugins") {
       try {
-        const response = await fetch(`${MCP_SERVER_URL}/goat/plugins`);
+        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/plugins`);
         const data = await response.json();
         return {
           statusCode: response.status,
@@ -1148,7 +1148,7 @@ export async function handler(
     // Route: GET /api/mcp/tools - List ALL GOAT tools across all plugins
     if (method === "GET" && path === "/api/mcp/tools") {
       try {
-        const response = await fetch(`${MCP_SERVER_URL}/goat/tools`);
+        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/tools`);
         const data = await response.json();
         return {
           statusCode: response.status,
@@ -1167,7 +1167,7 @@ export async function handler(
     // Route: GET /api/mcp/status - Get GOAT runtime status
     if (method === "GET" && path === "/api/mcp/status") {
       try {
-        const response = await fetch(`${MCP_SERVER_URL}/goat/status`);
+        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/status`);
         const data = await response.json();
         return {
           statusCode: response.status,
@@ -1187,7 +1187,7 @@ export async function handler(
     if (method === "GET" && path.match(/^\/api\/mcp\/[^/]+\/tools$/)) {
       const pluginId = path.replace("/api/mcp/", "").replace("/tools", "");
       try {
-        const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools`);
+        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools`);
         const data = await response.json();
         return {
           statusCode: response.status,
@@ -1209,7 +1209,7 @@ export async function handler(
       const pluginId = parts[0];
       const toolName = parts[1];
       try {
-        const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools/${encodeURIComponent(toolName)}`);
+        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools/${encodeURIComponent(toolName)}`);
         const data = await response.json();
         return {
           statusCode: response.status,
@@ -1230,8 +1230,8 @@ export async function handler(
       const pluginId = path.replace("/api/mcp/", "").replace("/execute", "");
       const body = event.body ? JSON.parse(event.body) : {};
 
-      // Forward PAYMENT-SIGNATURE header to MCP server for proper x402 handling
-      // The MCP server uses handleX402Payment which returns proper x402 protocol response
+      // Forward PAYMENT-SIGNATURE header to Runtime server for proper x402 handling
+      // The Runtime server uses handleX402Payment which returns proper x402 protocol response
       const paymentHeader = event.headers["payment-signature"] || event.headers["PAYMENT-SIGNATURE"];
 
       try {
@@ -1240,7 +1240,7 @@ export async function handler(
           fetchHeaders["PAYMENT-SIGNATURE"] = paymentHeader;
         }
 
-        const response = await fetch(`${MCP_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/execute`, {
+        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/execute`, {
           method: "POST",
           headers: fetchHeaders,
           body: JSON.stringify(body),
@@ -1285,7 +1285,7 @@ export async function handler(
     // Route: GET /api/mcp/servers - List MCP servers
     if (method === "GET" && path === "/api/mcp/servers") {
       try {
-        const response = await fetch(`${MCP_SERVER_URL}/servers`);
+        const response = await fetch(`${RUNTIME_SERVER_URL}/servers`);
         const data = await response.json();
         return {
           statusCode: response.status,
@@ -1315,7 +1315,7 @@ export async function handler(
         };
       }
 
-      // Forward PAYMENT-SIGNATURE header to MCP server for proper x402 handling
+      // Forward PAYMENT-SIGNATURE header to Runtime server for proper x402 handling
       const paymentHeader = event.headers["payment-signature"] || event.headers["PAYMENT-SIGNATURE"];
 
       try {
@@ -1325,7 +1325,7 @@ export async function handler(
         }
 
         // Call MCP server's actual route: /mcp/servers/:serverId/tools/:toolName
-        const response = await fetch(`${MCP_SERVER_URL}/mcp/servers/${encodeURIComponent(slug)}/tools/${encodeURIComponent(tool)}`, {
+        const response = await fetch(`${RUNTIME_SERVER_URL}/mcp/servers/${encodeURIComponent(slug)}/tools/${encodeURIComponent(tool)}`, {
           method: "POST",
           headers: fetchHeaders,
           body: JSON.stringify({ args }),
