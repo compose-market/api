@@ -1,0 +1,13 @@
+{
+  "processedIds": [
+    "mcp:00200200-cocktails-rag-mcp"
+  ],
+  "updatedAt": "2026-02-07T19:22:44.080Z",
+  "pipeline": {
+    "strictSpawn": false,
+    "strictDescriptions": false,
+    "allowEmptyEmbeddings": true,
+    "openaiModel": "gpt-4o",
+    "embeddingModel": "@cf/baai/bge-base-en-v1.5"
+  }
+}

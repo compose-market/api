@@ -10,7 +10,8 @@
     "deploy:domain": "npx serverless create_domain",
     "deploy:quick": "tsx deploy.ts",
     "sync-models": "cd shared/models/scripts && npx tsx sync-models.ts",
-    "dev": "tsx index.ts"
+    "dev": "tsx index.ts",
+    "knowledge:mcp-index": "node --import tsx knowledge/mcp-indexer.ts"
   },
   "dependencies": {
     "@ai-ml.api/aimlapi-vercel-ai": "^1.0.2",

@@ -421,6 +421,8 @@ export async function submitUserOperation(
     console.log(`[aa/userop] Sender: ${userOp.sender}`);
     console.log(`[aa/userop] Beneficiary (gas refund): ${account.address}`);
 
+    // Explicit gas limit to avoid Cronos's EIP-4844 data gas estimation issues
+    // Viem's auto-estimation returns values that are too low for the tx calldata size.
     const txHash = await walletClient.writeContract({
         address: entryPoint,
         abi: ENTRYPOINT_V07_ABI,
@@ -439,6 +441,7 @@ export async function submitUserOperation(
             }],
             account.address, // Beneficiary receives leftover gas
         ],
+        gas: 2_000_000n, // Explicit gas limit to prevent floor data gas cost errors
     });
 
     console.log(`[aa/userop] Transaction submitted: ${txHash}`);
@@ -476,10 +479,11 @@ export async function estimateGas(chainId: number): Promise<GasEstimates> {
     const gasPrice = await client.getGasPrice();
 
     // Cronos-specific defaults (account deployment needs ~350k gas)
+    // mintManowar uses ~650k gas due to multiple cross-contract calls
     return {
-        callGasLimit: 500_000n,           // 500k for contract calls
+        callGasLimit: 1_000_000n,           // 1M for complex contract calls like mintManowar
         verificationGasLimit: 500_000n,   // 500k for verification (covers ~350k deployment)
-        preVerificationGas: 100_000n,     // 100k pre-verification
+        preVerificationGas: 150_000n,     // 150k pre-verification
         maxFeePerGas: gasPrice * 2n,       // 2x current gas price
         maxPriorityFeePerGas: gasPrice / 2n, // 0.5x for priority
     };
