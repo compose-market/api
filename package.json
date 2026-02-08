@@ -19,6 +19,7 @@
     "@ai-sdk/google": "^3.0.20",
     "@ai-sdk/openai": "^3.0.25",
     "@ai-sdk/openai-compatible": "^2.0.26",
+    "@composio/core": "^0.6.3",
     "@crypto.com/facilitator-client": "^1.0.4",
     "@google/genai": "^1.39.0",
     "@hono/node-server": "^1.19.9",
