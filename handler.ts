@@ -886,6 +886,287 @@ export async function handler(
     }
 
     // ==========================================================================
+    // Backpack API Routes (Composio OAuth Credential Broker)
+    // ==========================================================================
+
+    // POST /api/backpack/connect - Initiate OAuth connection for a toolkit
+    if (method === "POST" && path === "/api/backpack/connect") {
+      const { initiateConnection } = await import("./shared/backpack/composio.js");
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { userId, toolkit } = body;
+
+      if (!userId || !toolkit) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "userId and toolkit are required" }),
+        };
+      }
+
+      try {
+        const result = await initiateConnection(userId, toolkit);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify(result),
+        };
+      } catch (error) {
+        console.error("[backpack/connect] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to initiate connection",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // GET /api/backpack/connections?userId=xxx - List all connections for a user
+    if (method === "GET" && path === "/api/backpack/connections") {
+      const { listConnections } = await import("./shared/backpack/composio.js");
+      const userId = event.queryStringParameters?.userId;
+
+      if (!userId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "userId query parameter is required" }),
+        };
+      }
+
+      try {
+        const connections = await listConnections(userId);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ connections }),
+        };
+      } catch (error) {
+        console.error("[backpack/connections] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to list connections",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // GET /api/backpack/status/:toolkit?userId=xxx - Check single toolkit status
+    if (method === "GET" && path.startsWith("/api/backpack/status/")) {
+      const { checkConnection } = await import("./shared/backpack/composio.js");
+      const toolkit = decodeURIComponent(path.replace("/api/backpack/status/", ""));
+      const userId = event.queryStringParameters?.userId;
+
+      if (!userId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "userId query parameter is required" }),
+        };
+      }
+
+      try {
+        const status = await checkConnection(userId, toolkit);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ toolkit, ...status }),
+        };
+      } catch (error) {
+        console.error("[backpack/status] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to check connection status",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // POST /api/backpack/disconnect - Disconnect a toolkit for a user
+    if (method === "POST" && path === "/api/backpack/disconnect") {
+      const { disconnectToolkit } = await import("./shared/backpack/composio.js");
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { userId, toolkit } = body;
+
+      if (!userId || !toolkit) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "userId and toolkit are required" }),
+        };
+      }
+
+      try {
+        const result = await disconnectToolkit(userId, toolkit);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify(result),
+        };
+      } catch (error) {
+        console.error("[backpack/disconnect] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to disconnect toolkit",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // GET /api/backpack/toolkits?search=xxx&limit=20 - Search toolkit catalog
+    if (method === "GET" && path === "/api/backpack/toolkits") {
+      const { searchToolkits } = await import("./shared/backpack/composio.js");
+      const search = event.queryStringParameters?.search || "";
+      const limit = parseInt(event.queryStringParameters?.limit || "20", 10);
+
+      try {
+        const toolkits = await searchToolkits(search, limit);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ toolkits }),
+        };
+      } catch (error) {
+        console.error("[backpack/toolkits] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to search toolkits",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // POST /api/backpack/telegram/link - Generate Telegram deep link for user binding
+    if (method === "POST" && path === "/api/backpack/telegram/link") {
+      const { initiateTelegramLink } = await import("./shared/backpack/composio.js");
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { userId } = body;
+
+      if (!userId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "userId is required" }),
+        };
+      }
+
+      try {
+        const result = await initiateTelegramLink(userId);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify(result),
+        };
+      } catch (error) {
+        console.error("[backpack/telegram/link] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to generate Telegram link",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+    // GET /api/backpack/telegram/status?userId=xxx - Check Telegram channel binding
+    if (method === "GET" && path === "/api/backpack/telegram/status") {
+      const { checkTelegramBinding } = await import("./shared/backpack/composio.js");
+      const userId = event.queryStringParameters?.userId;
+
+      if (!userId) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ error: "userId query parameter is required" }),
+        };
+      }
+
+      try {
+        const status = await checkTelegramBinding(userId);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ toolkit: "telegram", ...status }),
+        };
+      } catch (error) {
+        console.error("[backpack/telegram/status] Error:", error);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            error: "Failed to check Telegram status",
+            details: error instanceof Error ? error.message : String(error),
+          }),
+        };
+      }
+    }
+
+
+
+    // POST /api/backpack/webhook/telegram - Telegram Bot webhook (receives updates)
+    if (method === "POST" && path === "/api/backpack/webhook/telegram") {
+      const { handleTelegramWebhook } = await import("./shared/backpack/composio.js");
+      const update = event.body ? JSON.parse(event.body) : {};
+
+      try {
+        const result = await handleTelegramWebhook(update);
+
+        // Send a confirmation message back to the user if binding succeeded
+        if (result.bound && result.chatId) {
+          const botToken = process.env.COMPOSE_BOT_HTTP_API;
+          if (botToken) {
+            try {
+              const tgRes = await fetch(
+                `https://api.telegram.org/bot${botToken}/sendMessage`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    chat_id: result.chatId,
+                    text: "✅ Connected to Compose Market! You can now receive notifications and interact with your agents here.",
+                    parse_mode: "HTML",
+                  }),
+                }
+              );
+              console.log("[backpack/webhook/telegram] Confirmation sent:", tgRes.status);
+            } catch (msgError) {
+              console.error("[backpack/webhook/telegram] Failed to send confirmation:", msgError);
+            }
+          }
+        }
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: true, ...result }),
+        };
+      } catch (error) {
+        console.error("[backpack/webhook/telegram] Error:", error);
+        return {
+          statusCode: 200, // Telegram expects 200 even on errors
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: false }),
+        };
+      }
+    }
+
+    // ==========================================================================
     // Dynamic Model Registry Routes
     // ==========================================================================
 
