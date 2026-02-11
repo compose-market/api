@@ -7,7 +7,14 @@ provider:
   stage: ${opt:stage, 'prod'}
   memorySize: 2048
   timeout: 120
+  
+  # CloudWatch Logs Configuration
+  logs:
+    httpApi:
+      format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLatency":"$context.responseLatency","integrationLatency":"$context.integrationLatency"}'
+  
   environment:
+    LOG_LEVEL: ${env:LOG_LEVEL, 'info'}
     THIRDWEB_SECRET_KEY: ${env:THIRDWEB_SECRET_KEY}
     THIRDWEB_SERVER_WALLET_ADDRESS: ${env:THIRDWEB_SERVER_WALLET_ADDRESS}
     MERCHANT_WALLET_ADDRESS: ${env:MERCHANT_WALLET_ADDRESS}
@@ -20,6 +27,8 @@ provider:
     FAL_API_KEY: ${env:FAL_API_KEY}
     OPEN_ROUTER_API_KEY: ${env:OPEN_ROUTER_API_KEY}
     AI_ML_API_KEY: ${env:AI_ML_API_KEY}
+    VERTEX_AI_API_KEY: ${env:VERTEX_AI_API_KEY}
+    VERTEX_PROJECT_ID: ${env:VERTEX_PROJECT_ID}
     AGENTVERSE_API_KEY: ${env:AGENTVERSE_API_KEY}
     COMPOSIO_API_KEY: ${env:COMPOSIO_API_KEY}
     MEM0_API_KEY: ${env:MEM0_API_KEY}
