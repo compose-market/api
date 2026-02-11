@@ -441,7 +441,9 @@ export async function preparePayment(
 
                 console.log(`[x402] preparePayment: Executing deferred settlement for ${validation.payload!.sub}`);
                 const { settleComposeKeyPayment } = await import("./settlement.js");
-                const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei);
+                const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+                const chainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
+                const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, chainId);
 
                 if (result.success) {
                     settlementTxHash = result.txHash;
@@ -685,7 +687,7 @@ export async function requirePayment(
 
         console.log(`[x402] Initiating on-chain settlement for ${userAddress}, amount: ${amountWei} wei`);
 
-        const settlementResult = await settleComposeKeyPayment(userAddress, amountWei);
+        const settlementResult = await settleComposeKeyPayment(userAddress, amountWei, explicitChainId);
 
         if (!settlementResult.success) {
             // On-chain payment failed - no money transferred, no Redis update needed
