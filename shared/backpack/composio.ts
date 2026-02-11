@@ -416,6 +416,12 @@ export async function disconnectToolkit(
             return { success: true };
         }
 
+        if (toolkit === "whatsapp") {
+            await deleteChannelBinding(userId, "whatsapp");
+            console.log(`[Composio] Removed WhatsApp binding for user ${userId}`);
+            return { success: true };
+        }
+
         // For OAuth toolkits, delete the connected account
         const connection = await checkConnection(userId, toolkit);
         if (!connection.connected || !connection.accountId) {
