@@ -185,7 +185,7 @@ function transformGemini(jsonPath: string): RawModel[] {
         if (caps.searchGrounding) capabilities.push("search-grounding");
         if (caps.structuredOutputs) capabilities.push("structured-outputs");
         if (caps.imageGeneration) capabilities.push("image-generation");
-        if (caps.audioGeneration) capabilities.push("audio-generation");
+        if (caps.audioGeneration || caps.musicGeneration) capabilities.push("audio-generation");
         if (caps.liveApi) capabilities.push("live-api");
         if (caps.embeddings) capabilities.push("embeddings");
         capabilities.push("streaming"); // All Gemini models support streaming
@@ -210,7 +210,7 @@ function transformGemini(jsonPath: string): RawModel[] {
             taskType = "text-to-image";
         } else if (outputs.includes("video")) {
             taskType = "text-to-video";
-        } else if (caps.audioGeneration || outputs.includes("audio")) {
+        } else if (caps.audioGeneration || caps.musicGeneration || outputs.includes("audio") || outputs.includes("audio (music)")) {
             taskType = "text-to-audio";
         } else if (caps.embeddings) {
             taskType = "feature-extraction";
@@ -365,35 +365,38 @@ function transformOpenRouter(jsonPath: string): RawModel[] {
  * Transform HuggingFace provider JSON to RawModel[]
  * Note: Provider field in hf.json is the internal provider (novita, nebius, etc.)
  * but for routing we always use "huggingface" as the provider
+ * 
+ * SIMPLIFIED: No hardcoded capability inference from task types.
+ * All models can handle any input/output - the model decides what it can do.
  */
 function transformHuggingFace(jsonPath: string): RawModel[] {
+    if (!fs.existsSync(jsonPath)) {
+        console.log(`[sync] HuggingFace: file not found, skipping`);
+        return [];
+    }
+
     const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
+        // SIMPLIFIED: Use capabilities from source data only
+        // No inference from task types - all models are multimodal-capable
         const capabilities: ModelCapability[] = [];
-
-        // HF models typically support streaming
-        capabilities.push("streaming");
-
-        // Check task type for capabilities
-        const task = model.taskType || "text-generation";
-        if (task.includes("image")) {
-            if (task.includes("to-text") || task.includes("text-to-text")) {
-                capabilities.push("vision");
+        
+        // Only normalize known capability names from source
+        const rawCapabilities: string[] = model.capabilities || [];
+        for (const cap of rawCapabilities) {
+            const capLower = cap.toLowerCase();
+            const validCaps: ModelCapability[] = [
+                "tools", "reasoning", "structured-outputs", "vision", "code-execution",
+                "search-grounding", "thinking", "streaming", "live-api", "embeddings",
+                "image-generation", "audio-generation", "audio-understanding", 
+                "video-understanding", "computer-use", "agentic"
+            ];
+            const matched = validCaps.find(vc => vc.toLowerCase() === capLower);
+            if (matched && !capabilities.includes(matched)) {
+                capabilities.push(matched);
             }
-            if (task.includes("to-image") || task === "text-to-image") {
-                capabilities.push("image-generation");
-            }
-        }
-        if (task === "text-to-speech") {
-            capabilities.push("audio-generation");
-        }
-        if (task === "speech-to-text" || task === "automatic-speech-recognition") {
-            capabilities.push("audio-understanding");
-        }
-        if (task === "feature-extraction") {
-            capabilities.push("embeddings");
         }
 
         // Extract pricing
@@ -408,13 +411,13 @@ function transformHuggingFace(jsonPath: string): RawModel[] {
         models.push({
             modelId: model.modelId,
             name: model.name,
-            provider: "huggingface", // Always route via HF Router
-            taskType: task,
+            provider: "huggingface",
+            taskType: model.taskType || "text-generation",
             capabilities,
             pricing,
             ownedBy: model.modelId.split("/")[0] || "huggingface",
-            hfInferenceProvider: model.provider,  // e.g., "fal-ai"
-            hfProviderId: model.providerId,       // e.g., "fal-ai/flux/schnell"
+            hfInferenceProvider: model.provider,
+            hfProviderId: model.providerId,
         });
     }
 
@@ -484,6 +487,112 @@ function transformAIML(jsonPath: string): RawModel[] {
     }
 
     console.log(`[sync] AI/ML: ${models.length} models`);
+    return models;
+}
+
+/**
+ * Transform Vertex AI provider JSON to RawModel[]
+ * SIMPLIFIED: Pass through task types and capabilities as-is from source data
+ * No hardcoded "smart" detection - trust the source data
+ */
+function transformVertex(jsonPath: string): RawModel[] {
+    if (!fs.existsSync(jsonPath)) {
+        console.log(`[sync] Vertex: file not found, skipping`);
+        return [];
+    }
+
+    const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    const models: RawModel[] = [];
+
+    for (const model of raw.models || []) {
+        // Detect CORRECT task type from model ID patterns
+        // Source data often has wrong task types (e.g., lyria marked as text-generation)
+        const modelId = model.modelId || "";
+        const modelIdLower = modelId.toLowerCase();
+        const name = (model.name || "").toLowerCase();
+        
+        // Start with source task type, but override for known mis-categorized models
+        let taskType = model.taskType || "text-generation";
+        const normalizedCapabilities: ModelCapability[] = [];
+        
+        // Image generation models
+        if (modelIdLower.includes("-image") || 
+            modelIdLower.includes("imagen") ||
+            modelIdLower.includes("imagegeneration")) {
+            taskType = "text-to-image";
+            if (!normalizedCapabilities.includes("image-generation")) {
+                normalizedCapabilities.push("image-generation");
+            }
+        }
+        // Video generation models
+        else if (modelIdLower.includes("veo") ||
+                 name.includes("video generation")) {
+            taskType = "text-to-video";
+        }
+        // Audio/Music generation (Lyria and similar)
+        else if (modelIdLower.includes("lyria") || 
+                 modelIdLower.includes("-tts") ||
+                 modelIdLower.includes("music") && modelIdLower.includes("generation")) {
+            taskType = "text-to-audio";
+            if (!normalizedCapabilities.includes("audio-generation")) {
+                normalizedCapabilities.push("audio-generation");
+            }
+        }
+        // Speech-to-text
+        else if (modelIdLower.includes("chirp") ||
+                 modelIdLower.includes("speech-to-text")) {
+            taskType = "speech-to-text";
+            if (!normalizedCapabilities.includes("audio-understanding")) {
+                normalizedCapabilities.push("audio-understanding");
+            }
+        }
+        // Embeddings
+        else if (modelIdLower.includes("embedding") ||
+                 modelIdLower.includes("embed") ||
+                 modelIdLower.includes("multimodalembedding")) {
+            taskType = "feature-extraction";
+            if (!normalizedCapabilities.includes("embeddings")) {
+                normalizedCapabilities.push("embeddings");
+            }
+        }
+        
+        // Normalize capabilities from source data
+        const rawCapabilities: string[] = model.capabilities || [];
+        for (const cap of rawCapabilities) {
+            const capLower = cap.toLowerCase();
+            if (capLower === "function_calling" || capLower === "function_call") {
+                if (!normalizedCapabilities.includes("tools")) normalizedCapabilities.push("tools");
+            } else if (capLower === "image-generation" && !normalizedCapabilities.includes("image-generation")) {
+                normalizedCapabilities.push("image-generation");
+            } else if (capLower === "audio-generation" && !normalizedCapabilities.includes("audio-generation")) {
+                normalizedCapabilities.push("audio-generation");
+            } else if (capLower === "vision" && !normalizedCapabilities.includes("vision")) {
+                normalizedCapabilities.push("vision");
+            } else if (capLower === "streaming" && !normalizedCapabilities.includes("streaming")) {
+                normalizedCapabilities.push("streaming");
+            } else if (capLower === "embeddings" && !normalizedCapabilities.includes("embeddings")) {
+                normalizedCapabilities.push("embeddings");
+            } else if (capLower === "audio-understanding" && !normalizedCapabilities.includes("audio-understanding")) {
+                normalizedCapabilities.push("audio-understanding");
+            } else if (capLower === "video-understanding" && !normalizedCapabilities.includes("video-understanding")) {
+                normalizedCapabilities.push("video-understanding");
+            }
+        }
+
+        models.push({
+            modelId: model.modelId,
+            name: model.name,
+            provider: "vertex",
+            taskType,
+            capabilities: normalizedCapabilities,
+            pricing: model.pricing || null,
+            description: model.description || undefined,
+            contextWindow: model.contextWindow || undefined,
+            ownedBy: model.ownedBy || "google",
+        });
+    }
+
+    console.log(`[sync] Vertex: ${models.length} models`);
     return models;
 }
 
@@ -598,6 +707,11 @@ async function main() {
     const aimlPath = path.join(PROVIDERS_DIR, "aimlapi.json");
     if (fs.existsSync(aimlPath)) {
         allModels.push(...transformAIML(aimlPath));
+    }
+
+    const vertexPath = path.join(PROVIDERS_DIR, "vertex.json");
+    if (fs.existsSync(vertexPath)) {
+        allModels.push(...transformVertex(vertexPath));
     }
 
     console.log(`\n[sync-models] Total models fetched: ${allModels.length}`);

@@ -238,8 +238,9 @@ export async function openaiGenerateVideo(
         console.log(`[openai] Video job created: ${job.id}`);
 
         // Step 2: Poll for completion
-        const maxWaitTime = 5 * 60 * 1000; // 5 minutes max
-        const pollInterval = 5000; // 5 seconds
+        // Sora videos can take 10-30 minutes to generate depending on complexity
+        const maxWaitTime = 30 * 60 * 1000; // 30 minutes max
+        const pollInterval = 10000; // 10 seconds (less frequent to reduce API load)
         const startTime = Date.now();
 
         while (Date.now() - startTime < maxWaitTime) {

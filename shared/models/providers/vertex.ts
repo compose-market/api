@@ -118,6 +118,7 @@ async function* parseVertexStream(stream: ReadableStream<Uint8Array>): AsyncGene
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let hasYieldedContent = false;
     
     try {
         while (true) {
@@ -136,15 +137,37 @@ async function* parseVertexStream(stream: ReadableStream<Uint8Array>): AsyncGene
                 
                 try {
                     const parsed = JSON.parse(data);
-                    // Extract text from candidates
                     const candidate = parsed.candidates?.[0];
+                    
+                    // Check for content blocking
+                    if (candidate?.finishReason === "SAFETY") {
+                        console.error("[vertex] Content blocked by safety settings");
+                        throw new Error("Content blocked by safety settings");
+                    }
+                    
+                    if (candidate?.finishReason === "RECITATION") {
+                        console.error("[vertex] Content blocked by recitation policy");
+                        throw new Error("Content blocked by recitation policy");
+                    }
+                    
+                    // Extract text from candidates
                     if (candidate?.content?.parts?.[0]?.text) {
+                        hasYieldedContent = true;
                         yield candidate.content.parts[0].text;
                     }
                 } catch (e) {
-                    // Ignore parse errors
+                    if (e instanceof Error && e.message.includes("blocked")) {
+                        throw e;
+                    }
+                    // Log but don't throw for parse errors
+                    console.warn("[vertex] Failed to parse SSE chunk:", line.slice(0, 100));
                 }
             }
+        }
+        
+        if (!hasYieldedContent) {
+            console.error("[vertex] Stream completed but no content was generated");
+            throw new Error("No content generated from Vertex AI");
         }
     } finally {
         reader.releaseLock();
@@ -279,16 +302,382 @@ export async function generateVertexChat(
     
     const result = await response.json();
     
+    // Log full response for debugging
+    console.log("[vertex] Response structure:", JSON.stringify(result, null, 2).slice(0, 1000));
+    
     // Extract text from response
     const candidate = result.candidates?.[0];
+    
+    // Check for blocking first
+    if (candidate?.finishReason === "SAFETY") {
+        console.error("[vertex] Content blocked by safety settings");
+        throw new Error("Content blocked by safety settings");
+    }
+    
+    if (candidate?.finishReason === "RECITATION") {
+        console.error("[vertex] Content blocked by recitation policy");
+        throw new Error("Content blocked by recitation policy");
+    }
+    
+    if (candidate?.finishReason === "OTHER") {
+        console.error("[vertex] Generation stopped for other reasons");
+        throw new Error("Generation stopped: " + (candidate.finishMessage || "Unknown reason"));
+    }
+    
+    // Return text if available
     if (candidate?.content?.parts?.[0]?.text) {
         return candidate.content.parts[0].text;
     }
     
-    // Check for blocking
-    if (candidate?.finishReason === "SAFETY") {
-        throw new Error("Content blocked by safety settings");
+    // Log what we got instead
+    console.error("[vertex] No text in response. Finish reason:", candidate?.finishReason);
+    console.error("[vertex] Full candidate:", JSON.stringify(candidate, null, 2));
+    
+    throw new Error(`No content in Vertex AI response. Finish reason: ${candidate?.finishReason || "unknown"}`);
+}
+
+// =============================================================================
+// Image Generation (Imagen 3)
+// =============================================================================
+
+export interface VertexImageResult {
+    buffer: Buffer;
+    mimeType: string;
+}
+
+export async function generateVertexImage(
+    modelId: string,
+    prompt: string,
+    options?: { size?: string; n?: number }
+): Promise<VertexImageResult> {
+    if (!VERTEX_AI_API_KEY) {
+        throw new Error("VERTEX_AI_API_KEY not configured");
     }
     
-    throw new Error("No content in Vertex AI response");
+    // Parse size (e.g., "1024x1024" -> {width: 1024, height: 1024})
+    const size = options?.size || "1024x1024";
+    const [width, height] = size.split("x").map(Number);
+    
+    const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predict`;
+    
+    const requestBody = {
+        instances: [
+            { prompt: prompt }
+        ],
+        parameters: {
+            sampleCount: options?.n || 1,
+            aspectRatio: width && height ? `${width}:${height}` : "1:1",
+        }
+    };
+    
+    console.log(`[vertex] Generating image with ${modelId}: "${prompt.slice(0, 50)}..."`);
+    
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${VERTEX_AI_API_KEY}`,
+        },
+        body: JSON.stringify(requestBody),
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[vertex] Image generation failed: ${response.status}`, errorText);
+        throw new Error(`Vertex AI image generation failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    // Extract base64 image from predictions
+    const prediction = data.predictions?.[0];
+    if (!prediction) {
+        throw new Error("No image data in Vertex AI response");
+    }
+    
+    // Imagen returns base64 in bytesBase64Encoded field
+    const base64Image = prediction.bytesBase64Encoded || prediction.base64Image || prediction.image;
+    if (!base64Image) {
+        console.error("[vertex] Response structure:", JSON.stringify(data).slice(0, 500));
+        throw new Error("No base64 image data in response");
+    }
+    
+    const buffer = Buffer.from(base64Image, "base64");
+    return { buffer, mimeType: "image/png" };
+}
+
+// =============================================================================
+// Video Generation (Veo)
+// =============================================================================
+
+export interface VertexVideoResult {
+    buffer: Buffer;
+    mimeType: string;
+}
+
+export async function generateVertexVideo(
+    modelId: string,
+    prompt: string,
+    options?: { duration?: number; aspectRatio?: string }
+): Promise<VertexVideoResult> {
+    if (!VERTEX_AI_API_KEY) {
+        throw new Error("VERTEX_AI_API_KEY not configured");
+    }
+    
+    const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predictLongRunning`;
+    
+    // Veo uses aspect ratio, not exact dimensions
+    const aspectRatio = options?.aspectRatio || "16:9";
+    const duration = options?.duration || 8; // Default 8 seconds
+    
+    const requestBody = {
+        instances: [
+            { prompt: prompt }
+        ],
+        parameters: {
+            aspectRatio: aspectRatio,
+            durationSeconds: duration,
+        }
+    };
+    
+    console.log(`[vertex] Starting video generation with ${modelId}: "${prompt.slice(0, 50)}..."`);
+    
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${VERTEX_AI_API_KEY}`,
+        },
+        body: JSON.stringify(requestBody),
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[vertex] Video generation failed: ${response.status}`, errorText);
+        throw new Error(`Vertex AI video generation failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    // Long running operation - get operation ID
+    const operationName = data.name;
+    if (!operationName) {
+        throw new Error("No operation ID in response");
+    }
+    
+    console.log(`[vertex] Video job started: ${operationName}`);
+    
+    // Poll for completion
+    const maxAttempts = 60; // 5 minutes (5s intervals)
+    const pollUrl = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/${operationName}`;
+    
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
+        
+        const pollResponse = await fetch(pollUrl, {
+            headers: { "Authorization": `Bearer ${VERTEX_AI_API_KEY}` },
+        });
+        
+        if (!pollResponse.ok) {
+            console.warn(`[vertex] Poll failed: ${pollResponse.status}`);
+            continue;
+        }
+        
+        const pollData = await pollResponse.json();
+        
+        if (pollData.done) {
+            if (pollData.error) {
+                throw new Error(`Video generation failed: ${pollData.error.message}`);
+            }
+            
+            // Extract video from response
+            const videoBase64 = pollData.response?.predictions?.[0]?.bytesBase64Encoded;
+            if (!videoBase64) {
+                throw new Error("No video data in completed operation");
+            }
+            
+            console.log(`[vertex] Video generation complete`);
+            const buffer = Buffer.from(videoBase64, "base64");
+            return { buffer, mimeType: "video/mp4" };
+        }
+        
+        console.log(`[vertex] Polling... attempt ${attempt + 1}/${maxAttempts}`);
+    }
+    
+    throw new Error("Video generation timed out after 5 minutes");
+}
+
+// =============================================================================
+// Text-to-Speech
+// =============================================================================
+
+export interface VertexSpeechResult {
+    buffer: Buffer;
+    mimeType: string;
+}
+
+export async function generateVertexSpeech(
+    modelId: string,
+    text: string,
+    options?: { voice?: string; language?: string }
+): Promise<VertexSpeechResult> {
+    if (!VERTEX_AI_API_KEY) {
+        throw new Error("VERTEX_AI_API_KEY not configured");
+    }
+    
+    // Chirp is the TTS model on Vertex
+    const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predict`;
+    
+    const requestBody = {
+        instances: [
+            { text: text }
+        ],
+        parameters: {
+            languageCode: options?.language || "en-US",
+            voiceName: options?.voice || "en-US-Standard-A",
+        }
+    };
+    
+    console.log(`[vertex] Generating speech with ${modelId}: "${text.slice(0, 50)}..."`);
+    
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${VERTEX_AI_API_KEY}`,
+        },
+        body: JSON.stringify(requestBody),
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[vertex] TTS failed: ${response.status}`, errorText);
+        throw new Error(`Vertex AI TTS failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    const prediction = data.predictions?.[0];
+    if (!prediction?.audioContent) {
+        throw new Error("No audio data in Vertex AI response");
+    }
+    
+    const buffer = Buffer.from(prediction.audioContent, "base64");
+    return { buffer, mimeType: "audio/mp3" };
+}
+
+// =============================================================================
+// Speech-to-Text (ASR)
+// =============================================================================
+
+export interface VertexTranscriptionResult {
+    text: string;
+    confidence?: number;
+}
+
+export async function transcribeVertexAudio(
+    modelId: string,
+    audio: Buffer,
+    options?: { language?: string }
+): Promise<VertexTranscriptionResult> {
+    if (!VERTEX_AI_API_KEY) {
+        throw new Error("VERTEX_AI_API_KEY not configured");
+    }
+    
+    // Chirp ASR model
+    const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predict`;
+    
+    const base64Audio = audio.toString("base64");
+    
+    const requestBody = {
+        instances: [
+            { content: base64Audio }
+        ],
+        parameters: {
+            languageCode: options?.language || "en-US",
+        }
+    };
+    
+    console.log(`[vertex] Transcribing audio with ${modelId}`);
+    
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${VERTEX_AI_API_KEY}`,
+        },
+        body: JSON.stringify(requestBody),
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[vertex] ASR failed: ${response.status}`, errorText);
+        throw new Error(`Vertex AI ASR failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    const prediction = data.predictions?.[0];
+    if (!prediction?.alternatives?.[0]?.transcript) {
+        throw new Error("No transcription in Vertex AI response");
+    }
+    
+    return {
+        text: prediction.alternatives[0].transcript,
+        confidence: prediction.alternatives[0].confidence,
+    };
+}
+
+// =============================================================================
+// Embeddings
+// =============================================================================
+
+export interface VertexEmbeddingResult {
+    embeddings: number[][];
+}
+
+export async function generateVertexEmbeddings(
+    modelId: string,
+    inputs: string[]
+): Promise<VertexEmbeddingResult> {
+    if (!VERTEX_AI_API_KEY) {
+        throw new Error("VERTEX_AI_API_KEY not configured");
+    }
+    
+    // Text embedding models (textembedding-gecko, etc.)
+    const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predict`;
+    
+    const requestBody = {
+        instances: inputs.map(text => ({ content: text })),
+    };
+    
+    console.log(`[vertex] Generating embeddings for ${inputs.length} inputs with ${modelId}`);
+    
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${VERTEX_AI_API_KEY}`,
+        },
+        body: JSON.stringify(requestBody),
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[vertex] Embeddings failed: ${response.status}`, errorText);
+        throw new Error(`Vertex AI embeddings failed: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (!data.predictions || !Array.isArray(data.predictions)) {
+        throw new Error("Invalid embedding response from Vertex AI");
+    }
+    
+    const embeddings = data.predictions.map((pred: any) => {
+        // Different embedding models return different field names
+        return pred.embeddings?.values || pred.embedding?.values || pred.values || [];
+    });
+    
+    return { embeddings };
 }

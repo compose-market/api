@@ -1,50 +1,20 @@
 /**
- * OpenAI-Compatible API Endpoints
+ * OpenAI-Compatible API Endpoints - Enterprise Grade
  * 
- * Route handlers for all /v1/* endpoints.
- * Uses central invoke layer for all provider calls.
- * Includes x402 pay-per-call integration.
+ * Unified handler for ALL model invocations with:
+ * - x402 payment integration (deferred settlement)
+ * - Response adapters for OpenAI compatibility
+ * - Proper SSE formatting and streaming
+ * - Response validation
+ * - Error handling with proper formatting
+ * - CORS handling for cross-origin requests
+ * - Async video generation support
  */
 
 import type { Request, Response } from "express";
-import type {
-    ChatCompletionRequest,
-    ImageGenerationRequest,
-    AudioSpeechRequest,
-    AudioTranscriptionRequest,
-    EmbeddingRequest,
-    VideoGenerationRequest,
-    ModelsListResponse,
-    OpenAIModelDetails,
-} from "./types.js";
-import {
-    generateCompletionId,
-    formatSSE,
-    formatSSEDone,
-    createErrorResponse,
-} from "./types.js";
-import {
-    adaptChatResponse,
-    adaptStreamChunk,
-    adaptStreamToolCallChunk,
-    adaptImageResponse,
-    adaptTranscriptionResponse,
-    adaptEmbeddingResponse,
-    adaptVideoResponse,
-    adaptError,
-} from "./adapter.js";
-import {
-    getCompiledModels,
-    getModelById,
-    getExtendedModels,
-    calculateInferenceCost,
-} from "../../models/registry.js";
+import { getCompiledModels, getModelById, getExtendedModels } from "../../models/registry.js";
 import type { ModelCard } from "../../models/types.js";
-
-// x402 Payment handling
-import { requirePayment, preparePayment, handleX402Payment, createPaymentRequired402Response, INFERENCE_PRICE_WEI, type PreparedPayment } from "../../x402/index.js";
-
-// Central invocation layer for all provider calls
+import { requirePayment, preparePayment, handleX402Payment, INFERENCE_PRICE_WEI } from "../../x402/index.js";
 import {
     invokeChat,
     invokeImage,
@@ -55,9 +25,49 @@ import {
     submitVideoJob,
     checkVideoJobStatus,
     type ChatMessage,
-    type VideoJobResult,
-    type VideoJobStatus,
 } from "../../models/invoke.js";
+
+import {
+    adaptChatResponse,
+    adaptStreamChunk,
+    adaptStreamToolCallChunk,
+    adaptImageResponse,
+    adaptTranscriptionResponse,
+    adaptEmbeddingResponse,
+    adaptVideoResponse,
+    adaptError,
+} from "./adapter.js";
+
+import {
+    generateCompletionId,
+    formatSSE,
+    formatSSEDone,
+    createErrorResponse,
+    type ChatCompletionRequest,
+    type ImageGenerationRequest,
+    type AudioSpeechRequest,
+    type AudioTranscriptionRequest,
+    type EmbeddingRequest,
+    type VideoGenerationRequest,
+    type ModelsListResponse,
+    type OpenAIModelDetails,
+} from "./types.js";
+
+// =============================================================================
+// CORS Headers
+// =============================================================================
+
+/**
+ * Set CORS headers for all responses
+ * Required for browser-based clients accessing the API
+ * CRITICAL: This is used by backend/manowar which does NOT go through handler.ts
+ */
+function setCorsHeaders(res: Response): void {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Chain-Id, X-Payment-Data");
+    res.setHeader("Access-Control-Expose-Headers", "X-Transaction-Hash, X-Request-Id");
+}
 
 // =============================================================================
 // Model Conversion
@@ -74,7 +84,7 @@ function modelCardToOpenAI(card: ModelCard): OpenAIModelDetails {
             ? card.createdAt
             : (card.createdAt ? new Date(card.createdAt).getTime() / 1000 : Date.now() / 1000),
         owned_by: card.ownedBy || card.provider,
-        provider: card.provider,  // Explicit provider for routing
+        provider: card.provider,
         name: card.name,
         description: card.description,
         context_window: card.contextWindow,
@@ -100,6 +110,14 @@ export async function handleListModels(
     extended: boolean = false
 ): Promise<void> {
     try {
+        setCorsHeaders(res);
+        
+        // Handle preflight
+        if (req.method === "OPTIONS") {
+            res.status(200).end();
+            return;
+        }
+        
         const models = extended ? getExtendedModels() : getCompiledModels();
         const response: ModelsListResponse = {
             object: "list",
@@ -107,6 +125,7 @@ export async function handleListModels(
         };
         res.status(200).json(response);
     } catch (error) {
+        setCorsHeaders(res);
         const { status, body } = adaptError(error, 500);
         res.status(status).json(body);
     }
@@ -120,8 +139,16 @@ export async function handleGetModel(
     res: Response
 ): Promise<void> {
     try {
+        setCorsHeaders(res);
+        
+        if (req.method === "OPTIONS") {
+            res.status(200).end();
+            return;
+        }
+        
         const modelIdParam = req.params.model || req.params.id;
         const modelId = Array.isArray(modelIdParam) ? modelIdParam[0] : modelIdParam;
+        
         if (!modelId) {
             res.status(400).json(createErrorResponse(
                 "Model ID is required",
@@ -143,6 +170,7 @@ export async function handleGetModel(
 
         res.status(200).json(modelCardToOpenAI(model));
     } catch (error) {
+        setCorsHeaders(res);
         const { status, body } = adaptError(error, 500);
         res.status(status).json(body);
     }
@@ -159,6 +187,15 @@ export async function handleChatCompletions(
     req: Request,
     res: Response
 ): Promise<void> {
+    // Set CORS headers immediately
+    setCorsHeaders(res);
+    
+    // Handle preflight
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body: ChatCompletionRequest = req.body;
 
@@ -174,13 +211,21 @@ export async function handleChatCompletions(
 
         console.log(`[chat] Received request for model: "${body.model}"`);
 
-        // Lookup model to verify it exists and log provider
+        // Lookup model to verify it exists
         const modelCard = getModelById(body.model);
         console.log(`[chat] Model lookup result: ${modelCard ? `found (provider: ${modelCard.provider})` : "NOT FOUND"}`);
+        
         if (!modelCard) {
             console.error(`[chat] Available model IDs (first 10):`);
             const compiled = getCompiledModels();
             compiled.models.slice(0, 10).forEach(m => console.error(`  - ${m.modelId}`));
+            
+            res.status(404).json(createErrorResponse(
+                `Model '${body.model}' not found`,
+                "invalid_request_error",
+                "model_not_found"
+            ));
+            return;
         }
 
         if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
@@ -193,24 +238,21 @@ export async function handleChatCompletions(
         }
 
         // Prepare payment (validate without charging yet)
-        // Settlement will happen AFTER first response token
         const payment = await preparePayment(req);
         if (!payment.valid) {
-            // Use handleX402Payment to generate proper ThirdWeb-compatible 402
-            // This allows wrapFetchWithPayment on client to auto-sign payments
             const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
-
-            // Read X-CHAIN-ID header from client to determine 402 format (Cronos V1 vs ThirdWeb V2)
             const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
             const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : undefined;
 
             const x402Result = await handleX402Payment(
-                null, // No payment data = generates 402 challenge
+                null,
                 resourceUrl,
                 req.method || "POST",
                 String(INFERENCE_PRICE_WEI),
-                explicitChainId, // Pass client-specified chain ID
+                explicitChainId,
             );
+            
+            setCorsHeaders(res);
             Object.entries(x402Result.responseHeaders).forEach(([key, value]) => {
                 res.setHeader(key, value);
             });
@@ -224,12 +266,10 @@ export async function handleChatCompletions(
         const imageUrl = (body as any).image_url;
         const audioUrl = (body as any).audio_url;
 
-        // Convert messages to ChatMessage format - preserve all fields
-        // For vision/audio models, inject image_url or audio_url into the last user message
+        // Convert messages to ChatMessage format
         const messages: ChatMessage[] = body.messages.map((m, idx) => {
             const isLastUserMessage = m.role === "user" && idx === body.messages.length - 1;
 
-            // If this is the last user message and we have media attachments, use multipart content
             if (isLastUserMessage && (imageUrl || audioUrl)) {
                 const contentParts: any[] = [
                     { type: "text" as const, text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) },
@@ -241,7 +281,6 @@ export async function handleChatCompletions(
                 }
                 if (audioUrl) {
                     console.log(`[chat] Injecting audio_url into last user message: ${audioUrl.slice(0, 60)}...`);
-                    // Use input_audio format for audio attachments (per OpenAI Realtime/GPT-4o-audio format)
                     contentParts.push({ type: "input_audio" as const, input_audio: { url: audioUrl } });
                 }
 
@@ -257,7 +296,6 @@ export async function handleChatCompletions(
             return {
                 role: m.role as "system" | "user" | "assistant" | "tool",
                 content: typeof m.content === "string" ? m.content : (m.content ? JSON.stringify(m.content) : null),
-                // Preserve tool-related fields
                 tool_calls: m.tool_calls,
                 tool_call_id: m.tool_call_id,
                 name: m.name,
@@ -266,18 +304,17 @@ export async function handleChatCompletions(
 
         // Check if streaming
         if (body.stream) {
+            // Set SSE headers
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
             res.setHeader("Connection", "keep-alive");
             res.setHeader("X-Request-Id", requestId);
 
-            // Debug: Log what we're sending to invokeChat
-            console.log(`[chat] Streaming request: model=${body.model}, messages=${messages.length}, tools=${body.tools?.length || 0}, tool_choice=${JSON.stringify(body.tool_choice) || "none"}`);
+            console.log(`[chat] Streaming request: model=${body.model}, messages=${messages.length}, tools=${body.tools?.length || 0}`);
 
-            // Track if we've settled payment (after first token)
             let paymentSettled = false;
-            // Track if we've sent any tool calls (for correct finish_reason)
             let hasToolCalls = false;
+            let fullContent = "";
 
             try {
                 await invokeChat(body.model, messages, {
@@ -287,66 +324,72 @@ export async function handleChatCompletions(
                     tools: body.tools,
                     tool_choice: body.tool_choice,
                     onToken: async (token: string) => {
-                        // Track if this is the first chunk (for role inclusion)
                         const isFirst = !paymentSettled;
 
-                        // Settle payment on FIRST token (model is responding)
+                        // Settle payment on FIRST token
                         if (!paymentSettled) {
                             paymentSettled = true;
                             console.log(`[chat] First token received, settling payment...`);
                             const settled = await payment.settle();
                             if (settled.txHash) {
                                 console.log(`[chat] Payment settled: ${settled.txHash}`);
+                                try {
+                                    res.setHeader("X-Transaction-Hash", settled.txHash);
+                                } catch {
+                                    console.log(`[chat] Payment settled (tx: ${settled.txHash}) but headers already sent`);
+                                }
                             }
                         }
 
-                        // Pass isFirst to include role: "assistant" in first chunk
+                        fullContent += token;
+                        
+                        // Use adapter for proper SSE formatting
                         const chunk = adaptStreamChunk(token, body.model, requestId, false, null, isFirst);
-                        res.write(formatSSE(chunk));
+                        const sseData = formatSSE(chunk);
+                        console.log(`[chat] Sending SSE chunk: ${sseData.slice(0, 100)}${sseData.length > 100 ? '...' : ''}`);
+                        res.write(sseData);
                     },
                     onToolCall: async (toolCall) => {
-                        // Mark that we have tool calls for finish_reason
                         hasToolCalls = true;
 
-                        // Settle payment on FIRST tool call (model is responding)
                         if (!paymentSettled) {
                             paymentSettled = true;
                             console.log(`[chat] First tool call received, settling payment...`);
                             const settled = await payment.settle();
                             if (settled.txHash) {
                                 console.log(`[chat] Payment settled: ${settled.txHash}`);
+                                try {
+                                    res.setHeader("X-Transaction-Hash", settled.txHash);
+                                } catch {
+                                    console.log(`[chat] Payment settled (tx: ${settled.txHash}) but headers already sent`);
+                                }
                             }
                         }
 
-                        // Format tool call as proper OpenAI SSE chunk
+                        // Format tool call using adapter
                         const chunk = adaptStreamToolCallChunk(toolCall, body.model, requestId);
-                        // Log exact SSE content for debugging
                         console.log(`[chat] Tool call SSE chunk: ${JSON.stringify(chunk)}`);
                         res.write(formatSSE(chunk));
                     },
                     onComplete: () => {
-                        // Add payment headers at end
-                        const paymentHeaders = payment.getHeaders();
-                        for (const [key, value] of Object.entries(paymentHeaders)) {
-                            // Can't set headers after stream started, log instead
-                            console.log(`[chat] Payment header: ${key}=${value}`);
-                        }
-
-                        // Use "tool_calls" finish_reason if tool calls were sent, otherwise "stop"
                         const finishReason = hasToolCalls ? "tool_calls" : "stop";
-                        console.log(`[chat] Stream complete, finish_reason: ${finishReason}`);
+                        console.log(`[chat] Stream complete. Total content length: ${fullContent.length} chars, finish_reason: ${finishReason}`);
+                        
                         const finalChunk = adaptStreamChunk("", body.model, requestId, true, finishReason);
                         res.write(formatSSE(finalChunk));
                         res.write(formatSSEDone());
                         res.end();
                     },
+                    onError: (error) => {
+                        console.error(`[chat] Stream error from invokeChat: ${error.message}`);
+                        // Error will be handled by the catch block below
+                        throw error;
+                    },
                 });
             } catch (error) {
-                // Headers already sent - send error as SSE event
                 const errorMessage = error instanceof Error ? error.message : "Unknown streaming error";
                 console.error(`[chat] Streaming error: ${errorMessage}`);
 
-                // Send error as final SSE chunk (OpenAI-compatible format)
                 const errorChunk = {
                     id: requestId,
                     object: "chat.completion.chunk",
@@ -355,7 +398,7 @@ export async function handleChatCompletions(
                     choices: [{
                         index: 0,
                         delta: {},
-                        finish_reason: "error",
+                        finish_reason: "error" as const,
                     }],
                     error: {
                         message: errorMessage,
@@ -368,7 +411,6 @@ export async function handleChatCompletions(
                     res.write(formatSSEDone());
                     res.end();
                 } catch (writeError) {
-                    // Connection already closed
                     console.error(`[chat] Could not send error to client:`, writeError);
                 }
             }
@@ -380,19 +422,23 @@ export async function handleChatCompletions(
                 tools: body.tools,
                 tool_choice: body.tool_choice,
             });
-            if (result) {
-                // Model succeeded, now settle payment
-                console.log(`[chat] Non-streaming response ready, settling payment...`);
-                const settled = await payment.settle();
-                if (settled.txHash) {
-                    res.setHeader("x-compose-key-tx-hash", settled.txHash);
-                }
-
-                const response = adaptChatResponse(result, body.model, requestId);
-                res.status(200).json(response);
+            
+            if (!result) {
+                res.status(500).json(createErrorResponse("Empty response from model", "internal_error"));
+                return;
             }
+
+            console.log(`[chat] Non-streaming response ready, settling payment...`);
+            const settled = await payment.settle();
+            if (settled.txHash) {
+                res.setHeader("x-compose-key-tx-hash", settled.txHash);
+            }
+
+            const response = adaptChatResponse(result, body.model, requestId);
+            res.status(200).json(response);
         }
     } catch (error) {
+        setCorsHeaders(res);
         const { status, body: errBody } = adaptError(error, 500);
         res.status(status).json(errBody);
     }
@@ -409,6 +455,13 @@ export async function handleImageGeneration(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body: ImageGenerationRequest = req.body;
 
@@ -423,25 +476,23 @@ export async function handleImageGeneration(
 
         const model = body.model || "dall-e-3";
 
-        // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
-        // Support image_url for image-to-image workflows (from frontend IPFS attachments)
         const imageUrl = (body as any).image_url || (body as any).image;
 
         const result = await invokeImage(model, body.prompt, {
             n: body.n,
             size: body.size,
             quality: body.quality,
-            imageUrl: imageUrl,  // Pass URL for image-to-image
+            imageUrl: imageUrl,
         });
 
-        // Adapt buffer to OpenAI format
         const response = adaptImageResponse({
             images: [{
                 b64_json: result.buffer.toString("base64"),
             }],
         });
+        
         res.status(200).json(response);
     } catch (error) {
         const { status, body: errBody } = adaptError(error, 500);
@@ -451,12 +502,18 @@ export async function handleImageGeneration(
 
 /**
  * POST /v1/images/edits - Edit images
- * Note: Uses image generation with image input for edit capability
  */
 export async function handleImageEdit(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body = req.body;
 
@@ -478,10 +535,8 @@ export async function handleImageEdit(
             return;
         }
 
-        // Use image generation with reference image
         const model = body.model || "dall-e-2";
 
-        // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
         const result = await invokeImage(model, body.prompt, {
@@ -494,6 +549,7 @@ export async function handleImageEdit(
                 b64_json: result.buffer.toString("base64"),
             }],
         });
+        
         res.status(200).json(response);
     } catch (error) {
         const { status, body: errBody } = adaptError(error, 500);
@@ -512,6 +568,13 @@ export async function handleAudioSpeech(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body: AudioSpeechRequest = req.body;
 
@@ -528,7 +591,6 @@ export async function handleAudioSpeech(
         const voice = body.voice || "alloy";
         const format = body.response_format || "mp3";
 
-        // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
         const audioBuffer = await invokeTTS(model, body.input, {
@@ -537,7 +599,6 @@ export async function handleAudioSpeech(
             responseFormat: format,
         });
 
-        // Set appropriate content type
         const contentTypes: Record<string, string> = {
             mp3: "audio/mpeg",
             opus: "audio/opus",
@@ -562,6 +623,13 @@ export async function handleAudioTranscription(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body: AudioTranscriptionRequest = req.body;
 
@@ -575,11 +643,8 @@ export async function handleAudioTranscription(
         }
 
         const model = body.model || "whisper-1";
-
-        // Decode base64 file to buffer
         const audioBuffer = Buffer.from(body.file, "base64");
 
-        // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
         const result = await invokeASR(model, audioBuffer, {
@@ -589,7 +654,6 @@ export async function handleAudioTranscription(
 
         const response = adaptTranscriptionResponse(result);
 
-        // Return text only if response_format is "text"
         if (body.response_format === "text") {
             res.setHeader("Content-Type", "text/plain");
             res.send(response.text);
@@ -613,6 +677,13 @@ export async function handleEmbeddings(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body: EmbeddingRequest = req.body;
 
@@ -634,7 +705,6 @@ export async function handleEmbeddings(
             return;
         }
 
-        // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
         const result = await invokeEmbedding(body.model, body.input, {
@@ -658,13 +728,20 @@ export async function handleEmbeddings(
 
 /**
  * POST /v1/videos/generations - Generate videos
- * Returns job ID immediately for async providers (AIML, etc.)
+ * Returns job ID immediately for async providers (AIML, OpenAI, Google)
  * Returns video directly for sync providers
  */
 export async function handleVideoGeneration(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const body: VideoGenerationRequest = req.body;
 
@@ -686,7 +763,6 @@ export async function handleVideoGeneration(
             return;
         }
 
-        // Verify x402 payment before processing
         if (!await requirePayment(req, res)) return;
 
         // Check if this model uses async video generation
@@ -700,10 +776,9 @@ export async function handleVideoGeneration(
             const jobResult = await submitVideoJob(body.model, body.prompt, {
                 duration: body.duration,
                 aspectRatio: body.aspect_ratio,
-                imageUrl: body.image_url || body.image,  // Support both URL and base64
+                imageUrl: body.image_url || body.image,
             });
 
-            // Return OpenAI-style async response
             res.status(202).json({
                 id: jobResult.jobId,
                 object: "video.generation",
@@ -719,10 +794,9 @@ export async function handleVideoGeneration(
             duration: body.duration,
             aspectRatio: body.aspect_ratio,
             resolution: body.size,
-            imageUrl: body.image_url || body.image,  // Support both URL and base64
+            imageUrl: body.image_url || body.image,
         });
 
-        // Adapt to OpenAI format
         const response = adaptVideoResponse({
             videos: [{
                 base64: result.buffer.toString("base64"),
@@ -745,9 +819,17 @@ export async function handleVideoStatus(
     req: Request,
     res: Response
 ): Promise<void> {
+    setCorsHeaders(res);
+    
+    if (req.method === "OPTIONS") {
+        res.status(200).end();
+        return;
+    }
+    
     try {
         const jobIdParam = req.params.id;
         const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
+        
         if (!jobId) {
             res.status(400).json(createErrorResponse(
                 "Video job ID is required",

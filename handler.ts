@@ -220,11 +220,156 @@ export async function handler(
     }
 
     // POST /v1/chat/completions - Chat completions (text-generation)
+    // Also handles multimodal models by detecting task type and routing appropriately
     if (method === "POST" && path === "/v1/chat/completions") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleChatCompletions(req as any, res as any);
-      return res.getResult();
+      try {
+        const body = event.body ? JSON.parse(event.body) : {};
+        const modelId = body.model;
+        
+        if (!modelId) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "model is required" }),
+          };
+        }
+        
+        // Load models registry to check task type
+        await loadModules();
+        const modelCard = models?.getModelById?.(modelId) || null;
+        const taskType = modelCard?.taskType || "text-generation";
+        
+        console.log(`[handler] Chat completion request for model: ${modelId}, taskType: ${taskType}`);
+        
+        // Route multimodal models to appropriate endpoints
+        if (taskType === "text-to-image" || taskType === "image-to-image") {
+          console.log(`[handler] Routing image model ${modelId} to /v1/images/generations`);
+          // Transform chat completion request to image generation request
+          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
+          const prompt = typeof lastUserMessage?.content === "string" 
+            ? lastUserMessage.content 
+            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
+          
+          if (!prompt) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({ error: "No prompt found in messages" }),
+            };
+          }
+          
+          // Modify request body for image generation
+          event.body = JSON.stringify({
+            model: modelId,
+            prompt,
+            n: 1,
+            size: "1024x1024",
+          });
+          
+          const req = createMockReq(event);
+          const res = createMockRes();
+          await handleImageGeneration(req as any, res as any);
+          return res.getResult();
+        }
+        
+        if (taskType === "text-to-video" || taskType === "image-to-video") {
+          console.log(`[handler] Routing video model ${modelId} to /v1/videos/generations`);
+          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
+          const prompt = typeof lastUserMessage?.content === "string" 
+            ? lastUserMessage.content 
+            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
+          
+          if (!prompt) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({ error: "No prompt found in messages" }),
+            };
+          }
+          
+          event.body = JSON.stringify({
+            model: modelId,
+            prompt,
+          });
+          
+          const req = createMockReq(event);
+          const res = createMockRes();
+          await handleVideoGeneration(req as any, res as any);
+          return res.getResult();
+        }
+        
+        if (taskType === "text-to-speech" || taskType === "text-to-audio") {
+          console.log(`[handler] Routing audio model ${modelId} to /v1/audio/speech`);
+          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
+          const input = typeof lastUserMessage?.content === "string" 
+            ? lastUserMessage.content 
+            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
+          
+          if (!input) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({ error: "No input text found in messages" }),
+            };
+          }
+          
+          event.body = JSON.stringify({
+            model: modelId,
+            input,
+            voice: "alloy",
+          });
+          
+          const req = createMockReq(event);
+          const res = createMockRes();
+          await handleAudioSpeech(req as any, res as any);
+          return res.getResult();
+        }
+        
+        // Route embedding models to embeddings endpoint
+        if (taskType === "feature-extraction") {
+          console.log(`[handler] Routing embedding model ${modelId} to /v1/embeddings`);
+          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
+          const input = typeof lastUserMessage?.content === "string" 
+            ? lastUserMessage.content 
+            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
+          
+          if (!input) {
+            return {
+              statusCode: 400,
+              headers: corsHeaders,
+              body: JSON.stringify({ error: "No input text found in messages for embedding" }),
+            };
+          }
+          
+          event.body = JSON.stringify({
+            model: modelId,
+            input,
+          });
+          
+          const req = createMockReq(event);
+          const res = createMockRes();
+          await handleEmbeddings(req as any, res as any);
+          return res.getResult();
+        }
+        
+        // Default: text-generation models go to chat completions
+        console.log(`[handler] Routing text model ${modelId} to /v1/chat/completions`);
+        const req = createMockReq(event);
+        const res = createMockRes();
+        await handleChatCompletions(req as any, res as any);
+        return res.getResult()
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[handler] Error in /v1/chat/completions:`, errorMessage);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ 
+            error: "Internal server error", 
+            message: errorMessage 
+          }),
+        };
+      }
     }
 
     // POST /v1/images/generations - Image generation
@@ -1905,12 +2050,24 @@ Create a professional wide banner image for an AI workflow orchestration system.
     };
   } catch (error) {
     console.error("Lambda handler error:", error);
+    // Log full stack trace for debugging
+    if (error instanceof Error && error.stack) {
+      console.error("Stack trace:", error.stack);
+    }
     return {
       statusCode: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      headers: { 
+        ...corsHeaders, 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-session-active, x-session-budget-remaining, x-session-user-address, x-manowar-internal, x-chain-id",
+      },
       body: JSON.stringify({
         error: "Internal server error",
         message: error instanceof Error ? error.message : "Unknown error",
+        path: event.rawPath,
+        method: event.requestContext.http.method,
       }),
     };
   }

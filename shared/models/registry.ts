@@ -1,5 +1,5 @@
 /**
- * Model Registry
+ * Model Registry - Enterprise Grade
  * 
  * Loads models from compiled models.json (built by sync-models.ts).
  * All metadata comes from pre-compiled provider JSONs - no runtime API fetching.
@@ -68,14 +68,14 @@ function getModelsBasePath(): string {
 
     // 2. Lambda-specific paths
     candidatePaths.push(
-        "/var/task/dist/data",                    // Lambda deployment structure
-        "/var/task/data",                         // Alternative Lambda structure
+        "/var/task/dist/data",
+        "/var/task/data",
     );
 
     // 3. process.cwd() based paths (reliable in Lambda)
     candidatePaths.push(
-        path.join(process.cwd(), "dist", "data"), // Lambda with dist folder
-        path.join(process.cwd(), "data"),         // Direct data folder
+        path.join(process.cwd(), "dist", "data"),
+        path.join(process.cwd(), "data"),
     );
 
     // 4. Relative to source (for local development with tsx)
@@ -295,6 +295,9 @@ export async function refreshRegistry(): Promise<{
 
 /**
  * Get language model instance - routes to correct provider
+ * 
+ * NOTE: Vertex AI uses direct API routing in invoke.ts, not AI SDK.
+ * This is because Vertex AI requires custom authentication and request formats.
  */
 export function getLanguageModel(modelId: string, provider?: ModelProvider): LanguageModel {
     const modelProvider = provider || getModelSource(modelId);
@@ -306,24 +309,41 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
     }
 
     console.log(`[getLanguageModel] Creating model instance for provider: ${modelProvider}`);
+    
     switch (modelProvider) {
         case "openai":
             return openai(modelId);
+        
         case "anthropic":
             return anthropic(modelId);
+        
         case "google":
             return google(modelId);
+        
         case "asi-one":
             return asiOneProvider(modelId);
+        
         case "asi-cloud":
             return asiCloudProvider(modelId);
+        
         case "openrouter":
             console.log(`[getLanguageModel] Using openRouterProvider for: ${modelId}`);
             return openRouterProvider(modelId);
+        
         case "aiml":
             return aimlProvider(modelId);
+        
         case "huggingface":
             return hfProvider(modelId);
+        
+        case "vertex":
+            // Vertex AI is handled in invoke.ts via direct HTTP calls
+            // It requires custom authentication (JWT tokens) that AI SDK doesn't support
+            throw new Error(
+                `Vertex AI models (${modelId}) use direct API routing, not AI SDK. ` +
+                `Use invokeChat with direct streaming or the Vertex provider-specific functions.`
+            );
+        
         default:
             throw new Error(`Unknown provider: ${modelProvider} for model: ${modelId}`);
     }
