@@ -10,7 +10,7 @@
 import { createPublicClient, createWalletClient, http, encodeFunctionData, keccak256, toHex, concat, pad, type Hex, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { cronosTestnet } from "viem/chains";
-import { CHAIN_IDS } from "../config/chains.js";
+import { CHAIN_IDS } from "../configs/chains.js";
 
 // =============================================================================
 // Constants (v0.7)
