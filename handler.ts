@@ -1,543 +1,425 @@
 /**
- * AWS Lambda Handler for Compose Market API
+ * AWS Lambda Handler
  * 
- * Handles:
- * - /v1/* - OpenAI-compatible API endpoints (primary)
- * - /api/registry/* - Model registry routes
- * - /api/hf/* - HuggingFace endpoints
- * - /api/agentverse/* - Agentverse endpoints
+ * Handles non-inference API endpoints:
+ * - Account management (Compose Keys, sessions)
+ * - Account Abstraction (Cronos)
+ * - Backpack/Composio integrations
+ * - Model registry queries
+ * 
+ * All /v1/* endpoints are delegated to backend/lambda/shared/api/gateway.ts
+ * using the gateway route matcher.
+ * 
+ * @module lambda/handler
  */
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "aws-lambda";
-import type { ModelCard } from "./shared/models/types.js";
 
-// OpenAI-compatible endpoint handlers
+// Compose Keys
 import {
-  handleListModels,
-  handleGetModel,
-  handleChatCompletions,
-  handleImageGeneration,
-  handleImageEdit,
-  handleAudioSpeech,
-  handleAudioTranscription,
-  handleEmbeddings,
-  handleVideoGeneration,
-} from "./shared/api/openai/endpoints.js";
+    createComposeKey,
+    listUserKeys,
+    revokeKey,
+    getActiveSession,
+} from "./shared/keys/index.js";
 
-import { handleGetModelParams } from "./shared/api/openai/paramsHandler.js";
+import {
+    extractComposeKeyFromHeader,
+    validateComposeKey,
+    consumeKeyBudget,
+    getKeyBudgetInfo,
+} from "./shared/keys/middleware.js";
 
-// Lazy-load heavy modules for cold start optimization
-let hfModelsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModels;
-let hfModelDetailsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModelDetails;
-let hfTasksHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFTasks;
-let agentverseSearch: typeof import("./external/agentverse.js").searchAgents;
-let agentverseGet: typeof import("./external/agentverse.js").getAgent;
-let agentverseExtractTags: typeof import("./external/agentverse.js").extractUniqueTags;
-let agentverseExtractCategories: typeof import("./external/agentverse.js").extractUniqueCategories;
-let models: typeof import("./shared/models/registry.js");
+import { settleComposeKeyPayment } from "./shared/x402/settlement.js";
+import { getSessionStatus } from "./shared/x402/session-budget.js";
 
-// Prod Servers URLs for proxying
-const RUNTIME_SERVER_URL = process.env.RUNTIME_SERVICE_URL || "https://runtime.compose.market";
-const MANOWAR_SERVER_URL = process.env.MANOWAR_SERVICE_URL || "https://manowar.compose.market";
+// Account Abstraction
+const loadAA = () => import("./shared/aa/index.js");
 
-async function loadModules() {
-  if (!hfModelsHandler) {
-    const hf = await import("./shared/models/providers/huggingface.js");
-    hfModelsHandler = hf.handleGetHFModels;
-    hfModelDetailsHandler = hf.handleGetHFModelDetails;
-    hfTasksHandler = hf.handleGetHFTasks;
-  }
-  if (!agentverseSearch) {
-    const av = await import("./external/agentverse.js");
-    agentverseSearch = av.searchAgents;
-    agentverseGet = av.getAgent;
-    agentverseExtractTags = av.extractUniqueTags;
-    agentverseExtractCategories = av.extractUniqueCategories;
-  }
-  if (!models) {
-    models = await import("./shared/models/registry.js");
-  }
-}
+// Backpack / Composio
+const loadBackpack = () => import("./shared/backpack/composio.js");
 
-// CORS headers - x402 needs PAYMENT-SIGNATURE header (v2) and exposed response headers
-// Session headers for x402 bypass: x-session-active, x-session-budget-remaining
-// Internal bypass: x-manowar-internal (for nested LLM calls from Manowar agents)
-// Compose Keys: Authorization header for external clients
+// Model Registry
+const loadRegistry = () => import("./shared/models/registry.js");
+
+// Faucet
+const loadFaucet = () => import("./shared/faucet/index.js");
+
+// Inference Gateway (canonical /v1 routing)
+import { handleInferenceEvent } from "./shared/inference/gateway.js";
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, x-session-user-address, x-manowar-internal, x-chain-id, Access-Control-Expose-Headers",
-  "Access-Control-Expose-Headers": "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, x-compose-key-budget-used, x-compose-key-budget-remaining, *",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
+        "X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, " +
+        "x-session-user-address, x-manowar-internal, x-chain-id, Access-Control-Expose-Headers",
+    "Access-Control-Expose-Headers":
+        "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
+        "x-compose-key-budget-used, x-compose-key-budget-remaining, *",
 };
 
-// Mock Express request/response for handler compatibility
-function createMockReq(event: APIGatewayProxyEventV2) {
-  const url = new URL(event.rawPath + (event.rawQueryString ? `?${event.rawQueryString}` : ""), "http://localhost");
-  return {
-    method: event.requestContext.http.method,
-    path: event.rawPath,
-    originalUrl: event.rawPath,
-    query: event.queryStringParameters || {},
-    params: event.pathParameters || {},
-    body: event.body ? JSON.parse(event.body) : {},
-    headers: Object.fromEntries(
-      Object.entries(event.headers || {}).map(([k, v]) => [k.toLowerCase(), v])
-    ),
-    get: (header: string) => event.headers?.[header] || event.headers?.[header.toLowerCase()],
-    protocol: "https",
-  };
-}
+// =============================================================================
+// Main Lambda Handler
+// =============================================================================
 
-function createMockRes() {
-  let statusCode = 200;
-  let body: unknown = null;
-  const headers: Record<string, string> = { ...corsHeaders };
-  let headersSent = false;
-  let isStreaming = false;
-  let isBinary = false;
-  const chunks: Buffer[] = [];
-
-  return {
-    status(code: number) {
-      statusCode = code;
-      return this;
-    },
-    json(data: unknown) {
-      body = JSON.stringify(data);
-      headers["Content-Type"] = "application/json";
-      return this;
-    },
-    send(data: Buffer | string) {
-      if (Buffer.isBuffer(data)) {
-        isBinary = true;
-        body = data.toString("base64");
-      } else {
-        body = data;
-      }
-      headersSent = true;
-      return this;
-    },
-    setHeader(key: string, value: string) {
-      headers[key] = value;
-      return this;
-    },
-    write(chunk: Buffer | string) {
-      isStreaming = true;
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    },
-    end() {
-      headersSent = true;
-    },
-    on(_event: string, _cb: () => void) {
-      // No-op for Lambda
-    },
-    get headersSent() {
-      return headersSent;
-    },
-    getResult(): APIGatewayProxyResultV2 {
-      if (isStreaming) {
-        return {
-          statusCode,
-          headers,
-          body: Buffer.concat(chunks).toString("utf-8"),
-        };
-      }
-      if (isBinary) {
-        return {
-          statusCode,
-          headers,
-          body: body as string,
-          isBase64Encoded: true,
-        };
-      }
-      return {
-        statusCode,
-        headers,
-        body: body as string,
-      };
-    },
-  };
-}
-
-// Main handler
 export async function handler(
-  event: APIGatewayProxyEventV2,
-  _context: Context
+    event: APIGatewayProxyEventV2,
+    _context: Context
 ): Promise<APIGatewayProxyResultV2> {
-  // Handle CORS preflight
-  if (event.requestContext.http.method === "OPTIONS") {
-    return {
-      statusCode: 204,
-      headers: corsHeaders,
-      body: "",
-    };
-  }
-
-  await loadModules();
-
-  const path = event.rawPath;
-  const method = event.requestContext.http.method;
-
-  try {
-    // ==========================================================================
-    // OpenAI-Compatible API v1 Routes (STANDARDIZED)
-    // ==========================================================================
-
-    // GET /v1/models - List available models (OpenAI format)
-    if (method === "GET" && path === "/v1/models") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleListModels(req as any, res as any, false);
-      return res.getResult();
-    }
-
-    // GET /v1/models/all - List ALL models including extended catalog
-    if (method === "GET" && (path === "/v1/models/all" || event.queryStringParameters?.extended === "true")) {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleListModels(req as any, res as any, true);
-      return res.getResult();
-    }
-
-    // GET /v1/models/:model/params - Get model optional parameters (MUST be before generic /:model route)
-    if (method === "GET" && path.match(/^\/v1\/models\/[^/]+\/params$/)) {
-      const modelId = decodeURIComponent(path.replace("/v1/models/", "").replace("/params", ""));
-      const req = createMockReq(event);
-      (req as any).params = { model: modelId };
-      const res = createMockRes();
-      await handleGetModelParams(req as any, res as any);
-      return res.getResult();
-    }
-
-    // GET /v1/models/:model - Get specific model details
-    if (method === "GET" && path.startsWith("/v1/models/") && path !== "/v1/models/all") {
-      const modelId = decodeURIComponent(path.replace("/v1/models/", ""));
-      const req = createMockReq(event);
-      (req as any).params = { model: modelId };
-      const res = createMockRes();
-      await handleGetModel(req as any, res as any);
-      return res.getResult();
-    }
-
-    // POST /v1/chat/completions - Chat completions (text-generation)
-    // Also handles multimodal models by detecting task type and routing appropriately
-    if (method === "POST" && path === "/v1/chat/completions") {
-      try {
-        const body = event.body ? JSON.parse(event.body) : {};
-        const modelId = body.model;
-        
-        if (!modelId) {
-          return {
-            statusCode: 400,
+    // Handle CORS preflight
+    if (event.requestContext.http.method === "OPTIONS") {
+        return {
+            statusCode: 204,
             headers: corsHeaders,
-            body: JSON.stringify({ error: "model is required" }),
-          };
+            body: "",
+        };
+    }
+
+    const path = event.rawPath;
+    const method = event.requestContext.http.method;
+
+    try {
+        // ==========================================================================
+        // /v1/* is delegated to shared/api/gateway.ts (single source of truth)
+        // ==========================================================================
+
+        if (path.startsWith("/v1/")) {
+            return await handleInferenceEvent(event);
         }
-        
-        // Load models registry to check task type
-        await loadModules();
-        const modelCard = models?.getModelById?.(modelId) || null;
-        const taskType = modelCard?.taskType || "text-generation";
-        
-        console.log(`[handler] Chat completion request for model: ${modelId}, taskType: ${taskType}`);
-        
-        // Route multimodal models to appropriate endpoints
-        if (taskType === "text-to-image" || taskType === "image-to-image") {
-          console.log(`[handler] Routing image model ${modelId} to /v1/images/generations`);
-          // Transform chat completion request to image generation request
-          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
-          const prompt = typeof lastUserMessage?.content === "string" 
-            ? lastUserMessage.content 
-            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
-          
-          if (!prompt) {
+
+        // GET /api/pricing - Get pricing table
+        if (method === "GET" && path === "/api/pricing") {
+            const { DYNAMIC_PRICES } = await import("./shared/x402/pricing.js");
             return {
-              statusCode: 400,
-              headers: corsHeaders,
-              body: JSON.stringify({ error: "No prompt found in messages" }),
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ prices: DYNAMIC_PRICES, version: "1.0" }),
             };
-          }
-          
-          // Modify request body for image generation
-          event.body = JSON.stringify({
-            model: modelId,
-            prompt,
-            n: 1,
-            size: "1024x1024",
-          });
-          
-          const req = createMockReq(event);
-          const res = createMockRes();
-          await handleImageGeneration(req as any, res as any);
-          return res.getResult();
         }
-        
-        if (taskType === "text-to-video" || taskType === "image-to-video") {
-          console.log(`[handler] Routing video model ${modelId} to /v1/videos/generations`);
-          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
-          const prompt = typeof lastUserMessage?.content === "string" 
-            ? lastUserMessage.content 
-            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
-          
-          if (!prompt) {
+
+        // ==========================================================================
+        // Compose Keys API Routes
+        // ==========================================================================
+
+        // GET /api/session - Get active session
+        if (method === "GET" && path === "/api/session") {
+            return handleGetSession(event);
+        }
+
+        // POST /api/keys - Create a new Compose Key
+        if (method === "POST" && path === "/api/keys") {
+            return handleCreateKey(event);
+        }
+
+        // GET /api/keys - List user's Compose Keys
+        if (method === "GET" && path === "/api/keys") {
+            return handleListKeys(event);
+        }
+
+        // POST /api/keys/settle - Settle payment using Compose Key
+        if (method === "POST" && path === "/api/keys/settle") {
+            return handleSettleKeyPayment(event);
+        }
+
+        // DELETE /api/keys/:keyId - Revoke a Compose Key
+        if (method === "DELETE" && path.startsWith("/api/keys/")) {
+            return handleRevokeKey(event);
+        }
+
+        // ==========================================================================
+        // Account Abstraction API Routes (Cronos)
+        // ==========================================================================
+
+        // POST /api/aa/prepare - Prepare UserOperation
+        if (method === "POST" && path === "/api/aa/prepare") {
+            return handleAAPrepare(event);
+        }
+
+        // POST /api/aa/submit - Submit UserOperation
+        if (method === "POST" && path === "/api/aa/submit") {
+            return handleAASubmit(event);
+        }
+
+        // GET /api/aa/nonce/:address - Get Smart Account nonce
+        if (method === "GET" && path.match(/^\/api\/aa\/nonce\/0x[a-fA-F0-9]{40}$/)) {
+            return handleAANonce(event);
+        }
+
+        // POST /api/aa/register-cronos - Register account on Cronos
+        if (method === "POST" && path === "/api/aa/register-cronos") {
+            return handleAARegister(event);
+        }
+
+        // GET /api/aa/predict-address/:adminAddress - Predict Smart Account address
+        if (method === "GET" && path.match(/^\/api\/aa\/predict-address\/0x[a-fA-F0-9]{40}$/)) {
+            return handleAAPredictAddress(event);
+        }
+
+        // ==========================================================================
+        // Backpack API Routes (Composio)
+        // ==========================================================================
+
+        if (path.startsWith("/api/backpack/")) {
+            return handleBackpackRoutes(event);
+        }
+
+        // ==========================================================================
+        // Dynamic Model Registry Routes
+        // ==========================================================================
+
+        if (path.startsWith("/api/registry/")) {
+            return handleRegistryRoutes(event);
+        }
+
+        // ==========================================================================
+        // Faucet API Routes
+        // ==========================================================================
+
+        // POST /api/faucet/claim - Claim USDC from faucet
+        if (method === "POST" && path === "/api/faucet/claim") {
+            return handleFaucetClaim(event);
+        }
+
+        // GET /api/faucet/status - Get faucet status for all chains
+        if (method === "GET" && path === "/api/faucet/status") {
+            return handleFaucetStatus();
+        }
+
+        // GET /api/faucet/status/:chainId - Get faucet status for specific chain
+        if (method === "GET" && path.match(/^\/api\/faucet\/status\/\d+$/)) {
+            return handleFaucetStatusByChain(event);
+        }
+
+        // GET /api/faucet/check/:address - Check if address has claimed
+        if (method === "GET" && path.match(/^\/api\/faucet\/check\/0x[a-fA-F0-9]{40}$/)) {
+            return handleFaucetCheck(event);
+        }
+
+        // ==========================================================================
+        // Legacy /api/models - Redirect to /v1/models
+        // ==========================================================================
+
+        if (method === "GET" && path === "/api/models") {
+            const compiled = await loadRegistry();
+            const models = compiled.getCompiledModels();
             return {
-              statusCode: 400,
-              headers: corsHeaders,
-              body: JSON.stringify({ error: "No prompt found in messages" }),
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    object: "list",
+                    data: models.models.map((model) => ({
+                        id: model.modelId,
+                        object: "model",
+                        created: typeof model.createdAt === "number" ? model.createdAt : Math.floor(Date.now() / 1000),
+                        owned_by: model.ownedBy || model.provider,
+                        provider: model.provider,
+                    })),
+                }),
             };
-          }
-          
-          event.body = JSON.stringify({
-            model: modelId,
-            prompt,
-          });
-          
-          const req = createMockReq(event);
-          const res = createMockRes();
-          await handleVideoGeneration(req as any, res as any);
-          return res.getResult();
         }
-        
-        if (taskType === "text-to-speech" || taskType === "text-to-audio") {
-          console.log(`[handler] Routing audio model ${modelId} to /v1/audio/speech`);
-          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
-          const input = typeof lastUserMessage?.content === "string" 
-            ? lastUserMessage.content 
-            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
-          
-          if (!input) {
-            return {
-              statusCode: 400,
-              headers: corsHeaders,
-              body: JSON.stringify({ error: "No input text found in messages" }),
-            };
-          }
-          
-          event.body = JSON.stringify({
-            model: modelId,
-            input,
-            voice: "alloy",
-          });
-          
-          const req = createMockReq(event);
-          const res = createMockRes();
-          await handleAudioSpeech(req as any, res as any);
-          return res.getResult();
-        }
-        
-        // Route embedding models to embeddings endpoint
-        if (taskType === "feature-extraction") {
-          console.log(`[handler] Routing embedding model ${modelId} to /v1/embeddings`);
-          const lastUserMessage = body.messages?.findLast((m: any) => m.role === "user");
-          const input = typeof lastUserMessage?.content === "string" 
-            ? lastUserMessage.content 
-            : lastUserMessage?.content?.find?.((c: any) => c.type === "text")?.text || "";
-          
-          if (!input) {
-            return {
-              statusCode: 400,
-              headers: corsHeaders,
-              body: JSON.stringify({ error: "No input text found in messages for embedding" }),
-            };
-          }
-          
-          event.body = JSON.stringify({
-            model: modelId,
-            input,
-          });
-          
-          const req = createMockReq(event);
-          const res = createMockRes();
-          await handleEmbeddings(req as any, res as any);
-          return res.getResult();
-        }
-        
-        // Default: text-generation models go to chat completions
-        console.log(`[handler] Routing text model ${modelId} to /v1/chat/completions`);
-        const req = createMockReq(event);
-        const res = createMockRes();
-        await handleChatCompletions(req as any, res as any);
-        return res.getResult()
-      } catch (error) {
+
+        // ==========================================================================
+        // 404 - Not Found
+        // ==========================================================================
+
+        return {
+            statusCode: 404,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: "Not found",
+                message: `Route ${method} ${path} not found`,
+                hint: "Use /v1/responses for canonical inference requests"
+            }),
+        };
+
+    } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[handler] Error in /v1/chat/completions:`, errorMessage);
+        console.error(`[handler] Unhandled error:`, errorMessage);
+
         return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({ 
-            error: "Internal server error", 
-            message: errorMessage 
-          }),
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: "Internal server error",
+                message: errorMessage
+            }),
         };
-      }
     }
+}
 
-    // POST /v1/images/generations - Image generation
-    if (method === "POST" && path === "/v1/images/generations") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleImageGeneration(req as any, res as any);
-      return res.getResult();
-    }
+// =============================================================================
+// Scheduled Batch Settlement Handler
+// =============================================================================
 
-    // POST /v1/images/edits - Image editing
-    if (method === "POST" && path === "/v1/images/edits") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleImageEdit(req as any, res as any);
-      return res.getResult();
-    }
-
-    // POST /v1/audio/speech - Text to speech
-    if (method === "POST" && path === "/v1/audio/speech") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleAudioSpeech(req as any, res as any);
-      return res.getResult();
-    }
-
-    // POST /v1/audio/transcriptions - Speech to text
-    if (method === "POST" && path === "/v1/audio/transcriptions") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleAudioTranscription(req as any, res as any);
-      return res.getResult();
-    }
-
-    // POST /v1/embeddings - Create embeddings
-    if (method === "POST" && path === "/v1/embeddings") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleEmbeddings(req as any, res as any);
-      return res.getResult();
-    }
-
-    // POST /v1/videos/generations - Video generation
-    if (method === "POST" && path === "/v1/videos/generations") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleVideoGeneration(req as any, res as any);
-      return res.getResult();
-    }
-
-    // GET /v1/videos/:id - Check video generation status
-    if (method === "GET" && path.startsWith("/v1/videos/") && path !== "/v1/videos/generations") {
-      const { handleVideoStatus } = await import("./shared/api/openai/endpoints.js");
-      const videoId = decodeURIComponent(path.split("/v1/videos/")[1]);
-      const req = { ...createMockReq(event), params: { id: videoId } };
-      const res = createMockRes();
-      await handleVideoStatus(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/pricing - Get pricing table
-    if (method === "GET" && path === "/api/pricing") {
-      const { DYNAMIC_PRICES } = await import("./shared/x402/pricing.js");
-      const res = createMockRes();
-      res.json({ prices: DYNAMIC_PRICES, version: "1.0" });
-      return res.getResult();
-    }
-
-    // ==========================================================================
-    // Compose Keys API Routes
-    // ==========================================================================
-
-    // GET /api/session - Get active session for user (includes token for restoration)
-    if (method === "GET" && path === "/api/session") {
-      const { getActiveSession } = await import("./shared/keys/index.js");
-      const userAddress = event.headers["x-session-user-address"];
-      const chainIdHeader = event.headers["x-chain-id"];
-      const chainId = chainIdHeader ? parseInt(chainIdHeader, 10) : undefined;
-
-      if (!userAddress) {
+export async function batchSettlementHandler(
+    _event: unknown,
+    _context: Context,
+): Promise<APIGatewayProxyResultV2> {
+    try {
+        const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+        const summary = await runBatchSettlement();
         return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "x-session-user-address header required" }),
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify(summary),
         };
-      }
-
-      const session = await getActiveSession(userAddress, chainId);
-
-      if (!session) {
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         return {
-          statusCode: 404,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "No active session found", hasSession: false }),
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: message }),
         };
-      }
+    }
+}
 
-      return {
+// =============================================================================
+// Route Handlers
+// =============================================================================
+
+async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const userAddress = event.headers["x-session-user-address"];
+    const chainIdHeader = event.headers["x-chain-id"];
+    const chainId = chainIdHeader ? parseInt(chainIdHeader, 10) : undefined;
+
+    if (!userAddress) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
+    }
+
+    const session = await getActiveSession(userAddress, chainId);
+
+    if (!session) {
+        return {
+            statusCode: 404,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "No active session found", hasSession: false }),
+        };
+    }
+
+    // Get detailed session status for notifications
+    let sessionStatus = null;
+    if (chainId) {
+        try {
+            sessionStatus = await getSessionStatus(userAddress, chainId);
+        } catch (e) {
+            console.warn(`[handleGetSession] Could not get session status: ${e}`);
+        }
+    }
+
+    const response: Record<string, any> = {
+        hasSession: true,
+        keyId: session.keyId,
+        token: session.token,
+        budgetLimit: session.budgetLimit,
+        budgetUsed: session.budgetUsed,
+        budgetRemaining: session.budgetRemaining,
+        expiresAt: session.expiresAt,
+        chainId: session.chainId,
+        name: session.name,
+    };
+
+    // Add status warnings if available
+    if (sessionStatus) {
+        response.status = {
+            isActive: sessionStatus.isActive,
+            isExpired: sessionStatus.isExpired,
+            expiresInSeconds: sessionStatus.expiresInSeconds,
+            budgetPercentRemaining: sessionStatus.budgetPercentRemaining,
+            warnings: sessionStatus.warnings,
+        };
+
+        // Add warning headers for frontend
+        const headers: Record<string, string> = { ...corsHeaders };
+
+        if (sessionStatus.warnings.budgetDepleted) {
+            headers["x-session-status"] = "budget-depleted";
+        } else if (sessionStatus.warnings.budgetLow) {
+            headers["x-session-status"] = "budget-low";
+        } else if (sessionStatus.warnings.expiringSoon) {
+            headers["x-session-status"] = "expiring-soon";
+        }
+
+        if (sessionStatus.warnings.budgetLow || sessionStatus.warnings.budgetDepleted) {
+            headers["x-session-budget-percent"] = String(Math.floor(sessionStatus.budgetPercentRemaining));
+        }
+
+        if (sessionStatus.warnings.expiringSoon || sessionStatus.warnings.expired) {
+            headers["x-session-expires-in"] = String(sessionStatus.expiresInSeconds);
+        }
+
+        return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify(response),
+        };
+    }
+
+    return {
         statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify({
-          hasSession: true,
-          keyId: session.keyId,
-          token: session.token,
-          budgetLimit: session.budgetLimit,
-          budgetUsed: session.budgetUsed,
-          budgetRemaining: session.budgetRemaining,
-          expiresAt: session.expiresAt,
-          chainId: session.chainId,
-          name: session.name,
-        }),
-      };
+        body: JSON.stringify(response),
+    };
+}
+
+async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const userAddress = event.headers["x-session-user-address"];
+    const sessionActive = event.headers["x-session-active"] === "true";
+
+    if (!userAddress || !sessionActive) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Active session required to create Compose Key" }),
+        };
     }
 
-    // POST /api/keys - Create a new Compose Key
-    if (method === "POST" && path === "/api/keys") {
-      const { createComposeKey } = await import("./shared/keys/index.js");
-      const userAddress = event.headers["x-session-user-address"];
-      const sessionActive = event.headers["x-session-active"] === "true";
-
-      if (!userAddress || !sessionActive) {
+    const body = event.body ? JSON.parse(event.body) : {};
+    if (!body.budgetLimit || !body.expiresAt) {
         return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "Active session required to create Compose Key" }),
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "budgetLimit and expiresAt are required" }),
         };
-      }
+    }
 
-      const body = event.body ? JSON.parse(event.body) : {};
-      if (!body.budgetLimit || !body.expiresAt) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "budgetLimit and expiresAt are required" }),
-        };
-      }
-
-      const result = await createComposeKey(userAddress, {
+    const result = await createComposeKey(userAddress, {
         budgetLimit: body.budgetLimit,
         expiresAt: body.expiresAt,
         name: body.name,
         chainId: body.chainId,
-      });
+    });
 
-      return {
+    return {
         statusCode: 201,
         headers: corsHeaders,
         body: JSON.stringify(result),
-      };
+    };
+}
+
+async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const userAddress = event.headers["x-session-user-address"];
+
+    if (!userAddress) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
     }
 
-    // GET /api/keys - List user's Compose Keys
-    if (method === "GET" && path === "/api/keys") {
-      const { listUserKeys } = await import("./shared/keys/index.js");
-      const userAddress = event.headers["x-session-user-address"];
+    const keys = await listUserKeys(userAddress);
 
-      if (!userAddress) {
-        return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "x-session-user-address header required" }),
-        };
-      }
-
-      const keys = await listUserKeys(userAddress);
-
-      // Return keys without tokens (security)
-      const safeKeys = keys.map(k => ({
+    const safeKeys = keys.map(k => ({
         keyId: k.keyId,
         budgetLimit: k.budgetLimit,
         budgetUsed: k.budgetUsed,
@@ -547,1561 +429,671 @@ export async function handler(
         revokedAt: k.revokedAt,
         name: k.name,
         lastUsedAt: k.lastUsedAt,
-      }));
+    }));
 
-      return {
+    return {
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify({ keys: safeKeys }),
-      };
+    };
+}
+
+async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const authHeader = event.headers["authorization"];
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+
+    if (!composeKeyToken) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Missing Compose Key in Authorization header" }),
+        };
     }
 
-    // POST /api/keys/settle - Settle payment using Compose Key (for external apps like Manowar)
-    if (method === "POST" && path === "/api/keys/settle") {
-      const { extractComposeKeyFromHeader, validateComposeKey, consumeKeyBudget, getKeyBudgetInfo } = await import("./shared/keys/index.js");
-      const { settleComposeKeyPayment } = await import("./shared/x402/settlement.js");
+    const body = event.body ? JSON.parse(event.body) : {};
+    const amountWei = parseInt(body.amount, 10);
 
-      const authHeader = event.headers["authorization"];
-      const composeKeyToken = extractComposeKeyFromHeader(authHeader);
-
-      if (!composeKeyToken) {
+    const validation = await validateComposeKey(composeKeyToken, amountWei);
+    if (!validation.valid) {
         return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "Missing Compose Key in Authorization header" }),
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: validation.error }),
         };
-      }
+    }
 
-      const body = event.body ? JSON.parse(event.body) : {};
-      const amountWei = parseInt(body.amount, 10);
-
-      const validation = await validateComposeKey(composeKeyToken, amountWei);
-      if (!validation.valid) {
+    const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
+    if (budgetRemaining < amountWei) {
         return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: validation.error }),
+            statusCode: 402,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Budget exhausted", budgetRemaining }),
         };
-      }
+    }
 
-      // Budget check
-      const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
-      if (budgetRemaining < amountWei) {
+    const keyChainId = validation.record!.chainId!;
+    const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, keyChainId);
+
+    if (!result.success) {
         return {
-          statusCode: 402,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "Budget exhausted", budgetRemaining }),
+            statusCode: 402,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: result.error }),
         };
-      }
+    }
 
-      // On-chain settlement via transferFrom
-      const keyChainId = validation.record!.chainId!;
-      console.log(`[keys/settle] Settling on chain ${keyChainId} for user ${validation.payload!.sub}`);
-      const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, keyChainId);
-      if (!result.success) {
-        return {
-          statusCode: 402,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: result.error }),
-        };
-      }
+    await consumeKeyBudget(validation.payload!.keyId, amountWei);
+    const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
 
-      // Update Redis budget cache
-      await consumeKeyBudget(validation.payload!.keyId, amountWei);
-      const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
-
-      return {
+    return {
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify({
-          success: true,
-          txHash: result.txHash,
-          budgetRemaining: budgetInfo?.budgetRemaining || 0,
+            success: true,
+            txHash: result.txHash,
+            budgetRemaining: budgetInfo?.budgetRemaining || 0,
         }),
-      };
+    };
+}
+
+async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const keyId = event.rawPath.replace("/api/keys/", "");
+    const userAddress = event.headers["x-session-user-address"];
+
+    if (!userAddress) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "x-session-user-address header required" }),
+        };
     }
 
-    // DELETE /api/keys/:keyId - Revoke a Compose Key
-    if (method === "DELETE" && path.startsWith("/api/keys/")) {
-      const { revokeKey } = await import("./shared/keys/index.js");
-      const keyId = path.replace("/api/keys/", "");
-      const userAddress = event.headers["x-session-user-address"];
+    const success = await revokeKey(keyId, userAddress);
 
-      if (!userAddress) {
+    if (!success) {
         return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "x-session-user-address header required" }),
+            statusCode: 404,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Key not found or not authorized" }),
         };
-      }
+    }
 
-      const success = await revokeKey(keyId, userAddress);
-
-      if (!success) {
-        return {
-          statusCode: 404,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "Key not found or not authorized" }),
-        };
-      }
-
-      return {
+    return {
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify({ success: true, keyId }),
-      };
+    };
+}
+
+// =============================================================================
+// Account Abstraction Handlers
+// =============================================================================
+
+async function handleAAPrepare(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const aa = await loadAA();
+    const body = event.body ? JSON.parse(event.body) : {};
+    const { chainId, smartAccount, to, value, data, adminAddress } = body;
+
+    if (!chainId || !smartAccount || !to || !data) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: "Missing required fields",
+                required: ["chainId", "smartAccount", "to", "data"],
+            }),
+        };
     }
 
-    // ==========================================================================
-    // Account Abstraction API Routes (Cronos Gasless Transactions)
-    // ==========================================================================
-
-    // POST /api/aa/prepare - Prepare a UserOperation and return hash for signing
-    // Step 1 of 2-step AA flow: Build UserOp wi paymaster data, return hash to frontend for signing
-    if (method === "POST" && path === "/api/aa/prepare") {
-      const aaModule = await import("./shared/aa/index.js");
-      const {
-        encodeExecute,
-        getNonce,
-        estimateGas,
-        isAccountDeployed,
-        generateInitCode,
-        packAccountGasLimits,
-        packGasFees,
-        getUserOpHash,
-        getEntryPointAddress,
-        buildPaymasterAndData,
-        predictAccountAddress,
-      } = aaModule;
-
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { chainId, smartAccount, to, value, data, adminAddress } = body;
-
-      if (!chainId || !smartAccount || !to || !data) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Missing required fields",
-            required: ["chainId", "smartAccount", "to", "data"],
-          }),
-        };
-      }
-
-      try {
-        console.log(`[aa/prepare] Preparing UserOp for ${smartAccount} on chain ${chainId}`);
-
-        // For Cronos, predict the CORRECT Smart Account address from our factory
-        // ThirdWeb SDK may have computed a different address using a different factory
+    try {
         let senderAddress = smartAccount as `0x${string}`;
         if (adminAddress && (chainId === 338 || chainId === 25)) {
-          const predictedAddress = await predictAccountAddress(adminAddress, "0x", chainId);
-          console.log(`[aa/prepare] Frontend sent: ${smartAccount}`);
-          console.log(`[aa/prepare] Factory predicts: ${predictedAddress}`);
-          senderAddress = predictedAddress;
+            const predictedAddress = await aa.predictAccountAddress(adminAddress, "0x", chainId);
+            senderAddress = predictedAddress;
         }
 
-        // Check if account is deployed on this chain
-        const deployed = await isAccountDeployed(senderAddress, chainId);
-        console.log(`[aa/prepare] Account deployed on chain ${chainId}: ${deployed}`);
+        const deployed = await aa.isAccountDeployed(senderAddress, chainId);
 
-        // Generate initCode if account not deployed
         let initCode: `0x${string}` = "0x";
         if (!deployed) {
-          if (!adminAddress) {
-            return {
-              statusCode: 400,
-              headers: corsHeaders,
-              body: JSON.stringify({
-                error: "Account not deployed on this chain",
-                details: "adminAddress is required to deploy Smart Account on Cronos.",
-                hint: "Include adminAddress (EOA signer from wallet.getPersonalWallet()) in the request",
-              }),
-            };
-          }
-          console.log(`[aa/prepare] Generating initCode for admin ${adminAddress}`);
-          initCode = generateInitCode(adminAddress, "0x", chainId);
+            if (!adminAddress) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        error: "Account not deployed on this chain",
+                        details: "adminAddress is required to deploy Smart Account on Cronos.",
+                    }),
+                };
+            }
+            initCode = aa.generateInitCode(adminAddress, "0x", chainId);
         }
 
-        // Get nonce and gas estimates
         const [nonce, gas] = await Promise.all([
-          getNonce(senderAddress, chainId),
-          estimateGas(chainId),
+            aa.getNonce(senderAddress, chainId),
+            aa.estimateGas(chainId),
         ]);
 
-        // Encode the execute call
-        const callData = encodeExecute(to, BigInt(value || "0"), data);
-
-        // Increase verificationGasLimit for account deployment
-        // Account deployment uses ~350k gas, plus validation needs extra headroom
+        const callData = aa.encodeExecute(to, BigInt(value || "0"), data);
         const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 5n : gas.verificationGasLimit;
 
-        // Build UserOperation (without signature, with paymasterAndData)
-        // paymasterAndData is included before computing the hash
         const userOp = {
-          sender: senderAddress,
-          nonce,
-          initCode,
-          callData,
-          accountGasLimits: packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
-          preVerificationGas: gas.preVerificationGas,
-          gasFees: packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
-          paymasterAndData: "0x" as `0x${string}`, // Will be set below
-          signature: "0x" as `0x${string}`,
-        };
-
-        // Build paymaster data FIRST (this signs the UserOp with server wallet)
-        userOp.paymasterAndData = await buildPaymasterAndData(userOp, chainId);
-        console.log(`[aa/prepare] PaymasterAndData: ${userOp.paymasterAndData.slice(0, 50)}...`);
-
-        // NOW compute the UserOpHash that the user needs to sign
-        // This hash includes the paymasterAndData, so the signature will be valid
-        const entryPoint = getEntryPointAddress(chainId);
-        const userOpHash = getUserOpHash(userOp, entryPoint, chainId);
-
-        console.log(`[aa/prepare] UserOpHash (with paymaster): ${userOpHash}`);
-
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            userOpHash,
-            userOp: {
-              sender: userOp.sender,
-              nonce: userOp.nonce.toString(),
-              initCode: userOp.initCode,
-              callData: userOp.callData,
-              accountGasLimits: userOp.accountGasLimits,
-              preVerificationGas: userOp.preVerificationGas.toString(),
-              gasFees: userOp.gasFees,
-              paymasterAndData: userOp.paymasterAndData, // Include in response
-            },
-            accountDeployed: deployed,
-            chainId,
-          }),
-        };
-      } catch (error) {
-        console.error("[aa/prepare] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to prepare UserOperation",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // POST /api/aa/submit - Submit a gasless transaction via Paymaster
-    // Step 2 of 2-step AA flow: Receive signed UserOp, add paymaster, submit
-    if (method === "POST" && path === "/api/aa/submit") {
-      const aaModule = await import("./shared/aa/index.js");
-      const {
-        buildPaymasterAndData,
-        encodeExecute,
-        getNonce,
-        estimateGas,
-        submitUserOperation,
-        isAccountDeployed,
-        generateInitCode,
-        packAccountGasLimits,
-        packGasFees,
-      } = aaModule;
-
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { chainId, smartAccount, to, value, data, signature, adminAddress, userOp: preparedUserOp } = body;
-
-      // Validate required fields
-      if (!chainId || !smartAccount || !signature) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Missing required fields",
-            required: ["chainId", "smartAccount", "signature"],
-            hint: "Use /api/aa/prepare first to get userOpHash, sign it, then call submit with signature",
-          }),
-        };
-      }
-
-      try {
-        console.log(`[aa/submit] Submitting UserOp for ${smartAccount} on chain ${chainId}`);
-
-        let userOp;
-
-        // If preparedUserOp is provided, use it (2-step flow)
-        if (preparedUserOp) {
-          console.log(`[aa/submit] Using prepared UserOp from /api/aa/prepare`);
-          // IMPORTANT: Use the paymasterAndData from prepared UserOp
-          // The user's signature covers the hash that includes this paymasterAndData
-          userOp = {
-            sender: preparedUserOp.sender as `0x${string}`,
-            nonce: BigInt(preparedUserOp.nonce),
-            initCode: preparedUserOp.initCode as `0x${string}`,
-            callData: preparedUserOp.callData as `0x${string}`,
-            accountGasLimits: preparedUserOp.accountGasLimits as `0x${string}`,
-            preVerificationGas: BigInt(preparedUserOp.preVerificationGas),
-            gasFees: preparedUserOp.gasFees as `0x${string}`,
-            paymasterAndData: (preparedUserOp.paymasterAndData || "0x") as `0x${string}`,
-            signature: signature as `0x${string}`,
-          };
-        } else {
-          // Legacy flow: Build UserOp from scratch (backward compatibility)
-          if (!to || !data) {
-            return {
-              statusCode: 400,
-              headers: corsHeaders,
-              body: JSON.stringify({
-                error: "Missing required fields for legacy flow",
-                required: ["to", "data"],
-                hint: "Either provide preparedUserOp (from /api/aa/prepare) or to+data for legacy flow",
-              }),
-            };
-          }
-
-          console.log(`[aa/submit] Building UserOp from scratch (legacy flow)`);
-
-          // Check if account is deployed
-          const deployed = await isAccountDeployed(smartAccount, chainId);
-
-          let initCode: `0x${string}` = "0x";
-          if (!deployed) {
-            if (!adminAddress) {
-              return {
-                statusCode: 400,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                  error: "Account not deployed on this chain",
-                  details: "adminAddress is required to deploy Smart Account",
-                }),
-              };
-            }
-            initCode = generateInitCode(adminAddress, "0x", chainId);
-          }
-
-          const [nonce, gas] = await Promise.all([
-            getNonce(smartAccount, chainId),
-            estimateGas(chainId),
-          ]);
-
-          const callData = encodeExecute(to, BigInt(value || "0"), data);
-          const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 3n : gas.verificationGasLimit;
-
-          userOp = {
-            sender: smartAccount as `0x${string}`,
+            sender: senderAddress,
             nonce,
             initCode,
             callData,
-            accountGasLimits: packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
+            accountGasLimits: aa.packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
             preVerificationGas: gas.preVerificationGas,
-            gasFees: packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
+            gasFees: aa.packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
             paymasterAndData: "0x" as `0x${string}`,
-            signature: signature as `0x${string}`,
-          };
-        }
+            signature: "0x" as `0x${string}`,
+        };
 
-        // Build paymaster data only for legacy flow (prepared UserOp already has it)
-        if (!preparedUserOp) {
-          userOp.paymasterAndData = await buildPaymasterAndData(userOp, chainId);
-        }
-
-        // Submit to EntryPoint
-        const result = await submitUserOperation(userOp, chainId);
+        userOp.paymasterAndData = await aa.buildPaymasterAndData(userOp, chainId);
+        const entryPoint = aa.getEntryPointAddress(chainId);
+        const userOpHash = aa.getUserOpHash(userOp, entryPoint, chainId);
 
         return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            success: true,
-            txHash: result.txHash,
-            userOp: {
-              sender: userOp.sender,
-              nonce: userOp.nonce.toString(),
-            },
-          }),
-        };
-      } catch (error) {
-        console.error("[aa/submit] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to submit transaction",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // GET /api/aa/nonce/:address - Get Smart Account nonce
-    if (method === "GET" && path.match(/^\/api\/aa\/nonce\/0x[a-fA-F0-9]{40}$/)) {
-      const { getNonce } = await import("./shared/aa/index.js");
-      const address = path.split("/api/aa/nonce/")[1] as `0x${string}`;
-      const chainId = parseInt(event.queryStringParameters?.chainId || "338");
-
-      try {
-        const nonce = await getNonce(address, chainId);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ address, chainId, nonce: nonce.toString() }),
-        };
-      } catch (error) {
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: String(error) }),
-        };
-      }
-    }
-
-    // POST /api/aa/register-cronos - Register a ThirdWeb/Fuji account on Cronos
-    if (method === "POST" && path === "/api/aa/register-cronos") {
-      const { registerAccountOnCronos } = await import("./shared/aa/index.js");
-
-      try {
-        const body = JSON.parse(event.body || "{}");
-        const { adminAddress } = body;
-
-        if (!adminAddress) {
-          return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "adminAddress required" }),
-          };
-        }
-
-        const result = await registerAccountOnCronos(adminAddress);
-
-        if (!result.success) {
-          return {
-            statusCode: 500,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: result.error }),
-          };
-        }
-
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            success: true,
-            accountAddress: result.accountAddress,
-            txHash: result.txHash,
-          }),
-        };
-      } catch (error) {
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: String(error) }),
-        };
-      }
-    }
-
-    // GET /api/aa/predict-address/:adminAddress - Get predicted Smart Account address
-    if (method === "GET" && path.match(/^\/api\/aa\/predict-address\/0x[a-fA-F0-9]{40}$/)) {
-      const { getPredictedAccountAddress } = await import("./shared/aa/index.js");
-      const adminAddress = path.split("/api/aa/predict-address/")[1] as `0x${string}`;
-      const chainId = parseInt(event.queryStringParameters?.chainId || "338");
-
-      try {
-        const address = await getPredictedAccountAddress(adminAddress, chainId);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ adminAddress, chainId, predictedAddress: address }),
-        };
-      } catch (error) {
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: String(error) }),
-        };
-      }
-    }
-
-    // Route: GET /api/models - Redirect to /v1/models
-    if (method === "GET" && path === "/api/models") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await handleListModels(req as any, res as any, false);
-      return res.getResult();
-    }
-
-    // ==========================================================================
-    // Backpack API Routes (Composio OAuth Credential Broker)
-    // ==========================================================================
-
-    // POST /api/backpack/connect - Initiate OAuth connection for a toolkit
-    if (method === "POST" && path === "/api/backpack/connect") {
-      const { initiateConnection } = await import("./shared/backpack/composio.js");
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { userId, toolkit } = body;
-
-      if (!userId || !toolkit) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "userId and toolkit are required" }),
-        };
-      }
-
-      try {
-        const result = await initiateConnection(userId, toolkit);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify(result),
-        };
-      } catch (error) {
-        console.error("[backpack/connect] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to initiate connection",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // GET /api/backpack/connections?userId=xxx - List all connections for a user
-    if (method === "GET" && path === "/api/backpack/connections") {
-      const { listConnections } = await import("./shared/backpack/composio.js");
-      const userId = event.queryStringParameters?.userId;
-
-      if (!userId) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "userId query parameter is required" }),
-        };
-      }
-
-      try {
-        const connections = await listConnections(userId);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ connections }),
-        };
-      } catch (error) {
-        console.error("[backpack/connections] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to list connections",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // GET /api/backpack/status/:toolkit?userId=xxx - Check single toolkit status
-    if (method === "GET" && path.startsWith("/api/backpack/status/")) {
-      const { checkConnection } = await import("./shared/backpack/composio.js");
-      const toolkit = decodeURIComponent(path.replace("/api/backpack/status/", ""));
-      const userId = event.queryStringParameters?.userId;
-
-      if (!userId) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "userId query parameter is required" }),
-        };
-      }
-
-      try {
-        const status = await checkConnection(userId, toolkit);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ toolkit, ...status }),
-        };
-      } catch (error) {
-        console.error("[backpack/status] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to check connection status",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // POST /api/backpack/disconnect - Disconnect a toolkit for a user
-    if (method === "POST" && path === "/api/backpack/disconnect") {
-      const { disconnectToolkit } = await import("./shared/backpack/composio.js");
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { userId, toolkit } = body;
-
-      if (!userId || !toolkit) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "userId and toolkit are required" }),
-        };
-      }
-
-      try {
-        const result = await disconnectToolkit(userId, toolkit);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify(result),
-        };
-      } catch (error) {
-        console.error("[backpack/disconnect] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to disconnect toolkit",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // GET /api/backpack/toolkits?search=xxx&limit=20 - Search toolkit catalog
-    if (method === "GET" && path === "/api/backpack/toolkits") {
-      const { searchToolkits } = await import("./shared/backpack/composio.js");
-      const search = event.queryStringParameters?.search || "";
-      const limit = parseInt(event.queryStringParameters?.limit || "20", 10);
-
-      try {
-        const toolkits = await searchToolkits(search, limit);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ toolkits }),
-        };
-      } catch (error) {
-        console.error("[backpack/toolkits] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to search toolkits",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // POST /api/backpack/telegram/link - Generate Telegram deep link for user binding
-    if (method === "POST" && path === "/api/backpack/telegram/link") {
-      const { initiateTelegramLink } = await import("./shared/backpack/composio.js");
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { userId } = body;
-
-      if (!userId) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "userId is required" }),
-        };
-      }
-
-      try {
-        const result = await initiateTelegramLink(userId);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify(result),
-        };
-      } catch (error) {
-        console.error("[backpack/telegram/link] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to generate Telegram link",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // GET /api/backpack/telegram/status?userId=xxx - Check Telegram channel binding
-    if (method === "GET" && path === "/api/backpack/telegram/status") {
-      const { checkTelegramBinding } = await import("./shared/backpack/composio.js");
-      const userId = event.queryStringParameters?.userId;
-
-      if (!userId) {
-        return {
-          statusCode: 400,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "userId query parameter is required" }),
-        };
-      }
-
-      try {
-        const status = await checkTelegramBinding(userId);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ toolkit: "telegram", ...status }),
-        };
-      } catch (error) {
-        console.error("[backpack/telegram/status] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to check Telegram status",
-            details: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-
-
-    // POST /api/backpack/webhook/telegram - Telegram Bot webhook (receives updates)
-    if (method === "POST" && path === "/api/backpack/webhook/telegram") {
-      const { handleTelegramWebhook } = await import("./shared/backpack/composio.js");
-      const update = event.body ? JSON.parse(event.body) : {};
-
-      try {
-        const result = await handleTelegramWebhook(update);
-
-        // Send a confirmation message back to the user if binding succeeded
-        if (result.bound && result.chatId) {
-          const botToken = process.env.COMPOSE_BOT_HTTP_API;
-          if (botToken) {
-            try {
-              const tgRes = await fetch(
-                `https://api.telegram.org/bot${botToken}/sendMessage`,
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    chat_id: result.chatId,
-                    text: "✅ Connected to Compose Market! You can now receive notifications and interact with your agents here.",
-                    parse_mode: "HTML",
-                  }),
-                }
-              );
-              console.log("[backpack/webhook/telegram] Confirmation sent:", tgRes.status);
-            } catch (msgError) {
-              console.error("[backpack/webhook/telegram] Failed to send confirmation:", msgError);
-            }
-          }
-        }
-
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({ ok: true, ...result }),
-        };
-      } catch (error) {
-        console.error("[backpack/webhook/telegram] Error:", error);
-        return {
-          statusCode: 200, // Telegram expects 200 even on errors
-          headers: corsHeaders,
-          body: JSON.stringify({ ok: false }),
-        };
-      }
-    }
-
-    // ==========================================================================
-    // Dynamic Model Registry Routes
-    // ==========================================================================
-
-    // Route: GET /api/registry/debug - Diagnostic endpoint for debugging model loading
-    if (method === "GET" && path === "/api/registry/debug") {
-      const registry = await models.getModelRegistry();
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          totalModels: registry.models.length,
-          sources: registry.sources,
-          lastUpdated: registry.lastUpdated,
-          byProvider: Object.fromEntries(
-            Object.entries(registry.sources || {}).map(([k, v]) => [k, (v as unknown as { count: number })?.count || 0])
-          ),
-          environment: {
-            cwd: process.cwd(),
-            nodeVersion: process.version,
-            platform: process.platform,
-            memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024,
-          },
-        }),
-      };
-    }
-
-    // Route: GET /api/registry/models - Get all models from all providers (dynamic)
-    if (method === "GET" && path === "/api/registry/models") {
-      const registry = await models.getModelRegistry();
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify(registry),
-      };
-    }
-
-    // Route: GET /api/registry/models/available - Get only available models
-    // Supports pagination: ?page=1&limit=100
-    // Supports filters: ?provider=openai&task=text-generation&search=gpt
-    // Supports ?refresh=true to force cache refresh
-    if (method === "GET" && path === "/api/registry/models/available") {
-      const query = event.queryStringParameters || {};
-      const forceRefresh = query.refresh === "true";
-
-      // Pagination params
-      const page = Math.max(1, parseInt(query.page || "1", 10));
-      const limit = Math.min(500, Math.max(1, parseInt(query.limit || "100", 10)));
-      const offset = (page - 1) * limit;
-
-      // Filter params
-      const providerFilter = query.provider;
-      const taskFilter = query.task;
-      const searchQuery = query.search?.toLowerCase();
-
-      // Get models (refresh if requested)
-      let allModels: ModelCard[];
-      if (forceRefresh) {
-        const registry = await models.refreshRegistry();
-        allModels = registry.models;
-      } else {
-        allModels = await models.getAvailableModels();
-      }
-
-      // Apply filters
-      let filtered = allModels;
-      if (providerFilter) {
-        filtered = filtered.filter(m => m.provider === providerFilter);
-      }
-      if (taskFilter) {
-        filtered = filtered.filter(m => m.taskType === taskFilter);
-      }
-      if (searchQuery) {
-        filtered = filtered.filter(m =>
-          m.modelId.toLowerCase().includes(searchQuery) ||
-          m.name.toLowerCase().includes(searchQuery)
-        );
-      }
-
-      // Paginate
-      const paginated = filtered.slice(offset, offset + limit);
-
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          models: paginated,
-          total: filtered.length,
-          page,
-          limit,
-          totalPages: Math.ceil(filtered.length / limit),
-          hasMore: offset + limit < filtered.length,
-        }),
-      };
-    }
-
-    // Route: GET /api/registry/models/:source - Get models by source
-    if (method === "GET" && path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google|openrouter|aiml)$/)) {
-      const source = path.replace("/api/registry/models/", "") as any;
-      const sourceModels = await models.getModelsBySource(source);
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ source, models: sourceModels, total: sourceModels.length }),
-      };
-    }
-
-    // Route: GET /api/registry/model/:modelId - Get specific model info
-    if (method === "GET" && path.startsWith("/api/registry/model/")) {
-      const modelId = decodeURIComponent(path.replace("/api/registry/model/", ""));
-      const modelInfo = await models.getModelInfo(modelId);
-
-      if (!modelInfo) {
-        return {
-          statusCode: 404,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "Model not found", modelId }),
-        };
-      }
-
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify(modelInfo),
-      };
-    }
-
-    // Route: POST /api/registry/refresh - Force refresh the model registry
-    if (method === "POST" && path === "/api/registry/refresh") {
-      const registry = await models.refreshRegistry();
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: "Registry refreshed",
-          models: registry.models.length,
-          sources: registry.sources,
-          lastUpdated: registry.lastUpdated,
-        }),
-      };
-    }
-
-    // Route: GET /api/agentverse/agents
-    if (method === "GET" && path === "/api/agentverse/agents") {
-      const query = event.queryStringParameters || {};
-      const result = await agentverseSearch({
-        search: query.search,
-        category: query.category,
-        tags: query.tags ? query.tags.split(",") : undefined,
-        status: query.status as "active" | "inactive" | undefined,
-        limit: query.limit ? parseInt(query.limit, 10) : 30,
-        offset: query.offset ? parseInt(query.offset, 10) : 0,
-        sort: query.sort as any,
-        direction: query.direction as "asc" | "desc" | undefined,
-      });
-
-      const uniqueTags = agentverseExtractTags(result.agents);
-      const uniqueCategories = agentverseExtractCategories(result.agents);
-
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agents: result.agents,
-          total: result.total,
-          offset: result.offset,
-          limit: result.limit,
-          tags: uniqueTags,
-          categories: uniqueCategories,
-        }),
-      };
-    }
-
-    // Route: GET /api/agentverse/agents/:address
-    if (method === "GET" && path.startsWith("/api/agentverse/agents/")) {
-      const address = path.replace("/api/agentverse/agents/", "");
-      const agent = await agentverseGet(address);
-
-      if (!agent) {
-        return {
-          statusCode: 404,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "Agent not found" }),
-        };
-      }
-
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify(agent),
-      };
-    }
-
-    // Route: GET /api/agent/:agentId - A2A-compliant Agent Card endpoint
-    // Returns agent card JSON for on-chain Manowar agents
-    if (method === "GET" && path.match(/^\/api\/agent\/\d+$/)) {
-      const agentId = path.replace("/api/agent/", "");
-
-      // Return A2A Agent Card format
-      // The actual data is fetched from on-chain by the frontend
-      // This endpoint serves as the canonical URL for the agent
-      return {
-        statusCode: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          schemaVersion: "1.0.0",
-          agentId: parseInt(agentId, 10),
-          endpoint: `https://manowar.compose.market/agent/${agentId}/chat`,
-          protocols: [
-            { name: "x402", version: "1.0" },
-            { name: "a2a", version: "1.0" },
-          ],
-          capabilities: ["inference", "workflow"],
-          registry: "manowar",
-          chain: 43113, // Avalanche Fuji
-          contract: "0xb6d62374Ba0076bE2c1020b6a8BBD1b3c67052F7",
-          // Full metadata is stored on IPFS, referenced by agentCardUri on-chain
-        }),
-      };
-    }
-
-    // Route: POST /api/agent/:agentId/invoke - A2A invoke endpoint
-    // This is where agent calls are routed through x402 payment
-    if (method === "POST" && path.match(/^\/api\/agent\/\d+\/invoke$/)) {
-      const agentId = path.replace("/api/agent/", "").replace("/invoke", "");
-
-      // Forward to chat completions handler with agent context
-      const req = createMockReq(event);
-      req.body = {
-        ...req.body,
-        agentId: parseInt(agentId, 10),
-      };
-      const res = createMockRes();
-      await handleChatCompletions(req as any, res as any);
-      return res.getResult();
-    }
-
-    // ==========================================================================
-    // MCP/Plugin Routes - Proxied to Runtime Server with x402 payment
-    // ==========================================================================
-
-    // Route: GET /api/mcp/plugins - List all available GOAT plugins (dynamically)
-    if (method === "GET" && path === "/api/mcp/plugins") {
-      try {
-        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/plugins`);
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
-        };
-      }
-    }
-
-    // Route: GET /api/mcp/tools - List ALL GOAT tools across all plugins
-    if (method === "GET" && path === "/api/mcp/tools") {
-      try {
-        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/tools`);
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
-        };
-      }
-    }
-
-    // Route: GET /api/mcp/status - Get GOAT runtime status
-    if (method === "GET" && path === "/api/mcp/status") {
-      try {
-        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/status`);
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
-        };
-      }
-    }
-
-    // Route: GET /api/mcp/:pluginId/tools - List tools for a plugin with full JSON schemas
-    if (method === "GET" && path.match(/^\/api\/mcp\/[^/]+\/tools$/)) {
-      const pluginId = path.replace("/api/mcp/", "").replace("/tools", "");
-      try {
-        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools`);
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: `Failed to fetch tools for ${pluginId}`, message: String(error) }),
-        };
-      }
-    }
-
-    // Route: GET /api/mcp/:pluginId/tools/:toolName - Get specific tool schema
-    if (method === "GET" && path.match(/^\/api\/mcp\/[^/]+\/tools\/[^/]+$/)) {
-      const parts = path.replace("/api/mcp/", "").split("/tools/");
-      const pluginId = parts[0];
-      const toolName = parts[1];
-      try {
-        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/tools/${encodeURIComponent(toolName)}`);
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: `Failed to fetch tool ${toolName}`, message: String(error) }),
-        };
-      }
-    }
-
-    // Route: POST /api/mcp/:pluginId/execute - Execute a plugin tool with x402 payment
-    if (method === "POST" && path.match(/^\/api\/mcp\/[^/]+\/execute$/)) {
-      const pluginId = path.replace("/api/mcp/", "").replace("/execute", "");
-      const body = event.body ? JSON.parse(event.body) : {};
-
-      // Forward PAYMENT-SIGNATURE header to Runtime server for proper x402 handling
-      // The Runtime server uses handleX402Payment which returns proper x402 protocol response
-      const paymentHeader = event.headers["payment-signature"] || event.headers["PAYMENT-SIGNATURE"];
-
-      try {
-        const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
-        if (paymentHeader) {
-          fetchHeaders["PAYMENT-SIGNATURE"] = paymentHeader;
-        }
-
-        const response = await fetch(`${RUNTIME_SERVER_URL}/goat/${encodeURIComponent(pluginId)}/execute`, {
-          method: "POST",
-          headers: fetchHeaders,
-          body: JSON.stringify(body),
-        });
-
-        // Collect response headers (includes x402 headers for 402 responses)
-        const responseHeaders: Record<string, string> = { ...corsHeaders };
-        response.headers.forEach((value, key) => {
-          // Preserve x402 protocol headers
-          const lowerKey = key.toLowerCase();
-          if (lowerKey.startsWith("x-") || lowerKey === "content-type" || lowerKey === "access-control-expose-headers") {
-            responseHeaders[key] = value;
-          }
-        });
-
-        const data = await response.json();
-
-        // Calculate action cost: 1% fee on any gas/fees spent (only on success)
-        if (response.status === 200) {
-          const actionCost = (data as { gasCost?: number }).gasCost || 0;
-          const platformFee = actionCost * 0.01;
-          const totalCost = actionCost + platformFee;
-          responseHeaders["X-Action-Cost"] = actionCost.toString();
-          responseHeaders["X-Platform-Fee"] = platformFee.toFixed(6);
-          responseHeaders["X-Total-Cost"] = totalCost.toFixed(6);
-        }
-
-        return {
-          statusCode: response.status,
-          headers: responseHeaders,
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: `Failed to execute ${pluginId}`, message: String(error) }),
-        };
-      }
-    }
-
-    // Route: GET /api/mcp/servers - List MCP servers
-    if (method === "GET" && path === "/api/mcp/servers") {
-      try {
-        const response = await fetch(`${RUNTIME_SERVER_URL}/servers`);
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "MCP server unavailable", message: String(error) }),
-        };
-      }
-    }
-
-    // Route: POST /api/mcp/servers/:slug/call - Call MCP server tool
-    if (method === "POST" && path.match(/^\/api\/mcp\/servers\/[^/]+\/call$/)) {
-      const slug = path.replace("/api/mcp/servers/", "").replace("/call", "");
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { tool, args } = body;
-
-      if (!tool) {
-        return {
-          statusCode: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "tool is required in request body" }),
-        };
-      }
-
-      // Forward PAYMENT-SIGNATURE header to Runtime server for proper x402 handling
-      const paymentHeader = event.headers["payment-signature"] || event.headers["PAYMENT-SIGNATURE"];
-
-      try {
-        const fetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
-        if (paymentHeader) {
-          fetchHeaders["PAYMENT-SIGNATURE"] = paymentHeader;
-        }
-
-        // Call MCP server's actual route: /mcp/servers/:serverId/tools/:toolName
-        const response = await fetch(`${RUNTIME_SERVER_URL}/mcp/servers/${encodeURIComponent(slug)}/tools/${encodeURIComponent(tool)}`, {
-          method: "POST",
-          headers: fetchHeaders,
-          body: JSON.stringify({ args }),
-        });
-
-        // Collect response headers (includes x402 headers for 402 responses)
-        const responseHeaders: Record<string, string> = { ...corsHeaders };
-        response.headers.forEach((value, key) => {
-          const lowerKey = key.toLowerCase();
-          if (lowerKey.startsWith("x-") || lowerKey === "content-type" || lowerKey === "access-control-expose-headers") {
-            responseHeaders[key] = value;
-          }
-        });
-
-        // Handle non-OK responses with detailed error info
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ error: "Unknown MCP error" }));
-          return {
-            statusCode: response.status,
-            headers: responseHeaders,
-            body: JSON.stringify({
-              success: false,
-              error: errorData.error || errorData.message || `MCP tool execution failed`,
-              details: errorData,
-              serverId: slug,
-              tool,
-            }),
-          };
-        }
-
-        const data = await response.json();
-        return {
-          statusCode: response.status,
-          headers: responseHeaders,
-          body: JSON.stringify(data),
-        };
-      } catch (error) {
-        return {
-          statusCode: 503,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: `Failed to call ${slug}`, message: String(error) }),
-        };
-      }
-    }
-
-    // ==========================================================================
-    // Mem0 Memory API Routes
-    // ==========================================================================
-
-    // Route: POST /api/memory/add - Add memory
-    if (method === "POST" && path === "/api/memory/add") {
-      const body = event.body ? JSON.parse(event.body) : {};
-
-      try {
-        const mem0 = await import("./shared/mem0.js");
-        const result = await mem0.addMemory(body);
-        return {
-          statusCode: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(result),
-        };
-      } catch (error) {
-        return {
-          statusCode: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "Failed to add memory", message: String(error) }),
-        };
-      }
-    }
-
-    // Route: POST /api/memory/search - Search memory
-    if (method === "POST" && path === "/api/memory/search") {
-      const body = event.body ? JSON.parse(event.body) : {};
-
-      try {
-        const mem0 = await import("./shared/mem0.js");
-        const result = await mem0.searchMemory(body);
-        return {
-          statusCode: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(result),
-        };
-      } catch (error) {
-        return {
-          statusCode: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "Failed to search memory", message: String(error) }),
-        };
-      }
-    }
-
-    // ==========================================================================
-    // Avatar Generation for Create Agent
-    // ==========================================================================
-
-    // Route: POST /api/generate-avatar - Generate avatar using Flux Schnell
-    if (method === "POST" && path === "/api/generate-avatar") {
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { title, description } = body;
-
-      if (!title || !description) {
-        return {
-          statusCode: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "You should add Name + Description before generating an avatar" }),
-        };
-      }
-
-      try {
-        const { invokeImage } = await import("./shared/models/invoke.js");
-        const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
-        const prompt = `Agent Name: ${title}
-Agent Description: ${description}
-Brand Style: ${brandStyle}
-
-Create a professional square avatar icon for this AI agent. Clean, iconic design suitable for small sizes. No text.`;
-
-        console.log("[generate-avatar] Prompt length:", prompt.length);
-
-        // Generate image using Flux Schnell (routes through HF -> fal-ai fallback)
-        const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
-          size: "1024x1024",
-          n: 1,
-        });
-
-        // Return base64 image
-        const base64Image = result.buffer.toString("base64");
-        const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
-
-        return {
-          statusCode: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl: dataUrl }),
-        };
-      } catch (error) {
-        console.error("[generate-avatar] Error:", error);
-        return {
-          statusCode: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "Avatar generation failed", message: String(error) }),
-        };
-      }
-    }
-
-    // ==========================================================================
-    // Banner Generation for Compose Manowar
-    // ==========================================================================
-
-    // Route: POST /api/generate-banner - Generate banner using Flux Schnell (landscape 1792x1024)
-    if (method === "POST" && path === "/api/generate-banner") {
-      const body = event.body ? JSON.parse(event.body) : {};
-      const { title, description } = body;
-
-      if (!title || !description) {
-        return {
-          statusCode: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "You should add Title + Description before generating a banner" }),
-        };
-      }
-
-      try {
-        const { invokeImage } = await import("./shared/models/invoke.js");
-        const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
-        const prompt = `Workflow Title: ${title}
-Workflow Description: ${description}
-Brand Style: ${brandStyle}
-
-Create a professional wide banner image for an AI workflow orchestration system. Landscape format, abstract tech visualization with connected nodes, data flows, or circuit patterns. No text or logos. Dark background with neon accent highlights.`;
-
-        console.log("[generate-banner] Prompt length:", prompt.length);
-
-        // Generate image using Flux Schnell with landscape dimensions
-        const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
-          size: "1792x1024", // Landscape aspect ratio for banners
-          n: 1,
-        });
-
-        // Return base64 image
-        const base64Image = result.buffer.toString("base64");
-        const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
-
-        return {
-          statusCode: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl: dataUrl }),
-        };
-      } catch (error) {
-        console.error("[generate-banner] Error:", error);
-        return {
-          statusCode: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ error: "Banner generation failed", message: String(error) }),
-        };
-      }
-    }
-
-    // ==========================================================================
-    // Batch Settlement Routes (Deferred Payment System)
-    // ==========================================================================
-
-    // POST /api/settlement/batch - Trigger batch settlement (scheduled or manual)
-    // Protected endpoint - only for internal use or admin
-    if (method === "POST" && path === "/api/settlement/batch") {
-      const internalSecret = event.headers["x-internal-secret"] || event.headers["X-Internal-Secret"];
-      const expectedSecret = process.env.MANOWAR_INTERNAL_SECRET;
-
-      // Security: Only allow internal calls
-      if (internalSecret !== expectedSecret) {
-        return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "Unauthorized" }),
-        };
-      }
-
-      try {
-        const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
-
-        console.log("[batch-settlement] Triggered manually via API");
-        const result = await runBatchSettlement();
-
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify(result),
-        };
-      } catch (error) {
-        console.error("[batch-settlement] Error:", error);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Batch settlement failed",
-            message: error instanceof Error ? error.message : String(error),
-          }),
-        };
-      }
-    }
-
-    // GET /api/settlement/status - Get pending settlement info for a user
-    if (method === "GET" && path === "/api/settlement/status") {
-      const userAddress = event.headers["x-session-user-address"];
-      const chainId = parseInt(event.queryStringParameters?.chainId || "338");
-
-      if (!userAddress) {
-        return {
-          statusCode: 401,
-          headers: corsHeaders,
-          body: JSON.stringify({ error: "x-session-user-address header required" }),
-        };
-      }
-
-      try {
-        const { getBudgetInfo } = await import("./shared/x402/session-budget.js");
-
-        const info = await getBudgetInfo(userAddress, chainId);
-
-        if (!info) {
-          return {
             statusCode: 200,
             headers: corsHeaders,
             body: JSON.stringify({
-              hasActiveBudget: false,
-              message: "No active session budget found",
+                userOpHash,
+                userOp: {
+                    sender: userOp.sender,
+                    nonce: userOp.nonce.toString(),
+                    initCode: userOp.initCode,
+                    callData: userOp.callData,
+                    accountGasLimits: userOp.accountGasLimits,
+                    preVerificationGas: userOp.preVerificationGas.toString(),
+                    gasFees: userOp.gasFees,
+                    paymasterAndData: userOp.paymasterAndData,
+                },
+                accountDeployed: deployed,
+                chainId,
             }),
-          };
+        };
+    } catch (error) {
+        console.error("[aa/prepare] Error:", error);
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: "Failed to prepare UserOperation",
+                details: error instanceof Error ? error.message : String(error),
+            }),
+        };
+    }
+}
+
+async function handleAASubmit(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const aa = await loadAA();
+    const body = event.body ? JSON.parse(event.body) : {};
+    const { chainId, smartAccount, signature, preparedUserOp, to, value, data, adminAddress } = body;
+
+    if (!chainId || !smartAccount || !signature) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: "Missing required fields",
+                required: ["chainId", "smartAccount", "signature"],
+            }),
+        };
+    }
+
+    try {
+        let userOp;
+
+        if (preparedUserOp) {
+            userOp = {
+                sender: preparedUserOp.sender as `0x${string}`,
+                nonce: BigInt(preparedUserOp.nonce),
+                initCode: preparedUserOp.initCode as `0x${string}`,
+                callData: preparedUserOp.callData as `0x${string}`,
+                accountGasLimits: preparedUserOp.accountGasLimits as `0x${string}`,
+                preVerificationGas: BigInt(preparedUserOp.preVerificationGas),
+                gasFees: preparedUserOp.gasFees as `0x${string}`,
+                paymasterAndData: (preparedUserOp.paymasterAndData || "0x") as `0x${string}`,
+                signature: signature as `0x${string}`,
+            };
+        } else {
+            // Legacy flow
+            if (!to || !data) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        error: "Missing required fields for legacy flow",
+                        required: ["to", "data"],
+                    }),
+                };
+            }
+
+            const deployed = await aa.isAccountDeployed(smartAccount, chainId);
+
+            let initCode: `0x${string}` = "0x";
+            if (!deployed) {
+                if (!adminAddress) {
+                    return {
+                        statusCode: 400,
+                        headers: corsHeaders,
+                        body: JSON.stringify({
+                            error: "Account not deployed on this chain",
+                            details: "adminAddress is required to deploy Smart Account",
+                        }),
+                    };
+                }
+                initCode = aa.generateInitCode(adminAddress, "0x", chainId);
+            }
+
+            const [nonce, gas] = await Promise.all([
+                aa.getNonce(smartAccount, chainId),
+                aa.estimateGas(chainId),
+            ]);
+
+            const callData = aa.encodeExecute(to, BigInt(value || "0"), data);
+            const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 3n : gas.verificationGasLimit;
+
+            userOp = {
+                sender: smartAccount as `0x${string}`,
+                nonce,
+                initCode,
+                callData,
+                accountGasLimits: aa.packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
+                preVerificationGas: gas.preVerificationGas,
+                gasFees: aa.packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
+                paymasterAndData: "0x" as `0x${string}`,
+                signature: signature as `0x${string}`,
+            };
+
+            userOp.paymasterAndData = await aa.buildPaymasterAndData(userOp, chainId);
+        }
+
+        const result = await aa.submitUserOperation(userOp, chainId);
+
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                success: true,
+                txHash: result.txHash,
+                userOp: {
+                    sender: userOp.sender,
+                    nonce: userOp.nonce.toString(),
+                },
+            }),
+        };
+    } catch (error) {
+        console.error("[aa/submit] Error:", error);
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: "Failed to submit transaction",
+                details: error instanceof Error ? error.message : String(error),
+            }),
+        };
+    }
+}
+
+async function handleAANonce(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const aa = await loadAA();
+    const address = event.rawPath.split("/api/aa/nonce/")[1] as `0x${string}`;
+    const chainId = parseInt(event.queryStringParameters?.chainId || "338", 10);
+
+    try {
+        const nonce = await aa.getNonce(address, chainId);
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({ address, chainId, nonce: nonce.toString() }),
+        };
+    } catch (error) {
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: String(error) }),
+        };
+    }
+}
+
+async function handleAARegister(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const aa = await loadAA();
+    const body = event.body ? JSON.parse(event.body) : {};
+    const { adminAddress } = body;
+
+    if (!adminAddress) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "adminAddress required" }),
+        };
+    }
+
+    try {
+        const result = await aa.registerAccountOnCronos(adminAddress);
+
+        if (!result.success) {
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ error: result.error }),
+            };
         }
 
         return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            hasActiveBudget: true,
-            budget: info,
-          }),
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                success: true,
+                accountAddress: result.accountAddress,
+                txHash: result.txHash,
+            }),
         };
-      } catch (error) {
-        console.error("[settlement/status] Error:", error);
+    } catch (error) {
         return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            error: "Failed to get status",
-            message: error instanceof Error ? error.message : String(error),
-          }),
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: String(error) }),
         };
-      }
     }
-
-    // 404 for unknown routes
-    return {
-      statusCode: 404,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Not found", path }),
-    };
-  } catch (error) {
-    console.error("Lambda handler error:", error);
-    // Log full stack trace for debugging
-    if (error instanceof Error && error.stack) {
-      console.error("Stack trace:", error.stack);
-    }
-    return {
-      statusCode: 500,
-      headers: { 
-        ...corsHeaders, 
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-session-active, x-session-budget-remaining, x-session-user-address, x-manowar-internal, x-chain-id",
-      },
-      body: JSON.stringify({
-        error: "Internal server error",
-        message: error instanceof Error ? error.message : "Unknown error",
-        path: event.rawPath,
-        method: event.requestContext.http.method,
-      }),
-    };
-  }
 }
 
+async function handleAAPredictAddress(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const aa = await loadAA();
+    const adminAddress = event.rawPath.split("/api/aa/predict-address/")[1] as `0x${string}`;
+    const chainId = parseInt(event.queryStringParameters?.chainId || "338", 10);
 
-/**
- * Batch Settlement Handler - Scheduled Lambda
- * 
- * Triggered by CloudWatch Events every 2 minutes.
- * Processes accumulated payment intents for deferred settlement.
- */
-export async function batchSettlementHandler(
-  event: { source?: string } | unknown,
-  _context: Context
-): Promise<void> {
-  console.log("[batch-settlement] Scheduled handler invoked", JSON.stringify(event));
+    try {
+        const address = await aa.getPredictedAccountAddress(adminAddress, chainId);
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({ adminAddress, chainId, predictedAddress: address }),
+        };
+    } catch (error) {
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: String(error) }),
+        };
+    }
+}
 
-  try {
-    const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+// =============================================================================
+// Backpack Routes Handler
+// =============================================================================
 
-    const result = await runBatchSettlement();
+async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const bp = await loadBackpack();
+    const path = event.rawPath;
+    const method = event.requestContext.http.method;
 
-    console.log("[batch-settlement] Completed:", {
-      runId: result.runId,
-      totalUsers: result.totalUsers,
-      totalIntents: result.totalIntents,
-      successCount: result.successCount,
-      failCount: result.failCount,
-      duration: `${result.endTime - result.startTime}ms`,
-    });
-  } catch (error) {
-    console.error("[batch-settlement] Fatal error:", error);
-    // Don't throw - let CloudWatch know the Lambda succeeded (error is logged)
-    // Throwing would trigger retries which could cause duplicate settlements
-  }
+    try {
+        // POST /api/backpack/connect
+        if (path === "/api/backpack/connect" && method === "POST") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            if (!body.userId || !body.toolkit) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and toolkit required" }) };
+            }
+            const result = await bp.initiateConnection(body.userId, body.toolkit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
+        // GET /api/backpack/connections
+        if (path === "/api/backpack/connections" && method === "GET") {
+            const userId = event.queryStringParameters?.userId;
+            if (!userId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            }
+            const connections = await bp.listConnections(userId);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ connections }) };
+        }
+
+        // GET /api/backpack/status/:toolkit
+        if (path.startsWith("/api/backpack/status/") && method === "GET") {
+            const toolkit = decodeURIComponent(path.replace("/api/backpack/status/", ""));
+            const userId = event.queryStringParameters?.userId;
+            if (!userId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            }
+            const status = await bp.checkConnection(userId, toolkit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, ...status }) };
+        }
+
+        // POST /api/backpack/disconnect
+        if (path === "/api/backpack/disconnect" && method === "POST") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            if (!body.userId || !body.toolkit) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and toolkit required" }) };
+            }
+            const result = await bp.disconnectToolkit(body.userId, body.toolkit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
+        // GET /api/backpack/toolkits
+        if (path === "/api/backpack/toolkits" && method === "GET") {
+            const search = event.queryStringParameters?.search || "";
+            const limit = parseInt(event.queryStringParameters?.limit || "20", 10);
+            const toolkits = await bp.searchToolkits(search, limit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkits }) };
+        }
+
+        // POST /api/backpack/telegram/link
+        if (path === "/api/backpack/telegram/link" && method === "POST") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            if (!body.userId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            }
+            const result = await bp.initiateTelegramLink(body.userId);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
+        // GET /api/backpack/telegram/status
+        if (path === "/api/backpack/telegram/status" && method === "GET") {
+            const userId = event.queryStringParameters?.userId;
+            if (!userId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            }
+            const status = await bp.checkTelegramBinding(userId);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit: "telegram", ...status }) };
+        }
+
+        // POST /api/backpack/webhook/telegram
+        if (path === "/api/backpack/webhook/telegram" && method === "POST") {
+            const update = event.body ? JSON.parse(event.body) : {};
+            const result = await bp.handleTelegramWebhook(update);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true, ...result }) };
+        }
+
+        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Not found" }) };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[backpack] Error:", message);
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
+    }
+}
+
+// =============================================================================
+// Registry Routes Handler
+// =============================================================================
+
+async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const registry = await loadRegistry();
+    const path = event.rawPath;
+    const method = event.requestContext.http.method;
+    const query = event.queryStringParameters || {};
+
+    // GET /api/registry/debug
+    if (path === "/api/registry/debug" && method === "GET") {
+        const data = await registry.getModelRegistry();
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                totalModels: data.models.length,
+                sources: data.sources,
+                lastUpdated: data.lastUpdated,
+                environment: {
+                    cwd: process.cwd(),
+                    nodeVersion: process.version,
+                    platform: process.platform,
+                },
+            }),
+        };
+    }
+
+    // GET /api/registry/models
+    if (path === "/api/registry/models" && method === "GET") {
+        const data = await registry.getModelRegistry();
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify(data),
+        };
+    }
+
+    // GET /api/registry/models/available
+    if (path === "/api/registry/models/available" && method === "GET") {
+        const forceRefresh = query.refresh === "true";
+        const page = Math.max(1, parseInt(query.page || "1", 10));
+        const limit = Math.min(500, Math.max(1, parseInt(query.limit || "100", 10)));
+        const offset = (page - 1) * limit;
+
+        let allModels = forceRefresh
+            ? (await registry.refreshRegistry()).models
+            : await registry.getAvailableModels();
+
+        // Apply filters
+        if (query.provider) {
+            allModels = allModels.filter((m: any) => m.provider === query.provider);
+        }
+        if (query.task) {
+            allModels = allModels.filter((m: any) => m.taskType === query.task);
+        }
+        if (query.search) {
+            const searchQuery = query.search.toLowerCase();
+            allModels = allModels.filter((m: any) =>
+                m.modelId.toLowerCase().includes(searchQuery) ||
+                m.name.toLowerCase().includes(searchQuery)
+            );
+        }
+
+        const paginated = allModels.slice(offset, offset + limit);
+
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                models: paginated,
+                total: allModels.length,
+                page,
+                limit,
+                totalPages: Math.ceil(allModels.length / limit),
+                hasMore: offset + limit < allModels.length,
+            }),
+        };
+    }
+
+    // GET /api/registry/models/:source
+    const sourceMatch = path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google|openrouter|aiml)$/);
+    if (sourceMatch && method === "GET") {
+        const source = sourceMatch[1] as any;
+        const sourceModels = await registry.getModelsBySource(source);
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({ source, models: sourceModels, total: sourceModels.length }),
+        };
+    }
+
+    return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Not found" }) };
+}
+
+// =============================================================================
+// Faucet Route Handlers
+// =============================================================================
+
+async function handleFaucetClaim(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const body = event.body ? JSON.parse(event.body) : {};
+    const { address, chainId } = body;
+
+    if (!address || !chainId) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "address and chainId are required" }),
+        };
+    }
+
+    if (!address.match(/^0x[a-fA-F0-9]{40}$/)) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Invalid address format" }),
+        };
+    }
+
+    const faucet = await loadFaucet();
+    const result = await faucet.claimFaucetUSDC({ address, chainId });
+
+    const statusCode = result.success
+        ? 200
+        : result.alreadyClaimed
+            ? 409
+            : 500;
+
+    return {
+        statusCode,
+        headers: corsHeaders,
+        body: JSON.stringify(result),
+    };
+}
+
+async function handleFaucetStatus(): Promise<APIGatewayProxyResultV2> {
+    const faucet = await loadFaucet();
+    const statuses = await faucet.getAllFaucetStatuses();
+
+    return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+            faucets: statuses,
+            claimAmount: 1_000_000,
+            claimAmountFormatted: "$1.00 USDC",
+            maxClaims: 1000,
+        }),
+    };
+}
+
+async function handleFaucetStatusByChain(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const chainId = parseInt(event.rawPath.split("/api/faucet/status/")[1], 10);
+
+    const faucet = await loadFaucet();
+    const result = await faucet.checkFaucetAvailable(chainId);
+
+    return {
+        statusCode: result.available ? 200 : 404,
+        headers: corsHeaders,
+        body: JSON.stringify(result),
+    };
+}
+
+async function handleFaucetCheck(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const address = event.rawPath.split("/api/faucet/check/")[1] as `0x${string}`;
+
+    const faucet = await loadFaucet();
+    const status = await faucet.getGlobalClaimStatus(address);
+
+    return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+            address,
+            hasClaimed: status.claimed,
+            claimedOnChain: status.chainId,
+            claimedOnChainName: status.chainName,
+            claimedAt: status.claimedAt,
+        }),
+    };
 }
