@@ -32,7 +32,7 @@ import {
 import { INFERENCE_PRICE_WEI, DEFAULT_PRICES, DYNAMIC_PRICES, getPriceForRequest } from "./pricing.js";
 import type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 
-// Compose Keys integration
+// Compose Keys integration (session record for UI/token)
 import {
     extractComposeKeyFromHeader,
     validateComposeKey,
@@ -40,7 +40,7 @@ import {
     getKeyBudgetInfo,
 } from "../keys/index.js";
 
-// Session Budget - Deferred Settlement
+// Session Budget - Deferred Payment (locked/used tracking for batch settlement)
 import {
     ensureSessionBudgetInitialized,
     lockBudget,
@@ -716,8 +716,7 @@ export async function requirePayment(
     if (hasValidSession && sessionUserAddress) {
         console.log(`[x402] Session bypass attempt: ${sessionUserAddress}, chain=${explicitChainId}, amount=${amountWei}`);
 
-        // Ensure session budget is initialized in Redis
-        // Lazy initialization from session headers if not already present
+        // Ensure session budget is initialized in Redis for deferred payment tracking
         await ensureSessionBudgetInitialized(
             sessionUserAddress,
             explicitChainId,
@@ -727,14 +726,14 @@ export async function requirePayment(
         // Generate unique request ID
         const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-        // Attempt to lock budget atomically
+        // Attempt to lock budget atomically in session-budget.ts (deferred payment ledger)
         const lockResult = await lockBudget(
             sessionUserAddress,
             explicitChainId,
             String(amountWei),
             merchantWalletAddress,
             requestId,
-            req.body?.model, // Optional model for tracking
+            req.body?.model,
         );
 
         if (lockResult.success) {
@@ -744,14 +743,12 @@ export async function requirePayment(
             const shouldSettle = await shouldTriggerImmediateSettlement(sessionUserAddress, explicitChainId);
             if (shouldSettle) {
                 console.log(`[x402] Threshold reached - triggering immediate settlement for ${sessionUserAddress}`);
-                // Note: Actual settlement happens via batch worker or separate trigger
-                // For now we just log - Tier 2 will implement the actual settlement
             }
 
             // Get session status for notifications
             const sessionStatus = await getSessionStatus(sessionUserAddress, explicitChainId);
 
-            // Set response headers for client tracking - use consistent naming
+            // Set response headers for client tracking
             res.setHeader("x-payment-method", "session-bypass");
             res.setHeader("x-budget-remaining", lockResult.availableWei);
             res.setHeader("x-session-budget-remaining", lockResult.availableWei);
@@ -779,7 +776,6 @@ export async function requirePayment(
         } else {
             // Budget insufficient or no session - fall through to standard flows
             console.log(`[x402] Session bypass FAILED: ${lockResult.error}`);
-            // Don't return false yet - let it try other payment methods
         }
     }
 

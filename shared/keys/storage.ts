@@ -200,6 +200,36 @@ export async function recordKeyUsage(keyId: string, amountWei: number): Promise<
 }
 
 /**
+ * Sync budget from batch settlement
+ * Called by batch worker after on-chain settlement completes
+ * Updates storage.ts budgetUsed to match settled amount
+ * 
+ * @param userAddress - User wallet address
+ * @param chainId - Chain ID
+ * @param totalUsedWei - Total USDC wei settled on-chain
+ */
+export async function syncBudgetAfterSettlement(
+    userAddress: string,
+    chainId: number,
+    totalUsedWei: string,
+): Promise<void> {
+    const addr = userAddress.toLowerCase();
+    const keyIds = await redisSMembers(userKeysKey(addr));
+    
+    for (const keyId of keyIds) {
+        const record = await getKeyRecord(keyId);
+        if (record && record.chainId === chainId) {
+            const recordKey = keyRecordKey(keyId);
+            await redisHSet(recordKey, "budgetUsed", totalUsedWei);
+            console.log(`[keys/storage] Synced key ${keyId} budgetUsed to ${totalUsedWei} after settlement`);
+            return;
+        }
+    }
+    
+    console.log(`[keys/storage] No key found for ${addr} chain ${chainId} to sync budget`);
+}
+
+/**
  * Check if a key is revoked
  */
 export async function isKeyRevoked(keyId: string): Promise<boolean> {

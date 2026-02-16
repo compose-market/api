@@ -23,6 +23,7 @@ import {
     type PaymentIntent,
 } from "../session-budget.js";
 import { settleComposeKeyPayment } from "../settlement.js";
+import { syncBudgetAfterSettlement } from "../../keys/index.js";
 import type { BatchSettlementResult, BatchRunSummary, BatchConfig, DEFAULT_BATCH_CONFIG } from "./types.js";
 
 // =============================================================================
@@ -176,6 +177,14 @@ export async function settleUserBatch(
 
         // Update session budget: move from locked to used
         await markSettled(userWallet, chainId, totalAmount.toString());
+
+        // Sync storage.ts for UI consistency - use session-budget.ts usedBudgetWei
+        const { getSessionBudget } = await import("../session-budget.js");
+        const budget = await getSessionBudget(userWallet, chainId);
+        if (budget) {
+            await syncBudgetAfterSettlement(userWallet, chainId, budget.usedBudgetWei);
+            console.log(`[batch-settlement] Synced storage.ts budgetUsed to ${budget.usedBudgetWei} for ${userWallet}`);
+        }
 
         console.log(`[batch-settlement] Successfully settled ${intents.length} intents for ${userWallet}, tx: ${settlementResult.txHash}`);
 

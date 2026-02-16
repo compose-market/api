@@ -21,6 +21,7 @@ import {
     listUserKeys,
     revokeKey,
     getActiveSession,
+    getActiveSessionStatus,
 } from "./shared/keys/index.js";
 
 import {
@@ -32,6 +33,7 @@ import {
 
 import { settleComposeKeyPayment } from "./shared/x402/settlement.js";
 import { getSessionStatus } from "./shared/x402/session-budget.js";
+import { getActiveChainId } from "./shared/configs/chains.js";
 
 // Account Abstraction
 const loadAA = () => import("./shared/aa/index.js");
@@ -296,77 +298,90 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
         };
     }
 
-    const session = await getActiveSession(userAddress, chainId);
+    // Get session record from storage.ts (for token, keyId, expiresAt)
+    const status = await getActiveSessionStatus(userAddress, chainId);
+    const session = status.session;
 
     if (!session) {
         return {
             statusCode: 404,
             headers: corsHeaders,
-            body: JSON.stringify({ error: "No active session found", hasSession: false }),
+            body: JSON.stringify({
+                error: "No active session found",
+                hasSession: false,
+                reason: status.reason,
+            }),
         };
     }
 
-    // Get detailed session status for notifications
-    let sessionStatus = null;
-    if (chainId) {
-        try {
-            sessionStatus = await getSessionStatus(userAddress, chainId);
-        } catch (e) {
-            console.warn(`[handleGetSession] Could not get session status: ${e}`);
-        }
-    }
+    // Get REAL-TIME budget from session-budget.ts (deferred payment ledger)
+    const budgetStatus = await getSessionStatus(
+        userAddress,
+        chainId ?? session.chainId ?? getActiveChainId()
+    );
+
+    // Use session-budget.ts for accurate budget (includes locked/used for deferred settlement)
+    const budgetLimit = budgetStatus ? BigInt(budgetStatus.totalBudget) : BigInt(session.budgetLimit);
+    const budgetUsed = budgetStatus ? BigInt(budgetStatus.usedBudget) : BigInt(session.budgetUsed);
+    const budgetLocked = budgetStatus ? BigInt(budgetStatus.lockedBudget) : 0n;
+    const budgetRemaining = budgetStatus ? BigInt(budgetStatus.availableBudget) : BigInt(session.budgetRemaining);
 
     const response: Record<string, any> = {
         hasSession: true,
         keyId: session.keyId,
         token: session.token,
-        budgetLimit: session.budgetLimit,
-        budgetUsed: session.budgetUsed,
-        budgetRemaining: session.budgetRemaining,
+        budgetLimit: budgetLimit.toString(),
+        budgetUsed: budgetUsed.toString(),
+        budgetLocked: budgetLocked.toString(),
+        budgetRemaining: budgetRemaining.toString(),
         expiresAt: session.expiresAt,
         chainId: session.chainId,
         name: session.name,
     };
 
-    // Add status warnings if available
-    if (sessionStatus) {
-        response.status = {
-            isActive: sessionStatus.isActive,
-            isExpired: sessionStatus.isExpired,
-            expiresInSeconds: sessionStatus.expiresInSeconds,
-            budgetPercentRemaining: sessionStatus.budgetPercentRemaining,
-            warnings: sessionStatus.warnings,
-        };
+    // Compute status warnings from real-time budget
+    const now = Date.now();
+    const expiresIn = Math.max(0, session.expiresAt - now);
+    const expiresInSeconds = Math.floor(expiresIn / 1000);
+    const budgetPercentRemaining = budgetLimit > 0n ? (Number(budgetRemaining) / Number(budgetLimit)) * 100 : 0;
 
-        // Add warning headers for frontend
-        const headers: Record<string, string> = { ...corsHeaders };
+    const warnings = {
+        budgetDepleted: budgetRemaining <= 0n,
+        budgetLow: budgetPercentRemaining < 20 && budgetRemaining > 0n,
+        expiringSoon: expiresInSeconds < 300 && expiresInSeconds > 0,
+        expired: expiresInSeconds <= 0,
+    };
 
-        if (sessionStatus.warnings.budgetDepleted) {
-            headers["x-session-status"] = "budget-depleted";
-        } else if (sessionStatus.warnings.budgetLow) {
-            headers["x-session-status"] = "budget-low";
-        } else if (sessionStatus.warnings.expiringSoon) {
-            headers["x-session-status"] = "expiring-soon";
-        }
+    response.status = {
+        isActive: !warnings.expired && budgetRemaining > 0n,
+        isExpired: warnings.expired,
+        expiresInSeconds,
+        budgetPercentRemaining,
+        warnings,
+    };
 
-        if (sessionStatus.warnings.budgetLow || sessionStatus.warnings.budgetDepleted) {
-            headers["x-session-budget-percent"] = String(Math.floor(sessionStatus.budgetPercentRemaining));
-        }
+    // Add warning headers for frontend
+    const headers: Record<string, string> = { ...corsHeaders };
 
-        if (sessionStatus.warnings.expiringSoon || sessionStatus.warnings.expired) {
-            headers["x-session-expires-in"] = String(sessionStatus.expiresInSeconds);
-        }
+    if (warnings.budgetDepleted) {
+        headers["x-session-status"] = "budget-depleted";
+    } else if (warnings.budgetLow) {
+        headers["x-session-status"] = "budget-low";
+    } else if (warnings.expiringSoon) {
+        headers["x-session-status"] = "expiring-soon";
+    }
 
-        return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify(response),
-        };
+    if (warnings.budgetLow || warnings.budgetDepleted) {
+        headers["x-session-budget-percent"] = String(Math.floor(budgetPercentRemaining));
+    }
+
+    if (warnings.expiringSoon || warnings.expired) {
+        headers["x-session-expires-in"] = String(expiresInSeconds);
     }
 
     return {
         statusCode: 200,
-        headers: corsHeaders,
+        headers,
         body: JSON.stringify(response),
     };
 }

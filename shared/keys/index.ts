@@ -28,6 +28,7 @@ export {
     getKeyRecord,
     listUserKeys,
     recordKeyUsage,
+    syncBudgetAfterSettlement,
     isKeyRevoked,
     revokeKey,
     getKeyBudgetRemaining,
