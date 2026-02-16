@@ -43,3 +43,9 @@ export {
     hasComposeKeyAuth,
     getKeyBudgetInfo,
 } from "./middleware.js";
+
+// WebSocket
+export { wsHandler, notifyExpired } from "./ws.js";
+
+// Expiry Worker
+export { expiryWorker, scheduleExpiryNotify } from "./expiry.js";

@@ -235,7 +235,7 @@ export async function redisExpire(key: string, seconds: number): Promise<boolean
 export async function redisSetNX(key: string, value: string): Promise<boolean> {
     const redis = await getRedisClient();
     const result = await redis.setNX(key, value);
-    return result;
+    return Boolean(result);
 }
 
 /**

@@ -5,6 +5,11 @@ import { registerRoutes } from "./shared/inference/index.js";
 import { createServer } from "http";
 import cors from "cors";
 
+export { handler } from "./handler.js";
+export { batchSettlementHandler } from "./handler.js";
+export { wsHandler } from "./shared/keys/index.js";
+export { expiryWorker } from "./shared/keys/index.js";
+
 const API_PORT = 3000;
 
 const app = express();

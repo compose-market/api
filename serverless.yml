@@ -61,8 +61,27 @@ functions:
           path: /
           method: ANY
   
-  # Batch Settlement Worker - runs every 2 minutes
-  # Settles accumulated payment intents for deferred settlement
+  ws:
+    handler: dist/index.wsHandler
+    events:
+      - websocket:
+          route: $connect
+      - websocket:
+          route: $disconnect
+      - websocket:
+          route: subscribe
+      - websocket:
+          route: $default
+  
+  expiry:
+    handler: dist/index.expiryWorker
+    timeout: 60
+    memorySize: 256
+    events:
+      - schedule:
+          rate: rate(1 minute)
+          enabled: true
+  
   batchSettlement:
     handler: dist/index.batchSettlementHandler
     timeout: 60
