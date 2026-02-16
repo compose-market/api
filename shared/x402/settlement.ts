@@ -13,8 +13,8 @@ import {
     serverClient,
     merchantWalletAddress,
     treasuryWalletAddress,
-} from "../config/thirdweb.js";
-import { getChainObject, getUsdcAddress, isCronosChain } from "../config/chains.js";
+} from "../configs/thirdweb.js";
+import { getChainObject, getUsdcAddress, isCronosChain } from "../configs/chains.js";
 
 // =============================================================================
 // Types

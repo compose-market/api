@@ -7,7 +7,7 @@
  * @module shared/x402/pricing
  */
 
-import { INFERENCE_PRICE_WEI } from "../config/thirdweb.js";
+import { INFERENCE_PRICE_WEI } from "../configs/thirdweb.js";
 import type { PriceResult, PriceLookupParams } from "./types.js";
 
 // =============================================================================
@@ -107,29 +107,37 @@ export function getToolPrice(params: {
 /**
  * Get price for multimodal generation based on model
  */
-export function getMultimodalPrice(model: string): string {
-    const modelLower = model.toLowerCase();
+export function getMultimodalPrice(params: {
+    requestProfile?: PriceLookupParams["requestProfile"];
+    outputModality?: PriceLookupParams["outputModality"];
+    taskType?: string;
+    provider?: string;
+}): string {
+    const profile = params.requestProfile || params.outputModality;
+    const taskType = (params.taskType || "").toLowerCase();
 
-    // Image generation
-    if (modelLower.includes("flux")) return DYNAMIC_PRICES.IMAGE_GEN_FLUX;
-    if (modelLower.includes("sdxl") || modelLower.includes("stable-diffusion")) {
+    if (profile === "image" || taskType.includes("image")) {
         return DYNAMIC_PRICES.IMAGE_GEN_SDXL;
     }
 
-    // Audio
-    if (modelLower.includes("tts") || modelLower.includes("bark")) {
+    if (profile === "audio" || taskType.includes("speech") || taskType.includes("audio")) {
         return DYNAMIC_PRICES.AUDIO_TTS;
     }
-    if (modelLower.includes("whisper") || modelLower.includes("stt")) {
-        return DYNAMIC_PRICES.AUDIO_STT;
-    }
 
-    // Video
-    if (modelLower.includes("veo") || modelLower.includes("video")) {
+    if (profile === "video" || taskType.includes("video")) {
         return DYNAMIC_PRICES.VIDEO_GEN;
     }
 
-    // Default to agent chat pricing
+    if (profile === "embedding" || taskType.includes("embedding") || taskType.includes("feature-extraction")) {
+        return DYNAMIC_PRICES.MEM0_SEARCH;
+    }
+
+    // Provider defaults for unknown models where only provider is known
+    const provider = (params.provider || "").toLowerCase();
+    if (provider === "vertex" || provider === "google") {
+        return DYNAMIC_PRICES.AGENT_CHAT;
+    }
+
     return DYNAMIC_PRICES.AGENT_CHAT;
 }
 
@@ -216,9 +224,19 @@ export function getPriceForRequest(params: PriceLookupParams): string {
         });
     }
 
-    // Multimodal pricing by model
+    // Canonical request-shape pricing
+    if (params.requestProfile || params.outputModality || params.taskType || params.provider) {
+        return getMultimodalPrice({
+            requestProfile: params.requestProfile,
+            outputModality: params.outputModality,
+            taskType: params.taskType,
+            provider: params.provider,
+        });
+    }
+
+    // Backward-compatible fallback for callers providing only modelId
     if (params.modelId) {
-        return getMultimodalPrice(params.modelId);
+        return DYNAMIC_PRICES.AGENT_CHAT;
     }
 
     // Default inference price

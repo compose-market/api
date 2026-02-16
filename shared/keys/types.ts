@@ -107,3 +107,41 @@ export interface KeyValidationResult {
     /** Key record if valid */
     record?: ComposeKeyRecord;
 }
+
+
+// =============================================================================
+// Session Lookup Types
+// =============================================================================
+
+export type SessionInactiveReason =
+    | "none"
+    | "expired"
+    | "budget_exhausted"
+    | "revoked"
+    | "chain_mismatch";
+
+export interface ActiveSessionRecord {
+    keyId: string;
+    token: string;
+    budgetLimit: number;
+    budgetUsed: number;
+    budgetRemaining: number;
+    expiresAt: number;
+    chainId?: number;
+    name?: string;
+}
+
+export interface ActiveSessionStatus {
+    session: ActiveSessionRecord | null;
+    reason: SessionInactiveReason;
+    latestKey?: {
+        keyId: string;
+        budgetLimit: number;
+        budgetUsed: number;
+        budgetRemaining: number;
+        expiresAt: number;
+        chainId?: number;
+        name?: string;
+        revokedAt?: number;
+    };
+}

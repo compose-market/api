@@ -14,6 +14,9 @@ export type {
     CreateKeyRequest,
     CreateKeyResponse,
     KeyValidationResult,
+    ActiveSessionRecord,
+    ActiveSessionStatus,
+    SessionInactiveReason,
 } from "./types.js";
 
 // JWT operations
@@ -29,6 +32,7 @@ export {
     revokeKey,
     getKeyBudgetRemaining,
     getActiveSession,
+    getActiveSessionStatus,
 } from "./storage.js";
 
 // Middleware

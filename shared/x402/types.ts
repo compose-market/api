@@ -92,8 +92,14 @@ export interface PriceResult {
 export interface PriceLookupParams {
     /** Model ID */
     modelId?: string;
+    /** Explicit provider for unknown-model routing */
+    provider?: string;
     /** Task type for multimodal pricing */
     taskType?: string;
+    /** Output modality requested by canonical /v1/responses */
+    outputModality?: "text" | "image" | "audio" | "video" | "embedding";
+    /** Request profile for pricing without model-id heuristics */
+    requestProfile?: "text" | "image" | "audio" | "video" | "embedding";
     /** Tool source for tool pricing */
     toolSource?: "goat" | "mcp" | "eliza";
     /** Tool name */

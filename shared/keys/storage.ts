@@ -18,9 +18,17 @@ import {
     redisExpire,
     redisSet,
     redisGet,
-} from "../config/redis.js";
+    redisSRem,
+} from "../configs/redis.js";
 import { signComposeKey } from "./jwt.js";
-import type { ComposeKeyRecord, CreateKeyRequest, CreateKeyResponse } from "./types.js";
+import type {
+    ComposeKeyRecord,
+    CreateKeyRequest,
+    CreateKeyResponse,
+    ActiveSessionRecord,
+    ActiveSessionStatus,
+    SessionInactiveReason,
+} from "./types.js";
 
 // =============================================================================
 // Redis Key Patterns
@@ -262,52 +270,160 @@ export async function rollbackKeyUsage(keyId: string, amountWei: number): Promis
  * @param chainId - Optional chain ID filter
  * @returns Active session with token, or null if none found
  */
-export async function getActiveSession(userAddress: string, chainId?: number): Promise<{
-    keyId: string;
-    token: string;
-    budgetLimit: number;
-    budgetUsed: number;
-    budgetRemaining: number;
-    expiresAt: number;
-    chainId?: number;
-    name?: string;
-} | null> {
+export async function getActiveSessionStatus(
+    userAddress: string,
+    chainId?: number,
+): Promise<ActiveSessionStatus> {
     const normalizedAddress = userAddress.toLowerCase();
     const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
     const now = Date.now();
 
+    type Candidate = {
+        keyId: string;
+        token?: string;
+        budgetLimit: number;
+        budgetUsed: number;
+        budgetRemaining: number;
+        expiresAt: number;
+        createdAt: number;
+        chainId?: number;
+        name?: string;
+        revokedAt?: number;
+    };
+
+    const candidates: Candidate[] = [];
     for (const keyId of keyIds) {
         const data = await redisHGetAll(keyRecordKey(keyId));
-        if (!data || Object.keys(data).length === 0) continue;
+        if (!data || Object.keys(data).length === 0) {
+            // Redis key expired but set index still references it.
+            await redisSRem(userKeysKey(normalizedAddress), keyId);
+            continue;
+        }
 
-        const expiresAt = parseInt(data.expiresAt, 10);
-        const budgetLimit = parseInt(data.budgetLimit, 10);
-        const budgetUsed = parseInt(data.budgetUsed, 10);
-        const budgetRemaining = budgetLimit - budgetUsed;
-        const isRevoked = data.revokedAt ? true : false;
+        const budgetLimit = Number.parseInt(data.budgetLimit || "0", 10);
+        const budgetUsed = Number.parseInt(data.budgetUsed || "0", 10);
+        const expiresAt = Number.parseInt(data.expiresAt || "0", 10);
+        const createdAt = Number.parseInt(data.createdAt || "0", 10);
+        const chain = data.chainId ? Number.parseInt(data.chainId, 10) : undefined;
+        const revokedAt = data.revokedAt ? Number.parseInt(data.revokedAt, 10) : undefined;
 
-        // Skip expired, revoked, or depleted keys
-        if (expiresAt <= now || isRevoked || budgetRemaining <= 0) continue;
+        if (!Number.isFinite(budgetLimit) || !Number.isFinite(budgetUsed) || !Number.isFinite(expiresAt)) {
+            continue;
+        }
 
-        // Optional chain filter
-        if (chainId && data.chainId && parseInt(data.chainId, 10) !== chainId) continue;
+        candidates.push({
+            keyId,
+            token: data.token || undefined,
+            budgetLimit,
+            budgetUsed,
+            budgetRemaining: Math.max(0, budgetLimit - budgetUsed),
+            expiresAt,
+            createdAt: Number.isFinite(createdAt) ? createdAt : 0,
+            chainId: Number.isFinite(chain || NaN) ? chain : undefined,
+            name: data.name || undefined,
+            revokedAt: Number.isFinite(revokedAt || NaN) ? revokedAt : undefined,
+        });
+    }
 
-        // Return the first valid session (they're sorted by creation, newest first)
-        if (data.token) {
-            console.log(`[keys/storage] Found active session ${keyId} for ${normalizedAddress}`);
+    if (candidates.length === 0) {
+        console.log(`[keys/storage] No active session found for ${normalizedAddress}`);
+        return { session: null, reason: "none" };
+    }
+
+    candidates.sort((a, b) => b.createdAt - a.createdAt);
+
+    let sawChainMismatch = false;
+    let firstInvalid: { reason: SessionInactiveReason; key: Candidate } | null = null;
+
+    for (const candidate of candidates) {
+        const chainMismatch = Boolean(chainId && candidate.chainId && candidate.chainId !== chainId);
+        if (chainMismatch) {
+            sawChainMismatch = true;
+            continue;
+        }
+
+        const isRevoked = Boolean(candidate.revokedAt);
+        const isExpired = candidate.expiresAt <= now;
+        const isDepleted = candidate.budgetRemaining <= 0;
+
+        if (!isRevoked && !isExpired && !isDepleted && candidate.token) {
+            console.log(`[keys/storage] Found active session ${candidate.keyId} for ${normalizedAddress}`);
             return {
-                keyId,
-                token: data.token,
-                budgetLimit,
-                budgetUsed,
-                budgetRemaining,
-                expiresAt,
-                chainId: data.chainId ? parseInt(data.chainId, 10) : undefined,
-                name: data.name || undefined,
+                session: {
+                    keyId: candidate.keyId,
+                    token: candidate.token,
+                    budgetLimit: candidate.budgetLimit,
+                    budgetUsed: candidate.budgetUsed,
+                    budgetRemaining: candidate.budgetRemaining,
+                    expiresAt: candidate.expiresAt,
+                    chainId: candidate.chainId,
+                    name: candidate.name,
+                },
+                reason: "none",
+                latestKey: {
+                    keyId: candidate.keyId,
+                    budgetLimit: candidate.budgetLimit,
+                    budgetUsed: candidate.budgetUsed,
+                    budgetRemaining: candidate.budgetRemaining,
+                    expiresAt: candidate.expiresAt,
+                    chainId: candidate.chainId,
+                    name: candidate.name,
+                    revokedAt: candidate.revokedAt,
+                },
+            };
+        }
+
+        if (!firstInvalid) {
+            firstInvalid = {
+                reason: isRevoked ? "revoked" : isExpired ? "expired" : "budget_exhausted",
+                key: candidate,
             };
         }
     }
 
+    if (firstInvalid) {
+        return {
+            session: null,
+            reason: firstInvalid.reason,
+            latestKey: {
+                keyId: firstInvalid.key.keyId,
+                budgetLimit: firstInvalid.key.budgetLimit,
+                budgetUsed: firstInvalid.key.budgetUsed,
+                budgetRemaining: firstInvalid.key.budgetRemaining,
+                expiresAt: firstInvalid.key.expiresAt,
+                chainId: firstInvalid.key.chainId,
+                name: firstInvalid.key.name,
+                revokedAt: firstInvalid.key.revokedAt,
+            },
+        };
+    }
+
+    if (sawChainMismatch) {
+        const latest = candidates[0];
+        return {
+            session: null,
+            reason: "chain_mismatch",
+            latestKey: {
+                keyId: latest.keyId,
+                budgetLimit: latest.budgetLimit,
+                budgetUsed: latest.budgetUsed,
+                budgetRemaining: latest.budgetRemaining,
+                expiresAt: latest.expiresAt,
+                chainId: latest.chainId,
+                name: latest.name,
+                revokedAt: latest.revokedAt,
+            },
+        };
+    }
+
     console.log(`[keys/storage] No active session found for ${normalizedAddress}`);
-    return null;
+    return { session: null, reason: "none" };
+}
+
+/**
+ * Backward-compatible helper: return only active session record.
+ */
+export async function getActiveSession(userAddress: string, chainId?: number): Promise<ActiveSessionRecord | null> {
+    const status = await getActiveSessionStatus(userAddress, chainId);
+    return status.session;
 }

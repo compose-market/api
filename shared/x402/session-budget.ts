@@ -25,7 +25,8 @@ import {
     redisSMembers,
     redisSRem,
     redisExists,
-} from "../config/redis.js";
+} from "../configs/redis.js";
+import { INFERENCE_PRICE_WEI } from "../configs/thirdweb.js";
 
 // =============================================================================
 // Configuration
@@ -76,6 +77,7 @@ export interface LockResult {
     success: boolean;
     availableWei: string;
     lockedWei: string;
+    intentId?: string;
     error?: string;
 }
 
@@ -225,6 +227,74 @@ export async function ensureSessionBudgetInitialized(
 }
 
 /**
+ * Get session status with notification flags
+ * Returns status info for frontend notifications
+ */
+export interface SessionStatus {
+    isActive: boolean;
+    isExpired: boolean;
+    expiresAt: number;
+    expiresInSeconds: number;
+    totalBudget: string;
+    availableBudget: string;
+    lockedBudget: string;
+    usedBudget: string;
+    budgetPercentRemaining: number;
+    warnings: {
+        budgetLow: boolean;      // < 20% remaining
+        budgetDepleted: boolean;  // < 1 request worth
+        expiringSoon: boolean;   // < 5 minutes
+        expired: boolean;
+    };
+}
+
+export async function getSessionStatus(
+    userWallet: string,
+    chainId: number,
+    // Default inference cost (centralized in config/thirdweb + pricing.ts)
+    requestCostWei: string = String(INFERENCE_PRICE_WEI),
+): Promise<SessionStatus | null> {
+    const budget = await getSessionBudget(userWallet, chainId);
+
+    if (!budget) {
+        return null;
+    }
+
+    const now = Date.now();
+    const total = BigInt(budget.totalBudgetWei);
+    const locked = BigInt(budget.lockedBudgetWei);
+    const used = BigInt(budget.usedBudgetWei);
+    const available = total - locked - used;
+    const requestCost = BigInt(requestCostWei);
+
+    const expiresInMs = budget.expiresAt - now;
+    const expiresInSeconds = Math.max(0, Math.floor(expiresInMs / 1000));
+    const isExpired = now > budget.expiresAt;
+
+    const totalNum = Number(total);
+    const availableNum = Number(available);
+    const budgetPercentRemaining = totalNum > 0 ? (availableNum / totalNum) * 100 : 0;
+
+    return {
+        isActive: !isExpired && available > 0n,
+        isExpired,
+        expiresAt: budget.expiresAt,
+        expiresInSeconds,
+        totalBudget: budget.totalBudgetWei,
+        availableBudget: available.toString(),
+        lockedBudget: budget.lockedBudgetWei,
+        usedBudget: budget.usedBudgetWei,
+        budgetPercentRemaining,
+        warnings: {
+            budgetLow: budgetPercentRemaining < 20,
+            budgetDepleted: available < requestCost,
+            expiringSoon: expiresInSeconds < 300 && !isExpired, // < 5 minutes
+            expired: isExpired,
+        },
+    };
+}
+
+/**
  * Get available budget (total - locked - used)
  */
 export async function getAvailableBudget(
@@ -346,6 +416,7 @@ export async function lockBudget(
         success: true,
         availableWei: newAvailable.toString(),
         lockedWei: newLocked.toString(),
+        intentId,
     };
 }
 
@@ -373,6 +444,27 @@ export async function unlockBudget(
 }
 
 /**
+ * Deterministically cancel a locked intent and release its budget.
+ * Safe to call multiple times; only locked intents are released.
+ */
+export async function cancelBudgetIntent(
+    intentId: string,
+    error: string = "Request failed before settlement",
+): Promise<void> {
+    const intent = await getPaymentIntent(intentId);
+    if (!intent) {
+        return;
+    }
+
+    if (intent.status !== "locked") {
+        return;
+    }
+
+    await unlockBudget(intent.userWallet, intent.chainId, intent.amountWei, intentId);
+    await markIntentFailed(intentId, error);
+}
+
+/**
  * Mark locked budget as settled (after batch settlement)
  * Moves amount from locked to used
  */
@@ -389,6 +481,17 @@ export async function markSettled(
     await redisHIncrBy(key, "usedBudgetWei", amount);
 
     console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userWallet} chain ${chainId}`);
+}
+
+/**
+ * Backward-compatible alias used by x402 wrapper code.
+ */
+export async function markBudgetSettled(
+    userWallet: string,
+    chainId: number,
+    amountWei: string,
+): Promise<void> {
+    await markSettled(userWallet, chainId, amountWei);
 }
 
 /**
@@ -577,11 +680,18 @@ export async function markIntentsSettled(intentIds: string[], txHash: string): P
  */
 export async function markIntentFailed(intentId: string, error: string): Promise<void> {
     const intentKey = getIntentKey(intentId);
+    const intent = await getPaymentIntent(intentId);
 
     await redisHSet(intentKey, {
         status: "failed",
         error,
     });
+
+    // Failed intents should not remain pending.
+    await redisSRem(PENDING_INTENTS_KEY, intentId);
+    if (intent) {
+        await redisSRem(getUserIntentsKey(intent.userWallet), intentId);
+    }
 
     console.log(`[sessionBudget] Marked intent ${intentId} as failed: ${error}`);
 }

@@ -19,8 +19,8 @@ import {
     serverWalletAddress,
     getChainIdFromPaymentData,
     getChainObject,
-} from "../config/thirdweb.js";
-import { CHAIN_IDS, isCronosChain, getUsdcAddress, getActiveChainId } from "../config/chains.js";
+} from "../configs/thirdweb.js";
+import { CHAIN_IDS, isCronosChain, getUsdcAddress, getActiveChainId } from "../configs/chains.js";
 import {
     createCronos402Response,
     verifyAndSettleCronosPayment,
@@ -28,7 +28,7 @@ import {
     isCronosPaymentHeader,
     getChainIdFromCronosHeader,
     getCronosNetworkString,
-} from "../config/cronos.js";
+} from "../configs/cronos.js";
 import { INFERENCE_PRICE_WEI, DEFAULT_PRICES, DYNAMIC_PRICES, getPriceForRequest } from "./pricing.js";
 import type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 
@@ -42,11 +42,12 @@ import {
 
 // Session Budget - Deferred Settlement
 import {
-    lockBudget,
-    unlockBudget,
-    shouldTriggerImmediateSettlement,
-    getSessionBudget,
     ensureSessionBudgetInitialized,
+    lockBudget,
+    cancelBudgetIntent,
+    markBudgetSettled,
+    getSessionStatus,
+    shouldTriggerImmediateSettlement,
 } from "./session-budget.js";
 
 // Re-export types
@@ -360,33 +361,42 @@ function requireEnv(name: string): string {
 // =============================================================================
 
 /**
- * Result of preparePayment - contains validation status and a deferred settlement callback
+ * Result of deferred payment preparation.
  */
 export interface PreparedPayment {
     valid: boolean;
     error?: string;
+    method?: "internal" | "session" | "compose-key" | "x402";
+    metadata?: {
+        amountWei: number;
+        chainId: number;
+        intentId?: string;
+        userAddress?: string;
+        keyId?: string;
+    };
     /** Call this AFTER first response token to actually charge. Only call once! */
     settle: () => Promise<{ success: boolean; txHash?: string; error?: string }>;
+    /** Abort deferred payment and rollback any locked budget */
+    abort: (reason?: string) => Promise<void>;
     /** For setting response headers */
     getHeaders: () => Record<string, string>;
 }
 
 /**
- * Prepare payment without actually charging. Returns a settlement callback.
- * 
- * Use this for endpoints where you want to charge AFTER the response starts,
- * to avoid charging for failed requests.
- * 
- * @param req - Express request
- * @param amountWei - Amount to charge (but don't charge yet)
- * @returns PreparedPayment with settle() callback
+ * Prepare payment without charging immediately.
+ * Use settle() when first output is emitted, and abort() on failures before settlement.
  */
-export async function preparePayment(
+export async function prepareDeferredPayment(
     req: Request,
     amountWei: number = INFERENCE_PRICE_WEI,
 ): Promise<PreparedPayment> {
+    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader), 10) : getActiveChainId();
     const authHeader = req.headers["authorization"] as string | undefined;
     const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    const { paymentData, sessionActive, sessionBudgetRemaining, sessionUserAddress } = extractPaymentInfo(
+        req.headers as Record<string, string | string[] | undefined>,
+    );
 
     // Check for internal Manowar bypass first
     const internalMarker = req.headers["x-manowar-internal"] as string | undefined;
@@ -394,11 +404,80 @@ export async function preparePayment(
         console.log(`[x402] preparePayment: Internal bypass - Manowar verified payment upstream`);
         return {
             valid: true,
+            method: "internal",
+            metadata: { amountWei, chainId: explicitChainId },
             settle: async () => ({ success: true }),
+            abort: async () => { },
             getHeaders: () => ({}),
         };
     }
 
+    // ==========================================================================
+    // Session bypass flow (deferred settlement with lock/abort lifecycle)
+    // ==========================================================================
+    if (sessionActive && sessionBudgetRemaining > 0 && sessionUserAddress) {
+        await ensureSessionBudgetInitialized(
+            sessionUserAddress,
+            explicitChainId,
+            sessionBudgetRemaining,
+        );
+
+        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const lockResult = await lockBudget(
+            sessionUserAddress,
+            explicitChainId,
+            String(amountWei),
+            merchantWalletAddress,
+            requestId,
+            req.body?.model,
+        );
+
+        if (lockResult.success) {
+            let committed = false;
+            let aborted = false;
+
+            return {
+                valid: true,
+                method: "session",
+                metadata: {
+                    amountWei,
+                    chainId: explicitChainId,
+                    intentId: lockResult.intentId,
+                    userAddress: sessionUserAddress,
+                },
+                // Commit means "keep intent locked for batch settlement".
+                settle: async () => {
+                    if (aborted) {
+                        return { success: false, error: "payment_aborted" };
+                    }
+                    if (committed) {
+                        return { success: true };
+                    }
+                    committed = true;
+                    return { success: true };
+                },
+                abort: async (reason?: string) => {
+                    if (aborted || committed) {
+                        return;
+                    }
+                    aborted = true;
+                    if (lockResult.intentId) {
+                        await cancelBudgetIntent(lockResult.intentId, reason || "Inference failed before settlement");
+                    }
+                },
+                getHeaders: () => ({
+                    "x-payment-method": "session-bypass",
+                    "x-budget-remaining": lockResult.availableWei,
+                    "x-settlement": "deferred",
+                    ...(lockResult.intentId ? { "x-payment-intent-id": lockResult.intentId } : {}),
+                }),
+            };
+        }
+    }
+
+    // ==========================================================================
+    // Compose Key flow
+    // ==========================================================================
     if (composeKeyToken) {
         console.log(`[x402] preparePayment: Compose Key detected, validating...`);
 
@@ -409,7 +488,10 @@ export async function preparePayment(
             return {
                 valid: false,
                 error: validation.error,
+                method: "compose-key",
+                metadata: { amountWei, chainId: explicitChainId },
                 settle: async () => ({ success: false, error: "Invalid key" }),
+                abort: async () => { },
                 getHeaders: () => ({}),
             };
         }
@@ -421,18 +503,32 @@ export async function preparePayment(
             return {
                 valid: false,
                 error: "Budget exhausted",
+                method: "compose-key",
+                metadata: { amountWei, chainId: explicitChainId, keyId: validation.payload?.keyId },
                 settle: async () => ({ success: false, error: "Budget exhausted" }),
+                abort: async () => { },
                 getHeaders: () => ({}),
             };
         }
 
         // Return valid with deferred settlement
         let settled = false;
+        let aborted = false;
         let settlementTxHash: string | undefined;
 
         return {
             valid: true,
+            method: "compose-key",
+            metadata: {
+                amountWei,
+                chainId: explicitChainId,
+                keyId: validation.payload?.keyId,
+                userAddress: validation.payload?.sub,
+            },
             settle: async () => {
+                if (aborted) {
+                    return { success: false, error: "payment_aborted" };
+                }
                 if (settled) {
                     console.log(`[x402] preparePayment: Already settled, skipping`);
                     return { success: true, txHash: settlementTxHash };
@@ -457,6 +553,9 @@ export async function preparePayment(
 
                 return result;
             },
+            abort: async () => {
+                aborted = true;
+            },
             getHeaders: () => {
                 const headers: Record<string, string> = {
                     "x-compose-key-budget-limit": String(validation.record!.budgetLimit),
@@ -474,20 +573,22 @@ export async function preparePayment(
     // ==========================================================================
     // x402 PAYMENT-SIGNATURE Flow (standard x402 v2 per-request settlement)
     // ==========================================================================
-    const { paymentData } = extractPaymentInfo(
-        req.headers as Record<string, string | string[] | undefined>
-    );
-
     if (paymentData) {
         console.log(`[x402] preparePayment: PAYMENT-SIGNATURE detected, using x402 flow`);
 
         // x402 flow: deferred settlement
         let settled = false;
+        let aborted = false;
         let settleResult: { success: boolean; txHash?: string; error?: string } | null = null;
 
         return {
             valid: true,
+            method: "x402",
+            metadata: { amountWei, chainId: explicitChainId },
             settle: async () => {
+                if (aborted) {
+                    return { success: false, error: "payment_aborted" };
+                }
                 if (settled && settleResult) {
                     console.log(`[x402] preparePayment: Already settled, returning cached result`);
                     return settleResult;
@@ -523,6 +624,9 @@ export async function preparePayment(
 
                 return settleResult;
             },
+            abort: async () => {
+                aborted = true;
+            },
             getHeaders: () => ({}),
         };
     }
@@ -531,9 +635,21 @@ export async function preparePayment(
     return {
         valid: false,
         error: "No valid payment method - use Compose Key or PAYMENT-SIGNATURE header",
+        metadata: { amountWei, chainId: explicitChainId },
         settle: async () => ({ success: false, error: "No payment" }),
+        abort: async () => { },
         getHeaders: () => ({}),
     };
+}
+
+/**
+ * Backward-compatible alias.
+ */
+export async function preparePayment(
+    req: Request,
+    amountWei: number = INFERENCE_PRICE_WEI,
+): Promise<PreparedPayment> {
+    return prepareDeferredPayment(req, amountWei);
 }
 
 const MANOWAR_INTERNAL_MARKER = requireEnv("MANOWAR_INTERNAL_SECRET");
@@ -632,10 +748,32 @@ export async function requirePayment(
                 // For now we just log - Tier 2 will implement the actual settlement
             }
 
-            // Set response headers for client tracking
+            // Get session status for notifications
+            const sessionStatus = await getSessionStatus(sessionUserAddress, explicitChainId);
+
+            // Set response headers for client tracking - use consistent naming
             res.setHeader("x-payment-method", "session-bypass");
             res.setHeader("x-budget-remaining", lockResult.availableWei);
+            res.setHeader("x-session-budget-remaining", lockResult.availableWei);
             res.setHeader("x-settlement", "deferred");
+
+            // Add session notification headers for frontend
+            if (sessionStatus) {
+                res.setHeader("x-session-budget-limit", sessionStatus.totalBudget);
+                res.setHeader("x-session-budget-used", sessionStatus.usedBudget);
+                // Budget warnings
+                if (sessionStatus.warnings.budgetDepleted) {
+                    res.setHeader("x-session-status", "budget-depleted");
+                } else if (sessionStatus.warnings.budgetLow) {
+                    res.setHeader("x-session-status", "budget-low");
+                } else if (sessionStatus.warnings.expiringSoon) {
+                    res.setHeader("x-session-status", "expiring-soon");
+                }
+
+                // Additional metadata
+                res.setHeader("x-session-expires-in", String(sessionStatus.expiresInSeconds));
+                res.setHeader("x-session-budget-percent", String(Math.floor(sessionStatus.budgetPercentRemaining)));
+            }
 
             return true;
         } else {
