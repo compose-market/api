@@ -1,7 +1,7 @@
 import "dotenv/config"; // Load .env variables FIRST
 import express, { type Request, type Response, type NextFunction } from "express";
 import type { Server } from "http";
-import { registerRoutes } from "./shared/api/index.js";
+import { registerRoutes } from "./shared/inference/index.js";
 import { createServer } from "http";
 import cors from "cors";
 

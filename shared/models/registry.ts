@@ -7,7 +7,7 @@
  * Uses ModelCard from types.ts as the SINGLE source of truth.
  */
 
-import type { ModelCard, ModelProvider, CompiledModelsData, ModelPricing } from "./types.js";
+import { PROVIDER_PRIORITY, type ModelCard, type ModelProvider, type CompiledModelsData, type ModelPricing } from "./types.js";
 
 // Re-export types for external use
 export type { ModelCard, ModelProvider, CompiledModelsData, ModelPricing };
@@ -19,6 +19,13 @@ import { google } from "@ai-sdk/google";
 import type { LanguageModel } from "ai";
 import * as fs from "fs";
 import * as path from "path";
+
+export interface ResolvedModel {
+    modelId: string;
+    provider: ModelProvider;
+    card: ModelCard | null;
+    known: boolean;
+}
 
 // =============================================================================
 // Provider Instances (for runtime model creation)
@@ -60,6 +67,7 @@ const aimlProvider = createOpenAICompatible({
 
 function getModelsBasePath(): string {
     const candidatePaths: string[] = [];
+    const runtimeDir = typeof __dirname !== "undefined" && __dirname ? __dirname : process.cwd();
 
     // 1. Try __dirname first (points to dist/)
     if (typeof __dirname !== "undefined" && __dirname !== "") {
@@ -80,7 +88,7 @@ function getModelsBasePath(): string {
 
     // 4. Relative to source (for local development with tsx)
     candidatePaths.push(
-        path.join(__dirname || process.cwd(), "..", "data"),
+        path.join(runtimeDir, "..", "data"),
     );
 
     // Try each candidate path
@@ -121,6 +129,8 @@ function getModelsBasePath(): string {
 let compiledModelsCache: CompiledModelsData | null = null;
 let compiledModelsCacheTime = 0;
 const MODELS_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+let compiledModelIndex: Map<string, ModelCard> | null = null;
+let compiledModelProviderIndex: Map<string, Map<ModelProvider, ModelCard>> | null = null;
 
 function loadCompiledModels(): CompiledModelsData {
     const now = Date.now();
@@ -135,14 +145,20 @@ function loadCompiledModels(): CompiledModelsData {
         if (fs.existsSync(modelsPath)) {
             compiledModelsCache = JSON.parse(fs.readFileSync(modelsPath, "utf-8"));
             compiledModelsCacheTime = now;
+            compiledModelIndex = null;
+            compiledModelProviderIndex = null;
             console.log(`[models] Loaded ${compiledModelsCache?.totalModels || 0} models from ${modelsPath}`);
         } else {
             console.warn(`[models] models.json not found at ${modelsPath}`);
             compiledModelsCache = { lastUpdated: "", totalModels: 0, byProvider: {} as any, byTaskType: {}, models: [] };
+            compiledModelIndex = null;
+            compiledModelProviderIndex = null;
         }
     } catch (e) {
         console.error("[models] Failed to load models.json:", e);
         compiledModelsCache = { lastUpdated: "", totalModels: 0, byProvider: {} as any, byTaskType: {}, models: [] };
+        compiledModelIndex = null;
+        compiledModelProviderIndex = null;
     }
 
     return compiledModelsCache!;
@@ -150,6 +166,8 @@ function loadCompiledModels(): CompiledModelsData {
 
 // Extended models (full 43k+ catalog) - loaded lazily only when needed
 let extendedModelsCache: CompiledModelsData | null = null;
+let extendedModelIndex: Map<string, ModelCard> | null = null;
+let extendedModelProviderIndex: Map<string, Map<ModelProvider, ModelCard>> | null = null;
 
 function loadExtendedModels(): CompiledModelsData {
     if (extendedModelsCache) {
@@ -162,6 +180,8 @@ function loadExtendedModels(): CompiledModelsData {
     try {
         if (fs.existsSync(extendedPath)) {
             extendedModelsCache = JSON.parse(fs.readFileSync(extendedPath, "utf-8"));
+            extendedModelIndex = null;
+            extendedModelProviderIndex = null;
             console.log(`[models] Loaded ${extendedModelsCache?.totalModels || 0} extended models from ${extendedPath}`);
         } else {
             console.warn(`[models] models_extended.json not found, falling back to models.json`);
@@ -173,6 +193,53 @@ function loadExtendedModels(): CompiledModelsData {
     }
 
     return extendedModelsCache!;
+}
+
+function buildIndexes(models: ModelCard[]): {
+    byId: Map<string, ModelCard>;
+    byIdProvider: Map<string, Map<ModelProvider, ModelCard>>;
+} {
+    const byId = new Map<string, ModelCard>();
+    const byIdProvider = new Map<string, Map<ModelProvider, ModelCard>>();
+
+    for (const model of models) {
+        const existingPrimary = byId.get(model.modelId);
+        if (!existingPrimary) {
+            byId.set(model.modelId, model);
+        } else {
+            const existingPriority = PROVIDER_PRIORITY[existingPrimary.provider] ?? 99;
+            const incomingPriority = PROVIDER_PRIORITY[model.provider] ?? 99;
+            if (incomingPriority < existingPriority) {
+                byId.set(model.modelId, model);
+            }
+        }
+
+        const providerMap = byIdProvider.get(model.modelId) || new Map<ModelProvider, ModelCard>();
+        if (!providerMap.has(model.provider)) {
+            providerMap.set(model.provider, model);
+        }
+        byIdProvider.set(model.modelId, providerMap);
+    }
+
+    return { byId, byIdProvider };
+}
+
+function ensureCompiledIndexes(): void {
+    if (compiledModelIndex && compiledModelProviderIndex) {
+        return;
+    }
+    const indexes = buildIndexes(loadCompiledModels().models);
+    compiledModelIndex = indexes.byId;
+    compiledModelProviderIndex = indexes.byIdProvider;
+}
+
+function ensureExtendedIndexes(): void {
+    if (extendedModelIndex && extendedModelProviderIndex) {
+        return;
+    }
+    const indexes = buildIndexes(loadExtendedModels().models);
+    extendedModelIndex = indexes.byId;
+    extendedModelProviderIndex = indexes.byIdProvider;
 }
 
 // =============================================================================
@@ -199,15 +266,81 @@ export function getExtendedModels(): CompiledModelsData {
  * Get model by ID from optimized set
  * Falls back to extended set if not found
  */
-export function getModelById(modelId: string): ModelCard | null {
-    // First try optimized set
-    const optimized = loadCompiledModels();
-    const model = optimized.models.find(m => m.modelId === modelId);
-    if (model) return model;
+export function getModelById(modelId: string, provider?: ModelProvider): ModelCard | null {
+    ensureCompiledIndexes();
 
-    // Fall back to extended set
-    const extended = loadExtendedModels();
-    return extended.models.find(m => m.modelId === modelId) || null;
+    if (provider) {
+        const compiledByProvider = compiledModelProviderIndex?.get(modelId)?.get(provider);
+        if (compiledByProvider) {
+            return compiledByProvider;
+        }
+    } else {
+        const compiledMatch = compiledModelIndex?.get(modelId);
+        if (compiledMatch) {
+            return compiledMatch;
+        }
+    }
+
+    ensureExtendedIndexes();
+
+    if (provider) {
+        return extendedModelProviderIndex?.get(modelId)?.get(provider) || null;
+    }
+
+    return extendedModelIndex?.get(modelId) || null;
+}
+
+function isModelProvider(value: unknown): value is ModelProvider {
+    return value === "google"
+        || value === "openai"
+        || value === "anthropic"
+        || value === "asi-one"
+        || value === "asi-cloud"
+        || value === "openrouter"
+        || value === "huggingface"
+        || value === "aiml"
+        || value === "vertex";
+}
+
+/**
+ * Resolve a model/provider pair.
+ * - Known model: provider inferred from registry unless explicit provider is passed.
+ * - Unknown model: explicit provider is required.
+ */
+export function resolveModel(modelId: string, provider?: ModelProvider | string): ResolvedModel {
+    const explicitProvider = provider && isModelProvider(provider) ? provider : undefined;
+    const card = explicitProvider ? getModelById(modelId, explicitProvider) : getModelById(modelId);
+
+    if (card) {
+        return {
+            modelId,
+            provider: explicitProvider || card.provider,
+            card,
+            known: true,
+        };
+    }
+
+    if (!explicitProvider) {
+        throw new Error(`Model not found: ${modelId}. Provide an explicit provider for unknown models.`);
+    }
+
+    const knownModel = getModelById(modelId);
+    if (knownModel) {
+        // Known modelId with explicit provider override (runtime routing can still try it).
+        return {
+            modelId,
+            provider: explicitProvider,
+            card: knownModel,
+            known: true,
+        };
+    }
+
+    return {
+        modelId,
+        provider: explicitProvider,
+        card: null,
+        known: false,
+    };
 }
 
 // =============================================================================
@@ -218,7 +351,7 @@ export function getModelById(modelId: string): ModelCard | null {
  * Get model provider from registry
  */
 export function getModelSource(modelId: string): ModelProvider | null {
-    const model = getModelCard(modelId);
+    const model = getModelById(modelId);
     return model?.provider || null;
 }
 
@@ -226,8 +359,7 @@ export function getModelSource(modelId: string): ModelProvider | null {
  * Get model by ID
  */
 export function getModelCard(modelId: string): ModelCard | null {
-    const data = loadCompiledModels();
-    return data.models.find(m => m.modelId === modelId) || null;
+    return getModelById(modelId);
 }
 
 /**
@@ -286,6 +418,11 @@ export async function refreshRegistry(): Promise<{
 }> {
     compiledModelsCache = null;
     compiledModelsCacheTime = 0;
+    compiledModelIndex = null;
+    compiledModelProviderIndex = null;
+    extendedModelIndex = null;
+    extendedModelProviderIndex = null;
+    extendedModelsCache = null;
     return getModelRegistry();
 }
 
@@ -300,7 +437,8 @@ export async function refreshRegistry(): Promise<{
  * This is because Vertex AI requires custom authentication and request formats.
  */
 export function getLanguageModel(modelId: string, provider?: ModelProvider): LanguageModel {
-    const modelProvider = provider || getModelSource(modelId);
+    const card = provider ? getModelById(modelId, provider) : getModelById(modelId);
+    const modelProvider = provider || card?.provider || null;
     console.log(`[getLanguageModel] modelId: "${modelId}", resolved provider: "${modelProvider}"`);
 
     if (!modelProvider) {
@@ -344,6 +482,56 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
                 `Use invokeChat with direct streaming or the Vertex provider-specific functions.`
             );
         
+        default:
+            throw new Error(`Unknown provider: ${modelProvider} for model: ${modelId}`);
+    }
+}
+
+/**
+ * Get embedding model instance - routes to provider embedding endpoint.
+ */
+export function getEmbeddingModel(modelId: string, provider?: ModelProvider): any {
+    const card = provider ? getModelById(modelId, provider) : getModelById(modelId);
+    const modelProvider = provider || card?.provider || null;
+    console.log(`[getEmbeddingModel] modelId: "${modelId}", resolved provider: "${modelProvider}"`);
+
+    if (!modelProvider) {
+        console.error(`[registry] Model not found in registry: ${modelId}`);
+        throw new Error(`Model not found: ${modelId}. Ensure model is in the compiled registry.`);
+    }
+
+    switch (modelProvider) {
+        case "openai":
+            return openai.embeddingModel(modelId);
+
+        case "google":
+            return google.embeddingModel(modelId);
+
+        case "asi-one":
+            return asiOneProvider.embeddingModel(modelId);
+
+        case "asi-cloud":
+            return asiCloudProvider.embeddingModel(modelId);
+
+        case "openrouter":
+            return openRouterProvider.embeddingModel(modelId);
+
+        case "aiml":
+            return aimlProvider.embeddingModel(modelId);
+
+        case "huggingface":
+            return hfProvider.embeddingModel(modelId);
+
+        case "anthropic":
+            throw new Error(`Embeddings are not supported for provider '${modelProvider}'.`);
+
+        case "vertex":
+            // Vertex embeddings are handled by provider-specific helper.
+            throw new Error(
+                `Vertex AI embeddings (${modelId}) use direct API routing. ` +
+                `Use generateVertexEmbeddings instead.`
+            );
+
         default:
             throw new Error(`Unknown provider: ${modelProvider} for model: ${modelId}`);
     }

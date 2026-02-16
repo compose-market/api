@@ -1,12 +1,18 @@
 /**
- * Unified API Module
+ * Unified API Module - Enterprise Grade
  * 
  * Single source of truth for ALL route handling.
  * Works for both Lambda (production) and Express (development).
  * 
+ * All inference logic consolidated into gateway.ts:
+ * - Smart routing based on model registry taskType (NOT heuristics)
+ * - Unified invoke function for all modalities
+ * - x402 payment integration with deferred settlement
+ * 
  * Usage:
- *   Lambda: import { routeRequest } from "./shared/api/index.js"
+ *   Lambda: import { handler } from "./lambda/handler.js"
  *   Express: import { registerRoutes } from "./shared/api/index.js"
+ *   Gateway: import { handleChatCompletions } from "./shared/api/gateway.js"
  * 
  * @module shared/api
  */
@@ -14,8 +20,9 @@
 import type { Request, Response, Express, NextFunction } from "express";
 import type { Server } from "http";
 
-// OpenAI-compatible handlers
+// Unified Inference Gateway (consolidates endpoints.ts + invoke.ts + adapter.ts)
 import {
+    INFERENCE_ROUTES,
     handleListModels,
     handleGetModel,
     handleChatCompletions,
@@ -26,9 +33,32 @@ import {
     handleEmbeddings,
     handleVideoGeneration,
     handleVideoStatus,
-} from "./openai/endpoints.js";
-
-import { handleGetModelParams } from "./openai/paramsHandler.js";
+    setCorsHeaders,
+    // Re-export unified invoke for direct use
+    invokeUnified,
+    invokeImage,
+    invokeVideo,
+    invokeTTS,
+    invokeASR,
+    invokeEmbedding,
+    submitVideoJob,
+    checkVideoJobStatus,
+    // Types
+    type ChatMessage,
+    type ChatOptions,
+    type ChatResult,
+    type ImageOptions,
+    type ImageResult,
+    type VideoOptions,
+    type VideoResult,
+    type TTSOptions,
+    type ASROptions,
+    type ASRResult,
+    type EmbeddingOptions,
+    type EmbeddingResult,
+    type VideoJobResult,
+    type VideoJobStatus,
+} from "./gateway.js";
 
 // Model registry
 import { getCompiledModels, getExtendedModels, getModelById } from "../models/registry.js";
@@ -38,7 +68,7 @@ import { DYNAMIC_PRICES } from "../x402/pricing.js";
 
 // x402 middleware
 import { extractPaymentInfo, buildPaymentRequiredHeaders } from "../x402/index.js";
-import { THIRDWEB_CHAIN_IDS } from "../config/chains.js";
+import { THIRDWEB_CHAIN_IDS } from "../configs/chains.js";
 
 // =============================================================================
 // CORS Configuration
@@ -244,32 +274,9 @@ export interface RouteHandler {
  */
 export const API_ROUTES: RouteHandler[] = [
     // ==========================================================================
-    // OpenAI-Compatible Routes (/v1/*)
+    // Gateway-Owned /v1/* Routes
     // ==========================================================================
-
-    // Models
-    { method: "GET", path: "/v1/models", handler: handleListModels, description: "List models" },
-    { method: "GET", path: "/v1/models/all", handler: (req, res) => handleListModels(req, res, true), description: "List all models" },
-    { method: "GET", path: "/v1/models/:model/params", handler: handleGetModelParams, description: "Get model optional params" },
-    { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model details" },
-
-    // Chat Completions
-    { method: "POST", path: "/v1/chat/completions", handler: handleChatCompletions, description: "Chat completion" },
-
-    // Images
-    { method: "POST", path: "/v1/images/generations", handler: handleImageGeneration, description: "Generate image" },
-    { method: "POST", path: "/v1/images/edits", handler: handleImageEdit, description: "Edit image" },
-
-    // Audio
-    { method: "POST", path: "/v1/audio/speech", handler: handleAudioSpeech, description: "Text to speech" },
-    { method: "POST", path: "/v1/audio/transcriptions", handler: handleAudioTranscription, description: "Transcribe audio" },
-
-    // Embeddings
-    { method: "POST", path: "/v1/embeddings", handler: handleEmbeddings, description: "Create embeddings" },
-
-    // Video
-    { method: "POST", path: "/v1/videos/generations", handler: handleVideoGeneration, description: "Generate video" },
-    { method: "GET", path: "/v1/videos/:id", handler: handleVideoStatus, description: "Check video generation status" },
+    ...INFERENCE_ROUTES,
 
     // ==========================================================================
     // API Routes (/api/*)
@@ -560,11 +567,11 @@ export function x402Middleware(options: {
 }
 
 // =============================================================================
-// Re-exports
+// Unified Gateway Exports
 // =============================================================================
 
-// OpenAI handlers
 export {
+    // Main handlers
     handleListModels,
     handleGetModel,
     handleChatCompletions,
@@ -575,16 +582,36 @@ export {
     handleEmbeddings,
     handleVideoGeneration,
     handleVideoStatus,
-} from "./openai/endpoints.js";
+    setCorsHeaders,
+    // Unified invoke functions
+    invokeUnified,
+    invokeImage,
+    invokeVideo,
+    invokeTTS,
+    invokeASR,
+    invokeEmbedding,
+    submitVideoJob,
+    checkVideoJobStatus,
+};
 
+// =============================================================================
 // Types
+// =============================================================================
+
 export type {
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ImageGenerationRequest,
-    AudioSpeechRequest,
-    AudioTranscriptionRequest,
-    EmbeddingRequest,
-    VideoGenerationRequest,
-    ModelsListResponse,
-} from "./openai/types.js";
+    ChatMessage,
+    ChatOptions,
+    ChatResult,
+    ImageOptions,
+    ImageResult,
+    VideoOptions,
+    VideoResult,
+    TTSOptions,
+    ASROptions,
+    ASRResult,
+    EmbeddingOptions,
+    EmbeddingResult,
+    VideoJobResult,
+    VideoJobStatus,
+    TokenUsage,
+} from "./gateway.js";

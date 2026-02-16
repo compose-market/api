@@ -1,5 +1,5 @@
 /**
- * Structured Logging Utility - Enterprise Grade
+ * Structured Logging Utility
  * 
  * Provides JSON-formatted logs for CloudWatch with:
  * - Log level filtering (debug, info, warn, error)
@@ -45,7 +45,7 @@ function log(
     }
 
     const timestamp = new Date().toISOString();
-    
+
     const logEntry: Record<string, unknown> = {
         timestamp,
         level: level.toUpperCase(),
@@ -57,7 +57,7 @@ function log(
     if (awsRequestId) {
         logEntry.awsRequestId = awsRequestId;
     }
-    
+
     if (awsLambdaFunctionName) {
         logEntry.lambdaFunction = awsLambdaFunctionName;
     }

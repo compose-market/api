@@ -37,11 +37,195 @@ const __dirname = path.dirname(__filename);
 const PROVIDERS_DIR = path.join(__dirname, "..", "data", "providers");
 
 // =============================================================================
+// Standardized Capability Normalization
+// =============================================================================
+
+/**
+ * Universal capability mapping across all providers
+ * Maps provider-specific capability names to standard ModelCapability names
+ */
+const CAPABILITY_MAP: Record<string, ModelCapability> = {
+    // Tools / Function calling
+    "can_use_tools": "tools",
+    "tool_use": "tools",
+    "functioncalling": "tools",
+    "function_calling": "tools",
+    "function_call": "tools",
+    "agentic_tool_use": "tools",
+    "tools": "tools",
+    
+    // Reasoning / Thinking
+    "reasoning": "reasoning",
+    "thinking": "thinking",
+    "extended_thinking": "thinking",
+    "interleaved_thinking": "thinking",
+    
+    // Vision / Image understanding
+    "image_understanding": "vision",
+    "vision_image_input": "vision",
+    "vision": "vision",
+    "visionInput": "vision",
+    "vision_input": "vision",
+    
+    // Image generation
+    "image_generation": "image-generation",
+    "imagegeneration": "image-generation",
+    "can_generate_images": "image-generation",
+    
+    // Audio generation / TTS
+    "audio_generation": "audio-generation",
+    "audio_output": "audio-generation",
+    "tts": "audio-generation",
+    "music_generation": "audio-generation",
+    "musicGeneration": "audio-generation",
+    
+    // Audio understanding / ASR
+    "audio_understanding": "audio-understanding",
+    "audio_input": "audio-understanding",
+    "transcription": "audio-understanding",
+    "speech_to_text": "audio-understanding",
+    
+    // Video understanding
+    "video_understanding": "video-understanding",
+    "video_input": "video-understanding",
+    "videoInput": "video-understanding",
+    
+    // Embeddings
+    "embeddings": "embeddings",
+    "can_embed": "embeddings",
+    "embedding": "embeddings",
+    
+    // Structured outputs
+    "structured_outputs": "structured-outputs",
+    "structured_json_output": "structured-outputs",
+    
+    // Streaming
+    "streaming": "streaming",
+    
+    // Code execution
+    "code_execution": "code-execution",
+    "codeExecution": "code-execution",
+    
+    // Search grounding
+    "search_grounding": "search-grounding",
+    "searchGrounding": "search-grounding",
+    
+    // Live API
+    "live_api": "live-api",
+    "liveApi": "live-api",
+    
+    // Computer use
+    "computer_use": "computer-use",
+    "computerUse": "computer-use",
+    
+    // Agentic
+    "agentic": "agentic",
+};
+
+/**
+ * Normalize capabilities from any provider to standard ModelCapability[]
+ * Only includes capabilities explicitly stated in source data
+ */
+function normalizeCapabilities(rawCapabilities: string[]): ModelCapability[] {
+    const normalized: ModelCapability[] = [];
+    
+    for (const cap of rawCapabilities) {
+        const capLower = cap.toLowerCase().replace(/[_\s-]/g, "");
+        const mapped = CAPABILITY_MAP[capLower] || CAPABILITY_MAP[cap];
+        
+        if (mapped && !normalized.includes(mapped)) {
+            normalized.push(mapped);
+        }
+    }
+    
+    return normalized;
+}
+
+/**
+ * Extract capability keys from provider payloads.
+ * - Arrays: pass through string values
+ * - Objects: include only keys explicitly set to true
+ */
+function extractRawCapabilities(input: unknown): string[] {
+    if (!input) return [];
+    if (Array.isArray(input)) {
+        return input.filter((cap): cap is string => typeof cap === "string");
+    }
+    if (typeof input === "object") {
+        return Object.entries(input as Record<string, unknown>)
+            .filter(([, value]) => value === true)
+            .map(([key]) => key);
+    }
+    return [];
+}
+
+/**
+ * Standardized task type validation
+ * Uses source data directly with simple validation
+ */
+function normalizeTaskType(rawTask: string | undefined): string {
+    if (!rawTask) return "text-generation";
+
+    const canonical = rawTask
+        .toLowerCase()
+        .trim()
+        .replace(/[_\\s]+/g, "-");
+
+    const aliases: Record<string, string> = {
+        chat: "conversational",
+        "chat-completion": "conversational",
+        "chat-completions": "conversational",
+        text2textgeneration: "text2text-generation",
+        "text2text-generation": "text2text-generation",
+        embeddings: "feature-extraction",
+        embedding: "feature-extraction",
+        "speech-to-text": "automatic-speech-recognition",
+        asr: "automatic-speech-recognition",
+        stt: "automatic-speech-recognition",
+        tts: "text-to-speech",
+        "image-generation": "text-to-image",
+        "video-generation": "text-to-video",
+    };
+
+    return aliases[canonical] || aliases[canonical.replace(/-/g, "")] || canonical;
+}
+
+/**
+ * Standardized pricing extraction
+ * Tries common pricing field patterns across providers
+ */
+function extractPricing(model: any): ModelPricing | null {
+    // Try various pricing field patterns
+    const input = 
+        model.prices?.input ??
+        model.prices?.text_tokens?.standard?.input ??
+        model.prices?.perMillionTokensUSD?.prompt ??
+        model.prices?.token?.input_per_1m ??
+        model.prices?.tokens_per_million?.base_input ??
+        model.pricing?.input ??
+        model.pricing?.inputPer1M;
+        
+    const output =
+        model.prices?.output ??
+        model.prices?.text_tokens?.standard?.output ??
+        model.prices?.perMillionTokensUSD?.completion ??
+        model.prices?.token?.output_per_1m ??
+        model.prices?.tokens_per_million?.output ??
+        model.pricing?.output ??
+        model.pricing?.outputPer1M;
+    
+    if (input == null || output == null) return null;
+    
+    return { input, output };
+}
+
+// =============================================================================
 // Provider Transformers
 // =============================================================================
 
 /**
  * Transform OpenAI provider JSON to RawModel[]
+ * SIMPLIFIED: Uses standardized normalization functions
  */
 function transformOpenAI(jsonPath: string): RawModel[] {
     const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
@@ -51,52 +235,17 @@ function transformOpenAI(jsonPath: string): RawModel[] {
         const model = (entry as any).model;
         if (!model) continue;
 
-        const capabilities: ModelCapability[] = [];
-        const caps = model.capabilities || {};
+        // Use standardized capability normalization
+        const rawCaps = extractRawCapabilities(model.capabilities);
+        const capabilities = normalizeCapabilities(rawCaps);
 
-        if (caps.can_use_tools) capabilities.push("tools");
-        if (caps.reasoning === true) capabilities.push("reasoning");
-        if (caps.image_understanding) capabilities.push("vision");
-        if (caps.image_generation) capabilities.push("image-generation");
-        if (caps.audio_generation || caps.tts) capabilities.push("audio-generation");
-        if (caps.audio_understanding || caps.transcription) capabilities.push("audio-understanding");
-        if (caps.video_understanding) capabilities.push("video-understanding");
-        if (caps.computer_use) capabilities.push("computer-use");
-        if (caps.embeddings) capabilities.push("embeddings");
-        if (caps.agentic) capabilities.push("agentic");
+        // Use source task type directly, or first from pipeline
+        const taskType = normalizeTaskType(
+            model.task_type_pipeline?.task_types?.[0]
+        );
 
-        // Pass through task type directly from source data - with fallback
-        let taskType = model.task_type_pipeline?.task_types?.[0];
-
-        // Fallback: derive task type from capabilities if not explicitly set
-        if (!taskType) {
-            if (caps.image_generation) {
-                taskType = "text-to-image";
-            } else if (caps.audio_generation || caps.tts) {
-                taskType = "text-to-audio";
-            } else if (caps.embeddings) {
-                taskType = "feature-extraction";
-            } else if (caps.image_understanding && !caps.can_use_tools) {
-                taskType = "image-to-text";
-            } else {
-                taskType = "text-generation";
-            }
-        }
-
-        // Extract pricing
-        let pricing: ModelPricing | null = null;
-        const prices = model.prices;
-        if (prices?.text_tokens?.standard) {
-            pricing = {
-                input: prices.text_tokens.standard.input || 0,
-                output: prices.text_tokens.standard.output || 0,
-            };
-        } else if (prices?.legacy_text_tokens?.standard) {
-            pricing = {
-                input: prices.legacy_text_tokens.standard.input || 0,
-                output: prices.legacy_text_tokens.standard.output || 0,
-            };
-        }
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
 
         models.push({
             modelId: model.modelId || modelId,
@@ -117,38 +266,27 @@ function transformOpenAI(jsonPath: string): RawModel[] {
 
 /**
  * Transform Anthropic/Claude provider JSON to RawModel[]
+ * SIMPLIFIED: Uses standardized normalization functions
  */
 function transformClaude(jsonPath: string): RawModel[] {
     const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
-        const capabilities: ModelCapability[] = [];
-        const caps = model.capabilities || {};
-
-        if (caps.tool_use === true) capabilities.push("tools");
-        if (caps.reasoning === true) capabilities.push("reasoning");
-        if (caps.vision_image_input === true) capabilities.push("vision");
-        if (caps.extended_thinking === true || caps.interleaved_thinking === true) {
-            capabilities.push("thinking");
-        }
-        capabilities.push("streaming"); // All Claude models support streaming
-
-        // Determine task type from task_types array
-        let taskType = "text-generation";
-        if ((model.task_types || []).includes("image-to-text")) {
-            // Keep as text-generation but note vision capability
+        // Normalize capabilities from source data
+        const rawCaps = extractRawCapabilities(model.capabilities);
+        let capabilities = normalizeCapabilities(rawCaps);
+        
+        // Add streaming if not already present (Claude models all support it)
+        if (!capabilities.includes("streaming")) {
+            capabilities.push("streaming");
         }
 
-        // Extract pricing
-        let pricing: ModelPricing | null = null;
-        const prices = model.prices?.tokens_per_million;
-        if (prices?.base_input != null && prices?.output != null) {
-            pricing = {
-                input: prices.base_input,
-                output: prices.output,
-            };
-        }
+        // Use source task type
+        const taskType = normalizeTaskType(model.task_types?.[0]);
+
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
 
         models.push({
             modelId: model.modelId,
@@ -160,7 +298,6 @@ function transformClaude(jsonPath: string): RawModel[] {
             description: model.context_window?.notes,
             contextWindow: model.context_window?.standard_tokens || undefined,
             ownedBy: "anthropic",
-            createdAt: model.status === "active" ? undefined : undefined,
         });
     }
 
@@ -170,65 +307,27 @@ function transformClaude(jsonPath: string): RawModel[] {
 
 /**
  * Transform Gemini/Google provider JSON to RawModel[]
+ * SIMPLIFIED: Uses standardized normalization functions
  */
 function transformGemini(jsonPath: string): RawModel[] {
     const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
-        const capabilities: ModelCapability[] = [];
-        const caps = model.capabilities || {};
-
-        if (caps.functionCalling) capabilities.push("tools");
-        if (caps.thinking) capabilities.push("thinking");
-        if (caps.codeExecution) capabilities.push("code-execution");
-        if (caps.searchGrounding) capabilities.push("search-grounding");
-        if (caps.structuredOutputs) capabilities.push("structured-outputs");
-        if (caps.imageGeneration) capabilities.push("image-generation");
-        if (caps.audioGeneration || caps.musicGeneration) capabilities.push("audio-generation");
-        if (caps.liveApi) capabilities.push("live-api");
-        if (caps.embeddings) capabilities.push("embeddings");
-        capabilities.push("streaming"); // All Gemini models support streaming
-
-        // Check input modalities for vision
-        const inputs = model.supportedDataTypes?.inputs || [];
-        if (inputs.includes("image") || inputs.includes("video")) {
-            capabilities.push("vision");
-        }
-        if (inputs.includes("audio")) {
-            capabilities.push("audio-understanding");
-        }
-        if (inputs.includes("video")) {
-            capabilities.push("video-understanding");
+        // Normalize capabilities from source data
+        const rawCaps = extractRawCapabilities(model.capabilities);
+        let capabilities = normalizeCapabilities(rawCaps);
+        
+        // Add streaming if not already present
+        if (!capabilities.includes("streaming")) {
+            capabilities.push("streaming");
         }
 
-        // Derive task type from capabilities and output modalities (source JSON has no explicit taskType)
-        let taskType = "text-generation";
-        const outputs = model.supportedDataTypes?.outputs || [];
+        // Use source data directly for task type and modalities
+        const taskType = normalizeTaskType(model.taskType);
 
-        if (caps.imageGeneration || outputs.includes("image")) {
-            taskType = "text-to-image";
-        } else if (outputs.includes("video")) {
-            taskType = "text-to-video";
-        } else if (caps.audioGeneration || caps.musicGeneration || outputs.includes("audio") || outputs.includes("audio (music)")) {
-            taskType = "text-to-audio";
-        } else if (caps.embeddings) {
-            taskType = "feature-extraction";
-        }
-
-        // Extract pricing
-        let pricing: ModelPricing | null = null;
-        if (model.prices?.input != null && model.prices?.output != null) {
-            pricing = {
-                input: model.prices.input,
-                output: model.prices.output,
-            };
-        } else if (model.prices?.tiers?.[0]) {
-            pricing = {
-                input: model.prices.tiers[0].input || 0,
-                output: model.prices.tiers[0].output || 0,
-            };
-        }
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
 
         models.push({
             modelId: model.modelId,
@@ -252,36 +351,22 @@ function transformGemini(jsonPath: string): RawModel[] {
 
 /**
  * Transform ASI:Cloud provider JSON to RawModel[]
+ * SIMPLIFIED: Uses standardized normalization functions
  */
 function transformASICloud(jsonPath: string): RawModel[] {
     const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
-        const capabilities: ModelCapability[] = [];
-        const caps = model.capabilities || {};
+        // Normalize capabilities from source data
+        const rawCaps = extractRawCapabilities(model.capabilities);
+        const capabilities = normalizeCapabilities(rawCaps);
 
-        if (caps.streaming) capabilities.push("streaming");
-        if (caps.structured_json_output) capabilities.push("structured-outputs");
-        if (caps.agentic_tool_use) capabilities.push("tools");
-        if (caps.embeddings) capabilities.push("embeddings");
-        if (caps.reasoning) capabilities.push("reasoning");
+        // Use source task type
+        const taskType = normalizeTaskType(model.task_types?.[0]);
 
-        // Determine task type
-        let taskType = "text-generation";
-        if (caps.embeddings || (model.task_types || []).includes("embeddings")) {
-            taskType = "feature-extraction";
-        }
-
-        // Extract pricing
-        let pricing: ModelPricing | null = null;
-        const tokenPrices = model.prices?.token;
-        if (tokenPrices?.input_per_1m != null && tokenPrices?.output_per_1m != null) {
-            pricing = {
-                input: tokenPrices.input_per_1m,
-                output: tokenPrices.output_per_1m,
-            };
-        }
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
 
         models.push({
             modelId: model.modelId,
@@ -301,45 +386,27 @@ function transformASICloud(jsonPath: string): RawModel[] {
 
 /**
  * Transform OpenRouter provider JSON to RawModel[]
+ * SIMPLIFIED: Uses standardized normalization functions
  */
 function transformOpenRouter(jsonPath: string): RawModel[] {
     const raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
-        const capabilities: ModelCapability[] = [];
-        const caps = model.capabilities || {};
-
-        if (caps.tools) capabilities.push("tools");
-        if (caps.reasoning) capabilities.push("reasoning");
-        if (caps.structuredOutputs) capabilities.push("structured-outputs");
-        if (caps.visionInput) capabilities.push("vision");
-        if (caps.audioInput) capabilities.push("audio-understanding");
-        if (caps.videoInput) capabilities.push("video-understanding");
-        if (caps.imageOutput) capabilities.push("image-generation");
-        if (caps.audioOutput) capabilities.push("audio-generation");
-        capabilities.push("streaming"); // OpenRouter typically supports streaming
-
-        // Determine task type
-        let taskType = "text-generation";
-        const arch = model.architecture || {};
-        if (arch.modality?.includes("image")) {
-            taskType = caps.imageOutput ? "text-to-image" : "image-to-text";
-        }
-        if ((model.taskTypes || []).length > 0) {
-            // Use first task type if available
-            taskType = model.taskTypes[0].replace("text-to-text", "text-generation");
+        // Normalize capabilities from source data
+        const rawCaps = extractRawCapabilities(model.capabilities);
+        let capabilities = normalizeCapabilities(rawCaps);
+        
+        // Add streaming if not already present (OpenRouter models typically support it)
+        if (!capabilities.includes("streaming")) {
+            capabilities.push("streaming");
         }
 
-        // Extract pricing
-        let pricing: ModelPricing | null = null;
-        const priceData = model.prices?.perMillionTokensUSD;
-        if (priceData?.prompt != null && priceData?.completion != null) {
-            pricing = {
-                input: priceData.prompt,
-                output: priceData.completion,
-            };
-        }
+        // Use source task type
+        const taskType = normalizeTaskType(model.taskTypes?.[0]);
+
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
 
         models.push({
             modelId: model.modelId,
@@ -352,8 +419,8 @@ function transformOpenRouter(jsonPath: string): RawModel[] {
             contextWindow: model.contextWindowTokens || model.topProvider?.context_length,
             maxOutputTokens: model.topProvider?.max_completion_tokens || undefined,
             ownedBy: model.modelId.split("/")[0] || "openrouter",
-            inputModalities: arch.inputModalities,
-            outputModalities: arch.outputModalities,
+            inputModalities: model.architecture?.inputModalities,
+            outputModalities: model.architecture?.outputModalities,
         });
     }
 
@@ -379,40 +446,17 @@ function transformHuggingFace(jsonPath: string): RawModel[] {
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
-        // SIMPLIFIED: Use capabilities from source data only
-        // No inference from task types - all models are multimodal-capable
-        const capabilities: ModelCapability[] = [];
-        
-        // Only normalize known capability names from source
-        const rawCapabilities: string[] = model.capabilities || [];
-        for (const cap of rawCapabilities) {
-            const capLower = cap.toLowerCase();
-            const validCaps: ModelCapability[] = [
-                "tools", "reasoning", "structured-outputs", "vision", "code-execution",
-                "search-grounding", "thinking", "streaming", "live-api", "embeddings",
-                "image-generation", "audio-generation", "audio-understanding", 
-                "video-understanding", "computer-use", "agentic"
-            ];
-            const matched = validCaps.find(vc => vc.toLowerCase() === capLower);
-            if (matched && !capabilities.includes(matched)) {
-                capabilities.push(matched);
-            }
-        }
+        // Use standardized capability normalization
+        const capabilities = normalizeCapabilities(extractRawCapabilities(model.capabilities));
 
-        // Extract pricing
-        let pricing: ModelPricing | null = null;
-        if (model.pricing?.inputPer1M != null) {
-            pricing = {
-                input: model.pricing.inputPer1M,
-                output: model.pricing.outputPer1M || 0,
-            };
-        }
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
 
         models.push({
             modelId: model.modelId,
             name: model.name,
             provider: "huggingface",
-            taskType: model.taskType || "text-generation",
+            taskType: normalizeTaskType(model.taskType),
             capabilities,
             pricing,
             ownedBy: model.modelId.split("/")[0] || "huggingface",
@@ -439,39 +483,19 @@ function transformAIML(jsonPath: string): RawModel[] {
 
     // AI/ML JSON format may vary - adapt as needed
     for (const model of raw.models || []) {
-        const capabilities: ModelCapability[] = [];
-        capabilities.push("streaming");
-
-        // Basic capability detection from model info
-        if (model.capabilities?.tools) capabilities.push("tools");
-        if (model.capabilities?.vision) capabilities.push("vision");
-
-        let pricing: ModelPricing | null = null;
-        if (model.pricing) {
-            pricing = {
-                input: model.pricing.input || 0,
-                output: model.pricing.output || 0,
-            };
+        // Use standardized capability normalization
+        let capabilities = normalizeCapabilities(extractRawCapabilities(model.capabilities));
+        
+        // Add streaming if not already present (AIML models typically support it)
+        if (!capabilities.includes("streaming")) {
+            capabilities.push("streaming");
         }
 
-        // Use task_types array directly from source data (preserves exact types like image-to-image)
-        // Fallback to type field, then default to text-generation
-        let taskType = "text-generation";
-        if (model.task_types && model.task_types.length > 0) {
-            // Use first task type as-is (e.g., "text-to-image", "image-to-image")
-            taskType = model.task_types[0];
-        } else if (model.type) {
-            // Map type field directly (e.g., "chat-completion" -> "text-generation")
-            const typeMap: Record<string, string> = {
-                "chat-completion": "text-generation",
-                "text-completion": "text-generation",
-                "image-generation": "text-to-image",
-                "video-generation": "text-to-video",
-                "audio-generation": "text-to-audio",
-                "embedding": "feature-extraction",
-            };
-            taskType = typeMap[model.type] || model.type;
-        }
+        // Use standardized pricing extraction
+        const pricing = extractPricing(model);
+
+        // Use source task type directly
+        const taskType = normalizeTaskType(model.task_types?.[0]);
 
         models.push({
             modelId: model.id || model.modelId,
@@ -492,8 +516,8 @@ function transformAIML(jsonPath: string): RawModel[] {
 
 /**
  * Transform Vertex AI provider JSON to RawModel[]
- * SIMPLIFIED: Pass through task types and capabilities as-is from source data
- * No hardcoded "smart" detection - trust the source data
+ * SIMPLIFIED: Uses standardized normalization functions
+ * Trusts source data - no hardcoded model ID pattern matching
  */
 function transformVertex(jsonPath: string): RawModel[] {
     if (!fs.existsSync(jsonPath)) {
@@ -505,86 +529,16 @@ function transformVertex(jsonPath: string): RawModel[] {
     const models: RawModel[] = [];
 
     for (const model of raw.models || []) {
-        // Detect CORRECT task type from model ID patterns
-        // Source data often has wrong task types (e.g., lyria marked as text-generation)
-        const modelId = model.modelId || "";
-        const modelIdLower = modelId.toLowerCase();
-        const name = (model.name || "").toLowerCase();
-        
-        // Start with source task type, but override for known mis-categorized models
-        let taskType = model.taskType || "text-generation";
-        const normalizedCapabilities: ModelCapability[] = [];
-        
-        // Image generation models
-        if (modelIdLower.includes("-image") || 
-            modelIdLower.includes("imagen") ||
-            modelIdLower.includes("imagegeneration")) {
-            taskType = "text-to-image";
-            if (!normalizedCapabilities.includes("image-generation")) {
-                normalizedCapabilities.push("image-generation");
-            }
-        }
-        // Video generation models
-        else if (modelIdLower.includes("veo") ||
-                 name.includes("video generation")) {
-            taskType = "text-to-video";
-        }
-        // Audio/Music generation (Lyria and similar)
-        else if (modelIdLower.includes("lyria") || 
-                 modelIdLower.includes("-tts") ||
-                 modelIdLower.includes("music") && modelIdLower.includes("generation")) {
-            taskType = "text-to-audio";
-            if (!normalizedCapabilities.includes("audio-generation")) {
-                normalizedCapabilities.push("audio-generation");
-            }
-        }
-        // Speech-to-text
-        else if (modelIdLower.includes("chirp") ||
-                 modelIdLower.includes("speech-to-text")) {
-            taskType = "speech-to-text";
-            if (!normalizedCapabilities.includes("audio-understanding")) {
-                normalizedCapabilities.push("audio-understanding");
-            }
-        }
-        // Embeddings
-        else if (modelIdLower.includes("embedding") ||
-                 modelIdLower.includes("embed") ||
-                 modelIdLower.includes("multimodalembedding")) {
-            taskType = "feature-extraction";
-            if (!normalizedCapabilities.includes("embeddings")) {
-                normalizedCapabilities.push("embeddings");
-            }
-        }
-        
-        // Normalize capabilities from source data
-        const rawCapabilities: string[] = model.capabilities || [];
-        for (const cap of rawCapabilities) {
-            const capLower = cap.toLowerCase();
-            if (capLower === "function_calling" || capLower === "function_call") {
-                if (!normalizedCapabilities.includes("tools")) normalizedCapabilities.push("tools");
-            } else if (capLower === "image-generation" && !normalizedCapabilities.includes("image-generation")) {
-                normalizedCapabilities.push("image-generation");
-            } else if (capLower === "audio-generation" && !normalizedCapabilities.includes("audio-generation")) {
-                normalizedCapabilities.push("audio-generation");
-            } else if (capLower === "vision" && !normalizedCapabilities.includes("vision")) {
-                normalizedCapabilities.push("vision");
-            } else if (capLower === "streaming" && !normalizedCapabilities.includes("streaming")) {
-                normalizedCapabilities.push("streaming");
-            } else if (capLower === "embeddings" && !normalizedCapabilities.includes("embeddings")) {
-                normalizedCapabilities.push("embeddings");
-            } else if (capLower === "audio-understanding" && !normalizedCapabilities.includes("audio-understanding")) {
-                normalizedCapabilities.push("audio-understanding");
-            } else if (capLower === "video-understanding" && !normalizedCapabilities.includes("video-understanding")) {
-                normalizedCapabilities.push("video-understanding");
-            }
-        }
+        // Use standardized normalization - trust source data
+        const capabilities = normalizeCapabilities(extractRawCapabilities(model.capabilities));
+        const taskType = normalizeTaskType(model.taskType);
 
         models.push({
             modelId: model.modelId,
             name: model.name,
             provider: "vertex",
             taskType,
-            capabilities: normalizedCapabilities,
+            capabilities,
             pricing: model.pricing || null,
             description: model.description || undefined,
             contextWindow: model.contextWindow || undefined,
@@ -619,6 +573,67 @@ function toModelCard(raw: RawModel): ModelCard {
         hfInferenceProvider: raw.hfInferenceProvider,
         hfProviderId: raw.hfProviderId,
     };
+}
+
+function mergeStringArrays(a?: string[], b?: string[]): string[] | undefined {
+    const merged = new Set<string>([...(a || []), ...(b || [])]);
+    return merged.size > 0 ? Array.from(merged) : undefined;
+}
+
+function mergeModelCards(primary: ModelCard, secondary: ModelCard): ModelCard {
+    const availableFrom = new Set<ModelProvider>([
+        ...(primary.availableFrom || [primary.provider]),
+        ...(secondary.availableFrom || [secondary.provider]),
+    ]);
+
+    const chooseTask =
+        primary.taskType && primary.taskType !== "text-generation"
+            ? primary.taskType
+            : secondary.taskType || primary.taskType;
+
+    return {
+        ...primary,
+        taskType: chooseTask,
+        capabilities: Array.from(new Set([...(primary.capabilities || []), ...(secondary.capabilities || [])])),
+        pricing: primary.pricing ?? secondary.pricing ?? null,
+        description: primary.description || secondary.description,
+        contextWindow: primary.contextWindow ?? secondary.contextWindow,
+        maxOutputTokens: primary.maxOutputTokens ?? secondary.maxOutputTokens,
+        ownedBy: primary.ownedBy || secondary.ownedBy,
+        createdAt: primary.createdAt || secondary.createdAt,
+        inputModalities: mergeStringArrays(primary.inputModalities, secondary.inputModalities),
+        outputModalities: mergeStringArrays(primary.outputModalities, secondary.outputModalities),
+        hfInferenceProvider: primary.hfInferenceProvider || secondary.hfInferenceProvider,
+        hfProviderId: primary.hfProviderId || secondary.hfProviderId,
+        availableFrom: Array.from(availableFrom),
+    };
+}
+
+function dedupeModelCards(cards: ModelCard[]): ModelCard[] {
+    const byId = new Map<string, ModelCard>();
+
+    for (const card of cards) {
+        const candidate: ModelCard = {
+            ...card,
+            availableFrom: card.availableFrom || [card.provider],
+        };
+        const existing = byId.get(card.modelId);
+        if (!existing) {
+            byId.set(card.modelId, candidate);
+            continue;
+        }
+
+        const existingPriority = PROVIDER_PRIORITY[existing.provider] ?? 99;
+        const incomingPriority = PROVIDER_PRIORITY[candidate.provider] ?? 99;
+
+        if (incomingPriority < existingPriority) {
+            byId.set(card.modelId, mergeModelCards(candidate, existing));
+        } else {
+            byId.set(card.modelId, mergeModelCards(existing, candidate));
+        }
+    }
+
+    return Array.from(byId.values());
 }
 
 // =============================================================================
@@ -716,12 +731,9 @@ async function main() {
 
     console.log(`\n[sync-models] Total models fetched: ${allModels.length}`);
 
-    // NO deduplication - keep all models from all providers as-is
-    const dedupedModels = allModels;
-    console.log(`[sync-models] Total models (no deduplication): ${dedupedModels.length}`);
-
-    // Convert to ModelCard format
-    const allModelCards = dedupedModels.map(toModelCard);
+    // Convert to ModelCard then dedupe by modelId with provider-priority merge.
+    const allModelCards = dedupeModelCards(allModels.map(toModelCard));
+    console.log(`[sync-models] Total models after dedupe: ${allModelCards.length}`);
 
     // Sort by provider priority ONLY - preserve original order within each provider
     // This keeps HuggingFace models in their trending order from sync-hf.ts
@@ -762,7 +774,7 @@ async function main() {
     console.log(`\n[sync-models] Wrote ${allModelCards.length} models to models_extended.json (${extendedSize}MB)`);
 
     // =========================================================================
-    // Output 2: models.json (OPTIMIZED - top 30 HF per task + all other providers)
+    // Output 2: models.json (OPTIMIZED - top N HF per task + all other providers)
     // =========================================================================
     const optimizedCards = selectPopularHFModels(allModelCards);
 

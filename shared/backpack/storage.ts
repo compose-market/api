@@ -16,7 +16,7 @@ import {
     redisSet,
     redisDel,
     redisExpire,
-} from "../config/redis.js";
+} from "../configs/redis.js";
 import crypto from "crypto";
 
 // =============================================================================
