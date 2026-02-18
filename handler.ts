@@ -44,8 +44,8 @@ const loadBackpack = () => import("./shared/backpack/composio.js");
 // Model Registry
 const loadRegistry = () => import("./shared/models/registry.js");
 
-// Faucet
-const loadFaucet = () => import("./shared/faucet/index.js");
+// Dispenser
+const loadDispenser = () => import("./shared/dispenser/index.js");
 
 // Inference Gateway (canonical /v1 routing)
 import { handleInferenceEvent } from "./shared/inference/gateway.js";
@@ -180,106 +180,284 @@ export async function handler(
         }
 
         // ==========================================================================
-        // Faucet API Routes
+        // Memory API Routes (Mem0 + Redis)
         // ==========================================================================
 
-        // POST /api/faucet/claim - Claim USDC from faucet
-        if (method === "POST" && path === "/api/faucet/claim") {
-            return handleFaucetClaim(event);
-        }
-
-        // GET /api/faucet/status - Get faucet status for all chains
-        if (method === "GET" && path === "/api/faucet/status") {
-            return handleFaucetStatus();
-        }
-
-        // GET /api/faucet/status/:chainId - Get faucet status for specific chain
-        if (method === "GET" && path.match(/^\/api\/faucet\/status\/\d+$/)) {
-            return handleFaucetStatusByChain(event);
-        }
-
-        // GET /api/faucet/check/:address - Check if address has claimed
-        if (method === "GET" && path.match(/^\/api\/faucet\/check\/0x[a-fA-F0-9]{40}$/)) {
-            return handleFaucetCheck(event);
+        if (path.startsWith("/api/memory/")) {
+            return handleMemoryRoutes(event);
         }
 
         // ==========================================================================
-        // Legacy /api/models - Redirect to /v1/models
+        // Dispenser API Routes
         // ==========================================================================
 
-        if (method === "GET" && path === "/api/models") {
-            const compiled = await loadRegistry();
-            const models = compiled.getCompiledModels();
-            return {
-                statusCode: 200,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                    object: "list",
-                    data: models.models.map((model) => ({
-                        id: model.modelId,
-                        object: "model",
-                        created: typeof model.createdAt === "number" ? model.createdAt : Math.floor(Date.now() / 1000),
-                        owned_by: model.ownedBy || model.provider,
-                        provider: model.provider,
-                    })),
-                }),
-            };
+        // POST /api/dispenser/claim - Claim USDC from dispenser
+        if (method === "POST" && path === "/api/dispenser/claim") {
+            return handleDispenserClaim(event);
+        }
+
+        // GET /api/dispenser/status - Get dispenser status for all chains
+        if (method === "GET" && path === "/api/dispenser/status") {
+            return handleDispenserStatus();
+        }
+
+        // GET /api/dispenser/status/:chainId - Get dispenser status for specific chain
+        if (method === "GET" && path.match(/^\/api\/dispenser\/status\/\d+$/)) {
+            return handleDispenserStatusByChain(event);
+        }
+
+        // GET /api/dispenser/check/:address - Check if address has claimed
+        if (method === "GET" && path.match(/^\/api\/dispenser\/check\/0x[a-fA-F0-9]{40}$/)) {
+            return handleDispenserCheck(event);
         }
 
         // ==========================================================================
-        // 404 - Not Found
+        // Batch Settlement Routes (Deferred Payment System)
         // ==========================================================================
 
+        // POST /api/settlement/batch - Trigger batch settlement (scheduled or manual)
+        // Protected endpoint - only for internal use or admin
+        if (method === "POST" && path === "/api/settlement/batch") {
+            const internalSecret = event.headers["x-internal-secret"] || event.headers["X-Internal-Secret"];
+            const expectedSecret = process.env.MANOWAR_INTERNAL_SECRET;
+
+            // Security: Only allow internal calls
+            if (internalSecret !== expectedSecret) {
+                return {
+                    statusCode: 401,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "Unauthorized" }),
+                };
+            }
+
+            try {
+                const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+
+                console.log("[batch-settlement] Triggered manually via API");
+                const result = await runBatchSettlement();
+
+                return {
+                    statusCode: 200,
+                    headers: corsHeaders,
+                    body: JSON.stringify(result),
+                };
+            } catch (error) {
+                console.error("[batch-settlement] Error:", error);
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        error: "Batch settlement failed",
+                        message: error instanceof Error ? error.message : String(error),
+                    }),
+                };
+            }
+        }
+
+        // GET /api/settlement/status - Get pending settlement info for a user
+        if (method === "GET" && path === "/api/settlement/status") {
+            const userAddress = event.headers["x-session-user-address"];
+            const chainId = parseInt(event.queryStringParameters?.chainId || "338");
+
+            if (!userAddress) {
+                return {
+                    statusCode: 401,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "x-session-user-address header required" }),
+                };
+            }
+
+            try {
+                const { getBudgetInfo } = await import("./shared/x402/session-budget.js");
+
+                const info = await getBudgetInfo(userAddress, chainId);
+
+                if (!info) {
+                    return {
+                        statusCode: 200,
+                        headers: corsHeaders,
+                        body: JSON.stringify({
+                            hasActiveBudget: false,
+                            message: "No active session budget found",
+                        }),
+                    };
+                }
+
+                return {
+                    statusCode: 200,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        hasActiveBudget: true,
+                        budget: info,
+                    }),
+                };
+            } catch (error) {
+                console.error("[settlement/status] Error:", error);
+                return {
+                    statusCode: 500,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        error: "Failed to get status",
+                        message: error instanceof Error ? error.message : String(error),
+                    }),
+                };
+            }
+        }
+
+        // ==========================================================================
+        // Avatar and Banner Generation
+        // ==========================================================================
+
+        // Route: POST /api/generate-avatar - Generate avatar using Flux Schnell
+        if (method === "POST" && path === "/api/generate-avatar") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            const { title, description } = body;
+
+            if (!title || !description) {
+                return {
+                    statusCode: 400,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    body: JSON.stringify({ error: "You should add Name + Description before generating an avatar" }),
+                };
+            }
+
+            try {
+                const { invokeImage } = await import("./shared/inference/gateway.js");
+                const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
+                const prompt = `Agent Name: ${title}
+Agent Description: ${description}
+Brand Style: ${brandStyle}
+
+Create a professional square avatar icon for this AI agent. Clean, iconic design suitable for small sizes. No text.`;
+
+                console.log("[generate-avatar] Prompt length:", prompt.length);
+
+                // Generate image using Flux Schnell (routes through HF -> fal-ai fallback)
+                const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
+                    size: "1024x1024",
+                    n: 1,
+                });
+
+                // Return base64 image
+                const base64Image = result.buffer.toString("base64");
+                const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
+
+                return {
+                    statusCode: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    body: JSON.stringify({ imageUrl: dataUrl }),
+                };
+            } catch (error) {
+                console.error("[generate-avatar] Error:", error);
+                return {
+                    statusCode: 500,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    body: JSON.stringify({ error: "Avatar generation failed", message: String(error) }),
+                };
+            }
+        }
+
+        // Route: POST /api/generate-banner - Generate banner using Flux Schnell (landscape 1792x1024)
+        if (method === "POST" && path === "/api/generate-banner") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            const { title, description } = body;
+
+            if (!title || !description) {
+                return {
+                    statusCode: 400,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    body: JSON.stringify({ error: "You should add Title + Description before generating a banner" }),
+                };
+            }
+
+            try {
+                const { invokeImage } = await import("./shared/inference/gateway.js");
+                const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
+                const prompt = `Workflow Title: ${title}
+Workflow Description: ${description}
+Brand Style: ${brandStyle}
+
+Create a professional wide banner image for an AI workflow orchestration system. Landscape format, abstract tech visualization with connected nodes, data flows, or circuit patterns. No text or logos. Dark background with neon accent highlights.`;
+
+                console.log("[generate-banner] Prompt length:", prompt.length);
+
+                // Generate image using Flux Schnell with landscape dimensions
+                const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
+                    size: "1792x1024", // Landscape aspect ratio for banners
+                    n: 1,
+                });
+
+                // Return base64 image
+                const base64Image = result.buffer.toString("base64");
+                const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
+
+                return {
+                    statusCode: 200,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    body: JSON.stringify({ imageUrl: dataUrl }),
+                };
+            } catch (error) {
+                console.error("[generate-banner] Error:", error);
+                return {
+                    statusCode: 500,
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                    body: JSON.stringify({ error: "Banner generation failed", message: String(error) }),
+                };
+            }
+        }
+
+        // 404 for unknown routes
         return {
             statusCode: 404,
-            headers: corsHeaders,
-            body: JSON.stringify({
-                error: "Not found",
-                message: `Route ${method} ${path} not found`,
-                hint: "Use /v1/responses for canonical inference requests"
-            }),
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            body: JSON.stringify({ error: "Not found", path }),
         };
-
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[handler] Unhandled error:`, errorMessage);
-
+        console.error("Lambda handler error:", error);
         return {
             statusCode: 500,
-            headers: corsHeaders,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
             body: JSON.stringify({
                 error: "Internal server error",
-                message: errorMessage
+                message: error instanceof Error ? error.message : "Unknown error",
             }),
         };
     }
 }
 
-// =============================================================================
-// Scheduled Batch Settlement Handler
-// =============================================================================
 
+/**
+ * Batch Settlement Handler - Scheduled Lambda
+ * 
+ * Triggered by CloudWatch Events every 2 minutes.
+ * Processes accumulated payment intents for deferred settlement.
+ */
 export async function batchSettlementHandler(
-    _event: unknown,
-    _context: Context,
-): Promise<APIGatewayProxyResultV2> {
+    event: { source?: string } | unknown,
+    _context: Context
+): Promise<void> {
+    console.log("[batch-settlement] Scheduled handler invoked", JSON.stringify(event));
+
     try {
         const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
-        const summary = await runBatchSettlement();
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify(summary),
-        };
+
+        const result = await runBatchSettlement();
+
+        console.log("[batch-settlement] Completed:", {
+            runId: result.runId,
+            totalUsers: result.totalUsers,
+            totalIntents: result.totalIntents,
+            successCount: result.successCount,
+            failCount: result.failCount,
+            duration: `${result.endTime - result.startTime}ms`,
+        });
     } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-            statusCode: 500,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: message }),
-        };
+        console.error("[batch-settlement] Fatal error:", error);
+        // Don't throw - let CloudWatch know the Lambda succeeded (error is logged)
+        // Throwing would trigger retries which could cause duplicate settlements
     }
 }
+
 
 // =============================================================================
 // Route Handlers
@@ -886,6 +1064,26 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
         }
 
+        // POST /api/backpack/execute
+        if (path === "/api/backpack/execute" && method === "POST") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            if (!body.userId || !body.toolkit || !body.action) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "userId, toolkit and action required" }),
+                };
+            }
+            const result = await bp.executeToolkitAction({
+                userId: body.userId,
+                toolkit: body.toolkit,
+                action: body.action,
+                params: body.params,
+                text: body.text,
+            });
+            return { statusCode: result.success ? 200 : 400, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
         // GET /api/backpack/toolkits
         if (path === "/api/backpack/toolkits" && method === "GET") {
             const search = event.queryStringParameters?.search || "";
@@ -1026,10 +1224,10 @@ async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIG
 }
 
 // =============================================================================
-// Faucet Route Handlers
+// Dispenser Route Handlers
 // =============================================================================
 
-async function handleFaucetClaim(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+async function handleDispenserClaim(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const body = event.body ? JSON.parse(event.body) : {};
     const { address, chainId } = body;
 
@@ -1049,8 +1247,8 @@ async function handleFaucetClaim(event: APIGatewayProxyEventV2): Promise<APIGate
         };
     }
 
-    const faucet = await loadFaucet();
-    const result = await faucet.claimFaucetUSDC({ address, chainId });
+    const dispenser = await loadDispenser();
+    const result = await dispenser.claimDispenserUSDC({ address, chainId });
 
     const statusCode = result.success
         ? 200
@@ -1065,15 +1263,15 @@ async function handleFaucetClaim(event: APIGatewayProxyEventV2): Promise<APIGate
     };
 }
 
-async function handleFaucetStatus(): Promise<APIGatewayProxyResultV2> {
-    const faucet = await loadFaucet();
-    const statuses = await faucet.getAllFaucetStatuses();
+async function handleDispenserStatus(): Promise<APIGatewayProxyResultV2> {
+    const dispenser = await loadDispenser();
+    const statuses = await dispenser.getAllDispenserStatuses();
 
     return {
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify({
-            faucets: statuses,
+            dispensers: statuses,
             claimAmount: 1_000_000,
             claimAmountFormatted: "$1.00 USDC",
             maxClaims: 1000,
@@ -1081,11 +1279,11 @@ async function handleFaucetStatus(): Promise<APIGatewayProxyResultV2> {
     };
 }
 
-async function handleFaucetStatusByChain(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const chainId = parseInt(event.rawPath.split("/api/faucet/status/")[1], 10);
+async function handleDispenserStatusByChain(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const chainId = parseInt(event.rawPath.split("/api/dispenser/status/")[1], 10);
 
-    const faucet = await loadFaucet();
-    const result = await faucet.checkFaucetAvailable(chainId);
+    const dispenser = await loadDispenser();
+    const result = await dispenser.checkDispenserAvailable(chainId);
 
     return {
         statusCode: result.available ? 200 : 404,
@@ -1094,11 +1292,11 @@ async function handleFaucetStatusByChain(event: APIGatewayProxyEventV2): Promise
     };
 }
 
-async function handleFaucetCheck(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const address = event.rawPath.split("/api/faucet/check/")[1] as `0x${string}`;
+async function handleDispenserCheck(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const address = event.rawPath.split("/api/dispenser/check/")[1] as `0x${string}`;
 
-    const faucet = await loadFaucet();
-    const status = await faucet.getGlobalClaimStatus(address);
+    const dispenser = await loadDispenser();
+    const status = await dispenser.getGlobalClaimStatus(address);
 
     return {
         statusCode: 200,
@@ -1111,4 +1309,114 @@ async function handleFaucetCheck(event: APIGatewayProxyEventV2): Promise<APIGate
             claimedAt: status.claimedAt,
         }),
     };
+}
+
+// =============================================================================
+// Memory Routes Handler
+// =============================================================================
+
+async function handleMemoryRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const path = event.rawPath;
+    const method = event.requestContext.http.method;
+    let body: Record<string, any> = {};
+    if (event.body) {
+        try {
+            body = JSON.parse(event.body);
+        } catch {
+            return {
+                statusCode: 400,
+                headers: corsHeaders,
+                body: JSON.stringify({ error: "Invalid JSON body" }),
+            };
+        }
+    }
+
+    try {
+        const { addMemory, searchMemory, getAllMemories } = await import("./shared/mem0.js");
+        const agentWallet = body.agentWallet || body.agent_id;
+        const userId = body.userId || body.user_id;
+        const enableGraph = body.enableGraph ?? body.enable_graph ?? true;
+
+        // POST /api/memory/add - Add memory with graph extraction
+        if (path === "/api/memory/add" && method === "POST") {
+            if (!body.messages || !agentWallet) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "messages and (agentWallet or agent_id) required" })
+                };
+            }
+
+            const result = await addMemory({
+                messages: body.messages,
+                agent_id: agentWallet,
+                user_id: userId,
+                enable_graph: enableGraph,
+                metadata: body.metadata,
+            });
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
+        // POST /api/memory/search - Semantic search
+        if (path === "/api/memory/search" && method === "POST") {
+            if (!body.query || !agentWallet) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "query and (agentWallet or agent_id) required" })
+                };
+            }
+
+            const result = await searchMemory({
+                query: body.query,
+                agent_id: agentWallet,
+                user_id: userId,
+                limit: body.limit ?? 10,
+                enable_graph: enableGraph,
+            });
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
+        // GET /api/memory/:agentWallet - Get all memories
+        const getAllMatch = path.match(/^\/api\/memory\/(0x[a-fA-F0-9]{40})$/);
+        if (getAllMatch && method === "GET") {
+            const agentWallet = getAllMatch[1];
+            const userId = event.queryStringParameters?.userId;
+
+            const result = await getAllMemories({
+                agent_id: agentWallet,
+                user_id: userId,
+                enable_graph: true,
+            });
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
+        }
+
+        // POST /api/memory/cell - Store a memory cell
+        if (path === "/api/memory/cell" && method === "POST") {
+            if (!body.content || !body.agentWallet) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "content and agentWallet required" })
+                };
+            }
+        }
+
+        // POST /api/memory/cell/search - Search cells with decay
+        if (path === "/api/memory/cell/search" && method === "POST") {
+            if (!body.agentWallet) {
+                return {
+                    statusCode: 400,
+                    headers: corsHeaders,
+                    body: JSON.stringify({ error: "agentWallet required" })
+                };
+            }
+        }
+
+        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Memory route not found" }) };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[memory] Error:", message);
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
+    }
 }

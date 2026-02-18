@@ -182,7 +182,6 @@ const CHAIN_RPC_URLS: Record<number, string> = {
     [CHAIN_IDS.arbitrumSepolia]: process.env.ARBITRUM_SEPOLIA_RPC as string,
 };
 
-
 const VIEM_CHAINS: Record<number, typeof cronosTestnet | typeof avalancheFuji | typeof arbitrumSepolia> = {
     [CHAIN_IDS.cronosTestnet]: cronosTestnet,
     [CHAIN_IDS.avalancheFuji]: avalancheFuji,
