@@ -26,6 +26,7 @@ const PROVIDER_ORDER: ModelProvider[] = [
   "anthropic",
   "google",
   "vertex",
+  "edge",
   "openrouter",
   "huggingface",
   "aiml",
@@ -34,15 +35,16 @@ const PROVIDER_ORDER: ModelProvider[] = [
 ];
 
 const PROVIDER_FALLBACKS: Record<ModelProvider, ModelProvider[]> = {
-  openai: ["openrouter", "huggingface"],
-  anthropic: ["openrouter", "huggingface"],
-  google: ["vertex", "openrouter"],
-  vertex: ["google", "openrouter"],
-  openrouter: ["huggingface", "openai"],
-  huggingface: ["openrouter", "aiml"],
-  aiml: ["openrouter", "huggingface"],
-  "asi-cloud": ["openrouter", "huggingface"],
-  "asi-one": ["openrouter", "huggingface"],
+  openai: ["edge", "huggingface", "asi-cloud", "asi-one", "aiml", "anthropic", "google", "vertex", "openrouter"],
+  anthropic: ["edge", "huggingface", "asi-cloud", "asi-one", "aiml", "openai", "google", "vertex", "openrouter"],
+  google: ["vertex", "edge", "asi-cloud", "asi-one", "aiml", "openai", "anthropic", "huggingface", "openrouter"],
+  vertex: ["google", "edge", "asi-cloud", "asi-one", "aiml", "openai", "anthropic", "huggingface", "openrouter"],
+  edge: ["openrouter", "huggingface", "asi-cloud", "asi-one", "aiml", "openai", "anthropic", "google", "vertex"],
+  openrouter: ["huggingface", "openai", "asi-cloud", "asi-one", "aiml", "anthropic", "google", "vertex", "edge"],
+  huggingface: ["edge", "aiml", "asi-cloud", "asi-one", "openai", "anthropic", "google", "vertex", "openrouter"],
+  aiml: ["edge", "huggingface", "asi-cloud", "asi-one", "openai", "anthropic", "google", "vertex", "openrouter"],
+  "asi-cloud": ["edge", "huggingface", "aiml", "openai", "anthropic", "google", "vertex", "openrouter"],
+  "asi-one": ["edge", "huggingface", "aiml", "openai", "anthropic", "google", "vertex", "openrouter"],
 };
 
 function byProviderOrder(a: ModelProvider, b: ModelProvider): number {
