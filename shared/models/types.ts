@@ -22,7 +22,8 @@ export type ModelProvider =
     | "openrouter"
     | "huggingface"
     | "aiml"
-    | "vertex";
+    | "vertex"
+    | "edge";
 
 /**
  * Provider priority for deduplication and routing
@@ -34,11 +35,12 @@ export const PROVIDER_PRIORITY: Record<ModelProvider, number> = {
     "openai": 1,
     "anthropic": 1,
     "vertex": 1,
-    "asi-cloud": 2,
-    "openrouter": 3,
-    "huggingface": 4,
-    "aiml": 5,
-    "asi-one": 6
+    "edge": 2,
+    "huggingface": 2,
+    "aiml": 3,
+    "asi-cloud": 3,
+    "openrouter": 4,
+    "asi-one": 4
 };
 
 // =============================================================================

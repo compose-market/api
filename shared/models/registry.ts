@@ -61,6 +61,12 @@ const aimlProvider = createOpenAICompatible({
     baseURL: "https://api.aimlapi.com/v1",
 });
 
+const edgeProvider = createOpenAICompatible({
+    name: "edge",
+    apiKey: process.env.EDGE_API_KEY || "",
+    baseURL: process.env.EDGE_BASE_URL || "",
+});
+
 // =============================================================================
 // Compiled Models Loading
 // =============================================================================
@@ -299,7 +305,8 @@ function isModelProvider(value: unknown): value is ModelProvider {
         || value === "openrouter"
         || value === "huggingface"
         || value === "aiml"
-        || value === "vertex";
+        || value === "vertex"
+        || value === "edge";
 }
 
 /**
@@ -447,33 +454,37 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
     }
 
     console.log(`[getLanguageModel] Creating model instance for provider: ${modelProvider}`);
-    
+
     switch (modelProvider) {
         case "openai":
             return openai(modelId);
-        
+
         case "anthropic":
             return anthropic(modelId);
-        
+
         case "google":
             return google(modelId);
-        
+
         case "asi-one":
             return asiOneProvider(modelId);
-        
+
         case "asi-cloud":
             return asiCloudProvider(modelId);
-        
+
         case "openrouter":
             console.log(`[getLanguageModel] Using openRouterProvider for: ${modelId}`);
             return openRouterProvider(modelId);
-        
+
         case "aiml":
             return aimlProvider(modelId);
-        
+
         case "huggingface":
             return hfProvider(modelId);
-        
+
+        case "edge":
+            console.log(`[getLanguageModel] Using edgeProvider for: ${modelId}`);
+            return edgeProvider(modelId);
+
         case "vertex":
             // Vertex AI is handled in invoke.ts via direct HTTP calls
             // It requires custom authentication (JWT tokens) that AI SDK doesn't support
@@ -481,7 +492,7 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
                 `Vertex AI models (${modelId}) use direct API routing, not AI SDK. ` +
                 `Use invokeChat with direct streaming or the Vertex provider-specific functions.`
             );
-        
+
         default:
             throw new Error(`Unknown provider: ${modelProvider} for model: ${modelId}`);
     }
@@ -521,6 +532,9 @@ export function getEmbeddingModel(modelId: string, provider?: ModelProvider): an
 
         case "huggingface":
             return hfProvider.embeddingModel(modelId);
+
+        case "edge":
+            return edgeProvider.embeddingModel(modelId);
 
         case "anthropic":
             throw new Error(`Embeddings are not supported for provider '${modelProvider}'.`);

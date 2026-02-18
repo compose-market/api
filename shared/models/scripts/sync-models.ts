@@ -53,71 +53,71 @@ const CAPABILITY_MAP: Record<string, ModelCapability> = {
     "function_call": "tools",
     "agentic_tool_use": "tools",
     "tools": "tools",
-    
+
     // Reasoning / Thinking
     "reasoning": "reasoning",
     "thinking": "thinking",
     "extended_thinking": "thinking",
     "interleaved_thinking": "thinking",
-    
+
     // Vision / Image understanding
     "image_understanding": "vision",
     "vision_image_input": "vision",
     "vision": "vision",
     "visionInput": "vision",
     "vision_input": "vision",
-    
+
     // Image generation
     "image_generation": "image-generation",
     "imagegeneration": "image-generation",
     "can_generate_images": "image-generation",
-    
+
     // Audio generation / TTS
     "audio_generation": "audio-generation",
     "audio_output": "audio-generation",
     "tts": "audio-generation",
     "music_generation": "audio-generation",
     "musicGeneration": "audio-generation",
-    
+
     // Audio understanding / ASR
     "audio_understanding": "audio-understanding",
     "audio_input": "audio-understanding",
     "transcription": "audio-understanding",
     "speech_to_text": "audio-understanding",
-    
+
     // Video understanding
     "video_understanding": "video-understanding",
     "video_input": "video-understanding",
     "videoInput": "video-understanding",
-    
+
     // Embeddings
     "embeddings": "embeddings",
     "can_embed": "embeddings",
     "embedding": "embeddings",
-    
+
     // Structured outputs
     "structured_outputs": "structured-outputs",
     "structured_json_output": "structured-outputs",
-    
+
     // Streaming
     "streaming": "streaming",
-    
+
     // Code execution
     "code_execution": "code-execution",
     "codeExecution": "code-execution",
-    
+
     // Search grounding
     "search_grounding": "search-grounding",
     "searchGrounding": "search-grounding",
-    
+
     // Live API
     "live_api": "live-api",
     "liveApi": "live-api",
-    
+
     // Computer use
     "computer_use": "computer-use",
     "computerUse": "computer-use",
-    
+
     // Agentic
     "agentic": "agentic",
 };
@@ -128,16 +128,16 @@ const CAPABILITY_MAP: Record<string, ModelCapability> = {
  */
 function normalizeCapabilities(rawCapabilities: string[]): ModelCapability[] {
     const normalized: ModelCapability[] = [];
-    
+
     for (const cap of rawCapabilities) {
         const capLower = cap.toLowerCase().replace(/[_\s-]/g, "");
         const mapped = CAPABILITY_MAP[capLower] || CAPABILITY_MAP[cap];
-        
+
         if (mapped && !normalized.includes(mapped)) {
             normalized.push(mapped);
         }
     }
-    
+
     return normalized;
 }
 
@@ -196,7 +196,7 @@ function normalizeTaskType(rawTask: string | undefined): string {
  */
 function extractPricing(model: any): ModelPricing | null {
     // Try various pricing field patterns
-    const input = 
+    const input =
         model.prices?.input ??
         model.prices?.text_tokens?.standard?.input ??
         model.prices?.perMillionTokensUSD?.prompt ??
@@ -204,7 +204,7 @@ function extractPricing(model: any): ModelPricing | null {
         model.prices?.tokens_per_million?.base_input ??
         model.pricing?.input ??
         model.pricing?.inputPer1M;
-        
+
     const output =
         model.prices?.output ??
         model.prices?.text_tokens?.standard?.output ??
@@ -213,9 +213,9 @@ function extractPricing(model: any): ModelPricing | null {
         model.prices?.tokens_per_million?.output ??
         model.pricing?.output ??
         model.pricing?.outputPer1M;
-    
+
     if (input == null || output == null) return null;
-    
+
     return { input, output };
 }
 
@@ -276,7 +276,7 @@ function transformClaude(jsonPath: string): RawModel[] {
         // Normalize capabilities from source data
         const rawCaps = extractRawCapabilities(model.capabilities);
         let capabilities = normalizeCapabilities(rawCaps);
-        
+
         // Add streaming if not already present (Claude models all support it)
         if (!capabilities.includes("streaming")) {
             capabilities.push("streaming");
@@ -317,7 +317,7 @@ function transformGemini(jsonPath: string): RawModel[] {
         // Normalize capabilities from source data
         const rawCaps = extractRawCapabilities(model.capabilities);
         let capabilities = normalizeCapabilities(rawCaps);
-        
+
         // Add streaming if not already present
         if (!capabilities.includes("streaming")) {
             capabilities.push("streaming");
@@ -396,7 +396,7 @@ function transformOpenRouter(jsonPath: string): RawModel[] {
         // Normalize capabilities from source data
         const rawCaps = extractRawCapabilities(model.capabilities);
         let capabilities = normalizeCapabilities(rawCaps);
-        
+
         // Add streaming if not already present (OpenRouter models typically support it)
         if (!capabilities.includes("streaming")) {
             capabilities.push("streaming");
@@ -485,7 +485,7 @@ function transformAIML(jsonPath: string): RawModel[] {
     for (const model of raw.models || []) {
         // Use standardized capability normalization
         let capabilities = normalizeCapabilities(extractRawCapabilities(model.capabilities));
-        
+
         // Add streaming if not already present (AIML models typically support it)
         if (!capabilities.includes("streaming")) {
             capabilities.push("streaming");
@@ -747,7 +747,7 @@ async function main() {
     // Compute global stats (for extended output)
     const byProvider: Record<ModelProvider, number> = {
         google: 0, openai: 0, anthropic: 0, vertex: 0,
-        "asi-cloud": 0, "asi-one": 0,
+        edge: 0, "asi-cloud": 0, "asi-one": 0,
         openrouter: 0, huggingface: 0, aiml: 0
     };
     const byTaskType: Record<string, number> = {};
@@ -781,7 +781,7 @@ async function main() {
     // Recompute stats for optimized set
     const optByProvider: Record<ModelProvider, number> = {
         google: 0, openai: 0, anthropic: 0, vertex: 0,
-        "asi-cloud": 0, "asi-one": 0,
+        edge: 0, "asi-cloud": 0, "asi-one": 0,
         openrouter: 0, huggingface: 0, aiml: 0
     };
     const optByTaskType: Record<string, number> = {};
