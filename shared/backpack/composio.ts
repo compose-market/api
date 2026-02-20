@@ -399,6 +399,54 @@ export async function checkConnection(
     };
 }
 
+export interface ToolkitActionExecutionParams {
+    userId: string;
+    toolkit: string;
+    action: string;
+    params?: Record<string, unknown>;
+    text?: string;
+}
+
+export async function executeToolkitAction(
+    params: ToolkitActionExecutionParams
+): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    if (!params.userId || !params.toolkit || !params.action) {
+        return { success: false, error: "userId, toolkit and action are required" };
+    }
+
+    try {
+        const client = getClient();
+
+        let connectedAccountId: string | undefined;
+        if (params.toolkit === "telegram" || params.toolkit === "whatsapp") {
+            connectedAccountId = await getSystemConnectedAccount(params.toolkit) || undefined;
+        } else {
+            const connection = await checkConnection(params.userId, params.toolkit);
+            if (!connection.connected || !connection.accountId) {
+                return {
+                    success: false,
+                    error: `Toolkit '${params.toolkit}' is not connected for user ${params.userId}`,
+                };
+            }
+            connectedAccountId = connection.accountId;
+        }
+
+        const result = await client.tools.execute(params.action, {
+            connected_account_id: connectedAccountId,
+            user_id: params.userId,
+            arguments: params.params,
+            text: params.text,
+        } as any);
+
+        return { success: true, result };
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
 /**
  * Disconnect a toolkit for a user.
  */
