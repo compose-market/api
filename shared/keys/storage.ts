@@ -215,7 +215,7 @@ export async function syncBudgetAfterSettlement(
 ): Promise<void> {
     const addr = userAddress.toLowerCase();
     const keyIds = await redisSMembers(userKeysKey(addr));
-    
+
     for (const keyId of keyIds) {
         const record = await getKeyRecord(keyId);
         if (record && record.chainId === chainId) {
@@ -225,7 +225,7 @@ export async function syncBudgetAfterSettlement(
             return;
         }
     }
-    
+
     console.log(`[keys/storage] No key found for ${addr} chain ${chainId} to sync budget`);
 }
 

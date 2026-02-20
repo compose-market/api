@@ -72,7 +72,7 @@ async function onConnect(connId: string): Promise<WsResult> {
 async function onDisconnect(connId: string): Promise<WsResult> {
     const key = `${CONN_KEY}${connId}`;
     const data = await redisGet(key);
-    
+
     if (data) {
         try {
             const conn = JSON.parse(data);
@@ -81,9 +81,9 @@ async function onDisconnect(connId: string): Promise<WsResult> {
                     await redisSRem(sub, connId);
                 }
             }
-        } catch {}
+        } catch { }
     }
-    
+
     await redisDel(key);
     console.log(`[ws] Disconnected: ${connId}`);
     return { statusCode: 200, body: "OK" };
@@ -118,21 +118,21 @@ async function onSubscribe(connId: string, msg: SubMsg): Promise<WsResult> {
     const addr = msg.userAddress.toLowerCase();
     const subKey = `${SUB_KEY}${addr}:${msg.chainId}`;
     const connKey = `${CONN_KEY}${connId}`;
-    
+
     await redisSAdd(subKey, connId);
-    
+
     const data = await redisGet(connKey);
     let conn: Record<string, unknown> = { at: Date.now() };
     if (data) {
-        try { conn = JSON.parse(data); } catch {}
+        try { conn = JSON.parse(data); } catch { }
     }
-    
+
     const subs = new Set((conn.subs as string[]) || []);
     subs.add(subKey);
     conn.subs = Array.from(subs);
-    
+
     await redisSet(connKey, JSON.stringify(conn), CONN_TTL);
-    
+
     console.log(`[ws] Subscribed ${connId} to ${addr}:${msg.chainId}`);
     return { statusCode: 200, body: JSON.stringify({ action: "subscribed", userAddress: addr, chainId: msg.chainId }) };
 }
@@ -141,9 +141,9 @@ async function onUnsubscribe(connId: string, msg: UnsubMsg): Promise<WsResult> {
     const addr = msg.userAddress.toLowerCase();
     const subKey = `${SUB_KEY}${addr}:${msg.chainId}`;
     const connKey = `${CONN_KEY}${connId}`;
-    
+
     await redisSRem(subKey, connId);
-    
+
     const data = await redisGet(connKey);
     if (data) {
         try {
@@ -152,9 +152,9 @@ async function onUnsubscribe(connId: string, msg: UnsubMsg): Promise<WsResult> {
             subs.delete(subKey);
             conn.subs = Array.from(subs);
             await redisSet(connKey, JSON.stringify(conn), CONN_TTL);
-        } catch {}
+        } catch { }
     }
-    
+
     console.log(`[ws] Unsubscribed ${connId} from ${addr}:${msg.chainId}`);
     return { statusCode: 200, body: JSON.stringify({ action: "unsubscribed" }) };
 }
@@ -166,19 +166,19 @@ async function send(
     stage: string
 ): Promise<WsResult> {
     const endpoint = `https://${domain}/${stage}`;
-    
+
     try {
         const res = await fetch(`${endpoint}/@connections/${connId}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(data),
         });
-        
+
         if (!res.ok) {
             console.error(`[ws] Send failed: ${res.status}`);
             return { statusCode: res.status, body: "Failed" };
         }
-        
+
         return { statusCode: 200, body: "Sent" };
     } catch (err) {
         console.error(`[ws] Send error:`, err);
@@ -194,13 +194,13 @@ export async function notifyExpired(
 ): Promise<void> {
     const addr = userAddress.toLowerCase();
     const subKey = `${SUB_KEY}${addr}:${chainId}`;
-    
+
     const connIds = await redisSMembers(subKey);
-    
+
     if (connIds.length === 0) return;
-    
+
     console.log(`[ws] Notifying ${connIds.length} conns of expiry for ${addr}:${chainId}`);
-    
+
     const notify = {
         action: "session-expired",
         userAddress: addr,
@@ -208,10 +208,10 @@ export async function notifyExpired(
         message: "Session expired, create a new session to use our services",
         timestamp: Date.now(),
     };
-    
+
     for (const connId of connIds) {
         await send(connId, notify, domain, stage);
     }
-    
+
     await redisDel(subKey);
 }

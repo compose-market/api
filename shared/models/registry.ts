@@ -1,5 +1,5 @@
 /**
- * Model Registry - Enterprise Grade
+ * Model Registry
  * 
  * Loads models from compiled models.json (built by sync-models.ts).
  * All metadata comes from pre-compiled provider JSONs - no runtime API fetching.

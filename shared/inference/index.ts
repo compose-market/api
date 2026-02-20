@@ -1,5 +1,5 @@
 /**
- * Unified API Module - Enterprise Grade
+ * Unified API Module
  * 
  * Single source of truth for ALL route handling.
  * Works for both Lambda (production) and Express (development).
