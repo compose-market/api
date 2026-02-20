@@ -21,7 +21,6 @@ import {
     listUserKeys,
     revokeKey,
     getActiveSession,
-    getActiveSessionStatus,
 } from "./shared/keys/index.js";
 
 import {
@@ -32,7 +31,6 @@ import {
 } from "./shared/keys/middleware.js";
 
 import { settleComposeKeyPayment } from "./shared/x402/settlement.js";
-import { getSessionStatus } from "./shared/x402/session-budget.js";
 import { getActiveChainId } from "./shared/configs/chains.js";
 
 // Account Abstraction
@@ -477,8 +475,7 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
     }
 
     // Get session record from storage.ts (for token, keyId, expiresAt)
-    const status = await getActiveSessionStatus(userAddress, chainId);
-    const session = status.session;
+    const session = await getActiveSession(userAddress, chainId);
 
     if (!session) {
         return {
@@ -487,12 +484,12 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
             body: JSON.stringify({
                 error: "No active session found",
                 hasSession: false,
-                reason: status.reason,
             }),
         };
     }
 
     // Get REAL-TIME budget from session-budget.ts (deferred payment ledger)
+    const { getSessionStatus } = await import("./shared/x402/session-budget.js");
     const budgetStatus = await getSessionStatus(
         userAddress,
         chainId ?? session.chainId ?? getActiveChainId()
@@ -1332,7 +1329,7 @@ async function handleMemoryRoutes(event: APIGatewayProxyEventV2): Promise<APIGat
     }
 
     try {
-        const { addMemory, searchMemory, getAllMemories } = await import("./shared/mem0.js");
+        const { addMemory, searchMemory, getAllMemories } = await import("./shared/configs/mem0.js");
         const agentWallet = body.agentWallet || body.agent_id;
         const userId = body.userId || body.user_id;
         const enableGraph = body.enableGraph ?? body.enable_graph ?? true;

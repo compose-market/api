@@ -36,8 +36,8 @@ provider:
     PERPLEXITY_API_KEY: ${env:PERPLEXITY_API_KEY}
     DEEPGRAM_API_KEY: ${env:DEEPGRAM_API_KEY}
     MANOWAR_INTERNAL_SECRET: ${env:MANOWAR_INTERNAL_SECRET}
-    REDIS_DATABASE_PUBLIC_ENDPOINT: ${env:REDIS_DATABASE_PUBLIC_ENDPOINT}
-    REDIS_DEFAULT_PASSWORD: ${env:REDIS_DEFAULT_PASSWORD}
+    REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT: ${env:REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT}
+    REDIS_KEYS_DEFAULT_PASSWORD: ${env:REDIS_KEYS_DEFAULT_PASSWORD}
     REDIS_API_KEY: ${env:REDIS_API_KEY}
     REDIS_TLS: ${env:REDIS_TLS, 'true'}
     SESSION_SECRET: ${env:SESSION_SECRET}
@@ -50,6 +50,12 @@ provider:
     CF_EMBEDDING_MODEL: ${env:CF_EMBEDDING_MODEL}
     COMPOSE_BOT_HTTP_API: ${env:COMPOSE_BOT_HTTP_API}
     TG_BOT_USERNAME: ${env:TG_BOT_USERNAME}
+    CRONOS_TESTNET_RPC: ${env:CRONOS_TESTNET_RPC}
+    AVALANCHE_FUJI_RPC: ${env:AVALANCHE_FUJI_RPC}
+    ARBITRUM_SEPOLIA_RPC: ${env:ARBITRUM_SEPOLIA_RPC}
+    CRONOS_TESTNET_CHAIN_ID: ${env:CRONOS_TESTNET_CHAIN_ID, '338'}
+    AVALANCHE_FUJI_CHAIN_ID: ${env:AVALANCHE_FUJI_CHAIN_ID, '43113'}
+    ARBITRUM_SEPOLIA_CHAIN_ID: ${env:ARBITRUM_SEPOLIA_CHAIN_ID, '421614'}
 
 functions:
   api:
@@ -73,6 +79,15 @@ functions:
           route: subscribe
       - websocket:
           route: $default
+    customDomain:
+      domainName: ws.compose.market
+      basePath: ''
+      stage: $default
+      certificateName: ws.compose.market
+      createRoute53Record: true
+      endpointType: regional
+      securityPolicy: tls_1_2
+      apiType: WebSocket
   
   expiry:
     handler: dist/index.expiryWorker
@@ -107,6 +122,16 @@ custom:
     endpointType: regional
     securityPolicy: tls_1_2
     apiType: http
+
+  customWsDomain:
+    domainName: ws.compose.market
+    basePath: ''
+    stage: $default
+    certificateName: ws.compose.market
+    createRoute53Record: true
+    endpointType: regional
+    securityPolicy: tls_1_2
+    apiType: WebSocket
 
 package:
   patterns:
