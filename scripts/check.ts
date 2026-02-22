@@ -1,5 +1,23 @@
 import "dotenv/config";
-import type { APIGatewayProxyEventV2, Context } from "aws-lambda";
+
+// Local types for Cloud Run compatibility (replacing aws-lambda types)
+interface APIGatewayProxyEventV2 {
+    rawPath: string;
+    requestContext: { http: { method: string } };
+    headers: Record<string, string | undefined>;
+    body?: string;
+    queryStringParameters?: Record<string, string>;
+    pathParameters?: Record<string, string>;
+}
+
+interface APIGatewayProxyResultV2 {
+    statusCode: number;
+    headers?: Record<string, string>;
+    body: string;
+    isBase64Encoded?: boolean;
+}
+
+type Context = Record<string, unknown>;
 
 import { handler } from "../handler.js";
 import { resolveModel } from "../shared/models/registry.js";
@@ -51,32 +69,15 @@ function buildEvent(method: string, path: string, body?: unknown, headers?: Reco
   }
 
   return {
-    version: "2.0",
-    routeKey: "$default",
     rawPath: path,
-    rawQueryString: "",
     headers: normalizedHeaders,
     requestContext: {
-      accountId: "local",
-      apiId: "local",
-      domainName: "localhost",
-      domainPrefix: "localhost",
-      requestId: `req_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
-      routeKey: "$default",
-      stage: "$default",
-      time: new Date().toISOString(),
-      timeEpoch: Date.now(),
       http: {
         method,
-        path,
-        protocol: "HTTP/1.1",
-        sourceIp: "127.0.0.1",
-        userAgent: "compose-market-check",
       },
     },
-    isBase64Encoded: false,
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  } as APIGatewayProxyEventV2;
+  };
 }
 
 async function invoke(method: string, path: string, options?: { body?: unknown; headers?: Record<string, string> }): Promise<InvokeResult> {

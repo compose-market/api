@@ -13,7 +13,24 @@
  * @module lambda/handler
  */
 
-import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "aws-lambda";
+// Define types locally - Cloud Run uses Express request/response via mock pattern
+interface APIGatewayProxyEventV2 {
+    rawPath: string;
+    requestContext: { http: { method: string } };
+    headers: Record<string, string | undefined>;
+    body?: string;
+    queryStringParameters?: Record<string, string>;
+    pathParameters?: Record<string, string>;
+}
+
+interface APIGatewayProxyResultV2 {
+    statusCode: number;
+    headers?: Record<string, string>;
+    body: string;
+    isBase64Encoded?: boolean;
+}
+
+type Context = Record<string, unknown>;
 
 // Compose Keys
 import {
@@ -432,7 +449,7 @@ Create a professional wide banner image for an AI workflow orchestration system.
  */
 export async function batchSettlementHandler(
     event: { source?: string } | unknown,
-    _context: Context
+    _context: Record<string, unknown>
 ): Promise<void> {
     console.log("[batch-settlement] Scheduled handler invoked", JSON.stringify(event));
 

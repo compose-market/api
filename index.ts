@@ -5,8 +5,36 @@ import { registerRoutes } from "./shared/inference/index.js";
 import { createServer } from "http";
 import cors from "cors";
 
-export { handler } from "./handler.js";
-export { batchSettlementHandler } from "./handler.js";
+export { handler, batchSettlementHandler } from "./handler.js";
+export { wsHandler, expiryWorker } from "./shared/keys/index.js";
+
+async function runJob() {
+  const task = process.env.JOB_TASK;
+  if (!task) return;
+
+  log(`🚀 Starting Cloud Run Job: ${task}`, "job");
+
+  try {
+    const { batchSettlementHandler } = await import("./handler.js");
+    const { expiryWorker } = await import("./shared/keys/expiry.js");
+
+    switch (task) {
+      case "batch-settlement":
+        await batchSettlementHandler({ source: "scheduled" }, {} as any);
+        break;
+      case "expiry-scan":
+        await expiryWorker({ source: "scheduled" } as any, {} as any);
+        break;
+      default:
+        throw new Error(`Unknown job task: ${task}`);
+    }
+    log(`✅ Job ${task} completed successfully.`, "job");
+    process.exit(0);
+  } catch (error) {
+    log(`❌ Job ${task} failed: ${error}`, "job");
+    process.exit(1);
+  }
+}
 
 const API_PORT = 3000;
 
@@ -96,6 +124,11 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
 }
 
 (async () => {
+  if (process.env.JOB_TASK) {
+    await runJob();
+    return;
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

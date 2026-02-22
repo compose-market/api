@@ -7,7 +7,9 @@
  * @module shared/keys/expiry
  */
 
-import type { ScheduledEvent, Context } from "aws-lambda";
+// Cloud Run Jobs plain objects
+type ScheduledEvent = { source?: string };
+type Context = Record<string, unknown>;
 import { redisSMembers, redisDel, redisSAdd, redisHGetAll, getRedisClient } from "../configs/redis.js";
 import { notifyExpired } from "./ws.js";
 

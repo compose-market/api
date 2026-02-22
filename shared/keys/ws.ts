@@ -6,11 +6,26 @@
  * @module shared/keys/ws
  */
 
-import type {
-    APIGatewayProxyEvent as WsEvent,
-    APIGatewayProxyResult as WsResult,
-    Context,
-} from "aws-lambda";
+// Local types for Cloud Run compatibility
+interface WsEvent {
+    requestContext: {
+        connectionId: string;
+        domainName?: string;
+        stage?: string;
+        eventType?: string;
+        routeKey?: string;
+    };
+    body?: string;
+    queryStringParameters?: Record<string, string>;
+}
+
+interface WsResult {
+    statusCode: number;
+    body?: string;
+}
+
+type Context = Record<string, unknown>;
+
 import {
     redisSet,
     redisGet,

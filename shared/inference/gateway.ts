@@ -1,7 +1,23 @@
 import type { Request, Response } from "express";
-import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
 import { embedMany, generateText, jsonSchema, streamText } from "ai";
 import { GoogleGenAI } from "@google/genai";
+
+// Local types for Cloud Run compatibility (replacing aws-lambda types)
+interface APIGatewayProxyEventV2 {
+    rawPath: string;
+    requestContext: { http: { method: string } };
+    headers: Record<string, string | undefined>;
+    body?: string;
+    queryStringParameters?: Record<string, string>;
+    pathParameters?: Record<string, string>;
+}
+
+interface APIGatewayProxyResultV2 {
+    statusCode: number;
+    headers?: Record<string, string>;
+    body: string;
+    isBase64Encoded?: boolean;
+}
 
 import {
   getCompiledModels,
