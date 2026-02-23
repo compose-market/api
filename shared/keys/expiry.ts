@@ -15,7 +15,7 @@ import { notifyExpired } from "./ws.js";
 
 const NOTIFY_KEY = "ws:notify:";
 const KEY_PREFIX = "compose-key:";
-const USER_KEYS_PREFIX = "user-key:";
+const USER_KEYS_PREFIX = "user-keys:";
 const SUB_KEY = "ws:sub:";
 
 export async function expiryWorker(
