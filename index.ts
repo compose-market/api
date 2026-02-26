@@ -4,9 +4,26 @@ import type { Server } from "http";
 import { registerRoutes } from "./shared/inference/index.js";
 import { createServer } from "http";
 import cors from "cors";
+import { handler as lambdaHandler } from "./handler.js";
+import { registerSessionEventsRoute } from "./shared/keys/sse.js";
 
 export { handler, batchSettlementHandler } from "./handler.js";
-export { wsHandler, expiryWorker } from "./shared/keys/index.js";
+export { expiryWorker } from "./shared/keys/expiry.js";
+
+interface APIGatewayProxyEventV2 {
+  rawPath: string;
+  requestContext: { http: { method: string } };
+  headers: Record<string, string | undefined>;
+  body?: string;
+  queryStringParameters?: Record<string, string>;
+}
+
+interface APIGatewayProxyResultV2 {
+  statusCode: number;
+  headers?: Record<string, string>;
+  body: string;
+  isBase64Encoded?: boolean;
+}
 
 async function runJob() {
   const task = process.env.JOB_TASK;
@@ -123,13 +140,91 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   });
 }
 
+function parseQueryParams(req: Request): Record<string, string> | undefined {
+  const queryIndex = req.originalUrl.indexOf("?");
+  if (queryIndex === -1) return undefined;
+
+  const search = req.originalUrl.slice(queryIndex + 1);
+  const params = new URLSearchParams(search);
+  const parsed: Record<string, string> = {};
+
+  for (const [key, value] of params.entries()) {
+    if (!(key in parsed)) parsed[key] = value;
+  }
+
+  return Object.keys(parsed).length > 0 ? parsed : undefined;
+}
+
+function buildLambdaEvent(req: Request): APIGatewayProxyEventV2 {
+  const headers: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    headers[key.toLowerCase()] = Array.isArray(value) ? value.join(",") : value;
+  }
+
+  const method = req.method.toUpperCase();
+  const canHaveBody = !["GET", "HEAD", "OPTIONS"].includes(method);
+  let body: string | undefined;
+
+  if (canHaveBody) {
+    if (Buffer.isBuffer(req.rawBody)) {
+      body = req.rawBody.toString("utf-8");
+    } else if (typeof req.rawBody === "string") {
+      body = req.rawBody;
+    } else if (typeof req.body === "string") {
+      body = req.body;
+    } else if (req.body && typeof req.body === "object" && Object.keys(req.body).length > 0) {
+      body = JSON.stringify(req.body);
+    }
+  }
+  const queryParams = parseQueryParams(req);
+
+  return {
+    rawPath: req.path,
+    requestContext: { http: { method } },
+    headers,
+    ...(body !== undefined ? { body } : {}),
+    ...(queryParams ? { queryStringParameters: queryParams } : {}),
+  };
+}
+
+async function delegateToLambda(req: Request, res: Response, next: NextFunction) {
+  try {
+    const event = buildLambdaEvent(req);
+    const result = await lambdaHandler(event, {} as Record<string, unknown>);
+
+    const lambdaResult = result as APIGatewayProxyResultV2;
+    if (lambdaResult.headers) {
+      for (const [key, value] of Object.entries(lambdaResult.headers)) {
+        if (value !== undefined) {
+          res.setHeader(key, value);
+        }
+      }
+    }
+
+    res.status(lambdaResult.statusCode);
+    if (lambdaResult.isBase64Encoded) {
+      const decoded = Buffer.from(lambdaResult.body || "", "base64");
+      res.send(decoded);
+      return;
+    }
+
+    res.send(lambdaResult.body ?? "");
+  } catch (err) {
+    next(err);
+  }
+}
+
 (async () => {
   if (process.env.JOB_TASK) {
     await runJob();
     return;
   }
 
-  await registerRoutes(httpServer, app);
+  await registerRoutes(httpServer, app, { skipNotFoundHandler: true });
+  registerSessionEventsRoute(app);
+  app.use((req, res, next) => {
+    void delegateToLambda(req, res, next);
+  });
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const error = err as { status?: number; statusCode?: number; message?: string };
@@ -143,7 +238,7 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   const preferredPort = parseInt(process.env.PORT || String(API_PORT), 10);
   const actualPort = await tryListen(preferredPort);
 
-  console.log(`\n  ➜  API Server: http://localhost:${actualPort}/`);
+  console.log(`\n  ➜  API Server listening on port ${actualPort}`);
   console.log(`  ➜  Endpoints:`);
   console.log(`     POST /api/inference`);
   console.log(`     GET  /api/models`);
@@ -151,4 +246,3 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   console.log(`     GET  /api/hf/tasks`);
   console.log(`     GET  /api/agentverse/agents\n`);
 })();
-
