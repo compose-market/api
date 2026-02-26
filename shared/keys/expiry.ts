@@ -1,72 +1,48 @@
 /**
- * Session Expiry Worker
- * 
- * Runs every minute to check for expired sessions and notify WebSocket clients.
- * Scans compose-key:* entries for recently expired sessions.
- * 
+ * Session Maintenance Worker
+ *
+ * Cloud Run job that keeps key indexes clean.
+ *
  * @module shared/keys/expiry
  */
 
-// Cloud Run Jobs plain objects
 type ScheduledEvent = { source?: string };
 type Context = Record<string, unknown>;
-import { redisSMembers, redisDel, redisSAdd, redisHGetAll, getRedisClient } from "../configs/redis.js";
-import { notifyExpired } from "./ws.js";
 
-const NOTIFY_KEY = "ws:notify:";
-const KEY_PREFIX = "compose-key:";
+import {
+    redisHGetAll,
+    redisSMembers,
+    redisSRem,
+    getRedisClient,
+} from "../configs/redis.js";
+
 const USER_KEYS_PREFIX = "user-keys:";
-const SUB_KEY = "ws:sub:";
+const KEY_PREFIX = "compose-key:";
 
 export async function expiryWorker(
     _event: ScheduledEvent,
-    _ctx: Context
+    _ctx: Context,
 ): Promise<void> {
-    console.log("[expiry] Scanning for expired sessions...");
+    console.log("[expiry] Running session maintenance...");
 
-    const domain = process.env.WS_DOMAIN || "api.compose.market";
-    const stage = process.env.STAGE || "$default";
+    let staleRefsRemoved = 0;
 
     try {
-        const pending = await redisSMembers(NOTIFY_KEY);
-
-        const toNotify: Array<{ addr: string; chainId: number }> = [];
-
-        for (const item of pending) {
-            const [addr, chainIdStr] = item.split(":");
-            const chainId = parseInt(chainIdStr, 10);
-            toNotify.push({ addr, chainId });
-        }
-
-        const subKeys = await scanKeys(SUB_KEY);
-        for (const subKey of subKeys) {
-            const parts = subKey.replace(SUB_KEY, "").split(":");
-            if (parts.length === 2) {
-                const [addr, chainIdStr] = parts;
-                const chainId = parseInt(chainIdStr, 10);
-                const conns = await redisSMembers(subKey);
-                if (conns.length > 0 && !toNotify.some(n => n.addr === addr && n.chainId === chainId)) {
-                    const keyData = await findLatestKey(addr, chainId);
-                    if (keyData && keyData.expiresAt < Date.now()) {
-                        toNotify.push({ addr, chainId });
-                    }
+        const userKeyIndexes = await scanKeys(USER_KEYS_PREFIX);
+        for (const userKeyIndex of userKeyIndexes) {
+            const keyIds = await redisSMembers(userKeyIndex);
+            for (const keyId of keyIds) {
+                const record = await redisHGetAll(`${KEY_PREFIX}${keyId}`);
+                if (!record || Object.keys(record).length === 0) {
+                    await redisSRem(userKeyIndex, keyId);
+                    staleRefsRemoved += 1;
                 }
             }
         }
 
-        for (const { addr, chainId } of toNotify) {
-            try {
-                await notifyExpired(addr, chainId, domain, stage);
-            } catch (err) {
-                console.error(`[expiry] Failed to notify ${addr}:${chainId}:`, err);
-            }
-        }
-
-        if (pending.length > 0) {
-            await redisDel(NOTIFY_KEY);
-        }
-
-        console.log(`[expiry] Notified ${toNotify.length} expirations`);
+        console.log(
+            `[expiry] Complete. stale_refs_removed=${staleRefsRemoved}`,
+        );
     } catch (err) {
         console.error("[expiry] Error:", err);
         throw err;
@@ -85,44 +61,4 @@ async function scanKeys(prefix: string): Promise<string[]> {
     } while (cursor !== "0");
 
     return keys;
-}
-
-async function findLatestKey(userAddress: string, chainId: number): Promise<{ expiresAt: number } | null> {
-    const userKeysKey = `${USER_KEYS_PREFIX}${userAddress.toLowerCase()}`;
-    const keyIds = await redisSMembers(userKeysKey);
-    let latest: { expiresAt: number } | null = null;
-
-    for (const keyId of keyIds) {
-        const data = await redisHGetAll(`${KEY_PREFIX}${keyId}`);
-        if (data && data.chainId === String(chainId)) {
-            const expiresAt = parseInt(data.expiresAt, 10);
-            if (!latest || expiresAt > latest.expiresAt) {
-                latest = { expiresAt };
-            }
-        }
-    }
-
-    return latest;
-}
-
-export async function scheduleExpiryNotify(
-    userAddress: string,
-    chainId: number,
-    expiresAt?: number
-): Promise<void> {
-    const addr = userAddress.toLowerCase();
-    const item = `${addr}:${chainId}`;
-
-    // If expiresAt is provided, we can do additional logic (like checking TTL)
-    // but the primary action is to record it in the central notify set.
-    if (expiresAt) {
-        const now = Date.now();
-        const ttlMs = expiresAt - now;
-        if (ttlMs < 0) {
-            console.log(`[expiry] Already expired: ${item}`);
-        }
-    }
-
-    await redisSAdd(NOTIFY_KEY, item);
-    console.log(`[expiry] Scheduled expiry notification for ${item}`);
 }

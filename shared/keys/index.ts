@@ -45,8 +45,8 @@ export {
     getKeyBudgetInfo,
 } from "./middleware.js";
 
-// WebSocket
-export { wsHandler, notifyExpired } from "./ws.js";
+// Session Events (SSE)
+export { registerSessionEventsRoute } from "./sse.js";
 
 // Expiry Worker
-export { expiryWorker, scheduleExpiryNotify } from "./expiry.js";
+export { expiryWorker } from "./expiry.js";

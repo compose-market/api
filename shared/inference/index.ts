@@ -475,7 +475,13 @@ export function matchRoute(
  */
 export async function registerRoutes(
     httpServer: Server,
-    app: Express
+    app: Express,
+    options?: {
+        /**
+         * Skip the built-in 404 middleware so callers can add their own fallback.
+         */
+        skipNotFoundHandler?: boolean;
+    }
 ): Promise<Server> {
     // CORS middleware
     app.use((req, res, next) => {
@@ -498,9 +504,11 @@ export async function registerRoutes(
     }
 
     // 404 handler
-    app.use((_req, res) => {
-        res.status(404).json({ error: "Not Found" });
-    });
+    if (!options?.skipNotFoundHandler) {
+        app.use((_req, res) => {
+            res.status(404).json({ error: "Not Found" });
+        });
+    }
 
     // Error handler
     app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
