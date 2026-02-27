@@ -40,9 +40,9 @@ export const DYNAMIC_PRICES = {
     AUDIO_STT: "15000",              // $0.015 - Speech-to-Text
     VIDEO_GEN: "500000",             // $0.50 - Video generation
 
-    // Memory & Storage
-    MEM0_SEARCH: "500",              // $0.0005 - memory search
-    MEM0_ADD: "1000",                // $0.001 - memory addition
+    // Embedding utilities
+    EMBEDDING_SEARCH: "500",         // $0.0005 - embedding retrieval/search
+    EMBEDDING_ADD: "1000",           // $0.001 - embedding index add
 
     // ElizaOS Actions
     ELIZA_MESSAGE: "10000",           // $0.01 - message processing
@@ -129,7 +129,7 @@ export function getMultimodalPrice(params: {
     }
 
     if (profile === "embedding" || taskType.includes("embedding") || taskType.includes("feature-extraction")) {
-        return DYNAMIC_PRICES.MEM0_SEARCH;
+        return DYNAMIC_PRICES.EMBEDDING_SEARCH;
     }
 
     // Provider defaults for unknown models where only provider is known
