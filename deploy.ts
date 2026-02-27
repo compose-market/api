@@ -210,16 +210,12 @@ async function deployJobs() {
         "DISPENSER_CONTRACT",
         "REDIS_TLS",
         "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT",
-        "REDIS_MEMORY_DATABASE_PUBLIC_ENDPOINT",
         "SERVER_WALLET_KEY",
         "DEPLOYER_KEY",
         "MANOWAR_INTERNAL_SECRET",
         "REDIS_KEYS_API_KEY",
         "REDIS_KEYS_DEFAULT_PASSWORD",
-        "REDIS_MEMORY_API_KEY",
-        "REDIS_MEMORY_DEFAULT_PASSWORD",
         "REDIS_API_KEY",
-        "MONGO_MEMORY_PASSWORD",
     ];
     const secretFlags = buildSecretFlags(jobSecrets);
 
