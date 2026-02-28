@@ -1,9 +1,14 @@
 /**
- * Shared Pricing Module
+ * x402 Dynamic Pricing
  * 
  * Centralized pricing for all x402-enabled services.
- * Used in Phase 1 for pricing metadata, will be used in Phase 2 for actual settlement.
+ * Supports model-aware pricing for 43k+ models.
+ * 
+ * @module shared/x402/pricing
  */
+
+import { INFERENCE_PRICE_WEI } from "../config/thirdweb.js";
+import type { PriceResult, PriceLookupParams } from "./types.js";
 
 // =============================================================================
 // Dynamic Pricing Table (in USDC wei - 6 decimals)
@@ -44,10 +49,9 @@ export const DYNAMIC_PRICES = {
     ELIZA_ACTION: "2000",            // $0.002 - action execution
 } as const;
 
-// =============================================================================
-// Default Prices (for backward compatibility)
-// =============================================================================
-
+/**
+ * Default prices for backward compatibility
+ */
 export const DEFAULT_PRICES = {
     MCP_TOOL_CALL: DYNAMIC_PRICES.MCP_TOOL_CALL,
     GOAT_EXECUTE: DYNAMIC_PRICES.GOAT_SIMPLE,
@@ -57,8 +61,11 @@ export const DEFAULT_PRICES = {
     AGENT_CHAT: DYNAMIC_PRICES.AGENT_CHAT,
 } as const;
 
+// Platform fee per million tokens
+const PLATFORM_FEE_PER_MILLION = 0.01; // $0.01
+
 // =============================================================================
-// Pricing Helper Functions
+// Pricing Functions
 // =============================================================================
 
 /**
@@ -82,7 +89,7 @@ export function getToolPrice(params: {
         return DYNAMIC_PRICES.GOAT_SIMPLE;
     }
 
-    // MCP tools - could be enhanced with tool-specific pricing
+    // MCP tools
     if (source === "mcp") {
         return DYNAMIC_PRICES.MCP_TOOL_CALL;
     }
@@ -127,11 +134,54 @@ export function getMultimodalPrice(model: string): string {
 }
 
 /**
- * Format price in USDC wei to human-readable string
+ * Calculate inference cost based on model pricing
+ * Uses model card pricing if available, otherwise platform fee only
  */
-export function formatPrice(weiAmount: string): string {
-    const usdc = parseInt(weiAmount) / 1_000_000;
-    return `$${usdc.toFixed(6)}`;
+export function calculateInferenceCost(
+    modelPricing: { input: number; output: number } | null,
+    inputTokens: number,
+    outputTokens: number
+): PriceResult {
+    const totalTokens = inputTokens + outputTokens;
+
+    if (!modelPricing) {
+        // No model pricing - just platform fee
+        const platformFee = (totalTokens / 1_000_000) * PLATFORM_FEE_PER_MILLION;
+        return {
+            providerCost: 0,
+            platformFee,
+            totalCost: platformFee,
+            costUsdcWei: BigInt(Math.ceil(platformFee * 1_000_000)),
+        };
+    }
+
+    // Calculate based on model pricing
+    const inputCost = (inputTokens / 1_000_000) * modelPricing.input;
+    const outputCost = (outputTokens / 1_000_000) * modelPricing.output;
+    const providerCost = inputCost + outputCost;
+    const platformFee = (totalTokens / 1_000_000) * PLATFORM_FEE_PER_MILLION;
+    const totalCost = providerCost + platformFee;
+
+    return {
+        providerCost,
+        platformFee,
+        totalCost,
+        costUsdcWei: BigInt(Math.ceil(totalCost * 1_000_000)),
+    };
+}
+
+/**
+ * Calculate action cost with 1% platform fee
+ */
+export function calculateActionCost(actionCost: number): PriceResult {
+    const platformFee = actionCost * 0.01;
+    const totalCost = actionCost + platformFee;
+    return {
+        providerCost: actionCost,
+        platformFee,
+        totalCost,
+        costUsdcWei: BigInt(Math.ceil(totalCost * 1_000_000)),
+    };
 }
 
 /**
@@ -151,3 +201,37 @@ export function calculateTotalCost(operations: Array<{
 
     return total.toString();
 }
+
+/**
+ * Get price for a request (unified pricing lookup)
+ */
+export function getPriceForRequest(params: PriceLookupParams): string {
+    // Tool pricing
+    if (params.toolSource && params.toolName) {
+        return getToolPrice({
+            source: params.toolSource,
+            toolName: params.toolName,
+            isTransaction: params.isTransaction,
+            complexity: params.complexity,
+        });
+    }
+
+    // Multimodal pricing by model
+    if (params.modelId) {
+        return getMultimodalPrice(params.modelId);
+    }
+
+    // Default inference price
+    return INFERENCE_PRICE_WEI.toString();
+}
+
+/**
+ * Format price in USDC wei to human-readable string
+ */
+export function formatPrice(weiAmount: string): string {
+    const usdc = parseInt(weiAmount) / 1_000_000;
+    return `$${usdc.toFixed(6)}`;
+}
+
+// Re-export inference price for convenience
+export { INFERENCE_PRICE_WEI };

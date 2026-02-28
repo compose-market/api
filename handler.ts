@@ -2,62 +2,68 @@
  * AWS Lambda Handler for Compose Market API
  * 
  * Handles:
- * - /api/inference - AI inference with x402 payments
- * - /api/models - Model listing
+ * - /v1/* - OpenAI-compatible API endpoints (primary)
+ * - /api/registry/* - Model registry routes
  * - /api/hf/* - HuggingFace endpoints
  * - /api/agentverse/* - Agentverse endpoints
  */
 
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from "aws-lambda";
+import type { ModelCard } from "./shared/models/types.js";
+
+// OpenAI-compatible endpoint handlers
+import {
+  handleListModels,
+  handleGetModel,
+  handleChatCompletions,
+  handleImageGeneration,
+  handleImageEdit,
+  handleAudioSpeech,
+  handleAudioTranscription,
+  handleEmbeddings,
+  handleVideoGeneration,
+} from "./shared/api/openai/endpoints.js";
 
 // Lazy-load heavy modules for cold start optimization
-let inferenceHandler: typeof import("./inference.js").handleInference;
-let multimodalHandler: typeof import("./inference.js").handleMultimodalInference;
-let modelsHandler: typeof import("./inference.js").handleGetModels;
-let hfModelsHandler: typeof import("./huggingface.js").handleGetHFModels;
-let hfModelDetailsHandler: typeof import("./huggingface.js").handleGetHFModelDetails;
-let hfTasksHandler: typeof import("./huggingface.js").handleGetHFTasks;
-let agentverseSearch: typeof import("./agentverse.js").searchAgents;
-let agentverseGet: typeof import("./agentverse.js").getAgent;
-let agentverseExtractTags: typeof import("./agentverse.js").extractUniqueTags;
-let agentverseExtractCategories: typeof import("./agentverse.js").extractUniqueCategories;
-let models: typeof import("./shared/models.js");
+let hfModelsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModels;
+let hfModelDetailsHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFModelDetails;
+let hfTasksHandler: typeof import("./shared/models/providers/huggingface.js").handleGetHFTasks;
+let agentverseSearch: typeof import("./external/agentverse.js").searchAgents;
+let agentverseGet: typeof import("./external/agentverse.js").getAgent;
+let agentverseExtractTags: typeof import("./external/agentverse.js").extractUniqueTags;
+let agentverseExtractCategories: typeof import("./external/agentverse.js").extractUniqueCategories;
+let models: typeof import("./shared/models/registry.js");
 
 // Prod Servers URLs for proxying
 const MCP_SERVER_URL = process.env.MCP_SERVICE_URL || "https://mcp.compose.market";
 const MANOWAR_SERVER_URL = process.env.MANOWAR_SERVICE_URL || "https://manowar.compose.market";
 
 async function loadModules() {
-  if (!inferenceHandler) {
-    const inference = await import("./inference.js");
-    inferenceHandler = inference.handleInference;
-    multimodalHandler = inference.handleMultimodalInference;
-    modelsHandler = inference.handleGetModels;
-  }
   if (!hfModelsHandler) {
-    const hf = await import("./huggingface.js");
+    const hf = await import("./shared/models/providers/huggingface.js");
     hfModelsHandler = hf.handleGetHFModels;
     hfModelDetailsHandler = hf.handleGetHFModelDetails;
     hfTasksHandler = hf.handleGetHFTasks;
   }
   if (!agentverseSearch) {
-    const av = await import("./agentverse.js");
+    const av = await import("./external/agentverse.js");
     agentverseSearch = av.searchAgents;
     agentverseGet = av.getAgent;
     agentverseExtractTags = av.extractUniqueTags;
     agentverseExtractCategories = av.extractUniqueCategories;
   }
   if (!models) {
-    models = await import("./shared/models.js");
+    models = await import("./shared/models/registry.js");
   }
 }
 
 // CORS headers - x402 needs x-payment header and exposed response headers
 // Session headers for x402 bypass: x-session-active, x-session-budget-remaining
+// Internal bypass: x-manowar-internal (for nested LLM calls from Manowar agents)
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, Access-Control-Expose-Headers",
+  "Access-Control-Allow-Headers": "Content-Type, x-payment, X-PAYMENT, x-session-active, x-session-budget-remaining, x-manowar-internal, Access-Control-Expose-Headers",
   "Access-Control-Expose-Headers": "*",
 };
 
@@ -170,34 +176,144 @@ export async function handler(
   const method = event.requestContext.http.method;
 
   try {
-    // Route: POST /api/inference - Uses multimodal handler for all tasks
-    if (method === "POST" && path === "/api/inference") {
+    // ==========================================================================
+    // OpenAI-Compatible API v1 Routes (STANDARDIZED)
+    // ==========================================================================
+
+    // GET /v1/models - List available models (OpenAI format)
+    if (method === "GET" && path === "/v1/models") {
       const req = createMockReq(event);
       const res = createMockRes();
-      // Use multimodal handler which routes based on modelId/task
-      await multimodalHandler(req as any, res as any);
+      await handleListModels(req as any, res as any, false);
+      return res.getResult();
+    }
+
+    // GET /v1/models/all - List ALL models including extended catalog
+    if (method === "GET" && (path === "/v1/models/all" || event.queryStringParameters?.extended === "true")) {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleListModels(req as any, res as any, true);
+      return res.getResult();
+    }
+
+    // GET /v1/models/:model - Get specific model details
+    if (method === "GET" && path.startsWith("/v1/models/") && path !== "/v1/models/all") {
+      const modelId = decodeURIComponent(path.replace("/v1/models/", ""));
+      const req = createMockReq(event);
+      (req as any).params = { model: modelId };
+      const res = createMockRes();
+      await handleGetModel(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/chat/completions - Chat completions (text-generation)
+    if (method === "POST" && path === "/v1/chat/completions") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleChatCompletions(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/images/generations - Image generation
+    if (method === "POST" && path === "/v1/images/generations") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleImageGeneration(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/images/edits - Image editing
+    if (method === "POST" && path === "/v1/images/edits") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleImageEdit(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/audio/speech - Text to speech
+    if (method === "POST" && path === "/v1/audio/speech") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleAudioSpeech(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/audio/transcriptions - Speech to text
+    if (method === "POST" && path === "/v1/audio/transcriptions") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleAudioTranscription(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/embeddings - Create embeddings
+    if (method === "POST" && path === "/v1/embeddings") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleEmbeddings(req as any, res as any);
+      return res.getResult();
+    }
+
+    // POST /v1/videos/generations - Video generation
+    if (method === "POST" && path === "/v1/videos/generations") {
+      const req = createMockReq(event);
+      const res = createMockRes();
+      await handleVideoGeneration(req as any, res as any);
+      return res.getResult();
+    }
+
+    // GET /v1/videos/:id - Check video generation status
+    if (method === "GET" && path.startsWith("/v1/videos/") && path !== "/v1/videos/generations") {
+      const { handleVideoStatus } = await import("./shared/api/openai/endpoints.js");
+      const videoId = decodeURIComponent(path.split("/v1/videos/")[1]);
+      const req = { ...createMockReq(event), params: { id: videoId } };
+      const res = createMockRes();
+      await handleVideoStatus(req as any, res as any);
       return res.getResult();
     }
 
     // Route: GET /api/pricing - Get pricing table
     if (method === "GET" && path === "/api/pricing") {
-      const { DYNAMIC_PRICES } = await import("./shared/pricing.js");
+      const { DYNAMIC_PRICES } = await import("./shared/x402/pricing.js");
       const res = createMockRes();
       res.json({ prices: DYNAMIC_PRICES, version: "1.0" });
       return res.getResult();
     }
 
-    // Route: GET /api/models - Legacy endpoint
+    // Route: GET /api/models - Redirect to /v1/models
     if (method === "GET" && path === "/api/models") {
       const req = createMockReq(event);
       const res = createMockRes();
-      await modelsHandler(req as any, res as any);
+      await handleListModels(req as any, res as any, false);
       return res.getResult();
     }
 
     // ==========================================================================
     // Dynamic Model Registry Routes
     // ==========================================================================
+
+    // Route: GET /api/registry/debug - Diagnostic endpoint for debugging model loading
+    if (method === "GET" && path === "/api/registry/debug") {
+      const registry = await models.getModelRegistry();
+      return {
+        statusCode: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          totalModels: registry.models.length,
+          sources: registry.sources,
+          lastUpdated: registry.lastUpdated,
+          byProvider: Object.fromEntries(
+            Object.entries(registry.sources || {}).map(([k, v]) => [k, (v as unknown as { count: number })?.count || 0])
+          ),
+          environment: {
+            cwd: process.cwd(),
+            nodeVersion: process.version,
+            platform: process.platform,
+            memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024,
+          },
+        }),
+      };
+    }
 
     // Route: GET /api/registry/models - Get all models from all providers (dynamic)
     if (method === "GET" && path === "/api/registry/models") {
@@ -210,17 +326,66 @@ export async function handler(
     }
 
     // Route: GET /api/registry/models/available - Get only available models
+    // Supports pagination: ?page=1&limit=100
+    // Supports filters: ?provider=openai&task=text-generation&search=gpt
+    // Supports ?refresh=true to force cache refresh
     if (method === "GET" && path === "/api/registry/models/available") {
-      const availableModels = await models.getAvailableModels();
+      const query = event.queryStringParameters || {};
+      const forceRefresh = query.refresh === "true";
+
+      // Pagination params
+      const page = Math.max(1, parseInt(query.page || "1", 10));
+      const limit = Math.min(500, Math.max(1, parseInt(query.limit || "100", 10)));
+      const offset = (page - 1) * limit;
+
+      // Filter params
+      const providerFilter = query.provider;
+      const taskFilter = query.task;
+      const searchQuery = query.search?.toLowerCase();
+
+      // Get models (refresh if requested)
+      let allModels: ModelCard[];
+      if (forceRefresh) {
+        const registry = await models.refreshRegistry();
+        allModels = registry.models;
+      } else {
+        allModels = await models.getAvailableModels();
+      }
+
+      // Apply filters
+      let filtered = allModels;
+      if (providerFilter) {
+        filtered = filtered.filter(m => m.provider === providerFilter);
+      }
+      if (taskFilter) {
+        filtered = filtered.filter(m => m.taskType === taskFilter);
+      }
+      if (searchQuery) {
+        filtered = filtered.filter(m =>
+          m.modelId.toLowerCase().includes(searchQuery) ||
+          m.name.toLowerCase().includes(searchQuery)
+        );
+      }
+
+      // Paginate
+      const paginated = filtered.slice(offset, offset + limit);
+
       return {
         statusCode: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ models: availableModels, total: availableModels.length }),
+        body: JSON.stringify({
+          models: paginated,
+          total: filtered.length,
+          page,
+          limit,
+          totalPages: Math.ceil(filtered.length / limit),
+          hasMore: offset + limit < filtered.length,
+        }),
       };
     }
 
     // Route: GET /api/registry/models/:source - Get models by source
-    if (method === "GET" && path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google)$/)) {
+    if (method === "GET" && path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google|openrouter|aiml)$/)) {
       const source = path.replace("/api/registry/models/", "") as any;
       const sourceModels = await models.getModelsBySource(source);
       return {
@@ -263,48 +428,6 @@ export async function handler(
           lastUpdated: registry.lastUpdated,
         }),
       };
-    }
-
-    // Route: POST /api/inference/:modelId - Inference with dynamic model (supports multimodal)
-    // Model IDs can contain slashes (e.g., "Comfy-Org/flux2-dev")
-    if (method === "POST" && path.startsWith("/api/inference/") && path !== "/api/inference/") {
-      const modelId = decodeURIComponent(path.slice("/api/inference/".length));
-      const req = createMockReq(event);
-      req.params = { modelId };
-      req.body = {
-        ...req.body,
-        modelId, // Override modelId from path
-      };
-      const res = createMockRes();
-      // Use multimodal handler which routes based on task type
-      await multimodalHandler(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/hf/models
-    if (method === "GET" && path === "/api/hf/models") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      await hfModelsHandler(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/hf/models/:modelId/details
-    if (method === "GET" && path.startsWith("/api/hf/models/") && path.endsWith("/details")) {
-      const modelId = path.replace("/api/hf/models/", "").replace("/details", "");
-      const req = createMockReq(event);
-      req.params = { modelId };
-      const res = createMockRes();
-      await hfModelDetailsHandler(req as any, res as any);
-      return res.getResult();
-    }
-
-    // Route: GET /api/hf/tasks
-    if (method === "GET" && path === "/api/hf/tasks") {
-      const req = createMockReq(event);
-      const res = createMockRes();
-      hfTasksHandler(req as any, res as any);
-      return res.getResult();
     }
 
     // Route: GET /api/agentverse/agents
@@ -391,14 +514,14 @@ export async function handler(
     if (method === "POST" && path.match(/^\/api\/agent\/\d+\/invoke$/)) {
       const agentId = path.replace("/api/agent/", "").replace("/invoke", "");
 
-      // Forward to inference handler with agent context
+      // Forward to chat completions handler with agent context
       const req = createMockReq(event);
       req.body = {
         ...req.body,
         agentId: parseInt(agentId, 10),
       };
       const res = createMockRes();
-      await inferenceHandler(req as any, res as any);
+      await handleChatCompletions(req as any, res as any);
       return res.getResult();
     }
 
@@ -585,6 +708,15 @@ export async function handler(
     if (method === "POST" && path.match(/^\/api\/mcp\/servers\/[^/]+\/call$/)) {
       const slug = path.replace("/api/mcp/servers/", "").replace("/call", "");
       const body = event.body ? JSON.parse(event.body) : {};
+      const { tool, args } = body;
+
+      if (!tool) {
+        return {
+          statusCode: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ error: "tool is required in request body" }),
+        };
+      }
 
       // Forward x-payment header to MCP server for proper x402 handling
       const paymentHeader = event.headers["x-payment"] || event.headers["X-PAYMENT"];
@@ -595,10 +727,11 @@ export async function handler(
           fetchHeaders["x-payment"] = paymentHeader;
         }
 
-        const response = await fetch(`${MCP_SERVER_URL}/servers/${encodeURIComponent(slug)}/call`, {
+        // Call MCP server's actual route: /mcp/servers/:serverId/tools/:toolName
+        const response = await fetch(`${MCP_SERVER_URL}/mcp/servers/${encodeURIComponent(slug)}/tools/${encodeURIComponent(tool)}`, {
           method: "POST",
           headers: fetchHeaders,
-          body: JSON.stringify(body),
+          body: JSON.stringify({ args }),
         });
 
         // Collect response headers (includes x402 headers for 402 responses)
@@ -609,6 +742,22 @@ export async function handler(
             responseHeaders[key] = value;
           }
         });
+
+        // Handle non-OK responses with detailed error info
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: "Unknown MCP error" }));
+          return {
+            statusCode: response.status,
+            headers: responseHeaders,
+            body: JSON.stringify({
+              success: false,
+              error: errorData.error || errorData.message || `MCP tool execution failed`,
+              details: errorData,
+              serverId: slug,
+              tool,
+            }),
+          };
+        }
 
         const data = await response.json();
         return {

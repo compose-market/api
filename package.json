@@ -4,27 +4,33 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild handler.ts --bundle --platform=node --target=node25 --format=cjs --outfile=dist/index.js --minify",
+    "build": "esbuild handler.ts --bundle --platform=node --target=node25 --format=cjs --outfile=dist/index.js --minify && npm run copy-data",
+    "copy-data": "mkdir -p dist/data && cp -f shared/models/data/params/video.json shared/models/data/params/image.json shared/models/data/models.json shared/models/data/models_extended.json dist/data/ 2>/dev/null || echo 'Note: Some data files not found'",
     "deploy": "npm run build && npx serverless deploy --verbose",
     "deploy:domain": "npx serverless create_domain",
     "deploy:quick": "tsx deploy.ts",
+    "sync-models": "cd shared/models/scripts && npx tsx sync-models.ts",
     "dev": "tsx index.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^2.0.56",
-    "@ai-sdk/google": "^2.0.49",
-    "@ai-sdk/openai": "^2.0.88",
-    "@ai-sdk/openai-compatible": "^1.0.29",
-    "@google/genai": "^1.34.0",
+    "@ai-ml.api/aimlapi-vercel-ai": "^1.0.2",
+    "@ai-sdk/anthropic": "^3.0.9",
+    "@ai-sdk/google": "^3.0.6",
+    "@ai-sdk/openai": "^3.0.7",
+    "@ai-sdk/openai-compatible": "^2.0.4",
+    "@google/genai": "^1.35.0",
     "@huggingface/hub": "^2.7.1",
     "@huggingface/inference": "^4.13.5",
-    "ai": "^5.0.115",
+    "@openrouter/sdk": "^0.3.11",
+    "ai": "^6.0.23",
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "mem0ai": "^2.1.38",
+    "mem0ai": "^1.0.39",
+    "puppeteer": "^24.34.0",
     "thirdweb": "^5.116.1",
-    "zod": "^4.2.1"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.159",
@@ -33,8 +39,8 @@
     "@types/node": "^25.0.3",
     "ajv": "^8.17.1",
     "esbuild": "^0.27.2",
-    "serverless": "^4.29.0",
-    "serverless-domain-manager": "^8.0.0",
+    "serverless": "^4.30.0",
+    "serverless-domain-manager": "^7.2.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
