@@ -49,7 +49,7 @@ const INTENT_KEY_PREFIX = "intent:";
 // =============================================================================
 
 export interface SessionBudget {
-    userWallet: string;
+    userAddress: string;
     chainId: number;
     totalBudgetWei: string;      // Original session budget
     lockedBudgetWei: string;     // Amount locked for pending intents
@@ -60,7 +60,7 @@ export interface SessionBudget {
 
 export interface PaymentIntent {
     id: string;
-    userWallet: string;
+    userAddress: string;
     merchantWallet: string;
     amountWei: string;
     chainId: number;
@@ -93,16 +93,16 @@ export interface BudgetInfo {
 // Key Helpers
 // =============================================================================
 
-function getSessionKey(wallet: string, chainId: number): string {
-    return `${SESSION_KEY_PREFIX}${wallet.toLowerCase()}:${chainId}`;
+function getSessionKey(address: string, chainId: number): string {
+    return `${SESSION_KEY_PREFIX}${address.toLowerCase()}:${chainId}`;
 }
 
 function getIntentKey(intentId: string): string {
     return `${INTENT_KEY_PREFIX}${intentId}`;
 }
 
-function getUserIntentsKey(wallet: string): string {
-    return `${SESSION_KEY_PREFIX}${wallet.toLowerCase()}:intents`;
+function getUserIntentsKey(address: string): string {
+    return `${SESSION_KEY_PREFIX}${address.toLowerCase()}:intents`;
 }
 
 // =============================================================================
@@ -114,15 +114,15 @@ function getUserIntentsKey(wallet: string): string {
  * Called when user creates a session via addSessionKey
  */
 export async function initializeSessionBudget(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     totalBudgetWei: string,
     expiresAt: number,
 ): Promise<void> {
-    const key = getSessionKey(userWallet, chainId);
+    const key = getSessionKey(userAddress, chainId);
 
     const budget: SessionBudget = {
-        userWallet: userWallet.toLowerCase(),
+        userAddress: userAddress.toLowerCase(),
         chainId,
         totalBudgetWei,
         lockedBudgetWei: "0",
@@ -133,7 +133,7 @@ export async function initializeSessionBudget(
 
     // Store as hash for efficient field access
     await redisHSet(key, {
-        userWallet: budget.userWallet,
+        userAddress: budget.userAddress,
         chainId: String(budget.chainId),
         totalBudgetWei: budget.totalBudgetWei,
         lockedBudgetWei: budget.lockedBudgetWei,
@@ -146,17 +146,17 @@ export async function initializeSessionBudget(
     const ttlSeconds = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000));
     await redisExpire(key, ttlSeconds);
 
-    console.log(`[sessionBudget] Initialized budget for ${userWallet} chain ${chainId}: ${totalBudgetWei} wei, expires in ${ttlSeconds}s`);
+    console.log(`[sessionBudget] Initialized budget for ${userAddress} chain ${chainId}: ${totalBudgetWei} wei, expires in ${ttlSeconds}s`);
 }
 
 /**
  * Get current session budget state
  */
 export async function getSessionBudget(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
 ): Promise<SessionBudget | null> {
-    const key = getSessionKey(userWallet, chainId);
+    const key = getSessionKey(userAddress, chainId);
     const data = await redisHGetAll(key);
 
     if (!data || Object.keys(data).length === 0) {
@@ -166,12 +166,12 @@ export async function getSessionBudget(
     // Check if expired
     const expiresAt = parseInt(data.expiresAt);
     if (Date.now() > expiresAt) {
-        console.log(`[sessionBudget] Session expired for ${userWallet} chain ${chainId}`);
+        console.log(`[sessionBudget] Session expired for ${userAddress} chain ${chainId}`);
         return null;
     }
 
     return {
-        userWallet: data.userWallet,
+        userAddress: data.userAddress,
         chainId: parseInt(data.chainId),
         totalBudgetWei: data.totalBudgetWei,
         lockedBudgetWei: data.lockedBudgetWei,
@@ -192,13 +192,13 @@ export async function getSessionBudget(
  * 4. The batch settlement will fail if actual on-chain balance is insufficient
  */
 export async function ensureSessionBudgetInitialized(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     sessionBudgetRemaining: number,
     durationHours: number = 24,
 ): Promise<SessionBudget | null> {
     // Check if already initialized
-    const existing = await getSessionBudget(userWallet, chainId);
+    const existing = await getSessionBudget(userAddress, chainId);
 
     if (existing) {
         return existing;
@@ -206,7 +206,7 @@ export async function ensureSessionBudgetInitialized(
 
     // No budget in Redis - initialize from headers
     if (sessionBudgetRemaining <= 0) {
-        console.log(`[session-budget] No budget to initialize for ${userWallet} chain ${chainId}`);
+        console.log(`[session-budget] No budget to initialize for ${userAddress} chain ${chainId}`);
         return null;
     }
 
@@ -215,15 +215,15 @@ export async function ensureSessionBudgetInitialized(
 
     // Initialize budget
     await initializeSessionBudget(
-        userWallet,
+        userAddress,
         chainId,
         String(sessionBudgetRemaining),
         expiresAt,
     );
 
-    console.log(`[session-budget] Auto-initialized budget for ${userWallet} chain ${chainId}: ${sessionBudgetRemaining} wei`);
+    console.log(`[session-budget] Auto-initialized budget for ${userAddress} chain ${chainId}: ${sessionBudgetRemaining} wei`);
 
-    return await getSessionBudget(userWallet, chainId);
+    return await getSessionBudget(userAddress, chainId);
 }
 
 /**
@@ -249,12 +249,12 @@ export interface SessionStatus {
 }
 
 export async function getSessionStatus(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     // Default inference cost (centralized in config/thirdweb + pricing.ts)
     requestCostWei: string = String(INFERENCE_PRICE_WEI),
 ): Promise<SessionStatus | null> {
-    const budget = await getSessionBudget(userWallet, chainId);
+    const budget = await getSessionBudget(userAddress, chainId);
 
     if (!budget) {
         return null;
@@ -298,10 +298,10 @@ export async function getSessionStatus(
  * Get available budget (total - locked - used)
  */
 export async function getAvailableBudget(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
 ): Promise<bigint> {
-    const budget = await getSessionBudget(userWallet, chainId);
+    const budget = await getSessionBudget(userAddress, chainId);
 
     if (!budget) {
         return 0n;
@@ -319,11 +319,11 @@ export async function getAvailableBudget(
  * Validate if sufficient budget is available for a request
  */
 export async function validateBudgetSufficient(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     requiredWei: string,
 ): Promise<boolean> {
-    const available = await getAvailableBudget(userWallet, chainId);
+    const available = await getAvailableBudget(userAddress, chainId);
     return available >= BigInt(requiredWei);
 }
 
@@ -337,17 +337,17 @@ export async function validateBudgetSufficient(
  * 3. Return success if budget was available
  */
 export async function lockBudget(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     amountWei: string,
     merchantWallet: string,
     requestId: string,
     model?: string,
 ): Promise<LockResult> {
-    const key = getSessionKey(userWallet, chainId);
+    const key = getSessionKey(userAddress, chainId);
 
     // First, check if session exists and has budget
-    const budget = await getSessionBudget(userWallet, chainId);
+    const budget = await getSessionBudget(userAddress, chainId);
 
     if (!budget) {
         return {
@@ -392,10 +392,10 @@ export async function lockBudget(
     }
 
     // Create and store payment intent
-    const intentId = `${userWallet.toLowerCase()}-${requestId}-${Date.now()}`;
+    const intentId = `${userAddress.toLowerCase()}-${requestId}-${Date.now()}`;
     const intent: PaymentIntent = {
         id: intentId,
-        userWallet: userWallet.toLowerCase(),
+        userAddress: userAddress.toLowerCase(),
         merchantWallet,
         amountWei,
         chainId,
@@ -410,7 +410,7 @@ export async function lockBudget(
 
     const newAvailable = total - newLocked - used;
 
-    console.log(`[sessionBudget] Locked ${amountWei} wei for ${userWallet} chain ${chainId}, available: ${newAvailable.toString()}`);
+    console.log(`[sessionBudget] Locked ${amountWei} wei for ${userAddress} chain ${chainId}, available: ${newAvailable.toString()}`);
 
     return {
         success: true,
@@ -425,12 +425,12 @@ export async function lockBudget(
  * Called when inference fails after budget was locked
  */
 export async function unlockBudget(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     amountWei: string,
     intentId?: string,
 ): Promise<void> {
-    const key = getSessionKey(userWallet, chainId);
+    const key = getSessionKey(userAddress, chainId);
 
     // Atomically decrement locked amount
     await redisHIncrBy(key, "lockedBudgetWei", -Number(BigInt(amountWei)));
@@ -440,7 +440,7 @@ export async function unlockBudget(
         await markIntentFailed(intentId, "Request failed - budget released");
     }
 
-    console.log(`[session-budget] Unlocked ${amountWei} wei for ${userWallet} chain ${chainId}`);
+    console.log(`[session-budget] Unlocked ${amountWei} wei for ${userAddress} chain ${chainId}`);
 }
 
 /**
@@ -460,7 +460,7 @@ export async function cancelBudgetIntent(
         return;
     }
 
-    await unlockBudget(intent.userWallet, intent.chainId, intent.amountWei, intentId);
+    await unlockBudget(intent.userAddress, intent.chainId, intent.amountWei, intentId);
     await markIntentFailed(intentId, error);
 }
 
@@ -469,39 +469,39 @@ export async function cancelBudgetIntent(
  * Moves amount from locked to used
  */
 export async function markSettled(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     amountWei: string,
 ): Promise<void> {
-    const key = getSessionKey(userWallet, chainId);
+    const key = getSessionKey(userAddress, chainId);
     const amount = Number(BigInt(amountWei));
 
     // Atomically: decrement locked, increment used
     await redisHIncrBy(key, "lockedBudgetWei", -amount);
     await redisHIncrBy(key, "usedBudgetWei", amount);
 
-    console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userWallet} chain ${chainId}`);
+    console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userAddress} chain ${chainId}`);
 }
 
 /**
  * Backward-compatible alias used by x402 wrapper code.
  */
 export async function markBudgetSettled(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
     amountWei: string,
 ): Promise<void> {
-    await markSettled(userWallet, chainId, amountWei);
+    await markSettled(userAddress, chainId, amountWei);
 }
 
 /**
  * Get comprehensive budget info for a user
  */
 export async function getBudgetInfo(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
 ): Promise<BudgetInfo | null> {
-    const budget = await getSessionBudget(userWallet, chainId);
+    const budget = await getSessionBudget(userAddress, chainId);
 
     if (!budget) {
         return null;
@@ -513,7 +513,7 @@ export async function getBudgetInfo(
     const available = total - locked - used;
 
     // Get pending intent count
-    const intentIds = await redisSMembers(getUserIntentsKey(userWallet));
+    const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
     let pendingCount = 0;
     for (const id of intentIds) {
         const intent = await getPaymentIntent(id);
@@ -544,7 +544,7 @@ export async function storePaymentIntent(intent: PaymentIntent): Promise<void> {
     // Store intent data
     await redisHSet(intentKey, {
         id: intent.id,
-        userWallet: intent.userWallet,
+        userAddress: intent.userAddress,
         merchantWallet: intent.merchantWallet,
         amountWei: intent.amountWei,
         chainId: String(intent.chainId),
@@ -564,9 +564,9 @@ export async function storePaymentIntent(intent: PaymentIntent): Promise<void> {
     await redisSAdd(PENDING_INTENTS_KEY, intent.id);
 
     // Add to user's intent set
-    await redisSAdd(getUserIntentsKey(intent.userWallet), intent.id);
+    await redisSAdd(getUserIntentsKey(intent.userAddress), intent.id);
 
-    console.log(`[sessionBudget] Stored intent ${intent.id} for ${intent.userWallet}`);
+    console.log(`[sessionBudget] Stored intent ${intent.id} for ${intent.userAddress}`);
 }
 
 /**
@@ -581,7 +581,7 @@ export async function getPaymentIntent(intentId: string): Promise<PaymentIntent 
 
     return {
         id: data.id,
-        userWallet: data.userWallet,
+        userAddress: data.userAddress,
         merchantWallet: data.merchantWallet,
         amountWei: data.amountWei,
         chainId: parseInt(data.chainId),
@@ -620,7 +620,7 @@ export async function getPendingIntentsGrouped(): Promise<Map<string, PaymentInt
     const grouped = new Map<string, PaymentIntent[]>();
 
     for (const intent of intents) {
-        const key = `${intent.userWallet}:${intent.chainId}`;
+        const key = `${intent.userAddress}:${intent.chainId}`;
         const existing = grouped.get(key) || [];
         existing.push(intent);
         grouped.set(key, existing);
@@ -632,8 +632,8 @@ export async function getPendingIntentsGrouped(): Promise<Map<string, PaymentInt
 /**
  * Get total pending amount for a user on a chain
  */
-export async function getPendingTotal(userWallet: string, chainId: number): Promise<bigint> {
-    const intentIds = await redisSMembers(getUserIntentsKey(userWallet));
+export async function getPendingTotal(userAddress: string, chainId: number): Promise<bigint> {
+    const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
     let total = 0n;
 
     for (const id of intentIds) {
@@ -668,7 +668,7 @@ export async function markIntentsSettled(intentIds: string[], txHash: string): P
 
         // Remove from user's pending set
         if (intent) {
-            await redisSRem(getUserIntentsKey(intent.userWallet), id);
+            await redisSRem(getUserIntentsKey(intent.userAddress), id);
         }
     }
 
@@ -690,7 +690,7 @@ export async function markIntentFailed(intentId: string, error: string): Promise
     // Failed intents should not remain pending.
     await redisSRem(PENDING_INTENTS_KEY, intentId);
     if (intent) {
-        await redisSRem(getUserIntentsKey(intent.userWallet), intentId);
+        await redisSRem(getUserIntentsKey(intent.userAddress), intentId);
     }
 
     console.log(`[sessionBudget] Marked intent ${intentId} as failed: ${error}`);
@@ -707,10 +707,10 @@ const IMMEDIATE_SETTLEMENT_THRESHOLD = 1000000n;
  * Check if pending amount exceeds threshold for immediate settlement
  */
 export async function shouldTriggerImmediateSettlement(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
 ): Promise<boolean> {
-    const pending = await getPendingTotal(userWallet, chainId);
+    const pending = await getPendingTotal(userAddress, chainId);
     return pending >= IMMEDIATE_SETTLEMENT_THRESHOLD;
 }
 
@@ -718,10 +718,10 @@ export async function shouldTriggerImmediateSettlement(
  * Get threshold status for a user
  */
 export async function getThresholdStatus(
-    userWallet: string,
+    userAddress: string,
     chainId: number,
 ): Promise<{ pendingWei: string; thresholdWei: string; shouldSettle: boolean }> {
-    const pending = await getPendingTotal(userWallet, chainId);
+    const pending = await getPendingTotal(userAddress, chainId);
 
     return {
         pendingWei: pending.toString(),

@@ -14,7 +14,7 @@ export { PaymentIntent };
  * Result of a batch settlement for a single user
  */
 export interface BatchSettlementResult {
-    userWallet: string;
+    userAddress: string;
     chainId: number;
     totalSettledWei: string;
     intentCount: number;

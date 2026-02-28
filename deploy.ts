@@ -42,12 +42,13 @@ function run(command: string, options: RunOptions = {}): string {
 
     if (!silent) console.log(`\n🏃 Executing: ${command}`);
     try {
-        return execSync(command, {
+        const result = execSync(command, {
             stdio: silent ? "pipe" : "inherit",
             encoding: "utf-8",
             env: GCLOUD_ENV,
             ...(input !== undefined ? { input } : {}),
-        }).trim();
+        });
+        return (result || "").toString().trim();
     } catch (error) {
         if (allowFailure) return "";
         throw new Error(formatExecError(error));

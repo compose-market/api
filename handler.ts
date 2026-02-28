@@ -32,6 +32,8 @@ interface APIGatewayProxyResultV2 {
 
 type Context = Record<string, unknown>;
 
+import { randomUUID } from "crypto";
+
 // Compose Keys
 import {
     createComposeKey,
@@ -46,6 +48,13 @@ import {
     consumeKeyBudget,
     getKeyBudgetInfo,
 } from "./shared/keys/middleware.js";
+import { verifyComposeKey } from "./shared/keys/jwt.js";
+import {
+    redisDel,
+    redisGet,
+    redisSet,
+    redisSetNXEX,
+} from "./shared/configs/redis.js";
 
 import { settleComposeKeyPayment } from "./shared/x402/settlement.js";
 import { getActiveChainId } from "./shared/configs/chains.js";
@@ -75,11 +84,18 @@ const corsHeaders = {
     "Access-Control-Allow-Headers":
         "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
         "X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, " +
-        "x-session-user-address, x-manowar-internal, x-chain-id, Access-Control-Expose-Headers",
+        "x-session-user-address, x-desktop-device-id, x-manowar-internal, x-chain-id, Access-Control-Expose-Headers",
     "Access-Control-Expose-Headers":
         "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
         "x-compose-key-budget-used, x-compose-key-budget-remaining, *",
 };
+
+const DESKTOP_LINK_TOKEN_PREFIX = "desktop:link-token:";
+const DESKTOP_LINK_CONSUMED_PREFIX = "desktop:link-token-consumed:";
+const DESKTOP_DEPLOYMENT_PREFIX = "desktop:deployment:";
+const DESKTOP_LINK_TOKEN_TTL_SECONDS = 5 * 60;
+const DESKTOP_LINK_CONSUMED_TTL_SECONDS = 30 * 60;
+const DESKTOP_DEPLOYMENT_RECORD_VERSION = 1;
 
 // =============================================================================
 // Main Lambda Handler
@@ -127,6 +143,21 @@ export async function handler(
         // GET /api/session - Get active session
         if (method === "GET" && path === "/api/session") {
             return handleGetSession(event);
+        }
+
+        // POST /api/desktop/link-token - Create one-time desktop deep-link token
+        if (method === "POST" && path === "/api/desktop/link-token") {
+            return handleCreateDesktopLinkToken(event);
+        }
+
+        // POST /api/desktop/link-token/redeem - Redeem deep-link token once on desktop
+        if (method === "POST" && path === "/api/desktop/link-token/redeem") {
+            return handleRedeemDesktopLinkToken(event);
+        }
+
+        // POST /api/desktop/deployments/register - Register local deployment event (idempotent)
+        if (method === "POST" && path === "/api/desktop/deployments/register") {
+            return handleRegisterDesktopDeployment(event);
         }
 
         // POST /api/keys - Create a new Compose Key
@@ -469,6 +500,524 @@ export async function batchSettlementHandler(
 // =============================================================================
 // Route Handlers
 // =============================================================================
+
+interface DesktopLinkTokenRequest {
+    agentWallet?: string;
+    userAddress: string;
+    composeKeyId?: string;
+    sessionId?: string;
+    budget?: string | number;
+    duration?: number;
+    chainId?: number;
+    deviceId?: string;
+}
+
+interface DesktopRedeemRequest {
+    token: string;
+    deviceId: string;
+}
+
+interface DesktopDeploymentRegisterRequest {
+    agentWallet: string;
+    userAddress: string;
+    composeKeyId: string;
+    agentCardCid: string;
+    desktopVersion: string;
+    deployedAt: number;
+    chainId?: number;
+}
+
+interface DesktopLinkTokenRecord {
+    version: number;
+    token: string;
+    issuedAt: number;
+    expiresAt: number;
+    chainId: number;
+    agentWallet: string;
+    userAddress: string;
+    composeKeyId: string;
+    sessionId: string;
+    budget: string;
+    duration: number;
+}
+
+interface DesktopDeploymentRecord {
+    version: number;
+    deploymentId: string;
+    agentWallet: string;
+    userAddress: string;
+    composeKeyId: string;
+    agentCardCid: string;
+    desktopVersion: string;
+    deployedAt: number;
+    chainId: number;
+    registeredAt: number;
+    updatedAt: number;
+}
+
+const ETH_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+const CID_REGEX = /^[A-Za-z0-9._-]{32,}$/;
+
+function getHeader(event: APIGatewayProxyEventV2, name: string): string | undefined {
+    const direct = event.headers[name];
+    if (typeof direct === "string" && direct.length > 0) {
+        return direct;
+    }
+    const lowered = event.headers[name.toLowerCase()];
+    if (typeof lowered === "string" && lowered.length > 0) {
+        return lowered;
+    }
+    return undefined;
+}
+
+function normalizeWallet(value: unknown): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    if (!ETH_ADDRESS_REGEX.test(trimmed)) {
+        return null;
+    }
+    return trimmed.toLowerCase();
+}
+
+function parsePositiveInt(value: unknown, field: string): number {
+    const parsed = Number.parseInt(String(value), 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        throw new Error(`${field} must be a positive integer`);
+    }
+    return parsed;
+}
+
+function parseRequiredString(value: unknown, field: string): string {
+    if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`${field} is required`);
+    }
+    return value.trim();
+}
+
+function parseJsonBody<T>(event: APIGatewayProxyEventV2): T {
+    if (!event.body || event.body.trim().length === 0) {
+        throw new Error("Request body is required");
+    }
+    try {
+        return JSON.parse(event.body) as T;
+    } catch {
+        throw new Error("Invalid JSON body");
+    }
+}
+
+async function validateDesktopAuthorization(
+    event: APIGatewayProxyEventV2,
+    body: DesktopLinkTokenRequest,
+): Promise<{
+    userAddress: string;
+    agentWallet: string | null;
+    chainId: number;
+    activeSession: {
+        keyId: string;
+        token: string;
+        expiresAt: number;
+        budgetLimit: number;
+        budgetUsed: number;
+        chainId: number;
+    } | null;
+}> {
+    const userAddress = normalizeWallet(body.userAddress);
+    if (!userAddress) {
+        throw new Error("userAddress must be a valid wallet address");
+    }
+
+    const agentWallet = normalizeWallet(body.agentWallet || null);
+    const chainId = body.chainId ? parsePositiveInt(body.chainId, "chainId") : getActiveChainId();
+
+    const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
+    if (!headerUserAddress) {
+        throw new Error("x-session-user-address header is required");
+    }
+    if (headerUserAddress !== userAddress) {
+        throw new Error("x-session-user-address must match userAddress");
+    }
+
+    const activeSession = await getActiveSession(userAddress, chainId);
+
+    return {
+        userAddress,
+        agentWallet,
+        chainId,
+        activeSession: activeSession ? {
+            keyId: activeSession.keyId,
+            token: activeSession.token,
+            expiresAt: activeSession.expiresAt,
+            budgetLimit: activeSession.budgetLimit,
+            budgetUsed: activeSession.budgetUsed,
+            chainId: activeSession.chainId ?? chainId,
+        } : null,
+    };
+}
+
+async function validateDesktopIdentity(
+    event: APIGatewayProxyEventV2,
+    body: DesktopLinkTokenRequest,
+): Promise<{
+    userAddress: string;
+    agentWallet: string;
+    composeKeyId: string;
+    sessionId: string;
+    budget: string;
+    duration: number;
+    chainId: number;
+    composeKeyToken: string;
+    sessionToken: string;
+    sessionExpiresAt: number;
+}> {
+    const userAddress = normalizeWallet(body.userAddress);
+    if (!userAddress) {
+        throw new Error("userAddress must be a valid wallet address");
+    }
+
+    const agentWallet = normalizeWallet(body.agentWallet);
+    if (!agentWallet) {
+        throw new Error("agentWallet must be a valid wallet address");
+    }
+
+    const composeKeyId = parseRequiredString(body.composeKeyId, "composeKeyId");
+    const sessionId = parseRequiredString(body.sessionId, "sessionId");
+    const budget = String(parsePositiveInt(body.budget, "budget"));
+    const duration = parsePositiveInt(body.duration, "duration");
+    const chainId = body.chainId ? parsePositiveInt(body.chainId, "chainId") : getActiveChainId();
+
+    if (sessionId !== composeKeyId) {
+        throw new Error("sessionId must match composeKeyId");
+    }
+
+    const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
+    if (!headerUserAddress) {
+        throw new Error("x-session-user-address header is required");
+    }
+    if (headerUserAddress !== userAddress) {
+        throw new Error("x-session-user-address must match userAddress");
+    }
+
+    const authHeader = getHeader(event, "authorization");
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    if (!composeKeyToken) {
+        throw new Error("Authorization header with Compose Key token is required");
+    }
+
+    const composePayload = verifyComposeKey(composeKeyToken);
+    if (!composePayload) {
+        throw new Error("Invalid or expired Compose Key token");
+    }
+
+    if (composePayload.sub.toLowerCase() !== userAddress) {
+        throw new Error("Compose Key token user does not match userAddress");
+    }
+    if (composePayload.keyId !== composeKeyId) {
+        throw new Error("Compose Key token keyId does not match composeKeyId");
+    }
+
+    const activeSession = await getActiveSession(userAddress, chainId);
+    if (!activeSession) {
+        throw new Error("No active session found for userAddress");
+    }
+
+    if (activeSession.keyId !== composeKeyId) {
+        throw new Error("composeKeyId does not match active session");
+    }
+
+    if (!activeSession.token) {
+        throw new Error("Active session missing Compose Key token");
+    }
+
+    return {
+        userAddress,
+        agentWallet,
+        composeKeyId,
+        sessionId,
+        budget,
+        duration,
+        chainId,
+        composeKeyToken,
+        sessionToken: activeSession.token,
+        sessionExpiresAt: activeSession.expiresAt,
+    };
+}
+
+async function handleCreateDesktopLinkToken(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    try {
+        const body = parseJsonBody<DesktopLinkTokenRequest>(event);
+        const auth = await validateDesktopAuthorization(event, body);
+
+        const issuedAt = Date.now();
+        const expiresAt = issuedAt + DESKTOP_LINK_TOKEN_TTL_SECONDS * 1000;
+        const token = `${randomUUID()}-${randomUUID()}`;
+
+        const record: DesktopLinkTokenRecord = {
+            version: 1,
+            token,
+            issuedAt,
+            expiresAt,
+            chainId: auth.chainId,
+            agentWallet: auth.agentWallet || auth.userAddress,
+            userAddress: auth.userAddress,
+            composeKeyId: auth.activeSession?.keyId || "",
+            sessionId: auth.activeSession?.keyId || "",
+            budget: auth.activeSession ? String(auth.activeSession.budgetLimit - auth.activeSession.budgetUsed) : "0",
+            duration: auth.activeSession ? Math.max(0, auth.activeSession.expiresAt - issuedAt) : 0,
+        };
+
+        await redisSet(
+            `${DESKTOP_LINK_TOKEN_PREFIX}${token}`,
+            JSON.stringify(record),
+            DESKTOP_LINK_TOKEN_TTL_SECONDS,
+        );
+
+        return {
+            statusCode: 201,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                success: true,
+                token,
+                expiresAt,
+                deepLinkUrl: `manowar://open?token=${encodeURIComponent(token)}`,
+                hasSession: !!auth.activeSession,
+            }),
+        };
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error ? error.message : "Invalid request",
+            }),
+        };
+    }
+}
+
+async function handleRedeemDesktopLinkToken(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    let requestBody: DesktopRedeemRequest;
+    try {
+        requestBody = parseJsonBody<DesktopRedeemRequest>(event);
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error ? error.message : "Invalid request",
+            }),
+        };
+    }
+
+    let token: string;
+    let deviceId: string;
+    try {
+        token = parseRequiredString(requestBody.token, "token");
+        deviceId = parseRequiredString(requestBody.deviceId, "deviceId");
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error ? error.message : "Invalid request",
+            }),
+        };
+    }
+
+    const linkTokenKey = `${DESKTOP_LINK_TOKEN_PREFIX}${token}`;
+    const consumedKey = `${DESKTOP_LINK_CONSUMED_PREFIX}${token}`;
+
+    const stored = await redisGet(linkTokenKey);
+    if (!stored) {
+        return {
+            statusCode: 404,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Desktop link token not found or expired" }),
+        };
+    }
+
+    const consumed = await redisSetNXEX(consumedKey, deviceId, DESKTOP_LINK_CONSUMED_TTL_SECONDS);
+    if (!consumed) {
+        return {
+            statusCode: 409,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Desktop link token already redeemed" }),
+        };
+    }
+
+    await redisDel(linkTokenKey);
+
+    let record: DesktopLinkTokenRecord;
+    try {
+        record = JSON.parse(stored) as DesktopLinkTokenRecord;
+    } catch {
+        return {
+            statusCode: 500,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Corrupted desktop link token payload" }),
+        };
+    }
+
+    const activeSession = await getActiveSession(record.userAddress, record.chainId);
+
+    const composeKey = activeSession && record.composeKeyId
+        ? {
+            keyId: record.composeKeyId,
+            token: activeSession.token,
+            expiresAt: activeSession.expiresAt,
+        }
+        : {
+            keyId: "",
+            token: "",
+            expiresAt: 0,
+        };
+
+    const session = activeSession
+        ? {
+            sessionId: record.sessionId || activeSession.keyId,
+            budget: record.budget || String(activeSession.budgetLimit - activeSession.budgetUsed),
+            duration: record.duration || Math.max(0, activeSession.expiresAt - Date.now()),
+            expiresAt: activeSession.expiresAt,
+        }
+        : {
+            sessionId: "",
+            budget: "0",
+            duration: 0,
+            expiresAt: 0,
+        };
+
+    return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+            success: true,
+            context: {
+                agentWallet: record.agentWallet,
+                userAddress: record.userAddress,
+                chainId: record.chainId,
+                composeKey,
+                session,
+                market: {
+                    entry: "desktop",
+                    agentWallet: record.agentWallet,
+                },
+                deviceId,
+                hasSession: !!activeSession,
+            },
+        }),
+    };
+}
+
+async function handleRegisterDesktopDeployment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    let body: DesktopDeploymentRegisterRequest;
+    try {
+        body = parseJsonBody<DesktopDeploymentRegisterRequest>(event);
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error ? error.message : "Invalid request",
+            }),
+        };
+    }
+
+    try {
+        const agentWallet = normalizeWallet(body.agentWallet);
+        const userAddress = normalizeWallet(body.userAddress);
+        if (!agentWallet) {
+            throw new Error("agentWallet must be a valid wallet address");
+        }
+        if (!userAddress) {
+            throw new Error("userAddress must be a valid wallet address");
+        }
+        const composeKeyId = parseRequiredString(body.composeKeyId, "composeKeyId");
+        const agentCardCid = parseRequiredString(body.agentCardCid, "agentCardCid");
+        if (!CID_REGEX.test(agentCardCid)) {
+            throw new Error("agentCardCid format is invalid");
+        }
+        const desktopVersion = parseRequiredString(body.desktopVersion, "desktopVersion");
+        const deployedAt = parsePositiveInt(body.deployedAt, "deployedAt");
+        const chainId = body.chainId ? parsePositiveInt(body.chainId, "chainId") : getActiveChainId();
+
+        const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
+        if (!headerUserAddress || headerUserAddress !== userAddress) {
+            throw new Error("x-session-user-address must match userAddress");
+        }
+
+        const authHeader = getHeader(event, "authorization");
+        const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+        if (!composeKeyToken) {
+            throw new Error("Authorization header with Compose Key token is required");
+        }
+
+        const payload = verifyComposeKey(composeKeyToken);
+        if (!payload) {
+            throw new Error("Invalid or expired Compose Key token");
+        }
+        if (payload.sub.toLowerCase() !== userAddress) {
+            throw new Error("Compose Key token user does not match userAddress");
+        }
+        if (payload.keyId !== composeKeyId) {
+            throw new Error("Compose Key token keyId does not match composeKeyId");
+        }
+
+        const activeSession = await getActiveSession(userAddress, chainId);
+        if (!activeSession || activeSession.keyId !== composeKeyId) {
+            throw new Error("composeKeyId does not match active session");
+        }
+
+        const deploymentKey = `${DESKTOP_DEPLOYMENT_PREFIX}${userAddress}:${agentWallet}:${composeKeyId}`;
+        const existing = await redisGet(deploymentKey);
+        if (existing) {
+            const existingRecord = JSON.parse(existing) as DesktopDeploymentRecord;
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    success: true,
+                    idempotent: true,
+                    deployment: existingRecord,
+                }),
+            };
+        }
+
+        const now = Date.now();
+        const record: DesktopDeploymentRecord = {
+            version: DESKTOP_DEPLOYMENT_RECORD_VERSION,
+            deploymentId: randomUUID(),
+            agentWallet,
+            userAddress,
+            composeKeyId,
+            agentCardCid,
+            desktopVersion,
+            deployedAt,
+            chainId,
+            registeredAt: now,
+            updatedAt: now,
+        };
+
+        await redisSet(deploymentKey, JSON.stringify(record));
+
+        return {
+            statusCode: 201,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                success: true,
+                idempotent: false,
+                deployment: record,
+            }),
+        };
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error ? error.message : "Invalid request",
+            }),
+        };
+    }
+}
 
 async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const userAddress = event.headers["x-session-user-address"];
