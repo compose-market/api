@@ -1,10 +1,12 @@
 .env
 node_modules
-.serverless
 dist
-function.zip
 phase2-x402-v2-migration.md
 shared/models/data/models_extended.json
 shared/models/data/huggingface
 shared/models/data/providers
 knowledge/
+shared/models/scripts
+
+.DS_Store
+**/.DS_Store
