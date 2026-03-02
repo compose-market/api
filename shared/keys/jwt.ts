@@ -2,7 +2,7 @@
  * Compose Keys - JWT Operations
  * 
  * Handles signing and verification of Compose Key JWTs.
- * Uses SESSION_SECRET from environment for HMAC-SHA256 signing.
+ * Uses COMPOSE_SESSION_SECRET from environment for HMAC-SHA256 signing.
  * 
  * @module shared/keys/jwt
  */
@@ -22,9 +22,9 @@ const ALGORITHM = "HS256";
 // =============================================================================
 
 function getSecret(): string {
-    const secret = process.env.SESSION_SECRET;
+    const secret = process.env.COMPOSE_SESSION_SECRET;
     if (!secret) {
-        throw new Error("SESSION_SECRET environment variable required");
+        throw new Error("COMPOSE_SESSION_SECRET environment variable required");
     }
     return secret;
 }
