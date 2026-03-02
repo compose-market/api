@@ -176,6 +176,8 @@ async function handleSessionEvents(req: Request, res: Response): Promise<void> {
                 writeEvent(res, "session-active", {
                     userAddress,
                     chainId,
+                    sessionId: status.session.keyId,
+                    duration: Math.max(0, status.session.expiresAt - Date.now()),
                     expiresAt: status.session.expiresAt,
                     budgetRemaining: status.session.budgetRemaining,
                     source,

@@ -22,11 +22,11 @@ const ALGORITHM = "HS256";
 // =============================================================================
 
 function getSecret(): string {
-    const secret = process.env.COMPOSE_SESSION_SECRET;
-    if (!secret) {
-        throw new Error("COMPOSE_SESSION_SECRET environment variable required");
+    const composeSecret = process.env.COMPOSE_SESSION_SECRET;
+    if (composeSecret) {
+        return composeSecret;
     }
-    return secret;
+    throw new Error("COMPOSE_SESSION_SECRET environment variable required");
 }
 
 /**
