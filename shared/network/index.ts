@@ -56,7 +56,16 @@ const DESKTOP_NETWORK_LIST_DEFAULT_LIMIT = 150;
 const DESKTOP_NETWORK_LIST_MAX_LIMIT = 500;
 
 const DESKTOP_NETWORK_GOSSIP_TOPIC_DEFAULT = "compose/global/presence/v1";
+const DESKTOP_NETWORK_KAD_PROTOCOL_DEFAULT = "/compose-market/desktop/kad/1.0.0";
 const DESKTOP_NETWORK_HEARTBEAT_DEFAULT_MS = 30_000;
+
+const DESKTOP_NETWORK_SEED_PREFIX = "desktop:network:seed:";
+const DESKTOP_NETWORK_SEED_INDEX_KEY = "desktop:network:seed:index";
+const DESKTOP_NETWORK_SEED_RECORD_VERSION = 1;
+const DESKTOP_NETWORK_SEED_MIN_TTL_SECONDS = 30;
+const DESKTOP_NETWORK_SEED_MAX_TTL_SECONDS = 60 * 60;
+const DESKTOP_NETWORK_SEED_DEFAULT_TTL_SECONDS = 5 * 60;
+const DESKTOP_NETWORK_SEED_LIST_MAX_LIMIT = 500;
 
 interface DesktopLinkTokenRequest {
     agentWallet?: string;
@@ -142,6 +151,23 @@ interface DesktopNetworkPresenceRecord {
     expiresAt: number;
 }
 
+interface DesktopNetworkSeedRecord {
+    version: number;
+    seedId: string;
+    provider: "digitalocean" | "azure" | "gcp" | "custom";
+    instanceId: string;
+    instanceName: string;
+    region: string;
+    zone: string | null;
+    peerId: string;
+    publicIp: string;
+    announceMultiaddrs: string[];
+    relayMultiaddrs: string[];
+    healthUrl: string | null;
+    lastSeenAt: number;
+    expiresAt: number;
+}
+
 const NetworkTokenRequestSchema = z.object({
     agentWallet: z.string().trim().regex(ETH_ADDRESS_REGEX, "agentWallet must be a valid wallet address"),
     userAddress: z.string().trim().regex(ETH_ADDRESS_REGEX, "userAddress must be a valid wallet address").optional(),
@@ -170,6 +196,21 @@ const PresenceListQuerySchema = z.object({
     includeSelf: z.coerce.boolean().optional(),
 });
 
+const SeedRegisterSchema = z.object({
+    seedId: z.string().trim().min(3).max(160),
+    provider: z.enum(["digitalocean", "azure", "gcp", "custom"]),
+    instanceId: z.string().trim().min(1).max(200),
+    instanceName: z.string().trim().min(1).max(200),
+    region: z.string().trim().min(1).max(120),
+    zone: z.string().trim().min(1).max(120).optional(),
+    peerId: z.string().trim().regex(PEER_ID_REGEX, "peerId format is invalid"),
+    publicIp: z.string().trim().min(7).max(64),
+    announceMultiaddrs: z.array(z.string().trim().min(4).max(512)).min(1).max(32),
+    relayMultiaddrs: z.array(z.string().trim().min(4).max(512)).min(1).max(32),
+    healthUrl: z.string().trim().url().optional(),
+    ttlSeconds: z.coerce.number().int().min(DESKTOP_NETWORK_SEED_MIN_TTL_SECONDS).max(DESKTOP_NETWORK_SEED_MAX_TTL_SECONDS).optional(),
+});
+
 export async function handleDesktopNetworkRoute(
     event: DesktopRouteEvent,
     corsHeaders: Record<string, string>,
@@ -193,6 +234,15 @@ export async function handleDesktopNetworkRoute(
 
     if (method === "POST" && path === "/api/desktop/network/token") {
         return handleCreateDesktopNetworkToken(event, corsHeaders);
+    }
+    if (method === "POST" && path === "/api/desktop/network/seeds/register") {
+        return handleRegisterDesktopNetworkSeed(event, corsHeaders);
+    }
+    if (method === "DELETE" && path === "/api/desktop/network/seeds/register") {
+        return handleDeleteDesktopNetworkSeed(event, corsHeaders);
+    }
+    if (method === "GET" && path === "/api/desktop/network/seeds") {
+        return handleListDesktopNetworkSeeds(event, corsHeaders);
     }
     if (method === "GET" && path === "/api/desktop/network/bootstrap") {
         return handleGetDesktopNetworkBootstrap(event, corsHeaders);
@@ -394,6 +444,75 @@ function parseDesktopPresenceKey(key: string): { chainId: number; agentWallet: s
     if (!agentWallet || !deviceId) return null;
 
     return { chainId, agentWallet, deviceId };
+}
+
+function desktopSeedKey(seedId: string): string {
+    return `${DESKTOP_NETWORK_SEED_PREFIX}${seedId}`;
+}
+
+function getDesktopNetworkInternalSecret(): string {
+    const explicit = process.env.NETWORK_INTERNAL_SECRET;
+    if (explicit && explicit.length > 0) {
+        return explicit;
+    }
+    const fallback = process.env.MANOWAR_INTERNAL_SECRET;
+    if (fallback && fallback.length > 0) {
+        return fallback;
+    }
+    throw new Error("NETWORK_INTERNAL_SECRET (or MANOWAR_INTERNAL_SECRET) is required");
+}
+
+function requireDesktopNetworkInternalAuth(event: DesktopRouteEvent): void {
+    const actual = getHeader(event, "x-network-internal") || getHeader(event, "x-manowar-internal");
+    const expected = getDesktopNetworkInternalSecret();
+    if (!actual || actual !== expected) {
+        throw new Error("x-network-internal authorization failed");
+    }
+}
+
+function parseSeedIdFromQuery(event: DesktopRouteEvent): string {
+    const seedId = event.queryStringParameters?.seedId?.trim();
+    if (!seedId) {
+        throw new Error("seedId query parameter is required");
+    }
+    if (seedId.length < 3 || seedId.length > 160) {
+        throw new Error("seedId length is invalid");
+    }
+    return seedId;
+}
+
+async function listActiveDesktopNetworkSeeds(): Promise<DesktopNetworkSeedRecord[]> {
+    const keys = await redisSMembers(DESKTOP_NETWORK_SEED_INDEX_KEY);
+    const now = Date.now();
+    const active: DesktopNetworkSeedRecord[] = [];
+
+    for (const key of keys) {
+        const raw = await redisGet(key);
+        if (!raw) {
+            await redisSRem(DESKTOP_NETWORK_SEED_INDEX_KEY, key);
+            continue;
+        }
+
+        let record: DesktopNetworkSeedRecord;
+        try {
+            record = JSON.parse(raw) as DesktopNetworkSeedRecord;
+        } catch {
+            await redisDel(key);
+            await redisSRem(DESKTOP_NETWORK_SEED_INDEX_KEY, key);
+            continue;
+        }
+
+        if (record.version !== DESKTOP_NETWORK_SEED_RECORD_VERSION || record.expiresAt <= now) {
+            await redisDel(key);
+            await redisSRem(DESKTOP_NETWORK_SEED_INDEX_KEY, key);
+            continue;
+        }
+
+        active.push(record);
+    }
+
+    active.sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+    return active.slice(0, DESKTOP_NETWORK_SEED_LIST_MAX_LIMIT);
 }
 
 async function validateDesktopAuthorization(
@@ -804,12 +923,152 @@ function parseCommaList(value: string | undefined): string[] {
         .filter((item) => item.length > 0);
 }
 
+function uniqueStrings(values: string[]): string[] {
+    return Array.from(new Set(values));
+}
+
 function parsePositiveIntegerEnv(name: string, fallback: number): number {
     const raw = process.env[name];
     if (!raw) return fallback;
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
     return parsed;
+}
+
+async function handleRegisterDesktopNetworkSeed(
+    event: DesktopRouteEvent,
+    corsHeaders: Record<string, string>,
+): Promise<DesktopRouteResult> {
+    try {
+        requireDesktopNetworkInternalAuth(event);
+    } catch (error) {
+        return json(401, { error: error instanceof Error ? error.message : "Unauthorized" }, corsHeaders);
+    }
+
+    let rawBody: unknown;
+    try {
+        rawBody = parseJsonBody<unknown>(event);
+    } catch (error) {
+        return json(400, { error: error instanceof Error ? error.message : "Invalid request body" }, corsHeaders);
+    }
+
+    const parsed = SeedRegisterSchema.safeParse(rawBody);
+    if (!parsed.success) {
+        return json(400, { error: parsed.error.issues[0]?.message || "Invalid seed payload" }, corsHeaders);
+    }
+
+    const ttlSeconds = parsed.data.ttlSeconds || parsePositiveIntegerEnv(
+        "LIBP2P_SEED_TTL_SECONDS",
+        DESKTOP_NETWORK_SEED_DEFAULT_TTL_SECONDS,
+    );
+    const normalizedTtl = Math.max(
+        DESKTOP_NETWORK_SEED_MIN_TTL_SECONDS,
+        Math.min(ttlSeconds, DESKTOP_NETWORK_SEED_MAX_TTL_SECONDS),
+    );
+    const now = Date.now();
+    const expiresAt = now + normalizedTtl * 1000;
+
+    const record: DesktopNetworkSeedRecord = {
+        version: DESKTOP_NETWORK_SEED_RECORD_VERSION,
+        seedId: parsed.data.seedId,
+        provider: parsed.data.provider,
+        instanceId: parsed.data.instanceId,
+        instanceName: parsed.data.instanceName,
+        region: parsed.data.region,
+        zone: parsed.data.zone || null,
+        peerId: parsed.data.peerId,
+        publicIp: parsed.data.publicIp,
+        announceMultiaddrs: uniqueStrings(parsed.data.announceMultiaddrs),
+        relayMultiaddrs: uniqueStrings(parsed.data.relayMultiaddrs),
+        healthUrl: parsed.data.healthUrl || null,
+        lastSeenAt: now,
+        expiresAt,
+    };
+
+    const key = desktopSeedKey(record.seedId);
+    await redisSet(key, JSON.stringify(record), normalizedTtl);
+    await redisSAdd(DESKTOP_NETWORK_SEED_INDEX_KEY, key);
+
+    return json(200, {
+        success: true,
+        seed: {
+            seedId: record.seedId,
+            provider: record.provider,
+            instanceId: record.instanceId,
+            instanceName: record.instanceName,
+            region: record.region,
+            zone: record.zone,
+            peerId: record.peerId,
+            publicIp: record.publicIp,
+            announceMultiaddrs: record.announceMultiaddrs,
+            relayMultiaddrs: record.relayMultiaddrs,
+            healthUrl: record.healthUrl,
+            lastSeenAt: record.lastSeenAt,
+            expiresAt: record.expiresAt,
+        },
+    }, corsHeaders);
+}
+
+async function handleDeleteDesktopNetworkSeed(
+    event: DesktopRouteEvent,
+    corsHeaders: Record<string, string>,
+): Promise<DesktopRouteResult> {
+    try {
+        requireDesktopNetworkInternalAuth(event);
+    } catch (error) {
+        return json(401, { error: error instanceof Error ? error.message : "Unauthorized" }, corsHeaders);
+    }
+
+    let seedId: string;
+    try {
+        seedId = parseSeedIdFromQuery(event);
+    } catch (error) {
+        return json(400, { error: error instanceof Error ? error.message : "Invalid query parameters" }, corsHeaders);
+    }
+
+    const key = desktopSeedKey(seedId);
+    const existed = await redisGet(key);
+    await redisDel(key);
+    await redisSRem(DESKTOP_NETWORK_SEED_INDEX_KEY, key);
+
+    return json(200, {
+        success: true,
+        removed: Boolean(existed),
+        seedId,
+    }, corsHeaders);
+}
+
+async function handleListDesktopNetworkSeeds(
+    event: DesktopRouteEvent,
+    corsHeaders: Record<string, string>,
+): Promise<DesktopRouteResult> {
+    try {
+        requireDesktopNetworkInternalAuth(event);
+    } catch (error) {
+        return json(401, { error: error instanceof Error ? error.message : "Unauthorized" }, corsHeaders);
+    }
+
+    const activeSeeds = await listActiveDesktopNetworkSeeds();
+    return json(200, {
+        success: true,
+        count: activeSeeds.length,
+        seeds: activeSeeds.map((record) => ({
+            seedId: record.seedId,
+            provider: record.provider,
+            instanceId: record.instanceId,
+            instanceName: record.instanceName,
+            region: record.region,
+            zone: record.zone,
+            peerId: record.peerId,
+            publicIp: record.publicIp,
+            announceMultiaddrs: record.announceMultiaddrs,
+            relayMultiaddrs: record.relayMultiaddrs,
+            healthUrl: record.healthUrl,
+            lastSeenAt: record.lastSeenAt,
+            expiresAt: record.expiresAt,
+        })),
+        serverTime: Date.now(),
+    }, corsHeaders);
 }
 
 async function handleGetDesktopNetworkBootstrap(
@@ -823,11 +1082,23 @@ async function handleGetDesktopNetworkBootstrap(
         return json(401, { error: error instanceof Error ? error.message : "Unauthorized" }, corsHeaders);
     }
 
-    const bootstrapMultiaddrs = parseCommaList(
+    const bootstrapMultiaddrsStatic = parseCommaList(
         process.env.LIBP2P_BOOTSTRAP_MULTIADDRS || process.env.LIBP2P_BOOTSTRAP_PEERS,
     );
-    const relayMultiaddrs = parseCommaList(process.env.LIBP2P_RELAY_MULTIADDRS);
+    const relayMultiaddrsStatic = parseCommaList(process.env.LIBP2P_RELAY_MULTIADDRS);
+    let dynamicSeeds: DesktopNetworkSeedRecord[] = [];
+    try {
+        dynamicSeeds = await listActiveDesktopNetworkSeeds();
+    } catch (error) {
+        console.error("[desktop-network] failed to list dynamic seeds", error);
+        dynamicSeeds = [];
+    }
+    const dynamicBootstrapAddrs = dynamicSeeds.flatMap((seed) => seed.announceMultiaddrs);
+    const dynamicRelayAddrs = dynamicSeeds.flatMap((seed) => seed.relayMultiaddrs);
+    const bootstrapMultiaddrs = uniqueStrings([...bootstrapMultiaddrsStatic, ...dynamicBootstrapAddrs]);
+    const relayMultiaddrs = uniqueStrings([...relayMultiaddrsStatic, ...dynamicRelayAddrs]);
     const gossipTopic = process.env.LIBP2P_GOSSIP_TOPIC || DESKTOP_NETWORK_GOSSIP_TOPIC_DEFAULT;
+    const kadProtocol = process.env.LIBP2P_KAD_PROTOCOL || DESKTOP_NETWORK_KAD_PROTOCOL_DEFAULT;
     const heartbeatMs = parsePositiveIntegerEnv("LIBP2P_HEARTBEAT_MS", DESKTOP_NETWORK_HEARTBEAT_DEFAULT_MS);
     const presenceTtlSeconds = parsePositiveIntegerEnv("LIBP2P_PRESENCE_TTL_SECONDS", DESKTOP_NETWORK_PRESENCE_DEFAULT_TTL_SECONDS);
 
@@ -837,11 +1108,15 @@ async function handleGetDesktopNetworkBootstrap(
             bootstrapMultiaddrs,
             relayMultiaddrs,
             gossipTopic,
+            kadProtocol,
             heartbeatMs,
             presenceTtlSeconds: Math.max(
                 DESKTOP_NETWORK_PRESENCE_MIN_TTL_SECONDS,
                 Math.min(presenceTtlSeconds, DESKTOP_NETWORK_PRESENCE_MAX_TTL_SECONDS),
             ),
+        },
+        seeds: {
+            count: dynamicSeeds.length,
         },
         identity: {
             userAddress: token.userAddress,

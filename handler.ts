@@ -72,11 +72,11 @@ import { handleInferenceEvent } from "./shared/inference/gateway.js";
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers":
         "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
         "X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, " +
-        "x-session-user-address, x-desktop-device-id, x-manowar-internal, x-chain-id, Access-Control-Expose-Headers",
+        "x-session-user-address, x-desktop-device-id, x-manowar-internal, x-network-internal, x-chain-id, Access-Control-Expose-Headers",
     "Access-Control-Expose-Headers":
         "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
         "x-compose-key-budget-used, x-compose-key-budget-remaining, *",
