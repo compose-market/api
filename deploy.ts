@@ -281,6 +281,8 @@ async function deploy() {
 
     if (fastMode) {
         console.log("   Mode: FAST (skip secrets + jobs)");
+        console.log("   ⚠️  FAST mode does NOT sync .env to Secret Manager and does NOT update --set-secrets bindings.");
+        console.log("   ⚠️  Use `npm run deploy` (or `npm run deploy:full`) after changing secret names/values.");
     } else {
         console.log("   Mode: FULL");
     }

@@ -6,9 +6,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && esbuild index.ts --bundle --platform=node --target=node25 --format=cjs --outfile=dist/index.cjs --minify && npm run copy-data",
-    "deploy": "npx tsx deploy.ts --fast",
+    "deploy": "npx tsx deploy.ts",
     "deploy:fast": "npx tsx deploy.ts --fast",
-    "deploy:checked": "npm run build && npx tsx deploy.ts --fast",
+    "deploy:checked": "npm run build && npx tsx deploy.ts",
     "deploy:full": "npm run build && npx tsx deploy.ts",
     "copy-data": "mkdir -p dist/data && cp -f shared/models/data/params/video.json shared/models/data/params/image.json shared/models/data/models.json shared/models/data/models_extended.json dist/data/ 2>/dev/null || echo 'Note: Some data files not found'",
     "sync-models": "cd shared/models/scripts && npx tsx sync-models.ts",

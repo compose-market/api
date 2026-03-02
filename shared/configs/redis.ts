@@ -39,7 +39,7 @@ async function connect(): Promise<RedisClientType> {
     const useTls = process.env.REDIS_TLS === "true";
 
     if (!endpoint || !password) {
-        throw new Error("Redis configuration missing: REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT and REDIS_DEFAULT_PASSWORD required");
+        throw new Error("Redis configuration missing: REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT and REDIS_KEYS_DEFAULT_PASSWORD required");
     }
 
     const [host, portStr] = endpoint.split(":");
