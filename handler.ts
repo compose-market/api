@@ -47,7 +47,8 @@ import {
 } from "./x402/keys/middleware.js";
 
 import { getActiveChainId } from "./x402/configs/chains.js";
-import { handleDesktopNetworkRoute } from "./network/index.js";
+import { handleDesktopUpdaterRoute } from "./desktop/updater.js";
+import { handleDesktopNetworkRoute } from "./desktop/network.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
 import type { UnifiedModality, UnifiedUsage } from "./inference/core.js";
@@ -234,6 +235,8 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/desktop/link-token", routeHandler);
     app.post("/api/desktop/link-token/redeem", routeHandler);
     app.post("/api/desktop/deployments/register", routeHandler);
+    app.get("/api/desktop/updates/config", routeHandler);
+    app.get(/^\/api\/desktop\/updates\/[^/]+\/[^/]+\/[^/]+$/, routeHandler);
     app.post("/api/desktop/network/peers/upsert", routeHandler);
     app.get("/api/desktop/network/peers", routeHandler);
 
@@ -291,6 +294,11 @@ export async function handler(
         const publicRouteResult = await handlePublicRoute(event, corsHeaders);
         if (publicRouteResult) {
             return publicRouteResult;
+        }
+
+        const desktopUpdaterRouteResult = await handleDesktopUpdaterRoute(event, corsHeaders);
+        if (desktopUpdaterRouteResult) {
+            return desktopUpdaterRouteResult;
         }
 
         if (method === "POST" && path === "/api/payments/prepare") {
