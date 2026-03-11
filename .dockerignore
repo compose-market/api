@@ -3,6 +3,9 @@ dist
 .env
 .serverless
 .git
+tests
+inference/scripts
+inference/data/providers
 *.log
 npm-debug.log*
 yarn-debug.log*

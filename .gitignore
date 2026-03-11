@@ -1,12 +1,13 @@
 .env
+.env.*
 node_modules
 dist
-phase2-x402-v2-migration.md
-shared/models/data/models_extended.json
-shared/models/data/huggingface
-shared/models/data/providers
-knowledge/
-shared/models/scripts
+inference/data/models_extended.json
+inference/data/huggingface
+inference/data/providers
+inference/data/reports
+inference/scripts
+tests
 
 .DS_Store
 **/.DS_Store

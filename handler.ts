@@ -1,5 +1,5 @@
 /**
- * AWS Lambda Handler
+ * Cloud Run Handler
  * 
  * Handles non-inference API endpoints:
  * - Account management (Compose Keys, sessions)
@@ -7,11 +7,10 @@
  * - Backpack/Composio integrations
  * - Model registry queries
  * 
- * All /v1/* endpoints are delegated to backend/lambda/shared/api/gateway.ts
- * using the gateway route matcher.
- * 
- * @module lambda/handler
+ * @module api/handler
  */
+
+import type { Application, NextFunction, Request, Response, RequestHandler } from "express";
 
 // Define types locally - Cloud Run uses Express request/response via mock pattern
 interface APIGatewayProxyEventV2 {
@@ -38,33 +37,37 @@ import {
     listUserKeys,
     revokeKey,
     getActiveSession,
-} from "./shared/keys/index.js";
+} from "./x402/keys/index.js";
 
 import {
     extractComposeKeyFromHeader,
     validateComposeKey,
     consumeKeyBudget,
     getKeyBudgetInfo,
-} from "./shared/keys/middleware.js";
+} from "./x402/keys/middleware.js";
 
-import { settleComposeKeyPayment } from "./shared/x402/settlement.js";
-import { getActiveChainId } from "./shared/configs/chains.js";
-import { handleDesktopNetworkRoute } from "./shared/network/index.js";
-
+import { getActiveChainId } from "./x402/configs/chains.js";
+import { handleDesktopNetworkRoute } from "./network/index.js";
+import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
+import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
+import type { UnifiedModality, UnifiedUsage } from "./inference/core.js";
+import type { BillingMediaEvidence } from "./inference/telemetry.js";
+import {
+    authorizePaymentIntent,
+    abortPaymentIntent,
+    settlePaymentIntent,
+} from "./x402/intents.js";
 // Account Abstraction
-const loadAA = () => import("./shared/aa/index.js");
+const loadAA = () => import("./aa/index.js");
 
 // Backpack / Composio
-const loadBackpack = () => import("./shared/backpack/composio.js");
+const loadBackpack = () => import("./backpack/composio.js");
 
 // Model Registry
-const loadRegistry = () => import("./shared/models/registry.js");
+const loadRegistry = () => import("./inference/modelsRegistry.js");
 
 // Dispenser
-const loadDispenser = () => import("./shared/dispenser/index.js");
-
-// Inference Gateway (canonical /v1 routing)
-import { handleInferenceEvent } from "./shared/inference/gateway.js";
+const loadDispenser = () => import("./dispenser/index.js");
 
 // =============================================================================
 // Configuration
@@ -76,14 +79,179 @@ const corsHeaders = {
     "Access-Control-Allow-Headers":
         "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
         "X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, " +
-        "x-session-user-address, x-desktop-device-id, x-manowar-internal, x-network-internal, x-chain-id, Access-Control-Expose-Headers",
+        "x-session-user-address, x-desktop-device-id, x-network-internal, x-chain-id, x-payment-intent-id, Access-Control-Expose-Headers",
     "Access-Control-Expose-Headers":
         "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
-        "x-compose-key-budget-used, x-compose-key-budget-remaining, *",
+        "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, x-payment-intent-id, *",
 };
 
+async function generateDecorativeImage(prompt: string, size: string): Promise<string> {
+    const modelId = "black-forest-labs/FLUX.1-schnell";
+    const [{ normalizeResponsesRequest }, { invokeAdapter }, { getModelById }] = await Promise.all([
+        import("./inference/core.js"),
+        import("./inference/providers/adapter.js"),
+        import("./inference/modelsRegistry.js"),
+    ]);
+
+    const card = getModelById(modelId);
+    if (!card) {
+        throw new Error(`Model not found: ${modelId}`);
+    }
+
+    const unified = normalizeResponsesRequest({
+        model: modelId,
+        input: [{ type: "input_text", text: prompt }],
+        modalities: ["image"],
+        size,
+        n: 1,
+    });
+
+    const output = (await invokeAdapter(unified, { modelId, provider: card.provider })).output;
+    if (!output.media) {
+        throw new Error("Image generation returned no media");
+    }
+
+    if (output.media.base64) {
+        return `data:${output.media.mimeType};base64,${output.media.base64}`;
+    }
+    if (output.media.url) {
+        return output.media.url;
+    }
+
+    throw new Error("Image generation returned no image payload");
+}
+
+function buildApiEvent(req: Request): APIGatewayProxyEventV2 {
+    const headers: Record<string, string | undefined> = {};
+    for (const [key, value] of Object.entries(req.headers)) {
+        headers[key.toLowerCase()] = Array.isArray(value) ? value.join(",") : value;
+    }
+
+    const method = req.method.toUpperCase();
+    const canHaveBody = !["GET", "HEAD", "OPTIONS"].includes(method);
+    let body: string | undefined;
+    const rawBody = (req as Request & { rawBody?: unknown }).rawBody;
+
+    if (canHaveBody) {
+        if (Buffer.isBuffer(rawBody)) {
+            body = rawBody.toString("utf-8");
+        } else if (typeof rawBody === "string") {
+            body = rawBody;
+        } else if (typeof req.body === "string") {
+            body = req.body;
+        } else if (req.body && typeof req.body === "object" && Object.keys(req.body).length > 0) {
+            body = JSON.stringify(req.body);
+        }
+    }
+
+    const queryIndex = req.originalUrl.indexOf("?");
+    let queryStringParameters: Record<string, string> | undefined;
+    if (queryIndex !== -1) {
+        const params = new URLSearchParams(req.originalUrl.slice(queryIndex + 1));
+        const parsed: Record<string, string> = {};
+        for (const [key, value] of params.entries()) {
+            if (!(key in parsed)) {
+                parsed[key] = value;
+            }
+        }
+        if (Object.keys(parsed).length > 0) {
+            queryStringParameters = parsed;
+        }
+    }
+
+    return {
+        rawPath: queryIndex === -1 ? req.originalUrl : req.originalUrl.slice(0, queryIndex),
+        requestContext: { http: { method } },
+        headers,
+        ...(body !== undefined ? { body } : {}),
+        ...(queryStringParameters ? { queryStringParameters } : {}),
+    };
+}
+
+async function delegateExpressToApiHandler(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+        const result = await handler(buildApiEvent(req), {});
+
+        if (result.headers) {
+            for (const [key, value] of Object.entries(result.headers)) {
+                if (value !== undefined) {
+                    res.setHeader(key, value);
+                }
+            }
+        }
+
+        res.status(result.statusCode);
+        if (result.isBase64Encoded) {
+            res.send(Buffer.from(result.body || "", "base64"));
+            return;
+        }
+
+        res.send(result.body ?? "");
+    } catch (error) {
+        next(error);
+    }
+}
+
+function expressApiHandler(): RequestHandler {
+    return (req, res, next) => {
+        void delegateExpressToApiHandler(req, res, next);
+    };
+}
+
+export function registerHandlerRoutes(app: Application): void {
+    const routeHandler = expressApiHandler();
+
+    registerWorkflowRoutes(app);
+
+    app.get("/health", routeHandler);
+    app.get("/api/models", routeHandler);
+    app.get("/agents", routeHandler);
+    app.get(/^\/agent\/0x[a-fA-F0-9]{40}$/, routeHandler);
+    app.get("/workflows", routeHandler);
+    app.get(/^\/workflow\/0x[a-fA-F0-9]{40}$/, routeHandler);
+
+    app.get("/api/pricing", routeHandler);
+
+    app.post("/api/payments/prepare", routeHandler);
+    app.post("/api/payments/settle", routeHandler);
+    app.post("/api/payments/abort", routeHandler);
+    app.post("/api/payments/meter/model", routeHandler);
+
+    app.get("/api/session", routeHandler);
+    app.post("/api/keys", routeHandler);
+    app.get("/api/keys", routeHandler);
+    app.post("/api/keys/settle", routeHandler);
+    app.delete(/^\/api\/keys\/[^/]+$/, routeHandler);
+
+    app.post("/api/aa/prepare", routeHandler);
+    app.post("/api/aa/submit", routeHandler);
+    app.get(/^\/api\/aa\/nonce\/0x[a-fA-F0-9]{40}$/, routeHandler);
+    app.post("/api/aa/register-cronos", routeHandler);
+    app.get(/^\/api\/aa\/predict-address\/0x[a-fA-F0-9]{40}$/, routeHandler);
+
+    app.use("/api/backpack", routeHandler);
+    app.use("/api/registry", routeHandler);
+    app.post("/api/desktop/link-token", routeHandler);
+    app.post("/api/desktop/link-token/redeem", routeHandler);
+    app.post("/api/desktop/deployments/register", routeHandler);
+    app.post("/api/desktop/network/peers/upsert", routeHandler);
+    app.get("/api/desktop/network/peers", routeHandler);
+
+    app.post("/api/dispenser/claim", routeHandler);
+    app.get("/api/dispenser/status", routeHandler);
+    app.get(/^\/api\/dispenser\/status\/\d+$/, routeHandler);
+    app.get(/^\/api\/dispenser\/check\/0x[a-fA-F0-9]{40}$/, routeHandler);
+
+    app.post("/api/settlement/batch", routeHandler);
+    app.get("/api/settlement/status", routeHandler);
+
+    app.post("/api/generate-avatar", routeHandler);
+    app.post("/api/generate-banner", routeHandler);
+
+}
+
 // =============================================================================
-// Main Lambda Handler
+// Main APIs Handler
 // =============================================================================
 
 export async function handler(
@@ -103,22 +271,42 @@ export async function handler(
     const method = event.requestContext.http.method;
 
     try {
-        // ==========================================================================
-        // /v1/* is delegated to shared/api/gateway.ts (single source of truth)
-        // ==========================================================================
-
-        if (path.startsWith("/v1/")) {
-            return await handleInferenceEvent(event);
-        }
-
         // GET /api/pricing - Get pricing table
         if (method === "GET" && path === "/api/pricing") {
-            const { DYNAMIC_PRICES } = await import("./shared/x402/pricing.js");
+            const { getCompiledModels } = await loadRegistry();
+            const models = getCompiledModels().models
+                .filter((model) => model.pricing)
+                .map((model) => ({
+                    modelId: model.modelId,
+                    provider: model.provider,
+                    pricing: model.pricing,
+                }));
             return {
                 statusCode: 200,
                 headers: corsHeaders,
-                body: JSON.stringify({ prices: DYNAMIC_PRICES, version: "1.0" }),
+                body: JSON.stringify({ models, version: "2.0" }),
             };
+        }
+
+        const publicRouteResult = await handlePublicRoute(event, corsHeaders);
+        if (publicRouteResult) {
+            return publicRouteResult;
+        }
+
+        if (method === "POST" && path === "/api/payments/prepare") {
+            return handlePreparePaymentIntent(event);
+        }
+
+        if (method === "POST" && path === "/api/payments/settle") {
+            return handleSettlePaymentIntent(event);
+        }
+
+        if (method === "POST" && path === "/api/payments/abort") {
+            return handleAbortPaymentIntent(event);
+        }
+
+        if (method === "POST" && path === "/api/payments/meter/model") {
+            return handleMeterModelPayment(event);
         }
 
         // ==========================================================================
@@ -234,7 +422,7 @@ export async function handler(
         // Protected endpoint - only for internal use or admin
         if (method === "POST" && path === "/api/settlement/batch") {
             const internalSecret = event.headers["x-internal-secret"] || event.headers["X-Internal-Secret"];
-            const expectedSecret = process.env.MANOWAR_INTERNAL_SECRET;
+            const expectedSecret = process.env.RUNTIME_INTERNAL_SECRET;
 
             // Security: Only allow internal calls
             if (internalSecret !== expectedSecret) {
@@ -246,7 +434,7 @@ export async function handler(
             }
 
             try {
-                const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+                const { runBatchSettlement } = await import("./x402/accumulator/index.js");
 
                 console.log("[batch-settlement] Triggered manually via API");
                 const result = await runBatchSettlement();
@@ -283,7 +471,7 @@ export async function handler(
             }
 
             try {
-                const { getBudgetInfo } = await import("./shared/x402/session-budget.js");
+                const { getBudgetInfo } = await import("./x402/session-budget.js");
 
                 const info = await getBudgetInfo(userAddress, chainId);
 
@@ -337,7 +525,6 @@ export async function handler(
             }
 
             try {
-                const { invokeImage } = await import("./shared/inference/gateway.js");
                 const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
                 const prompt = `Agent Name: ${title}
 Agent Description: ${description}
@@ -347,15 +534,7 @@ Create a professional square avatar icon for this AI agent. Clean, iconic design
 
                 console.log("[generate-avatar] Prompt length:", prompt.length);
 
-                // Generate image using Flux Schnell (routes through HF -> fal-ai fallback)
-                const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
-                    size: "1024x1024",
-                    n: 1,
-                });
-
-                // Return base64 image
-                const base64Image = result.buffer.toString("base64");
-                const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
+                const dataUrl = await generateDecorativeImage(prompt, "1024x1024");
 
                 return {
                     statusCode: 200,
@@ -386,7 +565,6 @@ Create a professional square avatar icon for this AI agent. Clean, iconic design
             }
 
             try {
-                const { invokeImage } = await import("./shared/inference/gateway.js");
                 const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
                 const prompt = `Workflow Title: ${title}
 Workflow Description: ${description}
@@ -396,15 +574,7 @@ Create a professional wide banner image for an AI workflow orchestration system.
 
                 console.log("[generate-banner] Prompt length:", prompt.length);
 
-                // Generate image using Flux Schnell with landscape dimensions
-                const result = await invokeImage("black-forest-labs/FLUX.1-schnell", prompt, {
-                    size: "1792x1024", // Landscape aspect ratio for banners
-                    n: 1,
-                });
-
-                // Return base64 image
-                const base64Image = result.buffer.toString("base64");
-                const dataUrl = `data:${result.mimeType};base64,${base64Image}`;
+                const dataUrl = await generateDecorativeImage(prompt, "1792x1024");
 
                 return {
                     statusCode: 200,
@@ -428,7 +598,7 @@ Create a professional wide banner image for an AI workflow orchestration system.
             body: JSON.stringify({ error: "Not found", path }),
         };
     } catch (error) {
-        console.error("Lambda handler error:", error);
+        console.error("APIs handler error:", error);
         return {
             statusCode: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -442,7 +612,7 @@ Create a professional wide banner image for an AI workflow orchestration system.
 
 
 /**
- * Batch Settlement Handler - Scheduled Lambda
+ * Batch Settlement Handler - Scheduled API
  * 
  * Triggered by CloudWatch Events every 2 minutes.
  * Processes accumulated payment intents for deferred settlement.
@@ -454,7 +624,7 @@ export async function batchSettlementHandler(
     console.log("[batch-settlement] Scheduled handler invoked", JSON.stringify(event));
 
     try {
-        const { runBatchSettlement } = await import("./shared/x402/accumulator/index.js");
+        const { runBatchSettlement } = await import("./x402/accumulator/index.js");
 
         const result = await runBatchSettlement();
 
@@ -468,7 +638,7 @@ export async function batchSettlementHandler(
         });
     } catch (error) {
         console.error("[batch-settlement] Fatal error:", error);
-        // Don't throw - let CloudWatch know the Lambda succeeded (error is logged)
+        // Don't throw - let CloudWatch know the API succeeded (error is logged)
         // Throwing would trigger retries which could cause duplicate settlements
     }
 }
@@ -506,7 +676,7 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
     }
 
     // Get REAL-TIME budget from session-budget.ts (deferred payment ledger)
-    const { getSessionStatus } = await import("./shared/x402/session-budget.js");
+    const { getSessionStatus } = await import("./x402/session-budget.js");
     const budgetStatus = await getSessionStatus(
         userAddress,
         chainId ?? session.chainId ?? getActiveChainId()
@@ -576,6 +746,177 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
         headers,
         body: JSON.stringify(response),
     };
+}
+
+type PaymentIntentPrepareBody = {
+    service?: string;
+    action?: string;
+    resource?: string;
+    method?: string;
+    maxAmountWei?: string;
+    meter?: {
+        subject?: string;
+        lineItems?: Array<{
+            key?: string;
+            unit?: string;
+            quantity?: number;
+            unitPriceUsd?: number;
+        }>;
+    };
+    composeRunId?: string;
+    idempotencyKey?: string;
+};
+
+async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const body = event.body ? JSON.parse(event.body) as PaymentIntentPrepareBody : {};
+    const authorization = event.headers.authorization || event.headers.Authorization;
+    const chainIdHeader = event.headers["x-chain-id"] || event.headers["X-Chain-Id"];
+    const chainId = chainIdHeader ? parseInt(chainIdHeader, 10) : NaN;
+
+    const result = await authorizePaymentIntent({
+        authorization: authorization || "",
+        chainId,
+        service: body.service || "",
+        action: body.action || "",
+        resource: body.resource || "",
+        method: body.method || "",
+        maxAmountWei: body.maxAmountWei,
+        meter: body.meter?.subject && Array.isArray(body.meter.lineItems)
+            ? {
+                subject: body.meter.subject,
+                lineItems: body.meter.lineItems.map((lineItem) => ({
+                    key: lineItem.key || "",
+                    unit: (lineItem.unit || "") as never,
+                    quantity: typeof lineItem.quantity === "number" ? lineItem.quantity : Number.NaN,
+                    unitPriceUsd: typeof lineItem.unitPriceUsd === "number" ? lineItem.unitPriceUsd : Number.NaN,
+                })),
+            }
+            : undefined,
+        composeRunId: body.composeRunId,
+        idempotencyKey: body.idempotencyKey,
+    });
+
+    return {
+        statusCode: result.status,
+        headers: {
+            ...corsHeaders,
+            ...result.headers,
+        },
+        body: JSON.stringify(result.body),
+    };
+}
+
+type PaymentIntentSettleBody = {
+    paymentIntentId?: string;
+    finalAmountWei?: string;
+    meter?: {
+        subject?: string;
+        lineItems?: Array<{
+            key?: string;
+            unit?: string;
+            quantity?: number;
+            unitPriceUsd?: number;
+        }>;
+    };
+};
+
+async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const body = event.body ? JSON.parse(event.body) as PaymentIntentSettleBody : {};
+    const result = await settlePaymentIntent({
+        paymentIntentId: body.paymentIntentId || "",
+        finalAmountWei: body.finalAmountWei,
+        meter: body.meter?.subject && Array.isArray(body.meter.lineItems)
+            ? {
+                subject: body.meter.subject,
+                lineItems: body.meter.lineItems.map((lineItem) => ({
+                    key: lineItem.key || "",
+                    unit: (lineItem.unit || "") as never,
+                    quantity: typeof lineItem.quantity === "number" ? lineItem.quantity : Number.NaN,
+                    unitPriceUsd: typeof lineItem.unitPriceUsd === "number" ? lineItem.unitPriceUsd : Number.NaN,
+                })),
+            }
+            : undefined,
+    });
+
+    return {
+        statusCode: result.status,
+        headers: {
+            ...corsHeaders,
+            ...result.headers,
+        },
+        body: JSON.stringify(result.body),
+    };
+}
+
+type PaymentIntentAbortBody = {
+    paymentIntentId?: string;
+    reason?: string;
+};
+
+async function handleAbortPaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const body = event.body ? JSON.parse(event.body) as PaymentIntentAbortBody : {};
+    const result = await abortPaymentIntent({
+        paymentIntentId: body.paymentIntentId || "",
+        reason: body.reason || "",
+    });
+
+    return {
+        statusCode: result.status,
+        headers: {
+            ...corsHeaders,
+            ...result.headers,
+        },
+        body: JSON.stringify(result.body),
+    };
+}
+
+type PaymentModelMeterBody = {
+    modelId?: string;
+    provider?: string;
+    modality?: UnifiedModality;
+    usage?: UnifiedUsage;
+    media?: BillingMediaEvidence;
+};
+
+async function handleMeterModelPayment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const body = event.body ? JSON.parse(event.body) as PaymentModelMeterBody : {};
+
+    if (!body.modelId) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "modelId is required" }),
+        };
+    }
+
+    if (!body.modality) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "modality is required" }),
+        };
+    }
+
+    try {
+        const metered = buildResolvedSettlementMeter({
+            resolved: resolveBillingModel(body.modelId, body.provider),
+            modality: body.modality,
+            usage: body.usage,
+            media: body.media,
+        });
+
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify(metered),
+        };
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+        };
+    }
 }
 
 async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
@@ -691,6 +1032,7 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
     }
 
     const keyChainId = validation.record!.chainId!;
+    const { settleComposeKeyPayment } = await import("./x402/settlement.js");
     const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, keyChainId);
 
     if (!result.success) {
@@ -1118,6 +1460,16 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkits }) };
         }
 
+        // GET /api/backpack/toolkits/:toolkit/actions
+        if (path.startsWith("/api/backpack/toolkits/") && path.endsWith("/actions") && method === "GET") {
+            const toolkit = decodeURIComponent(
+                path.replace("/api/backpack/toolkits/", "").replace(/\/actions$/, ""),
+            );
+            const limit = parseInt(event.queryStringParameters?.limit || "40", 10);
+            const actions = await bp.listToolkitActions(toolkit, limit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, actions }) };
+        }
+
         // POST /api/backpack/telegram/link
         if (path === "/api/backpack/telegram/link" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
@@ -1208,7 +1560,15 @@ async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIG
             allModels = allModels.filter((m: any) => m.provider === query.provider);
         }
         if (query.task) {
-            allModels = allModels.filter((m: any) => m.taskType === query.task);
+            allModels = allModels.filter((m: any) => {
+                if (typeof m.type === "string") {
+                    return m.type === query.task;
+                }
+                if (Array.isArray(m.type)) {
+                    return m.type.includes(query.task);
+                }
+                return false;
+            });
         }
         if (query.search) {
             const searchQuery = query.search.toLowerCase();
@@ -1235,9 +1595,9 @@ async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIG
     }
 
     // GET /api/registry/models/:source
-    const sourceMatch = path.match(/^\/api\/registry\/models\/(huggingface|asi-one|asi-cloud|openai|anthropic|google|openrouter|aiml)$/);
+    const sourceMatch = path.match(/^\/api\/registry\/models\/(hugging%20face|vertex|fireworks|openai|gemini|cloudflare|aiml|asicloud)$/);
     if (sourceMatch && method === "GET") {
-        const source = sourceMatch[1] as any;
+        const source = decodeURIComponent(sourceMatch[1]) as any;
         const sourceModels = await registry.getModelsBySource(source);
         return {
             statusCode: 200,
