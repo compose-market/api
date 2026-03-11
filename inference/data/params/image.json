@@ -1,0 +1,1350 @@
+{
+    "_comment": "Image model parameter schemas extracted from fal.ai and AIML API documentation. Used for UI parameter rendering.",
+    "generated_at": "2026-01-08",
+    "sources": [
+        "https://fal.ai/models",
+        "https://docs.aimlapi.com/api-references/image-models"
+    ],
+    "parameters": {
+        "_comment_fal": "Fal.ai image models - unique to fal.ai platform",
+        "fal-ai/flux/schnell": {
+            "modelId": "fal-ai/flux/schnell",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true,
+                    "description": "The prompt to generate an image from"
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ],
+                    "description": "Predefined size or custom {width, height} object"
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 4
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false,
+                    "description": "Same seed + prompt = same image"
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false,
+                    "default": 3.5,
+                    "description": "CFG scale"
+                },
+                "sync_mode": {
+                    "type": "boolean",
+                    "required": false,
+                    "description": "Return as data URI"
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                },
+                "acceleration": {
+                    "type": "string",
+                    "required": false,
+                    "default": "none",
+                    "options": [
+                        "none",
+                        "regular",
+                        "high"
+                    ]
+                }
+            }
+        },
+        "fal-ai/flux/dev": {
+            "modelId": "fal-ai/flux/dev",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 28
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false,
+                    "default": 3.5
+                },
+                "sync_mode": {
+                    "type": "boolean",
+                    "required": false
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                },
+                "acceleration": {
+                    "type": "string",
+                    "required": false,
+                    "default": "none",
+                    "options": [
+                        "none",
+                        "regular",
+                        "high"
+                    ]
+                }
+            }
+        },
+        "fal-ai/flux-pro/v1.1": {
+            "modelId": "fal-ai/flux-pro/v1.1",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "sync_mode": {
+                    "type": "boolean",
+                    "required": false
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                },
+                "safety_tolerance": {
+                    "type": "string",
+                    "required": false,
+                    "default": "2",
+                    "options": [
+                        "1",
+                        "2",
+                        "3",
+                        "4",
+                        "5",
+                        "6"
+                    ],
+                    "description": "1=strictest, 6=most permissive"
+                },
+                "enhance_prompt": {
+                    "type": "boolean",
+                    "required": false,
+                    "description": "Enhance prompt for better results"
+                }
+            }
+        },
+        "fal-ai/flux-pro": {
+            "modelId": "fal-ai/flux-pro",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                },
+                "safety_tolerance": {
+                    "type": "string",
+                    "required": false,
+                    "default": "2",
+                    "options": [
+                        "1",
+                        "2",
+                        "3",
+                        "4",
+                        "5",
+                        "6"
+                    ]
+                }
+            }
+        },
+        "fal-ai/stable-diffusion-v35-large": {
+            "modelId": "fal-ai/stable-diffusion-v35-large",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "required": false,
+                    "default": "",
+                    "description": "Elements to avoid in the image"
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 28
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false,
+                    "default": 3.5
+                },
+                "sync_mode": {
+                    "type": "boolean",
+                    "required": false
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                }
+            }
+        },
+        "fal-ai/stable-diffusion-v35-medium": {
+            "modelId": "fal-ai/stable-diffusion-v35-medium",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "required": false
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 28
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false,
+                    "default": 3.5
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                }
+            }
+        },
+        "fal-ai/recraft-v3": {
+            "modelId": "fal-ai/recraft-v3",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "style": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "realistic_image",
+                        "digital_illustration",
+                        "vector_illustration",
+                        "icon"
+                    ]
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                }
+            }
+        },
+        "fal-ai/ideogram/v2": {
+            "modelId": "fal-ai/ideogram/v2",
+            "provider": "fal-ai",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "style": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "auto",
+                        "general",
+                        "realistic",
+                        "design",
+                        "3d",
+                        "anime"
+                    ]
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "required": false
+                },
+                "num_images": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                }
+            }
+        },
+        "_comment_aiml": "AIML API image models - extracted from docs.aimlapi.com",
+        "flux/schnell": {
+            "modelId": "flux/schnell",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true,
+                    "description": "Text prompt describing the image"
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1,
+                    "description": "Number of images to generate"
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false,
+                    "description": "Seed for reproducible results"
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                }
+            }
+        },
+        "flux/dev": {
+            "modelId": "flux/dev",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                }
+            }
+        },
+        "flux-pro": {
+            "modelId": "flux-pro",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                },
+                "safety_tolerance": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 2,
+                    "options": [
+                        1,
+                        2,
+                        3,
+                        4,
+                        5,
+                        6
+                    ],
+                    "description": "1=strictest, 6=most permissive"
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                }
+            }
+        },
+        "flux-pro/v1.1": {
+            "modelId": "flux-pro/v1.1",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "landscape_4_3",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                },
+                "safety_tolerance": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 2,
+                    "options": [
+                        1,
+                        2,
+                        3,
+                        4,
+                        5,
+                        6
+                    ]
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                }
+            }
+        },
+        "flux-pro/v1.1-ultra": {
+            "modelId": "flux-pro/v1.1-ultra",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "16:9",
+                        "9:16",
+                        "1:1",
+                        "4:3",
+                        "3:4",
+                        "21:9",
+                        "9:21"
+                    ]
+                },
+                "safety_tolerance": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 2,
+                    "options": [
+                        1,
+                        2,
+                        3,
+                        4,
+                        5,
+                        6
+                    ]
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                }
+            }
+        },
+        "dall-e-3": {
+            "modelId": "dall-e-3",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1,
+                    "options": [
+                        1
+                    ]
+                },
+                "quality": {
+                    "type": "string",
+                    "required": false,
+                    "default": "standard",
+                    "options": [
+                        "standard",
+                        "hd"
+                    ]
+                },
+                "size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "1024x1024",
+                    "options": [
+                        "1024x1024",
+                        "1024x1792",
+                        "1792x1024"
+                    ]
+                },
+                "style": {
+                    "type": "string",
+                    "required": false,
+                    "default": "vivid",
+                    "options": [
+                        "vivid",
+                        "natural"
+                    ]
+                },
+                "response_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "url",
+                    "options": [
+                        "url",
+                        "b64_json"
+                    ]
+                }
+            }
+        },
+        "dall-e-2": {
+            "modelId": "dall-e-2",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "1024x1024",
+                    "options": [
+                        "256x256",
+                        "512x512",
+                        "1024x1024"
+                    ]
+                },
+                "response_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "url",
+                    "options": [
+                        "url",
+                        "b64_json"
+                    ]
+                }
+            }
+        },
+        "imagen-3.0-generate-002": {
+            "modelId": "imagen-3.0-generate-002",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "return_url": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true,
+                    "description": "Return URL or base64"
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "add_prompt_suffix": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true,
+                    "description": "LLM-based prompt rewriting"
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "required": false,
+                    "default": "1:1",
+                    "options": [
+                        "1:1",
+                        "9:16",
+                        "16:9",
+                        "3:4",
+                        "4:3"
+                    ]
+                },
+                "person_generation": {
+                    "type": "string",
+                    "required": false,
+                    "default": "allow_adult",
+                    "options": [
+                        "dont_allow",
+                        "allow_adult"
+                    ]
+                },
+                "safety_filter_level": {
+                    "type": "string",
+                    "required": false,
+                    "default": "block_medium_and_above",
+                    "options": [
+                        "block_low_and_above",
+                        "block_medium_and_above",
+                        "block_only_high"
+                    ]
+                },
+                "add_watermark": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": false
+                }
+            }
+        },
+        "google/imagen4/preview": {
+            "modelId": "google/imagen4/preview",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "1:1",
+                        "9:16",
+                        "16:9",
+                        "3:4",
+                        "4:3"
+                    ]
+                },
+                "add_watermark": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": false
+                }
+            }
+        },
+        "recraft-v3": {
+            "modelId": "recraft-v3",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "square_hd",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "style": {
+                    "type": "string",
+                    "required": false,
+                    "default": "realistic_image",
+                    "options": [
+                        "any",
+                        "realistic_image",
+                        "digital_illustration",
+                        "vector_illustration",
+                        "realistic_image/b_and_w",
+                        "realistic_image/hard_flash",
+                        "realistic_image/hdr",
+                        "realistic_image/natural_light",
+                        "realistic_image/studio_portrait",
+                        "realistic_image/enterprise",
+                        "realistic_image/motion_blur",
+                        "digital_illustration/pixel_art",
+                        "digital_illustration/hand_drawn",
+                        "digital_illustration/grain",
+                        "digital_illustration/infantile_sketch",
+                        "digital_illustration/2d_art_poster",
+                        "digital_illustration/handmade_3d",
+                        "digital_illustration/hand_drawn_outline",
+                        "digital_illustration/engraving_color",
+                        "digital_illustration/2d_art_poster_2",
+                        "vector_illustration/engraving",
+                        "vector_illustration/line_art",
+                        "vector_illustration/line_circuit",
+                        "vector_illustration/linocut"
+                    ]
+                },
+                "colors": {
+                    "type": "array",
+                    "required": false,
+                    "description": "Array of preferred colors"
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                }
+            }
+        },
+        "stable-diffusion-v35-large": {
+            "modelId": "stable-diffusion-v35-large",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "square_hd",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "required": false,
+                    "description": "Elements to avoid"
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false,
+                    "description": "CFG scale"
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                }
+            }
+        },
+        "stable-diffusion-v3-medium": {
+            "modelId": "stable-diffusion-v3-medium",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "image_size": {
+                    "type": "string",
+                    "required": false,
+                    "default": "square_hd",
+                    "options": [
+                        "square_hd",
+                        "square",
+                        "portrait_4_3",
+                        "portrait_16_9",
+                        "landscape_4_3",
+                        "landscape_16_9"
+                    ]
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                },
+                "num_inference_steps": {
+                    "type": "integer",
+                    "required": false
+                },
+                "enable_safety_checker": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": true
+                },
+                "output_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "jpeg",
+                    "options": [
+                        "jpeg",
+                        "png"
+                    ]
+                }
+            }
+        },
+        "bytedance/seedream-3.0": {
+            "modelId": "bytedance/seedream-3.0",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "response_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "url",
+                    "options": [
+                        "url",
+                        "b64_json"
+                    ]
+                },
+                "size": {
+                    "type": "string",
+                    "required": false,
+                    "description": "Width x height (512-2048)"
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                },
+                "watermark": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": false
+                }
+            }
+        },
+        "bytedance/seedream-v4-text-to-image": {
+            "modelId": "bytedance/seedream-v4-text-to-image",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "response_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "url",
+                    "options": [
+                        "url",
+                        "b64_json"
+                    ]
+                },
+                "size": {
+                    "type": "string",
+                    "required": false
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                },
+                "watermark": {
+                    "type": "boolean",
+                    "required": false,
+                    "default": false
+                }
+            }
+        },
+        "openai/gpt-image-1": {
+            "modelId": "openai/gpt-image-1",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "size": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "1024x1024",
+                        "1024x1536",
+                        "1536x1024"
+                    ]
+                },
+                "quality": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "low",
+                        "medium",
+                        "high"
+                    ]
+                },
+                "response_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "url",
+                    "options": [
+                        "url",
+                        "b64_json"
+                    ]
+                }
+            }
+        },
+        "x-ai/grok-2-image": {
+            "modelId": "x-ai/grok-2-image",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "response_format": {
+                    "type": "string",
+                    "required": false,
+                    "default": "url",
+                    "options": [
+                        "url",
+                        "b64_json"
+                    ]
+                }
+            }
+        },
+        "klingai/image-o1": {
+            "modelId": "klingai/image-o1",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "required": false,
+                    "options": [
+                        "1:1",
+                        "9:16",
+                        "16:9",
+                        "3:4",
+                        "4:3"
+                    ]
+                },
+                "image_url": {
+                    "type": "string",
+                    "required": false,
+                    "description": "Reference image for i2i"
+                }
+            }
+        },
+        "alibaba/qwen-image": {
+            "modelId": "alibaba/qwen-image",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "size": {
+                    "type": "string",
+                    "required": false
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                }
+            }
+        },
+        "hunyuan/hunyuan-image-v3-text-to-image": {
+            "modelId": "hunyuan/hunyuan-image-v3-text-to-image",
+            "provider": "aimlapi",
+            "params": {
+                "prompt": {
+                    "type": "string",
+                    "required": true
+                },
+                "n": {
+                    "type": "integer",
+                    "required": false,
+                    "default": 1
+                },
+                "size": {
+                    "type": "string",
+                    "required": false
+                },
+                "seed": {
+                    "type": "integer",
+                    "required": false
+                },
+                "guidance_scale": {
+                    "type": "number",
+                    "required": false
+                }
+            }
+        }
+    }
+}
