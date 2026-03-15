@@ -24,9 +24,9 @@ import {
 import { signComposeKey } from "./jwt.js";
 import type {
     ComposeKeyRecord,
+    ComposeKeyPurpose,
     CreateKeyRequest,
     CreateKeyResponse,
-    ActiveSessionRecord,
     ActiveSessionStatus,
     SessionInactiveReason,
 } from "./types.js";
@@ -51,6 +51,124 @@ function revokedKey(keyId: string): string {
     return `${REVOKED_PREFIX}${keyId}`;
 }
 
+function parseComposeKeyPurpose(value: string | undefined): ComposeKeyPurpose | null {
+    if (value === "session" || value === "api") {
+        return value;
+    }
+
+    return null;
+}
+
+export function getBudgetRemaining(record: Pick<ComposeKeyRecord, "budgetLimit" | "budgetUsed" | "budgetReserved">): number {
+    return Math.max(0, record.budgetLimit - record.budgetUsed - (record.budgetReserved || 0));
+}
+
+export interface ActiveSessionCandidate {
+    keyId: string;
+    purpose: ComposeKeyPurpose;
+    token?: string;
+    budgetLimit: number;
+    budgetUsed: number;
+    budgetLocked: number;
+    budgetRemaining: number;
+    expiresAt: number;
+    createdAt: number;
+    chainId?: number;
+    name?: string;
+    revokedAt?: number;
+}
+
+function latestKeySnapshot(candidate: ActiveSessionCandidate): NonNullable<ActiveSessionStatus["latestKey"]> {
+    return {
+        keyId: candidate.keyId,
+        budgetLimit: candidate.budgetLimit,
+        budgetUsed: candidate.budgetUsed,
+        budgetLocked: candidate.budgetLocked,
+        budgetRemaining: candidate.budgetRemaining,
+        expiresAt: candidate.expiresAt,
+        chainId: candidate.chainId,
+        name: candidate.name,
+        revokedAt: candidate.revokedAt,
+    };
+}
+
+export function selectActiveSessionStatus(
+    candidates: ActiveSessionCandidate[],
+    chainId?: number,
+    now: number = Date.now(),
+): ActiveSessionStatus {
+    if (candidates.length === 0) {
+        return { session: null, reason: "none" };
+    }
+
+    const sessionCandidates = candidates
+        .filter((candidate) => candidate.purpose === "session")
+        .sort((a, b) => b.createdAt - a.createdAt);
+
+    if (sessionCandidates.length === 0) {
+        return { session: null, reason: "none" };
+    }
+
+    let sawChainMismatch = false;
+    let firstInvalid: { reason: SessionInactiveReason; key: ActiveSessionCandidate } | null = null;
+
+    for (const candidate of sessionCandidates) {
+        const chainMismatch = Boolean(chainId && candidate.chainId && candidate.chainId !== chainId);
+        if (chainMismatch) {
+            sawChainMismatch = true;
+            continue;
+        }
+
+        const isRevoked = Boolean(candidate.revokedAt);
+        const isExpired = candidate.expiresAt <= now;
+        const spendableBudgetRemaining = Math.max(0, candidate.budgetLimit - candidate.budgetUsed);
+        const isDepleted = spendableBudgetRemaining <= 0;
+
+        if (!isRevoked && !isExpired && !isDepleted && candidate.token) {
+            return {
+                session: {
+                    keyId: candidate.keyId,
+                    token: candidate.token,
+                    budgetLimit: candidate.budgetLimit,
+                    budgetUsed: candidate.budgetUsed,
+                    budgetLocked: candidate.budgetLocked,
+                    budgetRemaining: candidate.budgetRemaining,
+                    expiresAt: candidate.expiresAt,
+                    chainId: candidate.chainId,
+                    name: candidate.name,
+                },
+                reason: "none",
+                latestKey: latestKeySnapshot(candidate),
+            };
+        }
+
+        if (!firstInvalid) {
+            firstInvalid = {
+                reason: isRevoked ? "revoked" : isExpired ? "expired" : "budget_exhausted",
+                key: candidate,
+            };
+        }
+    }
+
+    if (firstInvalid) {
+        return {
+            session: null,
+            reason: firstInvalid.reason,
+            latestKey: latestKeySnapshot(firstInvalid.key),
+        };
+    }
+
+    if (sawChainMismatch) {
+        return {
+            session: null,
+            reason: "chain_mismatch",
+            latestKey: latestKeySnapshot(sessionCandidates[0]),
+        };
+    }
+
+    return { session: null, reason: "none" };
+}
+
 // =============================================================================
 // Key Operations
 // =============================================================================
@@ -73,6 +191,7 @@ export async function createComposeKey(
     const record: ComposeKeyRecord = {
         keyId,
         userAddress: normalizedAddress,
+        purpose: request.purpose,
         budgetLimit: request.budgetLimit,
         budgetUsed: 0,
         budgetReserved: 0,
@@ -91,15 +210,20 @@ export async function createComposeKey(
         exp: Math.floor(request.expiresAt / 1000), // Convert to seconds
     });
 
-    // Store record in Redis (including token for session restoration)
     const recordKey = keyRecordKey(keyId);
-    for (const [field, value] of Object.entries(record)) {
-        if (value !== undefined) {
-            await redisHSet(recordKey, field, String(value));
-        }
-    }
-    // Store token securely for session restoration
-    await redisHSet(recordKey, "token", token);
+    await redisHSet(recordKey, {
+        keyId: record.keyId,
+        userAddress: record.userAddress,
+        purpose: record.purpose,
+        budgetLimit: String(record.budgetLimit),
+        budgetUsed: String(record.budgetUsed),
+        budgetReserved: String(record.budgetReserved || 0),
+        createdAt: String(record.createdAt),
+        expiresAt: String(record.expiresAt),
+        ...(record.name ? { name: record.name } : {}),
+        ...(record.chainId ? { chainId: String(record.chainId) } : {}),
+        token,
+    });
 
     // Set TTL based on expiration
     const ttlSeconds = Math.ceil((request.expiresAt - now) / 1000);
@@ -110,11 +234,15 @@ export async function createComposeKey(
     // Add to user's key set
     await redisSAdd(userKeysKey(normalizedAddress), keyId);
 
-    console.log(`[keys/storage] Created key ${keyId} for ${normalizedAddress}, budget: ${request.budgetLimit}, expires: ${new Date(request.expiresAt).toISOString()}`);
+    console.log(
+        `[keys/storage] Created ${request.purpose} key ${keyId} for ${normalizedAddress}, ` +
+        `budget: ${request.budgetLimit}, expires: ${new Date(request.expiresAt).toISOString()}`,
+    );
 
     return {
         keyId,
         token,
+        purpose: request.purpose,
         budgetLimit: request.budgetLimit,
         expiresAt: request.expiresAt,
         name: request.name,
@@ -131,9 +259,16 @@ export async function getKeyRecord(keyId: string): Promise<ComposeKeyRecord | nu
         return null;
     }
 
+    const purpose = parseComposeKeyPurpose(data.purpose);
+    if (!purpose) {
+        console.warn(`[keys/storage] Key ${keyId} is missing a valid purpose`);
+        return null;
+    }
+
     return {
         keyId: data.keyId,
         userAddress: data.userAddress,
+        purpose,
         budgetLimit: parseInt(data.budgetLimit, 10),
         budgetUsed: parseInt(data.budgetUsed, 10),
         budgetReserved: data.budgetReserved ? parseInt(data.budgetReserved, 10) : 0,
@@ -280,7 +415,7 @@ export async function revokeKey(keyId: string, userAddress: string): Promise<boo
 export async function getKeyBudgetRemaining(keyId: string): Promise<number> {
     const record = await getKeyRecord(keyId);
     if (!record) return 0;
-    return Math.max(0, record.budgetLimit - record.budgetUsed - (record.budgetReserved || 0));
+    return getBudgetRemaining(record);
 }
 
 export async function getKeyReservedBudget(keyId: string): Promise<number> {
@@ -318,22 +453,7 @@ export async function getActiveSessionStatus(
 ): Promise<ActiveSessionStatus> {
     const normalizedAddress = userAddress.toLowerCase();
     const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
-    const now = Date.now();
-
-    type Candidate = {
-        keyId: string;
-        token?: string;
-        budgetLimit: number;
-        budgetUsed: number;
-        budgetRemaining: number;
-        expiresAt: number;
-        createdAt: number;
-        chainId?: number;
-        name?: string;
-        revokedAt?: number;
-    };
-
-    const candidates: Candidate[] = [];
+    const candidates: ActiveSessionCandidate[] = [];
     for (const keyId of keyIds) {
         const data = await redisHGetAll(keyRecordKey(keyId));
         if (!data || Object.keys(data).length === 0) {
@@ -342,23 +462,42 @@ export async function getActiveSessionStatus(
             continue;
         }
 
+        const purpose = parseComposeKeyPurpose(data.purpose);
+        if (!purpose) {
+            continue;
+        }
+
         const budgetLimit = Number.parseInt(data.budgetLimit || "0", 10);
         const budgetUsed = Number.parseInt(data.budgetUsed || "0", 10);
+        const budgetLocked = Number.parseInt(data.budgetReserved || "0", 10);
         const expiresAt = Number.parseInt(data.expiresAt || "0", 10);
         const createdAt = Number.parseInt(data.createdAt || "0", 10);
         const chain = data.chainId ? Number.parseInt(data.chainId, 10) : undefined;
         const revokedAt = data.revokedAt ? Number.parseInt(data.revokedAt, 10) : undefined;
 
-        if (!Number.isFinite(budgetLimit) || !Number.isFinite(budgetUsed) || !Number.isFinite(expiresAt)) {
+        if (
+            !Number.isFinite(budgetLimit) ||
+            !Number.isFinite(budgetUsed) ||
+            !Number.isFinite(budgetLocked) ||
+            !Number.isFinite(expiresAt)
+        ) {
             continue;
         }
 
+        const budgetRemaining = getBudgetRemaining({
+            budgetLimit,
+            budgetUsed,
+            budgetReserved: budgetLocked,
+        });
+
         candidates.push({
             keyId,
+            purpose,
             token: data.token || undefined,
             budgetLimit,
             budgetUsed,
-            budgetRemaining: Math.max(0, budgetLimit - budgetUsed),
+            budgetLocked,
+            budgetRemaining,
             expiresAt,
             createdAt: Number.isFinite(createdAt) ? createdAt : 0,
             chainId: Number.isFinite(chain || NaN) ? chain : undefined,
@@ -367,105 +506,11 @@ export async function getActiveSessionStatus(
         });
     }
 
-    if (candidates.length === 0) {
+    const status = selectActiveSessionStatus(candidates, chainId);
+    if (status.session) {
+        console.log(`[keys/storage] Found active session ${status.session.keyId} for ${normalizedAddress}`);
+    } else {
         console.log(`[keys/storage] No active session found for ${normalizedAddress}`);
-        return { session: null, reason: "none" };
     }
-
-    candidates.sort((a, b) => b.createdAt - a.createdAt);
-
-    let sawChainMismatch = false;
-    let firstInvalid: { reason: SessionInactiveReason; key: Candidate } | null = null;
-
-    for (const candidate of candidates) {
-        const chainMismatch = Boolean(chainId && candidate.chainId && candidate.chainId !== chainId);
-        if (chainMismatch) {
-            sawChainMismatch = true;
-            continue;
-        }
-
-        const isRevoked = Boolean(candidate.revokedAt);
-        const isExpired = candidate.expiresAt <= now;
-        const isDepleted = candidate.budgetRemaining <= 0;
-
-        if (!isRevoked && !isExpired && !isDepleted && candidate.token) {
-            console.log(`[keys/storage] Found active session ${candidate.keyId} for ${normalizedAddress}`);
-            return {
-                session: {
-                    keyId: candidate.keyId,
-                    token: candidate.token,
-                    budgetLimit: candidate.budgetLimit,
-                    budgetUsed: candidate.budgetUsed,
-                    budgetRemaining: candidate.budgetRemaining,
-                    expiresAt: candidate.expiresAt,
-                    chainId: candidate.chainId,
-                    name: candidate.name,
-                },
-                reason: "none",
-                latestKey: {
-                    keyId: candidate.keyId,
-                    budgetLimit: candidate.budgetLimit,
-                    budgetUsed: candidate.budgetUsed,
-                    budgetRemaining: candidate.budgetRemaining,
-                    expiresAt: candidate.expiresAt,
-                    chainId: candidate.chainId,
-                    name: candidate.name,
-                    revokedAt: candidate.revokedAt,
-                },
-            };
-        }
-
-        if (!firstInvalid) {
-            firstInvalid = {
-                reason: isRevoked ? "revoked" : isExpired ? "expired" : "budget_exhausted",
-                key: candidate,
-            };
-        }
-    }
-
-    if (firstInvalid) {
-        return {
-            session: null,
-            reason: firstInvalid.reason,
-            latestKey: {
-                keyId: firstInvalid.key.keyId,
-                budgetLimit: firstInvalid.key.budgetLimit,
-                budgetUsed: firstInvalid.key.budgetUsed,
-                budgetRemaining: firstInvalid.key.budgetRemaining,
-                expiresAt: firstInvalid.key.expiresAt,
-                chainId: firstInvalid.key.chainId,
-                name: firstInvalid.key.name,
-                revokedAt: firstInvalid.key.revokedAt,
-            },
-        };
-    }
-
-    if (sawChainMismatch) {
-        const latest = candidates[0];
-        return {
-            session: null,
-            reason: "chain_mismatch",
-            latestKey: {
-                keyId: latest.keyId,
-                budgetLimit: latest.budgetLimit,
-                budgetUsed: latest.budgetUsed,
-                budgetRemaining: latest.budgetRemaining,
-                expiresAt: latest.expiresAt,
-                chainId: latest.chainId,
-                name: latest.name,
-                revokedAt: latest.revokedAt,
-            },
-        };
-    }
-
-    console.log(`[keys/storage] No active session found for ${normalizedAddress}`);
-    return { session: null, reason: "none" };
-}
-
-/**
- * Backward-compatible helper: return only active session record.
- */
-export async function getActiveSession(userAddress: string, chainId?: number): Promise<ActiveSessionRecord | null> {
-    const status = await getActiveSessionStatus(userAddress, chainId);
-    return status.session;
+    return status;
 }

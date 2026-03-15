@@ -32,7 +32,6 @@ export {
     isKeyRevoked,
     revokeKey,
     getKeyBudgetRemaining,
-    getActiveSession,
     getActiveSessionStatus,
 } from "./storage.js";
 

@@ -146,10 +146,8 @@ export async function redisHSet(
         }
         await redis.hSet(key, fieldOrData, value);
     } else {
-        // Object mode - set multiple fields at once
-        for (const [field, val] of Object.entries(fieldOrData)) {
-            await redis.hSet(key, field, val);
-        }
+        // Object mode - keep multi-field writes in one round trip.
+        await redis.hSet(key, fieldOrData);
     }
 }
 

@@ -37,11 +37,15 @@ export interface ComposeKeyPayload {
 /**
  * Compose Key record stored in Redis
  */
+export type ComposeKeyPurpose = "session" | "api";
+
 export interface ComposeKeyRecord {
     /** Unique key identifier */
     keyId: string;
     /** User's wallet address */
     userAddress: string;
+    /** Whether the key powers the first-party session or an external API client */
+    purpose: ComposeKeyPurpose;
     /** Budget allowed for this key in USDC wei */
     budgetLimit: number;
     /** Budget used so far in USDC wei */
@@ -74,6 +78,8 @@ export interface CreateKeyRequest {
     budgetLimit: number;
     /** Expiration timestamp */
     expiresAt: number;
+    /** Required key purpose */
+    purpose: ComposeKeyPurpose;
     /** Optional name */
     name?: string;
     /** Optional chain ID */
@@ -88,6 +94,8 @@ export interface CreateKeyResponse {
     keyId: string;
     /** Full token (compose-...) */
     token: string;
+    /** Key purpose */
+    purpose: ComposeKeyPurpose;
     /** Budget limit */
     budgetLimit: number;
     /** Expiration */
@@ -127,6 +135,7 @@ export interface ActiveSessionRecord {
     token: string;
     budgetLimit: number;
     budgetUsed: number;
+    budgetLocked: number;
     budgetRemaining: number;
     expiresAt: number;
     chainId?: number;
@@ -140,6 +149,7 @@ export interface ActiveSessionStatus {
         keyId: string;
         budgetLimit: number;
         budgetUsed: number;
+        budgetLocked: number;
         budgetRemaining: number;
         expiresAt: number;
         chainId?: number;
