@@ -520,11 +520,13 @@ export function extractAuthoritativeUsage(value: unknown): AuthoritativeUsage {
     }
   }
 
-  const responseMetadata = asRecord(record.response_metadata);
-  const tokenUsage = responseMetadata ? asRecord(responseMetadata.token_usage) : null;
+  const responseMetadata = asRecord(record.response_metadata) ?? asRecord(record.responseMetadata);
+  const tokenUsage = responseMetadata
+    ? (asRecord(responseMetadata.token_usage) ?? asRecord(responseMetadata.tokenUsage))
+    : null;
   if (tokenUsage) {
-    const promptTokens = readNonNegativeInteger(tokenUsage, ["prompt_tokens", "input_tokens"]);
-    const completionTokens = readNonNegativeInteger(tokenUsage, ["completion_tokens", "output_tokens"]);
+    const promptTokens = readNonNegativeInteger(tokenUsage, ["prompt_tokens", "promptTokens", "input_tokens", "inputTokens"]);
+    const completionTokens = readNonNegativeInteger(tokenUsage, ["completion_tokens", "completionTokens", "output_tokens", "outputTokens"]);
     const reasoningTokens = readReasoningTokens(tokenUsage);
     const totalTokens = readNonNegativeInteger(tokenUsage, ["total_tokens", "totalTokens"]);
     if (promptTokens !== undefined && completionTokens !== undefined) {

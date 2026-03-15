@@ -81,6 +81,7 @@ export interface UnifiedUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  reasoningTokens?: number;
 }
 
 export interface UnifiedToolCall {

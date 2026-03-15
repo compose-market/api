@@ -373,10 +373,38 @@ async function fetchRemoteBuffer(url?: string): Promise<Buffer | null> {
 }
 
 function usageFromResult(result: { promptTokens?: number; completionTokens?: number; totalTokens?: number }): UnifiedUsage {
+  return normalizeLanguageModelUsage(result);
+}
+
+type LanguageModelUsageLike = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  outputTokenDetails?: {
+    reasoningTokens?: number;
+  };
+};
+
+function readTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+export function normalizeLanguageModelUsage(result: LanguageModelUsageLike): UnifiedUsage {
+  const promptTokens = readTokenCount(result.promptTokens) ?? readTokenCount(result.inputTokens) ?? 0;
+  const completionTokens = readTokenCount(result.completionTokens) ?? readTokenCount(result.outputTokens) ?? 0;
+  const totalTokens = readTokenCount(result.totalTokens) ?? (promptTokens + completionTokens);
+  const reasoningTokens =
+    readTokenCount(result.reasoningTokens)
+    ?? readTokenCount(result.outputTokenDetails?.reasoningTokens);
+
   return {
-    promptTokens: result.promptTokens || 0,
-    completionTokens: result.completionTokens || 0,
-    totalTokens: result.totalTokens || 0,
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    ...(typeof reasoningTokens === "number" ? { reasoningTokens } : {}),
   };
 }
 
