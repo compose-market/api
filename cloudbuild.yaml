@@ -69,7 +69,7 @@ steps:
           RUNTIME_URL=RUNTIME_URL:latest,
           CONNECTOR_URL=CONNECTOR_URL:latest,
           EXPORTER_URL=EXPORTER_URL:latest,
-          IPFS_PINATA_GATEWAY=IPFS_PINATA_GATEWAY:latest,
+          PINATA_GATEWAY_URL=PINATA_GATEWAY_URL:latest,
           TEMPORAL_ADDRESS=TEMPORAL_ADDRESS:latest,
           TEMPORAL_NAMESPACE=TEMPORAL_NAMESPACE:latest,
           REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
@@ -111,9 +111,7 @@ steps:
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           RUNTIME_INTERNAL_SECRET=RUNTIME_INTERNAL_SECRET:latest,
-          REDIS_KEYS_API_KEY=REDIS_KEYS_API_KEY:latest,
           REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
-          REDIS_API_KEY=REDIS_API_KEY:latest,
           COMPOSE_SESSION_SECRET=COMPOSE_SESSION_SECRET:latest,
           CF_API_TOKEN=CF_API_TOKEN:latest,
           TEMPORAL_ALEX_API_KEY=TEMPORAL_ALEX_API_KEY:latest"
@@ -145,9 +143,7 @@ steps:
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
           RUNTIME_INTERNAL_SECRET=RUNTIME_INTERNAL_SECRET:latest,
-          REDIS_KEYS_API_KEY=REDIS_KEYS_API_KEY:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
-          REDIS_API_KEY=REDIS_API_KEY:latest" 2>/dev/null || \
+          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest" 2>/dev/null || \
         gcloud run jobs create compose-market-settlement \
           --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA \
           --region ${_REGION} \
@@ -166,9 +162,7 @@ steps:
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
           RUNTIME_INTERNAL_SECRET=RUNTIME_INTERNAL_SECRET:latest,
-          REDIS_KEYS_API_KEY=REDIS_KEYS_API_KEY:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
-          REDIS_API_KEY=REDIS_API_KEY:latest"
+          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest"
 
         # Expiry Scan Job
         gcloud run jobs update compose-market-expiry \

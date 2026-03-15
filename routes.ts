@@ -133,6 +133,7 @@ type PaymentPreparation = {
   paymentIntentId: string;
   maxAmountWei: string;
   headers: Record<string, string>;
+  runtimeHeaders: Record<string, string>;
 };
 
 type RouteSettlement = { meter: MeteredSettlementInput };
@@ -153,10 +154,45 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
-function requireConfiguredEnv(name: "PINATA_JWT" | "PINATA_GATEWAY"): string {
+function normalizeUrl(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function normalizePinataGateway(value: string): string {
+  return value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/+$/, "");
+}
+
+function requireConfiguredEnv(name: "PINATA_JWT"): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
+function requirePinataGateway(): string {
+  const value = process.env.PINATA_GATEWAY_URL;
+  if (!value) {
+    throw new Error("PINATA_GATEWAY_URL is required");
+  }
+  return normalizePinataGateway(value);
+}
+
+function requireRuntimeUrl(): string {
+  const value = process.env.RUNTIME_URL;
+  if (!value) {
+    throw new Error("RUNTIME_URL is required");
+  }
+  return normalizeUrl(value);
+}
+
+function requireRuntimeInternalSecret(): string {
+  const value = process.env.RUNTIME_INTERNAL_SECRET;
+  if (!value) {
+    throw new Error("RUNTIME_INTERNAL_SECRET is required");
   }
   return value;
 }
@@ -165,8 +201,8 @@ function isWalletAddress(value: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(value);
 }
 
-async function fetchFromPinataGateway<T>(cid: string, gatewayHost: string): Promise<T | null> {
-  const response = await fetch(`https://${gatewayHost}/ipfs/${cid}`, {
+async function fetchFromPinataGateway<T>(cid: string, pinataGateway: string): Promise<T | null> {
+  const response = await fetch(`https://${pinataGateway}/ipfs/${cid}`, {
     signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
@@ -177,8 +213,8 @@ async function fetchFromPinataGateway<T>(cid: string, gatewayHost: string): Prom
 
 async function listPinsByType(type: "agent-card" | "workflow-metadata"): Promise<(AgentCard | WorkflowMetadata)[]> {
   const jwt = requireConfiguredEnv("PINATA_JWT");
-  const gatewayHost = requireConfiguredEnv("PINATA_GATEWAY");
-  const query = encodeURIComponent(JSON.stringify({ keyvalues: { type: { value: type, op: "eq" } } }));
+  const pinataGateway = requirePinataGateway();
+  const query = encodeURIComponent(JSON.stringify({ type: { value: type, op: "eq" } }));
   const response = await fetch(
     `${PINATA_API_URL}/data/pinList?status=pinned&metadata[keyvalues]=${query}&pageLimit=100`,
     {
@@ -197,7 +233,7 @@ async function listPinsByType(type: "agent-card" | "workflow-metadata"): Promise
 
   const items: Array<AgentCard | WorkflowMetadata | null> = await Promise.all(
     data.rows.slice(0, 50).map(async (pin): Promise<AgentCard | WorkflowMetadata | null> => {
-      const content = await fetchFromPinataGateway<AgentCard | WorkflowMetadata>(pin.ipfs_pin_hash, gatewayHost);
+      const content = await fetchFromPinataGateway<AgentCard | WorkflowMetadata>(pin.ipfs_pin_hash, pinataGateway);
       return content ? { ...content, cid: pin.ipfs_pin_hash } : null;
     }),
   );
@@ -290,24 +326,8 @@ export async function handlePublicRoute(
   }
 }
 
-function requireRuntimeServiceUrl(): string {
-  const value = process.env.RUNTIME_SERVICE_URL;
-  if (!value) {
-    throw new Error("RUNTIME_SERVICE_URL is required");
-  }
-  return value.replace(/\/+$/, "");
-}
-
-function requireRuntimeInternalToken(): string {
-  const value = process.env.RUNTIME_INTERNAL_TOKEN;
-  if (!value) {
-    throw new Error("RUNTIME_INTERNAL_TOKEN is required");
-  }
-  return value;
-}
-
 export function buildWorkflowRuntimeUrl(pathAndQuery: string): string {
-  return `${requireRuntimeServiceUrl()}/internal/workflow${pathAndQuery}`;
+  return `${requireRuntimeUrl()}/internal/workflow${pathAndQuery}`;
 }
 
 function getHeader(req: Request, name: string): string | undefined {
@@ -324,7 +344,18 @@ function applyHeaders(res: ExpressResponse, headers: Record<string, string>): vo
   }
 }
 
-function buildRuntimeHeaders(req: Request): Headers {
+export function buildRuntimeSessionHeaders(input: {
+  userAddress: string;
+  sessionBudgetRemaining: string;
+}): Record<string, string> {
+  return {
+    "x-session-active": "true",
+    "x-session-user-address": input.userAddress.toLowerCase(),
+    "x-session-budget-remaining": input.sessionBudgetRemaining,
+  };
+}
+
+export function buildRuntimeHeaders(req: Request, extraHeaders: Record<string, string> = {}): Headers {
   const headers = new Headers();
 
   for (const [key, value] of Object.entries(req.headers)) {
@@ -339,7 +370,11 @@ function buildRuntimeHeaders(req: Request): Headers {
     }
   }
 
-  headers.set("x-runtime-internal-token", requireRuntimeInternalToken());
+  for (const [key, value] of Object.entries(extraHeaders)) {
+    headers.set(key, value);
+  }
+
+  headers.set("x-runtime-internal-token", requireRuntimeInternalSecret());
   return headers;
 }
 
@@ -367,10 +402,14 @@ function buildRuntimeBody(req: Request): string | Blob | undefined {
   return undefined;
 }
 
-async function callRuntime(req: Request, pathAndQuery = req.originalUrl): Promise<globalThis.Response> {
+async function callRuntime(
+  req: Request,
+  pathAndQuery = req.originalUrl,
+  extraHeaders: Record<string, string> = {},
+): Promise<globalThis.Response> {
   return fetch(buildWorkflowRuntimeUrl(pathAndQuery), {
     method: req.method,
-    headers: buildRuntimeHeaders(req),
+    headers: buildRuntimeHeaders(req, extraHeaders),
     body: buildRuntimeBody(req),
   });
 }
@@ -403,6 +442,7 @@ async function readRuntimeJson<TBody>(response: globalThis.Response): Promise<{ 
 async function prepareRoutePayment(
   req: Request,
   res: ExpressResponse,
+  service: string,
   action: string,
 ): Promise<PaymentPreparation | null> {
   const authorization = getHeader(req, "authorization");
@@ -418,9 +458,13 @@ async function prepareRoutePayment(
     return null;
   }
 
-  let maxAmountWei = "";
+  let sessionContext: {
+    maxAmountWei: string;
+    userAddress: string;
+    sessionBudgetRemaining: string;
+  } | null = null;
   try {
-    maxAmountWei = await resolveSessionBudgetReservation(authorization);
+    sessionContext = await resolveSessionBudgetReservation(authorization);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Compose key budget validation failed";
     const status = /authorization|required|invalid compose key/i.test(message)
@@ -435,11 +479,11 @@ async function prepareRoutePayment(
   const prepared = await authorizePaymentIntent({
     authorization,
     chainId,
-    service: "workflow",
+    service,
     action,
     resource: `https://${req.get("host")}${req.originalUrl}`,
     method: req.method,
-    maxAmountWei,
+    maxAmountWei: sessionContext.maxAmountWei,
     composeRunId: getHeader(req, "x-compose-run-id"),
     idempotencyKey: getHeader(req, "x-idempotency-key"),
   });
@@ -454,6 +498,10 @@ async function prepareRoutePayment(
     paymentIntentId: prepared.body.paymentIntentId,
     maxAmountWei: prepared.body.maxAmountWei,
     headers: prepared.headers,
+    runtimeHeaders: buildRuntimeSessionHeaders({
+      userAddress: sessionContext.userAddress,
+      sessionBudgetRemaining: sessionContext.sessionBudgetRemaining,
+    }),
   };
 }
 
@@ -483,7 +531,11 @@ async function settlePreparedPayment(
   }
 }
 
-async function resolveSessionBudgetReservation(authorization: string): Promise<string> {
+async function resolveSessionBudgetReservation(authorization: string): Promise<{
+  maxAmountWei: string;
+  userAddress: string;
+  sessionBudgetRemaining: string;
+}> {
   const token = extractComposeKeyFromHeader(authorization);
   if (!token) {
     throw new Error("Compose key authorization is required");
@@ -505,7 +557,12 @@ async function resolveSessionBudgetReservation(authorization: string): Promise<s
     throw new Error("Compose key budget exhausted");
   }
 
-  return available.toString();
+  const availableWei = available.toString();
+  return {
+    maxAmountWei: availableWei,
+    userAddress: validation.payload.sub,
+    sessionBudgetRemaining: availableWei,
+  };
 }
 
 function resolveAgentTextSettlement(body: Record<string, unknown>): RouteSettlement {
@@ -621,22 +678,40 @@ function passthroughJsonRoute(pathAndQuery?: (req: Request) => string) {
 }
 
 function payableJsonRoute(config: {
+  service: string;
   action: string;
   pathAndQuery?: (req: Request) => string;
   resolveSettlement: (body: Record<string, unknown>, req: Request) => RouteSettlement;
 }) {
   return (req: Request, res: ExpressResponse, next: NextFunction) => {
     void (async () => {
-      const prepared = await prepareRoutePayment(req, res, config.action);
+      const prepared = await prepareRoutePayment(req, res, config.service, config.action);
       if (!prepared) {
         return;
       }
 
-      const runtimeResponse = await callRuntime(req, config.pathAndQuery ? config.pathAndQuery(req) : req.originalUrl);
+      const runtimeResponse = await callRuntime(
+        req,
+        config.pathAndQuery ? config.pathAndQuery(req) : req.originalUrl,
+        prepared.runtimeHeaders,
+      );
       const { text, body } = await readRuntimeJson<Record<string, unknown>>(runtimeResponse);
 
+      let settlement: RouteSettlement | null = null;
+      if (body) {
+        try {
+          settlement = config.resolveSettlement(body, req);
+        } catch {
+          settlement = null;
+        }
+      }
+
       if (!runtimeResponse.ok) {
-        await abortPreparedPayment(prepared, `runtime_${runtimeResponse.status}`);
+        if (settlement) {
+          await settlePreparedPayment(prepared, res, settlement);
+        } else {
+          await abortPreparedPayment(prepared, `runtime_${runtimeResponse.status}`);
+        }
         applyRuntimeHeaders(res, runtimeResponse);
         res.status(runtimeResponse.status).send(text);
         return;
@@ -648,13 +723,14 @@ function payableJsonRoute(config: {
         return;
       }
 
-      let settlement: RouteSettlement;
-      try {
-        settlement = config.resolveSettlement(body, req);
-      } catch (error) {
-        await abortPreparedPayment(prepared, error instanceof Error ? error.message : "invalid_runtime_settlement");
-        res.status(502).json({ error: error instanceof Error ? error.message : "invalid_runtime_settlement" });
-        return;
+      if (!settlement) {
+        try {
+          settlement = config.resolveSettlement(body, req);
+        } catch (error) {
+          await abortPreparedPayment(prepared, error instanceof Error ? error.message : "invalid_runtime_settlement");
+          res.status(502).json({ error: error instanceof Error ? error.message : "invalid_runtime_settlement" });
+          return;
+        }
       }
 
       await settlePreparedPayment(prepared, res, settlement);
@@ -665,18 +741,23 @@ function payableJsonRoute(config: {
 }
 
 function payableStreamRoute(config: {
+  service: string;
   action: string;
   pathAndQuery?: (req: Request) => string;
   resolveSettlement: (eventName: string, data: Record<string, unknown>, req: Request) => RouteSettlement | null;
 }) {
   return (req: Request, res: ExpressResponse, next: NextFunction) => {
     void (async () => {
-      const prepared = await prepareRoutePayment(req, res, config.action);
+      const prepared = await prepareRoutePayment(req, res, config.service, config.action);
       if (!prepared) {
         return;
       }
 
-      const runtimeResponse = await callRuntime(req, config.pathAndQuery ? config.pathAndQuery(req) : req.originalUrl);
+      const runtimeResponse = await callRuntime(
+        req,
+        config.pathAndQuery ? config.pathAndQuery(req) : req.originalUrl,
+        prepared.runtimeHeaders,
+      );
       if (!runtimeResponse.ok) {
         const { text } = await readRuntimeJson(runtimeResponse);
         await abortPreparedPayment(prepared, `runtime_${runtimeResponse.status}`);
@@ -764,6 +845,7 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post(
     "/agent/:walletAddress/chat",
     payableJsonRoute({
+      service: "agent",
       action: "agent-chat",
       resolveSettlement: (body) => resolveAgentTextSettlement(body),
     }),
@@ -771,6 +853,7 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post(
     "/agent/:walletAddress/stream",
     payableStreamRoute({
+      service: "agent",
       action: "agent-stream",
       resolveSettlement: (_eventName, data) => {
         if (data.type !== "done") {
@@ -783,6 +866,7 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post(
     "/agent/:walletAddress/multimodal",
     payableJsonRoute({
+      service: "agent",
       action: "agent-multimodal",
       resolveSettlement: (body) => resolveAgentMultimodalSettlement(body),
     }),
@@ -792,6 +876,7 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post(
     "/workflow/execute",
     payableJsonRoute({
+      service: "workflow",
       action: "workflow-execute",
       resolveSettlement: (body, req) => resolveWorkflowSettlement(body, workflowSettlementSubject(req)),
     }),
@@ -816,6 +901,7 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post(
     "/workflow/:walletAddress/chat",
     payableStreamRoute({
+      service: "workflow",
       action: "workflow-chat",
       resolveSettlement: (eventName, data, req) => (
         eventName === "result"
@@ -830,6 +916,7 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post(
     "/workflow/:id/run",
     payableStreamRoute({
+      service: "workflow",
       action: "workflow-chat",
       resolveSettlement: (eventName, data, req) => (
         eventName === "result"

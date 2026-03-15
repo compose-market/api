@@ -378,9 +378,7 @@ async function deployJobs(image: string) {
                 "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT",
                 "SERVER_WALLET_KEY",
                 "DEPLOYER_KEY",
-                "REDIS_KEYS_API_KEY",
                 "REDIS_KEYS_DEFAULT_PASSWORD",
-                "REDIS_API_KEY",
             ],
         },
         {

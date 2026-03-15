@@ -36,8 +36,9 @@ import {
     createComposeKey,
     listUserKeys,
     revokeKey,
-    getActiveSession,
+    getActiveSessionStatus,
 } from "./x402/keys/index.js";
+import type { SessionInactiveReason } from "./x402/keys/types.js";
 
 import {
     extractComposeKeyFromHeader,
@@ -46,7 +47,7 @@ import {
     getKeyBudgetInfo,
 } from "./x402/keys/middleware.js";
 
-import { getActiveChainId } from "./x402/configs/chains.js";
+import { initializeSessionBudget } from "./x402/session-budget.js";
 import { handleDesktopUpdaterRoute } from "./desktop/updater.js";
 import { handleDesktopNetworkRoute } from "./desktop/network.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
@@ -83,8 +84,45 @@ const corsHeaders = {
         "x-session-user-address, x-desktop-device-id, x-network-internal, x-chain-id, x-payment-intent-id, Access-Control-Expose-Headers",
     "Access-Control-Expose-Headers":
         "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
-        "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, x-payment-intent-id, *",
+        "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, x-compose-session-invalid, x-payment-intent-id, *",
 };
+
+interface SessionBudgetSeed {
+    userAddress: string;
+    totalBudgetWei: string;
+    chainId: number;
+    expiresAt: number;
+}
+
+function buildInactiveSessionPayload(reason: SessionInactiveReason): {
+    hasSession: false;
+    reason: SessionInactiveReason;
+} {
+    return {
+        hasSession: false,
+        reason,
+    };
+}
+
+function buildSessionBudgetSeed(input: {
+    userAddress: string;
+    budgetLimit: number | string;
+    chainId: number | undefined;
+    expiresAt: number;
+}): SessionBudgetSeed {
+    if (!Number.isInteger(input.chainId) || (input.chainId ?? 0) <= 0) {
+        throw new Error("chainId is required");
+    }
+
+    const chainId = input.chainId as number;
+
+    return {
+        userAddress: input.userAddress.trim().toLowerCase(),
+        totalBudgetWei: String(input.budgetLimit),
+        chainId,
+        expiresAt: input.expiresAt,
+    };
+}
 
 async function generateDecorativeImage(prompt: string, size: string): Promise<string> {
     const modelId = "black-forest-labs/FLUX.1-schnell";
@@ -669,32 +707,20 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
         };
     }
 
-    // Get session record from storage.ts (for token, keyId, expiresAt)
-    const session = await getActiveSession(userAddress, chainId);
+    const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
+    const session = sessionStatus.session;
 
     if (!session) {
         return {
-            statusCode: 404,
+            statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify({
-                error: "No active session found",
-                hasSession: false,
-            }),
+            body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason)),
         };
     }
-
-    // Get REAL-TIME budget from session-budget.ts (deferred payment ledger)
-    const { getSessionStatus } = await import("./x402/session-budget.js");
-    const budgetStatus = await getSessionStatus(
-        userAddress,
-        chainId ?? session.chainId ?? getActiveChainId()
-    );
-
-    // Use session-budget.ts for accurate budget (includes locked/used for deferred settlement)
-    const budgetLimit = budgetStatus ? BigInt(budgetStatus.totalBudget) : BigInt(session.budgetLimit);
-    const budgetUsed = budgetStatus ? BigInt(budgetStatus.usedBudget) : BigInt(session.budgetUsed);
-    const budgetLocked = budgetStatus ? BigInt(budgetStatus.lockedBudget) : 0n;
-    const budgetRemaining = budgetStatus ? BigInt(budgetStatus.availableBudget) : BigInt(session.budgetRemaining);
+    const budgetLimit = BigInt(session.budgetLimit);
+    const budgetUsed = BigInt(session.budgetUsed);
+    const budgetLocked = BigInt(session.budgetLocked);
+    const budgetRemaining = BigInt(session.budgetRemaining);
 
     const response: Record<string, any> = {
         hasSession: true,
@@ -940,20 +966,49 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
     }
 
     const body = event.body ? JSON.parse(event.body) : {};
-    if (!body.budgetLimit || !body.expiresAt) {
+    const purpose = body.purpose === "session" || body.purpose === "api" ? body.purpose : null;
+    if (!body.budgetLimit || !body.expiresAt || !body.chainId || !purpose) {
         return {
             statusCode: 400,
             headers: corsHeaders,
-            body: JSON.stringify({ error: "budgetLimit and expiresAt are required" }),
+            body: JSON.stringify({ error: "budgetLimit, expiresAt, chainId, and purpose are required" }),
         };
     }
 
     const result = await createComposeKey(userAddress, {
         budgetLimit: body.budgetLimit,
         expiresAt: body.expiresAt,
+        purpose,
         name: body.name,
         chainId: body.chainId,
     });
+
+    if (purpose === "session") {
+        try {
+            const budgetSeed = buildSessionBudgetSeed({
+                userAddress,
+                budgetLimit: body.budgetLimit,
+                chainId: body.chainId,
+                expiresAt: body.expiresAt,
+            });
+
+            await initializeSessionBudget(
+                budgetSeed.userAddress,
+                budgetSeed.chainId,
+                budgetSeed.totalBudgetWei,
+                budgetSeed.expiresAt,
+            );
+        } catch (error) {
+            await revokeKey(result.keyId, userAddress);
+            return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    error: error instanceof Error ? error.message : "Failed to initialize session budget",
+                }),
+            };
+        }
+    }
 
     const budgetLimit = String(result.budgetLimit);
     const budgetUsed = "0";
@@ -969,6 +1024,7 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             budgetUsed,
             budgetRemaining,
             createdAt,
+            purpose,
             chainId: body.chainId,
         }),
     };
@@ -989,9 +1045,10 @@ async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const safeKeys = keys.map(k => ({
         keyId: k.keyId,
+        purpose: k.purpose,
         budgetLimit: k.budgetLimit,
         budgetUsed: k.budgetUsed,
-        budgetRemaining: Math.max(0, k.budgetLimit - k.budgetUsed),
+        budgetRemaining: Math.max(0, k.budgetLimit - k.budgetUsed - (k.budgetReserved || 0)),
         createdAt: k.createdAt,
         expiresAt: k.expiresAt,
         revokedAt: k.revokedAt,
