@@ -9,7 +9,7 @@ import {
   redisSetNXEX,
   redisTTL,
 } from "../x402/keys/redis.js";
-import { getActiveSession } from "../x402/keys/index.js";
+import { getActiveSessionStatus } from "../x402/keys/index.js";
 import { verifyComposeKey } from "../x402/keys/jwt.js";
 import { extractComposeKeyFromHeader } from "../x402/keys/middleware.js";
 
@@ -225,7 +225,7 @@ async function validateDesktopAuthorization(
     throw new Error("x-session-user-address must match userAddress");
   }
 
-  const activeSession = await getActiveSession(userAddress, chainId);
+  const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
   return {
     userAddress,
     agentWallet,
@@ -358,7 +358,7 @@ async function handleRedeemDesktopLinkToken(
 
   await redisDel(linkTokenKey);
 
-  const activeSession = await getActiveSession(record.userAddress, record.chainId);
+  const activeSession = (await getActiveSessionStatus(record.userAddress, record.chainId)).session;
   const composeKey = activeSession && record.composeKeyId
     ? {
       keyId: record.composeKeyId,
@@ -629,7 +629,7 @@ async function handleRegisterDesktopDeployment(
       throw new Error("Compose Key token keyId does not match composeKeyId");
     }
 
-    const activeSession = await getActiveSession(userAddress, chainId);
+    const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
     if (!activeSession || activeSession.keyId !== composeKeyId) {
       throw new Error("composeKeyId does not match active session");
     }
