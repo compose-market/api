@@ -42,16 +42,35 @@ import {
 
 // Session Budget - Deferred Payment (locked/used tracking for batch settlement)
 import {
-    ensureSessionBudgetInitialized,
+    getSessionBudget,
     lockBudget,
     cancelBudgetIntent,
-    markBudgetSettled,
     getSessionStatus,
     shouldTriggerImmediateSettlement,
 } from "./session-budget.js";
 
 // Re-export types
 export type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
+
+function setComposeSessionInvalidHeader(
+    target: Pick<Response, "setHeader"> | Record<string, string>,
+    reason: string,
+): void {
+    if (typeof (target as { setHeader?: unknown }).setHeader === "function") {
+        (target as Pick<Response, "setHeader">).setHeader("x-compose-session-invalid", reason);
+        return;
+    }
+
+    (target as Record<string, string>)["x-compose-session-invalid"] = reason;
+}
+
+function getComposeSessionInvalidReason(error: string | undefined): string {
+    const normalized = String(error || "").toLowerCase();
+    if (normalized.includes("revoked")) return "revoked";
+    if (normalized.includes("expired")) return "expired";
+    if (normalized.includes("budget") || normalized.includes("insufficient")) return "budget_exhausted";
+    return "invalid_key";
+}
 
 // Re-export pricing
 export {
@@ -416,11 +435,18 @@ export async function prepareDeferredPayment(
     // Session bypass flow (deferred settlement with lock/abort lifecycle)
     // ==========================================================================
     if (sessionActive && sessionBudgetRemaining > 0 && sessionUserAddress) {
-        await ensureSessionBudgetInitialized(
-            sessionUserAddress,
-            explicitChainId,
-            sessionBudgetRemaining,
-        );
+        const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
+        if (!sessionBudget) {
+            return {
+                valid: false,
+                error: "Active session budget not found. Recreate the session.",
+                method: "session",
+                metadata: { amountWei, chainId: explicitChainId, userAddress: sessionUserAddress },
+                settle: async () => ({ success: false, error: "Session budget missing" }),
+                abort: async () => { },
+                getHeaders: () => ({ "x-compose-session-invalid": "missing_budget_state" }),
+            };
+        }
 
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         const lockResult = await lockBudget(
@@ -485,6 +511,7 @@ export async function prepareDeferredPayment(
 
         if (!validation.valid) {
             console.log(`[x402] preparePayment: Compose Key invalid: ${validation.error}`);
+            const reason = getComposeSessionInvalidReason(validation.error);
             return {
                 valid: false,
                 error: validation.error,
@@ -492,7 +519,7 @@ export async function prepareDeferredPayment(
                 metadata: { amountWei, chainId: explicitChainId },
                 settle: async () => ({ success: false, error: "Invalid key" }),
                 abort: async () => { },
-                getHeaders: () => ({}),
+                getHeaders: () => ({ "x-compose-session-invalid": reason }),
             };
         }
 
@@ -507,7 +534,7 @@ export async function prepareDeferredPayment(
                 metadata: { amountWei, chainId: explicitChainId, keyId: validation.payload?.keyId },
                 settle: async () => ({ success: false, error: "Budget exhausted" }),
                 abort: async () => { },
-                getHeaders: () => ({}),
+                getHeaders: () => ({ "x-compose-session-invalid": "budget_exhausted" }),
             };
         }
 
@@ -642,16 +669,6 @@ export async function prepareDeferredPayment(
     };
 }
 
-/**
- * Backward-compatible alias.
- */
-export async function preparePayment(
-    req: Request,
-    amountWei: number = INFERENCE_PRICE_WEI,
-): Promise<PreparedPayment> {
-    return prepareDeferredPayment(req, amountWei);
-}
-
 const RUNTIME_INTERNAL_MARKER = requireEnv("RUNTIME_INTERNAL_SECRET");
 
 /**
@@ -716,12 +733,15 @@ export async function requirePayment(
     if (hasValidSession && sessionUserAddress) {
         console.log(`[x402] Session bypass attempt: ${sessionUserAddress}, chain=${explicitChainId}, amount=${amountWei}`);
 
-        // Ensure session budget is initialized in Redis for deferred payment tracking
-        await ensureSessionBudgetInitialized(
-            sessionUserAddress,
-            explicitChainId,
-            sessionBudgetRemaining,
-        );
+        const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
+        if (!sessionBudget) {
+            res.setHeader("x-compose-session-invalid", "missing_budget_state");
+            res.status(401).json({
+                error: "Active session budget not found",
+                hint: "Recreate the session and try again",
+            });
+            return false;
+        }
 
         // Generate unique request ID
         const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
@@ -793,6 +813,7 @@ export async function requirePayment(
 
         if (!validation.valid) {
             console.log(`[x402] Compose Key invalid: ${validation.error}`);
+            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation.error));
             res.status(401).json({
                 error: "Invalid Compose Key",
                 details: validation.error,
@@ -805,6 +826,7 @@ export async function requirePayment(
         const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
         if (budgetRemaining < amountWei) {
             console.log(`[x402] Compose Key budget exhausted for ${validation.payload!.keyId}: ${budgetRemaining} < ${amountWei}`);
+            setComposeSessionInvalidHeader(res, "budget_exhausted");
             res.status(402).json({
                 error: "Compose Key budget exhausted",
                 budgetLimit: validation.record!.budgetLimit,

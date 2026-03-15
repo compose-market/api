@@ -182,51 +182,6 @@ export async function getSessionBudget(
 }
 
 /**
- * Ensure session budget is initialized in Redis
- * Lazy initialization from session headers if not already present
- * 
- * SECURITY NOTE: We trust the sessionBudgetRemaining from headers because:
- * 1. The client-side session state is derived from the on-chain session creation
- * 2. We only ACCEPT this as the initial budget - subsequent requests use Redis
- * 3. If a user tampers with headers, they can only harm themselves (use budget they don't have)
- * 4. The batch settlement will fail if actual on-chain balance is insufficient
- */
-export async function ensureSessionBudgetInitialized(
-    userAddress: string,
-    chainId: number,
-    sessionBudgetRemaining: number,
-    durationHours: number = 24,
-): Promise<SessionBudget | null> {
-    // Check if already initialized
-    const existing = await getSessionBudget(userAddress, chainId);
-
-    if (existing) {
-        return existing;
-    }
-
-    // No budget in Redis - initialize from headers
-    if (sessionBudgetRemaining <= 0) {
-        console.log(`[session-budget] No budget to initialize for ${userAddress} chain ${chainId}`);
-        return null;
-    }
-
-    // Calculate expiry (default 24 hours from now)
-    const expiresAt = Date.now() + (durationHours * 60 * 60 * 1000);
-
-    // Initialize budget
-    await initializeSessionBudget(
-        userAddress,
-        chainId,
-        String(sessionBudgetRemaining),
-        expiresAt,
-    );
-
-    console.log(`[session-budget] Auto-initialized budget for ${userAddress} chain ${chainId}: ${sessionBudgetRemaining} wei`);
-
-    return await getSessionBudget(userAddress, chainId);
-}
-
-/**
  * Get session status with notification flags
  * Returns status info for frontend notifications
  */
@@ -481,17 +436,6 @@ export async function markSettled(
     await redisHIncrBy(key, "usedBudgetWei", amount);
 
     console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userAddress} chain ${chainId}`);
-}
-
-/**
- * Backward-compatible alias used by x402 wrapper code.
- */
-export async function markBudgetSettled(
-    userAddress: string,
-    chainId: number,
-    amountWei: string,
-): Promise<void> {
-    await markSettled(userAddress, chainId, amountWei);
 }
 
 /**
