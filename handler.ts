@@ -48,8 +48,8 @@ import {
 } from "./x402/keys/middleware.js";
 
 import { initializeSessionBudget } from "./x402/session-budget.js";
-import { handleDesktopUpdaterRoute } from "./desktop/updater.js";
-import { handleDesktopNetworkRoute } from "./desktop/network.js";
+import { handleLocalNetworkRoute } from "./local/network.js";
+import { handleLocalSynapseRoute } from "./local/synapse.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
 import type { UnifiedModality, UnifiedUsage } from "./inference/core.js";
@@ -81,7 +81,7 @@ const corsHeaders = {
     "Access-Control-Allow-Headers":
         "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
         "X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, " +
-        "x-session-user-address, x-desktop-device-id, x-network-internal, x-chain-id, x-payment-intent-id, Access-Control-Expose-Headers",
+        "x-session-user-address, x-network-internal, x-chain-id, x-payment-intent-id, Access-Control-Expose-Headers",
     "Access-Control-Expose-Headers":
         "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
         "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, x-compose-session-invalid, x-payment-intent-id, *",
@@ -122,6 +122,41 @@ function buildSessionBudgetSeed(input: {
         chainId,
         expiresAt: input.expiresAt,
     };
+}
+
+function getHeader(event: APIGatewayProxyEventV2, name: string): string | undefined {
+    const normalized = name.toLowerCase();
+    for (const [key, value] of Object.entries(event.headers || {})) {
+        if (key.toLowerCase() === normalized) {
+            return value;
+        }
+    }
+    return undefined;
+}
+
+function normalizeWallet(value: unknown): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    return /^0x[a-f0-9]{40}$/.test(normalized) ? normalized : null;
+}
+
+function requireUserAddressHeader(event: APIGatewayProxyEventV2): string {
+    const userAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
+    if (!userAddress) {
+        throw new Error("x-session-user-address header required");
+    }
+    return userAddress;
+}
+
+function requireChainIdHeader(event: APIGatewayProxyEventV2): number {
+    const chainIdRaw = getHeader(event, "x-chain-id");
+    const chainId = chainIdRaw ? Number.parseInt(chainIdRaw, 10) : Number.NaN;
+    if (!Number.isInteger(chainId) || chainId <= 0) {
+        throw new Error("x-chain-id header required");
+    }
+    return chainId;
 }
 
 async function generateDecorativeImage(prompt: string, size: string): Promise<string> {
@@ -270,13 +305,14 @@ export function registerHandlerRoutes(app: Application): void {
 
     app.use("/api/backpack", routeHandler);
     app.use("/api/registry", routeHandler);
-    app.post("/api/desktop/link-token", routeHandler);
-    app.post("/api/desktop/link-token/redeem", routeHandler);
-    app.post("/api/desktop/deployments/register", routeHandler);
-    app.get("/api/desktop/updates/config", routeHandler);
-    app.get(/^\/api\/desktop\/updates\/[^/]+\/[^/]+\/[^/]+$/, routeHandler);
-    app.post("/api/desktop/network/peers/upsert", routeHandler);
-    app.get("/api/desktop/network/peers", routeHandler);
+    app.post("/api/local/link-token", routeHandler);
+    app.post("/api/local/link-token/redeem", routeHandler);
+    app.post("/api/local/deployments/register", routeHandler);
+    app.post("/api/local/synapse/session", routeHandler);
+    app.get("/api/local/updates/config", routeHandler);
+    app.get(/^\/api\/local\/updates\/[^/]+\/[^/]+\/[^/]+$/, routeHandler);
+    app.post("/api/local/network/peers/upsert", routeHandler);
+    app.get("/api/local/network/peers", routeHandler);
 
     app.post("/api/dispenser/claim", routeHandler);
     app.get("/api/dispenser/status", routeHandler);
@@ -334,9 +370,9 @@ export async function handler(
             return publicRouteResult;
         }
 
-        const desktopUpdaterRouteResult = await handleDesktopUpdaterRoute(event, corsHeaders);
-        if (desktopUpdaterRouteResult) {
-            return desktopUpdaterRouteResult;
+        const localSynapseRouteResult = await handleLocalSynapseRoute(event, corsHeaders);
+        if (localSynapseRouteResult) {
+            return localSynapseRouteResult;
         }
 
         if (method === "POST" && path === "/api/payments/prepare") {
@@ -364,10 +400,10 @@ export async function handler(
             return handleGetSession(event);
         }
 
-        if (path.startsWith("/api/desktop/")) {
-            const desktopRouteResult = await handleDesktopNetworkRoute(event, corsHeaders);
-            if (desktopRouteResult) {
-                return desktopRouteResult;
+        if (path.startsWith("/api/local/")) {
+            const localRouteResult = await handleLocalNetworkRoute(event, corsHeaders);
+            if (localRouteResult) {
+                return localRouteResult;
             }
         }
 
@@ -505,16 +541,8 @@ export async function handler(
 
         // GET /api/settlement/status - Get pending settlement info for a user
         if (method === "GET" && path === "/api/settlement/status") {
-            const userAddress = event.headers["x-session-user-address"];
             const chainId = parseInt(event.queryStringParameters?.chainId || "338");
-
-            if (!userAddress) {
-                return {
-                    statusCode: 401,
-                    headers: corsHeaders,
-                    body: JSON.stringify({ error: "x-session-user-address header required" }),
-                };
-            }
+            const userAddress = requireUserAddressHeader(event);
 
             try {
                 const { getBudgetInfo } = await import("./x402/session-budget.js");
@@ -695,17 +723,8 @@ export async function batchSettlementHandler(
 // =============================================================================
 
 async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const userAddress = event.headers["x-session-user-address"];
-    const chainIdHeader = event.headers["x-chain-id"];
-    const chainId = chainIdHeader ? parseInt(chainIdHeader, 10) : undefined;
-
-    if (!userAddress) {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "x-session-user-address header required" }),
-        };
-    }
+    const userAddress = requireUserAddressHeader(event);
+    const chainId = requireChainIdHeader(event);
 
     const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
     const session = sessionStatus.session;
@@ -954,17 +973,6 @@ async function handleMeterModelPayment(event: APIGatewayProxyEventV2): Promise<A
 }
 
 async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const userAddress = event.headers["x-session-user-address"];
-    const sessionActive = event.headers["x-session-active"] === "true";
-
-    if (!userAddress || !sessionActive) {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "Active session required to create Compose Key" }),
-        };
-    }
-
     const body = event.body ? JSON.parse(event.body) : {};
     const purpose = body.purpose === "session" || body.purpose === "api" ? body.purpose : null;
     if (!body.budgetLimit || !body.expiresAt || !body.chainId || !purpose) {
@@ -972,6 +980,15 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             statusCode: 400,
             headers: corsHeaders,
             body: JSON.stringify({ error: "budgetLimit, expiresAt, chainId, and purpose are required" }),
+        };
+    }
+
+    const userAddress = requireUserAddressHeader(event);
+    if (purpose === "session" && getHeader(event, "x-session-active") !== "true") {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Session must be active before creating a Compose Key" }),
         };
     }
 
@@ -1031,16 +1048,7 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
 }
 
 async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const userAddress = event.headers["x-session-user-address"];
-
-    if (!userAddress) {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "x-session-user-address header required" }),
-        };
-    }
-
+    const userAddress = requireUserAddressHeader(event);
     const keys = await listUserKeys(userAddress);
 
     const safeKeys = keys.map(k => ({
@@ -1124,16 +1132,7 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
 
 async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const keyId = event.rawPath.replace("/api/keys/", "");
-    const userAddress = event.headers["x-session-user-address"];
-
-    if (!userAddress) {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "x-session-user-address header required" }),
-        };
-    }
-
+    const userAddress = requireUserAddressHeader(event);
     const success = await revokeKey(keyId, userAddress);
 
     if (!success) {
