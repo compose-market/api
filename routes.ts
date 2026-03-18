@@ -1,5 +1,6 @@
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
 
+import { normalizeResponsesRequest } from "./inference/core.js";
 import { getCompiledModels } from "./inference/modelsRegistry.js";
 import {
   buildResolvedSettlementMeter,
@@ -579,27 +580,16 @@ function resolveAgentTextSettlement(body: Record<string, unknown>): RouteSettlem
   return { meter: metered.meter };
 }
 
-function resolveAgentMultimodalSettlement(body: Record<string, unknown>): RouteSettlement {
+function resolveAgentResponsesSettlement(body: Record<string, unknown>): RouteSettlement {
   if (typeof body.model !== "string") {
     throw new Error("model is required for metered settlement");
   }
 
-  const task = typeof body.task === "string" ? body.task : "";
-  const type = typeof body.type === "string" ? body.type : "";
-  const modality =
-    task === "feature-extraction" || type === "embedding"
-      ? "embedding"
-      : task === "text-to-image" || task === "image-to-image" || type === "image"
-        ? "image"
-        : task === "text-to-video" || task === "image-to-video" || type === "video"
-          ? "video"
-          : task === "text-to-speech" || task === "text-to-audio" || task === "automatic-speech-recognition" || type === "audio"
-            ? "audio"
-            : "text";
+  const unified = normalizeResponsesRequest(body);
 
   const metered = buildResolvedSettlementMeter({
     resolved: resolveBillingModel(body.model),
-    modality,
+    modality: unified.modality,
     usage: body,
     media: body,
   });
@@ -864,11 +854,11 @@ export function registerWorkflowRoutes(app: Application): void {
     }),
   );
   app.post(
-    "/agent/:walletAddress/multimodal",
+    "/agent/:walletAddress/responses",
     payableJsonRoute({
       service: "agent",
-      action: "agent-multimodal",
-      resolveSettlement: (body) => resolveAgentMultimodalSettlement(body),
+      action: "agent-responses",
+      resolveSettlement: (body) => resolveAgentResponsesSettlement(body),
     }),
   );
   app.get("/agent/:walletAddress/runs/:runId/state", passthroughJsonRoute());
@@ -929,10 +919,10 @@ export function registerWorkflowRoutes(app: Application): void {
     res.json({ frameworks: FRAMEWORKS });
   });
 
-  app.post("/api/desktop/memory/add", passthroughJsonRoute());
-  app.post("/api/desktop/memory/search", passthroughJsonRoute());
-  app.get("/api/desktop/memory/:agentWallet", passthroughJsonRoute());
-  app.post("/api/desktop/memory/context", passthroughJsonRoute());
-  app.get("/api/desktop/skills/recommended", passthroughJsonRoute());
-  app.post("/api/desktop/skills/learn", passthroughJsonRoute());
+  app.post("/api/local/memory/add", passthroughJsonRoute());
+  app.post("/api/local/memory/search", passthroughJsonRoute());
+  app.get("/api/local/memory/:agentWallet", passthroughJsonRoute());
+  app.post("/api/local/memory/context", passthroughJsonRoute());
+  app.get("/api/local/skills/recommended", passthroughJsonRoute());
+  app.post("/api/local/skills/learn", passthroughJsonRoute());
 }

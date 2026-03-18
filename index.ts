@@ -140,8 +140,13 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
     const status = error.status || error.statusCode || 500;
     const message = error.message || "Internal Server Error";
 
+    console.error("[express] Unhandled error", err);
+
+    if (res.headersSent) {
+      return;
+    }
+
     res.status(status).json({ message });
-    throw err;
   });
 
   const preferredPort = parseInt(process.env.PORT || String(API_PORT), 10);
