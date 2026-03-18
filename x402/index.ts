@@ -729,9 +729,37 @@ export async function requirePayment(
     // ==========================================================================
     const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
     const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
+    const authHeader = req.headers["authorization"] as string | undefined;
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
 
-    if (hasValidSession && sessionUserAddress) {
+    if (hasValidSession && sessionUserAddress && composeKeyToken) {
         console.log(`[x402] Session bypass attempt: ${sessionUserAddress}, chain=${explicitChainId}, amount=${amountWei}`);
+
+        const validation = await validateComposeKey(composeKeyToken, amountWei);
+        if (!validation.valid || !validation.payload || !validation.record) {
+            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation.error));
+            res.status(401).json({
+                error: "Invalid Compose Key",
+                details: validation.error,
+            });
+            return false;
+        }
+        if (validation.payload.sub.toLowerCase() !== sessionUserAddress.toLowerCase()) {
+            setComposeSessionInvalidHeader(res, "invalid_key");
+            res.status(401).json({
+                error: "Invalid Compose Key",
+                details: "Compose Key user does not match session user",
+            });
+            return false;
+        }
+        if (validation.record.chainId && validation.record.chainId !== explicitChainId) {
+            setComposeSessionInvalidHeader(res, "invalid_key");
+            res.status(401).json({
+                error: "Invalid Compose Key",
+                details: "Compose Key chain does not match request chain",
+            });
+            return false;
+        }
 
         const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
         if (!sessionBudget) {
@@ -803,9 +831,6 @@ export async function requirePayment(
     // Compose Key Flow (external clients like Cursor, OpenClaw, OpenCode, ...)
     // Performs ACTUAL on-chain USDC settlement using session key authority
     // ==========================================================================
-    const authHeader = req.headers["authorization"] as string | undefined;
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
-
     if (composeKeyToken) {
         console.log(`[x402] Compose Key detected, validating...`);
 
