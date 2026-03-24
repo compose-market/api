@@ -111,7 +111,7 @@ function getUserIntentsKey(address: string): string {
 
 /**
  * Initialize or update session budget from on-chain session creation
- * Called when user creates a session via addSessionKey
+ * Called when user creates an allowance-backed session on-chain
  */
 export async function initializeSessionBudget(
     userAddress: string,
@@ -415,7 +415,7 @@ export async function cancelBudgetIntent(
         return;
     }
 
-    await unlockBudget(intent.userAddress, intent.chainId, intent.amountWei, intentId);
+    await unlockBudget(intent.userAddress, intent.chainId, intent.amountWei);
     await markIntentFailed(intentId, error);
 }
 
@@ -458,13 +458,8 @@ export async function getBudgetInfo(
 
     // Get pending intent count
     const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
-    let pendingCount = 0;
-    for (const id of intentIds) {
-        const intent = await getPaymentIntent(id);
-        if (intent && intent.status === "locked") {
-            pendingCount++;
-        }
-    }
+    const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
+    const pendingCount = intents.filter((intent) => intent && intent.status === "locked").length;
 
     return {
         totalWei: total.toString(),
@@ -544,16 +539,8 @@ export async function getPaymentIntent(intentId: string): Promise<PaymentIntent 
  */
 export async function getPendingIntents(): Promise<PaymentIntent[]> {
     const intentIds = await redisSMembers(PENDING_INTENTS_KEY);
-    const intents: PaymentIntent[] = [];
-
-    for (const id of intentIds) {
-        const intent = await getPaymentIntent(id);
-        if (intent && intent.status === "locked") {
-            intents.push(intent);
-        }
-    }
-
-    return intents;
+    const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
+    return intents.filter((intent): intent is PaymentIntent => Boolean(intent && intent.status === "locked"));
 }
 
 /**
@@ -578,16 +565,14 @@ export async function getPendingIntentsGrouped(): Promise<Map<string, PaymentInt
  */
 export async function getPendingTotal(userAddress: string, chainId: number): Promise<bigint> {
     const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
-    let total = 0n;
-
-    for (const id of intentIds) {
-        const intent = await getPaymentIntent(id);
-        if (intent && intent.status === "locked" && intent.chainId === chainId) {
-            total += BigInt(intent.amountWei);
+    const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
+    return intents.reduce((total, intent) => {
+        if (!intent || intent.status !== "locked" || intent.chainId !== chainId) {
+            return total;
         }
-    }
 
-    return total;
+        return total + BigInt(intent.amountWei);
+    }, 0n);
 }
 
 /**

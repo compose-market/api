@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 
 import { extractComposeKeyFromHeader, getKeyBudgetInfo, validateComposeKey } from "./keys/middleware.js";
 import { getKeyRecord, getKeyReservedBudget } from "./keys/storage.js";
+import type { ComposeKeyPurpose } from "./keys/types.js";
 import {
     quoteMeteredAuthorization,
     quoteMeteredSettlement,
@@ -11,6 +12,14 @@ import {
     type MeteredSettlementInput,
 } from "./metering.js";
 import {
+    cancelBudgetIntent,
+    getBudgetInfo as getSessionBudgetInfo,
+    lockBudget,
+    markIntentsSettled,
+    markSettled,
+    unlockBudget,
+} from "./session-budget.js";
+import {
     redisDel,
     redisExpire,
     redisGet,
@@ -19,6 +28,7 @@ import {
     redisHSet,
     redisSetNXEX,
 } from "./keys/redis.js";
+import { merchantWalletAddress } from "./wallets.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
@@ -56,6 +66,7 @@ export interface AbortPaymentIntentInput {
 export interface PaymentIntentRecord {
     paymentIntentId: string;
     keyId: string;
+    purpose: ComposeKeyPurpose;
     userAddress: string;
     chainId: number;
     service: string;
@@ -71,6 +82,7 @@ export interface PaymentIntentRecord {
     meterLineItems?: MeteredQuotedLineItem[];
     providerAmountWei?: string;
     platformFeeWei?: string;
+    sessionBudgetIntentId?: string;
     txHash?: string;
     error?: string;
     createdAt: number;
@@ -339,6 +351,7 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
     return {
         paymentIntentId: data.paymentIntentId,
         keyId: data.keyId,
+        purpose: data.purpose === "session" ? "session" : "api",
         userAddress: data.userAddress,
         chainId: parseInt(data.chainId, 10),
         service: data.service,
@@ -354,6 +367,7 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         meterLineItems: parseMeterLineItems(data.meterLineItems),
         providerAmountWei: data.providerAmountWei || undefined,
         platformFeeWei: data.platformFeeWei || undefined,
+        sessionBudgetIntentId: data.sessionBudgetIntentId || undefined,
         txHash: data.txHash || undefined,
         error: data.error || undefined,
         createdAt: parseInt(data.createdAt, 10),
@@ -381,12 +395,40 @@ async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>
     };
 }
 
+async function buildSessionBudgetHeaders(
+    userAddress: string,
+    chainId: number,
+): Promise<Record<string, string>> {
+    const budgetInfo = await getSessionBudgetInfo(userAddress, chainId);
+    if (!budgetInfo) {
+        return {};
+    }
+
+    return {
+        "x-session-budget-limit": budgetInfo.totalWei,
+        "x-session-budget-used": budgetInfo.usedWei,
+        "x-session-budget-locked": budgetInfo.lockedWei,
+        "x-session-budget-remaining": budgetInfo.availableWei,
+    };
+}
+
+async function buildPaymentBudgetHeaders(input: {
+    keyId: string;
+    purpose: ComposeKeyPurpose;
+    userAddress: string;
+    chainId: number;
+}): Promise<Record<string, string>> {
+    if (input.purpose === "session") {
+        return buildSessionBudgetHeaders(input.userAddress, input.chainId);
+    }
+
+    return buildBudgetHeaders(input.keyId);
+}
+
 export async function authorizePaymentIntent(
     input: AuthorizePaymentIntentInput,
 ): Promise<PaymentIntentResult<AuthorizedPaymentIntentBody>> {
     try {
-        validateAuthorizeInput(input);
-        const authorizationAmount = resolveAuthorizationAmount(input);
         const token = extractComposeKeyFromHeader(input.authorization);
 
         if (!token) {
@@ -398,17 +440,92 @@ export async function authorizePaymentIntent(
             return failure(401, validation.error || "Invalid Compose key");
         }
 
-        if (validation.record.chainId && validation.record.chainId !== input.chainId) {
+        const chainId = Number.isInteger(input.chainId) && input.chainId > 0
+            ? input.chainId
+            : validation.record.chainId ?? Number.NaN;
+
+        if (!Number.isInteger(chainId) || chainId <= 0) {
+            return failure(400, "x-chain-id header is required");
+        }
+
+        if (validation.record.chainId && validation.record.chainId !== chainId) {
             return failure(409, "Compose key chainId does not match request chainId");
         }
 
+        const normalizedInput = {
+            ...input,
+            chainId,
+        };
+        validateAuthorizeInput(normalizedInput);
+        const authorizationAmount = resolveAuthorizationAmount(normalizedInput);
         const paymentIntentId = randomUUID();
         const recordKey = composeKeyRecordKey(validation.payload.keyId);
+        const purpose = validation.record.purpose;
 
         const budgetState = await withRedisLock(composeKeyLockKey(validation.payload.keyId), async () => {
             const record = await getKeyRecord(validation.payload!.keyId);
             if (!record) {
                 throw new Error("Compose key record not found");
+            }
+
+            if (record.purpose === "session") {
+                const requestedAmountWei = authorizationAmount.useBudgetCap
+                    ? (await getSessionBudgetInfo(validation.payload!.sub, chainId))?.availableWei
+                    : authorizationAmount.maxAmountWei;
+
+                if (!requestedAmountWei) {
+                    return {
+                        ok: false as const,
+                    };
+                }
+
+                if (BigInt(requestedAmountWei) <= 0n) {
+                    return {
+                        ok: false as const,
+                    };
+                }
+
+                const reservation = await lockBudget(
+                    validation.payload!.sub,
+                    chainId,
+                    requestedAmountWei,
+                    merchantWalletAddress,
+                    paymentIntentId,
+                    authorizationAmount.metering?.subject,
+                );
+
+                if (!reservation.success) {
+                    return {
+                        ok: false as const,
+                    };
+                }
+
+                const now = Date.now();
+                await redisHSet(paymentIntentKey(paymentIntentId), {
+                    paymentIntentId,
+                    keyId: validation.payload!.keyId,
+                    purpose: "session",
+                    userAddress: validation.payload!.sub.toLowerCase(),
+                    chainId: String(chainId),
+                    service: normalizedInput.service,
+                    action: normalizedInput.action,
+                    resource: normalizedInput.resource,
+                    method: normalizedInput.method,
+                    maxAmountWei: requestedAmountWei,
+                    status: "authorized",
+                    composeRunId: toOptionalString(normalizedInput.composeRunId || ""),
+                    idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
+                    sessionBudgetIntentId: toOptionalString(reservation.intentId || ""),
+                    ...meteringRedisFields(authorizationAmount.metering),
+                    createdAt: String(now),
+                    updatedAt: String(now),
+                });
+                await redisExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
+
+                return {
+                    ok: true as const,
+                    reservedAmountWei: requestedAmountWei,
+                };
             }
 
             const reserved = BigInt(await getKeyReservedBudget(validation.payload!.keyId));
@@ -438,16 +555,17 @@ export async function authorizePaymentIntent(
             await redisHSet(paymentIntentKey(paymentIntentId), {
                 paymentIntentId,
                 keyId: validation.payload!.keyId,
+                purpose: "api",
                 userAddress: validation.payload!.sub.toLowerCase(),
-                chainId: String(input.chainId),
-                service: input.service,
-                action: input.action,
-                resource: input.resource,
-                method: input.method,
+                chainId: String(chainId),
+                service: normalizedInput.service,
+                action: normalizedInput.action,
+                resource: normalizedInput.resource,
+                method: normalizedInput.method,
                 maxAmountWei: reservedAmountWei,
                 status: "authorized",
-                composeRunId: toOptionalString(input.composeRunId || ""),
-                idempotencyKey: toOptionalString(input.idempotencyKey || ""),
+                composeRunId: toOptionalString(normalizedInput.composeRunId || ""),
+                idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
                 ...meteringRedisFields(authorizationAmount.metering),
                 createdAt: String(now),
                 updatedAt: String(now),
@@ -461,10 +579,26 @@ export async function authorizePaymentIntent(
         });
 
         if (!budgetState.ok) {
-            return failure(402, "Compose key budget exhausted");
+            const headers = await buildPaymentBudgetHeaders({
+                keyId: validation.payload.keyId,
+                purpose,
+                userAddress: validation.payload.sub.toLowerCase(),
+                chainId,
+            });
+            return {
+                ok: false,
+                status: 402,
+                body: { error: "Compose key budget exhausted" },
+                headers,
+            };
         }
 
-        const headers = await buildBudgetHeaders(validation.payload.keyId);
+        const headers = await buildPaymentBudgetHeaders({
+            keyId: validation.payload.keyId,
+            purpose,
+            userAddress: validation.payload.sub.toLowerCase(),
+            chainId,
+        });
         headers["x-payment-intent-id"] = paymentIntentId;
 
         return {
@@ -498,7 +632,7 @@ export async function settlePaymentIntent(
             }
 
             if (intent.status === "settled") {
-                const headers = await buildBudgetHeaders(intent.keyId);
+                const headers = await buildPaymentBudgetHeaders(intent);
                 if (intent.txHash) {
                     headers["x-compose-key-tx-hash"] = intent.txHash;
                     headers["X-Transaction-Hash"] = intent.txHash;
@@ -546,13 +680,21 @@ export async function settlePaymentIntent(
             const settlement = await settleComposeKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.chainId);
 
             if (!settlement.success) {
-                await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                    await redisHIncrBy(
-                        composeKeyRecordKey(intent.keyId),
-                        "budgetReserved",
-                        -toRedisInteger(reservedAmount, "maxAmountWei"),
-                    );
-                });
+                if (intent.purpose === "session") {
+                    if (intent.sessionBudgetIntentId) {
+                        await cancelBudgetIntent(intent.sessionBudgetIntentId, settlement.error || "Payment settlement failed");
+                    } else {
+                        await unlockBudget(intent.userAddress, intent.chainId, intent.maxAmountWei);
+                    }
+                } else {
+                    await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
+                        await redisHIncrBy(
+                            composeKeyRecordKey(intent.keyId),
+                            "budgetReserved",
+                            -toRedisInteger(reservedAmount, "maxAmountWei"),
+                        );
+                    });
+                }
 
                 await redisHSet(paymentIntentKey(intent.paymentIntentId), {
                     status: "failed",
@@ -563,12 +705,24 @@ export async function settlePaymentIntent(
                 return failure(402, settlement.error || "Payment settlement failed");
             }
 
-            await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                const recordKey = composeKeyRecordKey(intent.keyId);
-                await redisHIncrBy(recordKey, "budgetReserved", -toRedisInteger(reservedAmount, "maxAmountWei"));
-                await redisHIncrBy(recordKey, "budgetUsed", toRedisInteger(finalAmount, "finalAmountWei"));
-                await redisHSet(recordKey, "lastUsedAt", String(Date.now()));
-            });
+            if (intent.purpose === "session") {
+                const unlockedAmount = reservedAmount - finalAmount;
+                if (unlockedAmount > 0n) {
+                    await unlockBudget(intent.userAddress, intent.chainId, unlockedAmount.toString());
+                }
+                await markSettled(intent.userAddress, intent.chainId, finalAmountStr);
+                if (intent.sessionBudgetIntentId) {
+                    await markIntentsSettled([intent.sessionBudgetIntentId], settlement.txHash || "");
+                }
+                await redisHSet(composeKeyRecordKey(intent.keyId), "lastUsedAt", String(Date.now()));
+            } else {
+                await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
+                    const recordKey = composeKeyRecordKey(intent.keyId);
+                    await redisHIncrBy(recordKey, "budgetReserved", -toRedisInteger(reservedAmount, "maxAmountWei"));
+                    await redisHIncrBy(recordKey, "budgetUsed", toRedisInteger(finalAmount, "finalAmountWei"));
+                    await redisHSet(recordKey, "lastUsedAt", String(Date.now()));
+                });
+            }
 
             const settledAt = Date.now();
             await redisHSet(paymentIntentKey(intent.paymentIntentId), {
@@ -587,7 +741,7 @@ export async function settlePaymentIntent(
                 }),
             });
 
-            const headers = await buildBudgetHeaders(intent.keyId);
+            const headers = await buildPaymentBudgetHeaders(intent);
             if (settlement.txHash) {
                 headers["x-compose-key-tx-hash"] = settlement.txHash;
                 headers["X-Transaction-Hash"] = settlement.txHash;
@@ -628,7 +782,7 @@ export async function abortPaymentIntent(
             }
 
             if (intent.status === "aborted") {
-                const headers = await buildBudgetHeaders(intent.keyId);
+                const headers = await buildPaymentBudgetHeaders(intent);
                 return {
                     ok: true,
                     status: 200,
@@ -651,13 +805,21 @@ export async function abortPaymentIntent(
 
             const reservedAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
 
-            await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                await redisHIncrBy(
-                    composeKeyRecordKey(intent.keyId),
-                    "budgetReserved",
-                    -toRedisInteger(reservedAmount, "maxAmountWei"),
-                );
-            });
+            if (intent.purpose === "session") {
+                if (intent.sessionBudgetIntentId) {
+                    await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
+                } else {
+                    await unlockBudget(intent.userAddress, intent.chainId, intent.maxAmountWei);
+                }
+            } else {
+                await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
+                    await redisHIncrBy(
+                        composeKeyRecordKey(intent.keyId),
+                        "budgetReserved",
+                        -toRedisInteger(reservedAmount, "maxAmountWei"),
+                    );
+                });
+            }
 
             const abortedAt = Date.now();
             await redisHSet(paymentIntentKey(intent.paymentIntentId), {
@@ -667,7 +829,7 @@ export async function abortPaymentIntent(
                 error: input.reason,
             });
 
-            const headers = await buildBudgetHeaders(intent.keyId);
+            const headers = await buildPaymentBudgetHeaders(intent);
             return {
                 ok: true,
                 status: 200,
