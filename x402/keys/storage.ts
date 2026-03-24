@@ -22,6 +22,7 @@ import {
     redisSRem,
 } from "./redis.js";
 import { signComposeKey } from "./jwt.js";
+import { getSessionBudget } from "../session-budget.js";
 import type {
     ComposeKeyRecord,
     ComposeKeyPurpose,
@@ -76,6 +77,16 @@ export interface ActiveSessionCandidate {
     chainId?: number;
     name?: string;
     revokedAt?: number;
+    missingBudgetState?: boolean;
+}
+
+function parseStoredInteger(value: string | undefined): number | null {
+    if (!value) {
+        return null;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
 }
 
 function latestKeySnapshot(candidate: ActiveSessionCandidate): NonNullable<ActiveSessionStatus["latestKey"]> {
@@ -89,6 +100,100 @@ function latestKeySnapshot(candidate: ActiveSessionCandidate): NonNullable<Activ
         chainId: candidate.chainId,
         name: candidate.name,
         revokedAt: candidate.revokedAt,
+    };
+}
+
+function getInactiveReason(candidate: ActiveSessionCandidate, now: number): SessionInactiveReason | null {
+    if (candidate.missingBudgetState) {
+        return "missing_budget_state";
+    }
+
+    if (candidate.revokedAt) {
+        return "revoked";
+    }
+
+    if (candidate.expiresAt <= now) {
+        return "expired";
+    }
+
+    if (candidate.budgetRemaining <= 0 && candidate.budgetLocked <= 0) {
+        return "budget_exhausted";
+    }
+
+    if (!candidate.token) {
+        return "budget_exhausted";
+    }
+
+    return null;
+}
+
+function buildActiveSessionCandidate(
+    keyId: string,
+    data: Record<string, string>,
+): ActiveSessionCandidate | null {
+    const purpose = parseComposeKeyPurpose(data.purpose);
+    const budgetLimit = parseStoredInteger(data.budgetLimit);
+    const budgetUsed = parseStoredInteger(data.budgetUsed);
+    const budgetLocked = parseStoredInteger(data.budgetReserved) ?? 0;
+    const expiresAt = parseStoredInteger(data.expiresAt);
+
+    if (!purpose || budgetLimit === null || budgetUsed === null || expiresAt === null) {
+        return null;
+    }
+
+    return {
+        keyId,
+        purpose,
+        token: data.token || undefined,
+        budgetLimit,
+        budgetUsed,
+        budgetLocked,
+        budgetRemaining: getBudgetRemaining({
+            budgetLimit,
+            budgetUsed,
+            budgetReserved: budgetLocked,
+        }),
+        expiresAt,
+        createdAt: parseStoredInteger(data.createdAt) ?? 0,
+        chainId: parseStoredInteger(data.chainId) ?? undefined,
+        name: data.name || undefined,
+        revokedAt: parseStoredInteger(data.revokedAt) ?? undefined,
+    };
+}
+
+function applySessionBudgetState(
+    candidate: ActiveSessionCandidate,
+    budget: Awaited<ReturnType<typeof getSessionBudget>> | undefined,
+): ActiveSessionCandidate {
+    if (!budget) {
+        return {
+            ...candidate,
+            missingBudgetState: true,
+            budgetLocked: 0,
+            budgetRemaining: 0,
+        };
+    }
+
+    const budgetLimit = parseStoredInteger(budget.totalBudgetWei);
+    const budgetUsed = parseStoredInteger(budget.usedBudgetWei);
+    const budgetLocked = parseStoredInteger(budget.lockedBudgetWei);
+
+    if (budgetLimit === null || budgetUsed === null || budgetLocked === null) {
+        return {
+            ...candidate,
+            missingBudgetState: true,
+            budgetLocked: 0,
+            budgetRemaining: 0,
+        };
+    }
+
+    return {
+        ...candidate,
+        budgetLimit,
+        budgetUsed,
+        budgetLocked,
+        budgetRemaining: Math.max(0, budgetLimit - budgetUsed - budgetLocked),
+        expiresAt: budget.expiresAt,
     };
 }
 
@@ -119,16 +224,12 @@ export function selectActiveSessionStatus(
             continue;
         }
 
-        const isRevoked = Boolean(candidate.revokedAt);
-        const isExpired = candidate.expiresAt <= now;
-        const spendableBudgetRemaining = Math.max(0, candidate.budgetLimit - candidate.budgetUsed);
-        const isDepleted = spendableBudgetRemaining <= 0;
-
-        if (!isRevoked && !isExpired && !isDepleted && candidate.token) {
+        const inactiveReason = getInactiveReason(candidate, now);
+        if (!inactiveReason) {
             return {
                 session: {
                     keyId: candidate.keyId,
-                    token: candidate.token,
+                    token: candidate.token!,
                     budgetLimit: candidate.budgetLimit,
                     budgetUsed: candidate.budgetUsed,
                     budgetLocked: candidate.budgetLocked,
@@ -144,7 +245,7 @@ export function selectActiveSessionStatus(
 
         if (!firstInvalid) {
             firstInvalid = {
-                reason: isRevoked ? "revoked" : isExpired ? "expired" : "budget_exhausted",
+                reason: inactiveReason,
                 key: candidate,
             };
         }
@@ -234,11 +335,6 @@ export async function createComposeKey(
     // Add to user's key set
     await redisSAdd(userKeysKey(normalizedAddress), keyId);
 
-    console.log(
-        `[keys/storage] Created ${request.purpose} key ${keyId} for ${normalizedAddress}, ` +
-        `budget: ${request.budgetLimit}, expires: ${new Date(request.expiresAt).toISOString()}`,
-    );
-
     return {
         keyId,
         token,
@@ -261,7 +357,6 @@ export async function getKeyRecord(keyId: string): Promise<ComposeKeyRecord | nu
 
     const purpose = parseComposeKeyPurpose(data.purpose);
     if (!purpose) {
-        console.warn(`[keys/storage] Key ${keyId} is missing a valid purpose`);
         return null;
     }
 
@@ -287,14 +382,8 @@ export async function getKeyRecord(keyId: string): Promise<ComposeKeyRecord | nu
 export async function listUserKeys(userAddress: string): Promise<ComposeKeyRecord[]> {
     const normalizedAddress = userAddress.toLowerCase();
     const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
-
-    const records: ComposeKeyRecord[] = [];
-    for (const keyId of keyIds) {
-        const record = await getKeyRecord(keyId);
-        if (record) {
-            records.push(record);
-        }
-    }
+    const records = (await Promise.all(keyIds.map((keyId) => getKeyRecord(keyId))))
+        .filter((record): record is ComposeKeyRecord => record !== null);
 
     // Sort by creation date, newest first
     records.sort((a, b) => b.createdAt - a.createdAt);
@@ -315,14 +404,12 @@ export async function recordKeyUsage(keyId: string, amountWei: number): Promise<
     // Get current values
     const record = await getKeyRecord(keyId);
     if (!record) {
-        console.log(`[keys/storage] Key ${keyId} not found`);
         return -1;
     }
 
     // Check if budget would be exceeded
     const newUsed = record.budgetUsed + amountWei;
     if (newUsed > record.budgetLimit) {
-        console.log(`[keys/storage] Key ${keyId} budget exceeded: ${newUsed} > ${record.budgetLimit}`);
         return -1;
     }
 
@@ -331,8 +418,6 @@ export async function recordKeyUsage(keyId: string, amountWei: number): Promise<
 
     // Update last used timestamp
     await redisHSet(recordKey, "lastUsedAt", String(Date.now()));
-
-    console.log(`[keys/storage] Key ${keyId} usage: ${updatedUsed}/${record.budgetLimit} wei`);
 
     return updatedUsed;
 }
@@ -359,12 +444,9 @@ export async function syncBudgetAfterSettlement(
         if (record && record.chainId === chainId) {
             const recordKey = keyRecordKey(keyId);
             await redisHSet(recordKey, "budgetUsed", totalUsedWei);
-            console.log(`[keys/storage] Synced key ${keyId} budgetUsed to ${totalUsedWei} after settlement`);
             return;
         }
     }
-
-    console.log(`[keys/storage] No key found for ${addr} chain ${chainId} to sync budget`);
 }
 
 /**
@@ -385,12 +467,10 @@ export async function revokeKey(keyId: string, userAddress: string): Promise<boo
     const record = await getKeyRecord(keyId);
 
     if (!record) {
-        console.log(`[keys/storage] Key ${keyId} not found for revocation`);
         return false;
     }
 
     if (record.userAddress.toLowerCase() !== userAddress.toLowerCase()) {
-        console.log(`[keys/storage] Unauthorized revocation attempt for key ${keyId}`);
         return false;
     }
 
@@ -403,8 +483,6 @@ export async function revokeKey(keyId: string, userAddress: string): Promise<boo
     if (ttlSeconds > 0) {
         await redisSet(revokedKey(keyId), "1", ttlSeconds);
     }
-
-    console.log(`[keys/storage] Key ${keyId} revoked`);
 
     return true;
 }
@@ -428,18 +506,6 @@ export async function getKeyReservedBudget(keyId: string): Promise<number> {
 }
 
 /**
- * Rollback budget usage (when on-chain settlement fails)
- * 
- * @param keyId - Key ID
- * @param amountWei - Amount to rollback
- */
-export async function rollbackKeyUsage(keyId: string, amountWei: number): Promise<void> {
-    const recordKey = keyRecordKey(keyId);
-    await redisHIncrBy(recordKey, "budgetUsed", -amountWei);
-    console.log(`[keys/storage] Key ${keyId} budget rolled back by ${amountWei} wei`);
-}
-
-/**
  * Get active session for a user (most recent non-expired, non-revoked key with budget)
  * Returns the key WITH token for session restoration
  * 
@@ -453,64 +519,52 @@ export async function getActiveSessionStatus(
 ): Promise<ActiveSessionStatus> {
     const normalizedAddress = userAddress.toLowerCase();
     const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
-    const candidates: ActiveSessionCandidate[] = [];
-    for (const keyId of keyIds) {
-        const data = await redisHGetAll(keyRecordKey(keyId));
-        if (!data || Object.keys(data).length === 0) {
-            // Redis key expired but set index still references it.
-            await redisSRem(userKeysKey(normalizedAddress), keyId);
-            continue;
-        }
+    const userKeyIndex = userKeysKey(normalizedAddress);
+    const loadedRecords = await Promise.all(
+        keyIds.map(async (keyId) => [keyId, await redisHGetAll(keyRecordKey(keyId))] as const),
+    );
 
-        const purpose = parseComposeKeyPurpose(data.purpose);
-        if (!purpose) {
-            continue;
-        }
+    const staleKeyIds = loadedRecords
+        .filter(([, data]) => !data || Object.keys(data).length === 0)
+        .map(([keyId]) => keyId);
 
-        const budgetLimit = Number.parseInt(data.budgetLimit || "0", 10);
-        const budgetUsed = Number.parseInt(data.budgetUsed || "0", 10);
-        const budgetLocked = Number.parseInt(data.budgetReserved || "0", 10);
-        const expiresAt = Number.parseInt(data.expiresAt || "0", 10);
-        const createdAt = Number.parseInt(data.createdAt || "0", 10);
-        const chain = data.chainId ? Number.parseInt(data.chainId, 10) : undefined;
-        const revokedAt = data.revokedAt ? Number.parseInt(data.revokedAt, 10) : undefined;
-
-        if (
-            !Number.isFinite(budgetLimit) ||
-            !Number.isFinite(budgetUsed) ||
-            !Number.isFinite(budgetLocked) ||
-            !Number.isFinite(expiresAt)
-        ) {
-            continue;
-        }
-
-        const budgetRemaining = getBudgetRemaining({
-            budgetLimit,
-            budgetUsed,
-            budgetReserved: budgetLocked,
-        });
-
-        candidates.push({
-            keyId,
-            purpose,
-            token: data.token || undefined,
-            budgetLimit,
-            budgetUsed,
-            budgetLocked,
-            budgetRemaining,
-            expiresAt,
-            createdAt: Number.isFinite(createdAt) ? createdAt : 0,
-            chainId: Number.isFinite(chain || NaN) ? chain : undefined,
-            name: data.name || undefined,
-            revokedAt: Number.isFinite(revokedAt || NaN) ? revokedAt : undefined,
-        });
+    if (staleKeyIds.length > 0) {
+        await Promise.all(staleKeyIds.map((keyId) => redisSRem(userKeyIndex, keyId)));
     }
 
-    const status = selectActiveSessionStatus(candidates, chainId);
-    if (status.session) {
-        console.log(`[keys/storage] Found active session ${status.session.keyId} for ${normalizedAddress}`);
-    } else {
-        console.log(`[keys/storage] No active session found for ${normalizedAddress}`);
+    const candidates = loadedRecords
+        .map(([keyId, data]) => {
+            if (!data || Object.keys(data).length === 0) {
+                return null;
+            }
+
+            return buildActiveSessionCandidate(keyId, data);
+        })
+        .filter((candidate): candidate is ActiveSessionCandidate => candidate !== null);
+
+    const sessionChainIds = [...new Set(
+        candidates
+            .filter((candidate) => candidate.purpose === "session" && typeof candidate.chainId === "number")
+            .map((candidate) => candidate.chainId as number),
+    )];
+
+    const sessionBudgets = new Map<number, Awaited<ReturnType<typeof getSessionBudget>> | undefined>();
+    const sessionBudgetEntries = await Promise.all(
+        sessionChainIds.map(async (candidateChainId) => (
+            [candidateChainId, await getSessionBudget(normalizedAddress, candidateChainId)] as const
+        )),
+    );
+    for (const [candidateChainId, budget] of sessionBudgetEntries) {
+        sessionBudgets.set(candidateChainId, budget);
     }
-    return status;
+
+    const resolvedCandidates = candidates.map((candidate) => {
+        if (candidate.purpose !== "session" || typeof candidate.chainId !== "number") {
+            return candidate;
+        }
+
+        return applySessionBudgetState(candidate, sessionBudgets.get(candidate.chainId));
+    });
+
+    return selectActiveSessionStatus(resolvedCandidates, chainId);
 }

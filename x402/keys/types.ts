@@ -128,7 +128,8 @@ export type SessionInactiveReason =
     | "expired"
     | "budget_exhausted"
     | "revoked"
-    | "chain_mismatch";
+    | "chain_mismatch"
+    | "missing_budget_state";
 
 export interface ActiveSessionRecord {
     keyId: string;
