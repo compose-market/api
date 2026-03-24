@@ -1,16 +1,15 @@
 /**
  * Cloud Run Handler
- * 
+ *
  * Handles non-inference API endpoints:
  * - Account management (Compose Keys, sessions)
- * - Account Abstraction (Cronos)
+ * - Compose x402 facilitator
  * - Backpack/Composio integrations
  * - Model registry queries
- * 
- * @module api/handler
  */
 
 import type { Application, NextFunction, Request, Response, RequestHandler } from "express";
+import { createPublicClient, http } from "viem";
 
 // Define types locally - Cloud Run uses Express request/response via mock pattern
 interface APIGatewayProxyEventV2 {
@@ -49,7 +48,7 @@ import {
 
 import { initializeSessionBudget } from "./x402/session-budget.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
-import { handleLocalSynapseRoute } from "./local/synapse.js";
+import { handleLocalSynapseRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
 import type { UnifiedModality, UnifiedUsage } from "./inference/core.js";
@@ -59,11 +58,19 @@ import {
     abortPaymentIntent,
     settlePaymentIntent,
 } from "./x402/intents.js";
-// Account Abstraction
-const loadAA = () => import("./aa/index.js");
+import { merchantWalletAddress } from "./x402/wallets.js";
+import { getActiveChainId, getViemChain, getUsdcAddress, getRpcUrl } from "./x402/configs/chains.js";
+import {
+    getComposeFacilitatorSupported,
+    parseComposeFacilitatorSettleRequest,
+    parseComposeFacilitatorVerifyRequest,
+    settleComposePayment,
+    verifyComposePayment,
+} from "./x402/facilitator.js";
 
 // Backpack / Composio
 const loadBackpack = () => import("./backpack/composio.js");
+const loadBackpackPermissions = () => import("./backpack/backpack.js");
 
 // Model Registry
 const loadRegistry = () => import("./inference/modelsRegistry.js");
@@ -80,19 +87,14 @@ const corsHeaders = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers":
         "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
-        "X-PAYMENT, x-payment, x-session-active, x-session-budget-remaining, " +
+        "x-session-active, x-session-budget-remaining, " +
         "x-session-user-address, x-network-internal, x-chain-id, x-payment-intent-id, Access-Control-Expose-Headers",
     "Access-Control-Expose-Headers":
-        "PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
-        "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, x-compose-session-invalid, x-payment-intent-id, *",
+        "PAYMENT-REQUIRED, payment-required, PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
+        "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, " +
+        "x-session-budget-limit, x-session-budget-used, x-session-budget-locked, x-session-budget-remaining, " +
+        "x-session-status, x-session-expires-in, x-session-budget-percent, x-compose-session-invalid, x-payment-intent-id, *",
 };
-
-interface SessionBudgetSeed {
-    userAddress: string;
-    totalBudgetWei: string;
-    chainId: number;
-    expiresAt: number;
-}
 
 function buildInactiveSessionPayload(reason: SessionInactiveReason): {
     hasSession: false;
@@ -104,24 +106,59 @@ function buildInactiveSessionPayload(reason: SessionInactiveReason): {
     };
 }
 
-function buildSessionBudgetSeed(input: {
-    userAddress: string;
-    budgetLimit: number | string;
-    chainId: number | undefined;
-    expiresAt: number;
-}): SessionBudgetSeed {
-    if (!Number.isInteger(input.chainId) || (input.chainId ?? 0) <= 0) {
-        throw new Error("chainId is required");
+function parsePositiveIntegerInput(value: unknown, fieldName: string): number {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+        return value;
     }
 
-    const chainId = input.chainId as number;
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isInteger(parsed) && parsed > 0) {
+            return parsed;
+        }
+    }
 
-    return {
-        userAddress: input.userAddress.trim().toLowerCase(),
-        totalBudgetWei: String(input.budgetLimit),
-        chainId,
-        expiresAt: input.expiresAt,
-    };
+    throw new Error(`${fieldName} must be a positive integer`);
+}
+
+async function hasSufficientSessionAllowance(input: {
+    userAddress: string;
+    chainId: number;
+    minimumBudgetWei: number;
+}): Promise<boolean> {
+    const chain = getViemChain(input.chainId);
+    const usdcAddress = getUsdcAddress(input.chainId);
+    const rpcUrl = getRpcUrl(input.chainId);
+
+    if (!chain || !usdcAddress) {
+        throw new Error(`Unsupported chain for session creation: ${input.chainId}`);
+    }
+
+    const publicClient = createPublicClient({
+        chain,
+        transport: http(rpcUrl),
+    });
+
+    const currentAllowance = await publicClient.readContract({
+        address: usdcAddress,
+        abi: [{
+            name: "allowance",
+            type: "function",
+            inputs: [
+                { name: "owner", type: "address" },
+                { name: "spender", type: "address" },
+            ],
+            outputs: [{ name: "", type: "uint256" }],
+            stateMutability: "view",
+        }] as const,
+        functionName: "allowance",
+        args: [
+            input.userAddress as `0x${string}`,
+            merchantWalletAddress,
+        ],
+    });
+
+    return currentAllowance >= BigInt(input.minimumBudgetWei);
 }
 
 function getHeader(event: APIGatewayProxyEventV2, name: string): string | undefined {
@@ -290,18 +327,15 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/payments/settle", routeHandler);
     app.post("/api/payments/abort", routeHandler);
     app.post("/api/payments/meter/model", routeHandler);
+    app.get("/api/x402/facilitator/supported", routeHandler);
+    app.post("/api/x402/facilitator/verify", routeHandler);
+    app.post("/api/x402/facilitator/settle", routeHandler);
 
     app.get("/api/session", routeHandler);
     app.post("/api/keys", routeHandler);
     app.get("/api/keys", routeHandler);
     app.post("/api/keys/settle", routeHandler);
     app.delete(/^\/api\/keys\/[^/]+$/, routeHandler);
-
-    app.post("/api/aa/prepare", routeHandler);
-    app.post("/api/aa/submit", routeHandler);
-    app.get(/^\/api\/aa\/nonce\/0x[a-fA-F0-9]{40}$/, routeHandler);
-    app.post("/api/aa/register-cronos", routeHandler);
-    app.get(/^\/api\/aa\/predict-address\/0x[a-fA-F0-9]{40}$/, routeHandler);
 
     app.use("/api/backpack", routeHandler);
     app.use("/api/registry", routeHandler);
@@ -391,6 +425,18 @@ export async function handler(
             return handleMeterModelPayment(event);
         }
 
+        if (method === "GET" && path === "/api/x402/facilitator/supported") {
+            return handleComposeFacilitatorSupported();
+        }
+
+        if (method === "POST" && path === "/api/x402/facilitator/verify") {
+            return handleComposeFacilitatorVerify(event);
+        }
+
+        if (method === "POST" && path === "/api/x402/facilitator/settle") {
+            return handleComposeFacilitatorSettle(event);
+        }
+
         // ==========================================================================
         // Compose Keys API Routes
         // ==========================================================================
@@ -425,35 +471,6 @@ export async function handler(
         // DELETE /api/keys/:keyId - Revoke a Compose Key
         if (method === "DELETE" && path.startsWith("/api/keys/")) {
             return handleRevokeKey(event);
-        }
-
-        // ==========================================================================
-        // Account Abstraction API Routes (Cronos)
-        // ==========================================================================
-
-        // POST /api/aa/prepare - Prepare UserOperation
-        if (method === "POST" && path === "/api/aa/prepare") {
-            return handleAAPrepare(event);
-        }
-
-        // POST /api/aa/submit - Submit UserOperation
-        if (method === "POST" && path === "/api/aa/submit") {
-            return handleAASubmit(event);
-        }
-
-        // GET /api/aa/nonce/:address - Get Smart Account nonce
-        if (method === "GET" && path.match(/^\/api\/aa\/nonce\/0x[a-fA-F0-9]{40}$/)) {
-            return handleAANonce(event);
-        }
-
-        // POST /api/aa/register-cronos - Register account on Cronos
-        if (method === "POST" && path === "/api/aa/register-cronos") {
-            return handleAARegister(event);
-        }
-
-        // GET /api/aa/predict-address/:adminAddress - Predict Smart Account address
-        if (method === "GET" && path.match(/^\/api\/aa\/predict-address\/0x[a-fA-F0-9]{40}$/)) {
-            return handleAAPredictAddress(event);
         }
 
         // ==========================================================================
@@ -541,7 +558,7 @@ export async function handler(
 
         // GET /api/settlement/status - Get pending settlement info for a user
         if (method === "GET" && path === "/api/settlement/status") {
-            const chainId = parseInt(event.queryStringParameters?.chainId || "338");
+            const chainId = parseInt(event.queryStringParameters?.chainId || String(getActiveChainId()), 10);
             const userAddress = requireUserAddressHeader(event);
 
             try {
@@ -761,14 +778,14 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
     const budgetPercentRemaining = budgetLimit > 0n ? (Number(budgetRemaining) / Number(budgetLimit)) * 100 : 0;
 
     const warnings = {
-        budgetDepleted: budgetRemaining <= 0n,
+        budgetDepleted: budgetRemaining <= 0n && budgetLocked <= 0n,
         budgetLow: budgetPercentRemaining < 20 && budgetRemaining > 0n,
         expiringSoon: expiresInSeconds < 300 && expiresInSeconds > 0,
         expired: expiresInSeconds <= 0,
     };
 
     response.status = {
-        isActive: !warnings.expired && budgetRemaining > 0n,
+        isActive: !warnings.expired && (budgetRemaining > 0n || budgetLocked > 0n),
         isExpired: warnings.expired,
         expiresInSeconds,
         budgetPercentRemaining,
@@ -777,6 +794,10 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
 
     // Add warning headers for frontend
     const headers: Record<string, string> = { ...corsHeaders };
+    headers["x-session-budget-limit"] = budgetLimit.toString();
+    headers["x-session-budget-used"] = budgetUsed.toString();
+    headers["x-session-budget-locked"] = budgetLocked.toString();
+    headers["x-session-budget-remaining"] = budgetRemaining.toString();
 
     if (warnings.budgetDepleted) {
         headers["x-session-status"] = "budget-depleted";
@@ -975,45 +996,75 @@ async function handleMeterModelPayment(event: APIGatewayProxyEventV2): Promise<A
 async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const body = event.body ? JSON.parse(event.body) : {};
     const purpose = body.purpose === "session" || body.purpose === "api" ? body.purpose : null;
-    if (!body.budgetLimit || !body.expiresAt || !body.chainId || !purpose) {
+
+    let budgetLimit: number;
+    let expiresAt: number;
+    let chainId: number;
+    try {
+        budgetLimit = parsePositiveIntegerInput(body.budgetLimit, "budgetLimit");
+        expiresAt = parsePositiveIntegerInput(body.expiresAt, "expiresAt");
+        chainId = parsePositiveIntegerInput(body.chainId, "chainId");
+    } catch (error) {
         return {
             statusCode: 400,
             headers: corsHeaders,
-            body: JSON.stringify({ error: "budgetLimit, expiresAt, chainId, and purpose are required" }),
+            body: JSON.stringify({
+                error: error instanceof Error
+                    ? error.message
+                    : "budgetLimit, expiresAt, chainId, and purpose are required",
+            }),
+        };
+    }
+    if (!purpose) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "purpose must be either session or api" }),
+        };
+    }
+    if (expiresAt <= Date.now()) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "expiresAt must be in the future" }),
         };
     }
 
     const userAddress = requireUserAddressHeader(event);
-    if (purpose === "session" && getHeader(event, "x-session-active") !== "true") {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "Session must be active before creating a Compose Key" }),
-        };
+    if (purpose === "session") {
+        const hasAllowance = await hasSufficientSessionAllowance({
+            userAddress,
+            chainId,
+            minimumBudgetWei: budgetLimit,
+        });
+
+        if (!hasAllowance) {
+            return {
+                statusCode: 409,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    error: "On-chain session allowance is missing or below the requested budget",
+                    hint: "Approve the USDC session budget on-chain before creating the session",
+                }),
+            };
+        }
     }
 
     const result = await createComposeKey(userAddress, {
-        budgetLimit: body.budgetLimit,
-        expiresAt: body.expiresAt,
+        budgetLimit,
+        expiresAt,
         purpose,
         name: body.name,
-        chainId: body.chainId,
+        chainId,
     });
 
     if (purpose === "session") {
         try {
-            const budgetSeed = buildSessionBudgetSeed({
-                userAddress,
-                budgetLimit: body.budgetLimit,
-                chainId: body.chainId,
-                expiresAt: body.expiresAt,
-            });
-
             await initializeSessionBudget(
-                budgetSeed.userAddress,
-                budgetSeed.chainId,
-                budgetSeed.totalBudgetWei,
-                budgetSeed.expiresAt,
+                userAddress.trim().toLowerCase(),
+                chainId,
+                String(budgetLimit),
+                expiresAt,
             );
         } catch (error) {
             await revokeKey(result.keyId, userAddress);
@@ -1027,9 +1078,9 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         }
     }
 
-    const budgetLimit = String(result.budgetLimit);
+    const budgetLimitString = String(result.budgetLimit);
     const budgetUsed = "0";
-    const budgetRemaining = budgetLimit;
+    const budgetRemaining = budgetLimitString;
     const createdAt = Date.now();
 
     return {
@@ -1037,12 +1088,12 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         headers: corsHeaders,
         body: JSON.stringify({
             ...result,
-            budgetLimit,
+            budgetLimit: budgetLimitString,
             budgetUsed,
             budgetRemaining,
             createdAt,
             purpose,
-            chainId: body.chainId,
+            chainId,
         }),
     };
 }
@@ -1151,296 +1202,61 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
 }
 
 // =============================================================================
-// Account Abstraction Handlers
+// Compose Facilitator Handlers
 // =============================================================================
 
-async function handleAAPrepare(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const aa = await loadAA();
-    const body = event.body ? JSON.parse(event.body) : {};
-    const { chainId, smartAccount, to, value, data, adminAddress } = body;
+async function handleComposeFacilitatorSupported(): Promise<APIGatewayProxyResultV2> {
+    return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify(getComposeFacilitatorSupported()),
+    };
+}
 
-    if (!chainId || !smartAccount || !to || !data) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({
-                error: "Missing required fields",
-                required: ["chainId", "smartAccount", "to", "data"],
-            }),
-        };
-    }
-
+async function handleComposeFacilitatorVerify(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     try {
-        let senderAddress = smartAccount as `0x${string}`;
-        if (adminAddress && (chainId === 338 || chainId === 25)) {
-            const predictedAddress = await aa.predictAccountAddress(adminAddress, "0x", chainId);
-            senderAddress = predictedAddress;
-        }
-
-        const deployed = await aa.isAccountDeployed(senderAddress, chainId);
-
-        let initCode: `0x${string}` = "0x";
-        if (!deployed) {
-            if (!adminAddress) {
-                return {
-                    statusCode: 400,
-                    headers: corsHeaders,
-                    body: JSON.stringify({
-                        error: "Account not deployed on this chain",
-                        details: "adminAddress is required to deploy Smart Account on Cronos.",
-                    }),
-                };
-            }
-            initCode = aa.generateInitCode(adminAddress, "0x", chainId);
-        }
-
-        const [nonce, gas] = await Promise.all([
-            aa.getNonce(senderAddress, chainId),
-            aa.estimateGas(chainId),
-        ]);
-
-        const callData = aa.encodeExecute(to, BigInt(value || "0"), data);
-        const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 5n : gas.verificationGasLimit;
-
-        const userOp = {
-            sender: senderAddress,
-            nonce,
-            initCode,
-            callData,
-            accountGasLimits: aa.packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
-            preVerificationGas: gas.preVerificationGas,
-            gasFees: aa.packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
-            paymasterAndData: "0x" as `0x${string}`,
-            signature: "0x" as `0x${string}`,
-        };
-
-        userOp.paymasterAndData = await aa.buildPaymasterAndData(userOp, chainId);
-        const entryPoint = aa.getEntryPointAddress(chainId);
-        const userOpHash = aa.getUserOpHash(userOp, entryPoint, chainId);
+        const body = event.body ? JSON.parse(event.body) : {};
+        const { paymentPayload, paymentRequirements } = parseComposeFacilitatorVerifyRequest(body);
+        const result = await verifyComposePayment(paymentPayload, paymentRequirements);
 
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify({
-                userOpHash,
-                userOp: {
-                    sender: userOp.sender,
-                    nonce: userOp.nonce.toString(),
-                    initCode: userOp.initCode,
-                    callData: userOp.callData,
-                    accountGasLimits: userOp.accountGasLimits,
-                    preVerificationGas: userOp.preVerificationGas.toString(),
-                    gasFees: userOp.gasFees,
-                    paymasterAndData: userOp.paymasterAndData,
-                },
-                accountDeployed: deployed,
-                chainId,
-            }),
+            body: JSON.stringify(result),
         };
     } catch (error) {
-        console.error("[aa/prepare] Error:", error);
+        console.error("[x402/facilitator/verify] Error:", error);
         return {
-            statusCode: 500,
+            statusCode: 400,
             headers: corsHeaders,
             body: JSON.stringify({
-                error: "Failed to prepare UserOperation",
+                error: "Failed to verify payment",
                 details: error instanceof Error ? error.message : String(error),
             }),
         };
     }
 }
 
-async function handleAASubmit(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const aa = await loadAA();
-    const body = event.body ? JSON.parse(event.body) : {};
-    const { chainId, smartAccount, signature, preparedUserOp, to, value, data, adminAddress } = body;
-
-    if (!chainId || !smartAccount || !signature) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({
-                error: "Missing required fields",
-                required: ["chainId", "smartAccount", "signature"],
-            }),
-        };
-    }
-
+async function handleComposeFacilitatorSettle(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     try {
-        let userOp;
-
-        if (preparedUserOp) {
-            userOp = {
-                sender: preparedUserOp.sender as `0x${string}`,
-                nonce: BigInt(preparedUserOp.nonce),
-                initCode: preparedUserOp.initCode as `0x${string}`,
-                callData: preparedUserOp.callData as `0x${string}`,
-                accountGasLimits: preparedUserOp.accountGasLimits as `0x${string}`,
-                preVerificationGas: BigInt(preparedUserOp.preVerificationGas),
-                gasFees: preparedUserOp.gasFees as `0x${string}`,
-                paymasterAndData: (preparedUserOp.paymasterAndData || "0x") as `0x${string}`,
-                signature: signature as `0x${string}`,
-            };
-        } else {
-            // Legacy flow
-            if (!to || !data) {
-                return {
-                    statusCode: 400,
-                    headers: corsHeaders,
-                    body: JSON.stringify({
-                        error: "Missing required fields for legacy flow",
-                        required: ["to", "data"],
-                    }),
-                };
-            }
-
-            const deployed = await aa.isAccountDeployed(smartAccount, chainId);
-
-            let initCode: `0x${string}` = "0x";
-            if (!deployed) {
-                if (!adminAddress) {
-                    return {
-                        statusCode: 400,
-                        headers: corsHeaders,
-                        body: JSON.stringify({
-                            error: "Account not deployed on this chain",
-                            details: "adminAddress is required to deploy Smart Account",
-                        }),
-                    };
-                }
-                initCode = aa.generateInitCode(adminAddress, "0x", chainId);
-            }
-
-            const [nonce, gas] = await Promise.all([
-                aa.getNonce(smartAccount, chainId),
-                aa.estimateGas(chainId),
-            ]);
-
-            const callData = aa.encodeExecute(to, BigInt(value || "0"), data);
-            const verificationGasLimit = initCode !== "0x" ? gas.verificationGasLimit * 3n : gas.verificationGasLimit;
-
-            userOp = {
-                sender: smartAccount as `0x${string}`,
-                nonce,
-                initCode,
-                callData,
-                accountGasLimits: aa.packAccountGasLimits(verificationGasLimit, gas.callGasLimit),
-                preVerificationGas: gas.preVerificationGas,
-                gasFees: aa.packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
-                paymasterAndData: "0x" as `0x${string}`,
-                signature: signature as `0x${string}`,
-            };
-
-            userOp.paymasterAndData = await aa.buildPaymasterAndData(userOp, chainId);
-        }
-
-        const result = await aa.submitUserOperation(userOp, chainId);
+        const body = event.body ? JSON.parse(event.body) : {};
+        const { paymentPayload, paymentRequirements } = parseComposeFacilitatorSettleRequest(body);
+        const result = await settleComposePayment(paymentPayload, paymentRequirements);
 
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify({
-                success: true,
-                txHash: result.txHash,
-                userOp: {
-                    sender: userOp.sender,
-                    nonce: userOp.nonce.toString(),
-                },
-            }),
+            body: JSON.stringify(result),
         };
     } catch (error) {
-        console.error("[aa/submit] Error:", error);
+        console.error("[x402/facilitator/settle] Error:", error);
         return {
-            statusCode: 500,
+            statusCode: 400,
             headers: corsHeaders,
             body: JSON.stringify({
-                error: "Failed to submit transaction",
+                error: "Failed to settle payment",
                 details: error instanceof Error ? error.message : String(error),
             }),
-        };
-    }
-}
-
-async function handleAANonce(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const aa = await loadAA();
-    const address = event.rawPath.split("/api/aa/nonce/")[1] as `0x${string}`;
-    const chainId = parseInt(event.queryStringParameters?.chainId || "338", 10);
-
-    try {
-        const nonce = await aa.getNonce(address, chainId);
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({ address, chainId, nonce: nonce.toString() }),
-        };
-    } catch (error) {
-        return {
-            statusCode: 500,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: String(error) }),
-        };
-    }
-}
-
-async function handleAARegister(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const aa = await loadAA();
-    const body = event.body ? JSON.parse(event.body) : {};
-    const { adminAddress } = body;
-
-    if (!adminAddress) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "adminAddress required" }),
-        };
-    }
-
-    try {
-        const result = await aa.registerAccountOnCronos(adminAddress);
-
-        if (!result.success) {
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({ error: result.error }),
-            };
-        }
-
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({
-                success: true,
-                accountAddress: result.accountAddress,
-                txHash: result.txHash,
-            }),
-        };
-    } catch (error) {
-        return {
-            statusCode: 500,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: String(error) }),
-        };
-    }
-}
-
-async function handleAAPredictAddress(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const aa = await loadAA();
-    const adminAddress = event.rawPath.split("/api/aa/predict-address/")[1] as `0x${string}`;
-    const chainId = parseInt(event.queryStringParameters?.chainId || "338", 10);
-
-    try {
-        const address = await aa.getPredictedAccountAddress(adminAddress, chainId);
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({ adminAddress, chainId, predictedAddress: address }),
-        };
-    } catch (error) {
-        return {
-            statusCode: 500,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: String(error) }),
         };
     }
 }
@@ -1455,6 +1271,48 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
     const method = event.requestContext.http.method;
 
     try {
+        // GET /api/backpack/permissions
+        if (path === "/api/backpack/permissions" && method === "GET") {
+            const userId = event.queryStringParameters?.userId;
+            if (!userId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            }
+            const permissions = await loadBackpackPermissions();
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ permissions: permissions.listPermissions(userId) }),
+            };
+        }
+
+        // POST /api/backpack/permissions/grant
+        if (path === "/api/backpack/permissions/grant" && method === "POST") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            if (!body.userId || !body.consentType) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and consentType required" }) };
+            }
+            const permissions = await loadBackpackPermissions();
+            permissions.grantPermission({
+                userId: body.userId,
+                consentType: body.consentType,
+                sessionId: body.sessionId,
+                agentId: body.agentId,
+                expiresAt: body.expiresAt,
+            });
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
+        }
+
+        // POST /api/backpack/permissions/revoke
+        if (path === "/api/backpack/permissions/revoke" && method === "POST") {
+            const body = event.body ? JSON.parse(event.body) : {};
+            if (!body.userId || !body.consentType) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and consentType required" }) };
+            }
+            const permissions = await loadBackpackPermissions();
+            permissions.revokePermission(body.userId, body.consentType, body.sessionId, body.agentId);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
+        }
+
         // POST /api/backpack/connect
         if (path === "/api/backpack/connect" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};

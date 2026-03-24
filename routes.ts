@@ -20,6 +20,7 @@ import {
   validateComposeKey,
 } from "./x402/keys/middleware.js";
 import { getKeyReservedBudget } from "./x402/keys/storage.js";
+import { getActiveSessionStatus } from "./x402/keys/index.js";
 
 interface PublicRouteEvent {
   rawPath: string;
@@ -454,10 +455,6 @@ async function prepareRoutePayment(
 
   const chainHeader = getHeader(req, "x-chain-id");
   const chainId = chainHeader ? parseInt(chainHeader, 10) : Number.NaN;
-  if (!Number.isInteger(chainId) || chainId <= 0) {
-    res.status(400).json({ error: "x-chain-id header is required" });
-    return null;
-  }
 
   let sessionContext: {
     maxAmountWei: string;
@@ -547,11 +544,31 @@ async function resolveSessionBudgetReservation(authorization: string): Promise<{
     throw new Error(validation.error || "Invalid Compose key");
   }
 
+  if (validation.record?.purpose === "session") {
+    const sessionStatus = await getActiveSessionStatus(
+      validation.payload.sub,
+      validation.record.chainId,
+    );
+    if (!sessionStatus.session || sessionStatus.session.keyId !== validation.payload.keyId) {
+      throw new Error("Active session budget state not found");
+    }
+
+    const availableWei = String(sessionStatus.session.budgetRemaining);
+    if (BigInt(availableWei) <= 0n) {
+      throw new Error("Compose key budget exhausted");
+    }
+
+    return {
+      maxAmountWei: availableWei,
+      userAddress: validation.payload.sub,
+      sessionBudgetRemaining: availableWei,
+    };
+  }
+
   const budgetInfo = await getKeyBudgetInfo(validation.payload.keyId);
   if (!budgetInfo) {
     throw new Error("Compose key budget record not found");
   }
-
   const reserved = await getKeyReservedBudget(validation.payload.keyId);
   const available = BigInt(Math.max(0, budgetInfo.budgetLimit - budgetInfo.budgetUsed - reserved));
   if (available <= 0n) {
@@ -768,6 +785,7 @@ function payableStreamRoute(config: {
       const reader = runtimeResponse.body.getReader();
       let ended = false;
       let settlement: RouteSettlement | null = null;
+      let sawExplicitErrorEvent = false;
       let buffer = "";
       const decoder = new TextDecoder();
 
@@ -793,6 +811,10 @@ function payableStreamRoute(config: {
               continue;
             }
 
+            if (parsed.eventName === "error" || parsed.data.type === "error") {
+              sawExplicitErrorEvent = true;
+            }
+
             const resolved = config.resolveSettlement(parsed.eventName, parsed.data, req);
             if (resolved) {
               settlement = resolved;
@@ -805,6 +827,9 @@ function payableStreamRoute(config: {
         if (buffer.trim().length > 0) {
           const parsed = parseSseEventBlock(buffer);
           if (parsed) {
+            if (parsed.eventName === "error" || parsed.data.type === "error") {
+              sawExplicitErrorEvent = true;
+            }
             const resolved = config.resolveSettlement(parsed.eventName, parsed.data, req);
             if (resolved) {
               settlement = resolved;
@@ -814,7 +839,9 @@ function payableStreamRoute(config: {
 
         if (!settlement) {
           await abortPreparedPayment(prepared, "missing_authoritative_stream_settlement");
-          res.write(`event: error\ndata: ${JSON.stringify({ error: "authoritative stream settlement is required" })}\n\n`);
+          if (!sawExplicitErrorEvent) {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: "authoritative stream settlement is required" })}\n\n`);
+          }
           res.end();
           return;
         }
