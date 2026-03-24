@@ -24,6 +24,14 @@ interface SessionExpiredEvent {
     expiresAt: number | null;
 }
 
+interface SessionSnapshot {
+    sessionId: string;
+    expiresAt: number;
+    budgetRemaining: number;
+    budgetLocked: number;
+    budgetUsed: number;
+}
+
 function normalizeAddress(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const normalized = value.trim().toLowerCase();
@@ -114,7 +122,7 @@ async function handleSessionEvents(req: Request, res: Response): Promise<void> {
     res.write("retry: 3000\n\n");
 
     let closed = false;
-    let knownExpiresAt: number | null = null;
+    let snapshot: SessionSnapshot | null = null;
     let expiryTimer: NodeJS.Timeout | null = null;
     let refreshTimer: NodeJS.Timeout | null = null;
     let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -149,11 +157,11 @@ async function handleSessionEvents(req: Request, res: Response): Promise<void> {
         }
         const delayMs = Math.max(0, expiresAt - Date.now()) + 25;
         expiryTimer = setTimeout(() => {
-            void syncSession("timer");
+            void syncSession();
         }, delayMs);
     };
 
-    const syncSession = async (source: "initial" | "refresh" | "timer") => {
+    const syncSession = async () => {
         if (closed || res.writableEnded) return;
 
         try {
@@ -170,18 +178,33 @@ async function handleSessionEvents(req: Request, res: Response): Promise<void> {
                 return;
             }
 
-            if (knownExpiresAt !== status.session.expiresAt) {
-                knownExpiresAt = status.session.expiresAt;
+            const nextSnapshot: SessionSnapshot = {
+                sessionId: status.session.keyId,
+                expiresAt: status.session.expiresAt,
+                budgetRemaining: status.session.budgetRemaining,
+                budgetLocked: status.session.budgetLocked,
+                budgetUsed: status.session.budgetUsed,
+            };
+
+            const shouldEmitActive =
+                !snapshot ||
+                snapshot.sessionId !== nextSnapshot.sessionId ||
+                snapshot.expiresAt !== nextSnapshot.expiresAt ||
+                snapshot.budgetRemaining !== nextSnapshot.budgetRemaining ||
+                snapshot.budgetLocked !== nextSnapshot.budgetLocked ||
+                snapshot.budgetUsed !== nextSnapshot.budgetUsed;
+
+            if (shouldEmitActive) {
+                snapshot = nextSnapshot;
                 scheduleExpiryCheck(status.session.expiresAt);
                 writeEvent(res, "session-active", {
                     userAddress,
                     chainId,
-                    sessionId: status.session.keyId,
-                    duration: Math.max(0, status.session.expiresAt - Date.now()),
                     expiresAt: status.session.expiresAt,
+                    budgetLimit: status.session.budgetLimit,
+                    budgetUsed: status.session.budgetUsed,
+                    budgetLocked: status.session.budgetLocked,
                     budgetRemaining: status.session.budgetRemaining,
-                    source,
-                    timestamp: Date.now(),
                 });
             }
         } catch (err) {
@@ -197,19 +220,13 @@ async function handleSessionEvents(req: Request, res: Response): Promise<void> {
     req.on("close", closeStream);
     res.on("close", closeStream);
 
-    writeEvent(res, "ready", {
-        userAddress,
-        chainId,
-        timestamp: Date.now(),
-    });
-
     heartbeatTimer = setInterval(() => {
         writeEvent(res, "ping", { timestamp: Date.now() });
     }, HEARTBEAT_MS);
 
     refreshTimer = setInterval(() => {
-        void syncSession("refresh");
+        void syncSession();
     }, SESSION_REFRESH_MS);
 
-    await syncSession("initial");
+    await syncSession();
 }
