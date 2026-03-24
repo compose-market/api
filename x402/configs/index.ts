@@ -11,56 +11,44 @@
 export {
     CHAIN_IDS,
     CHAIN_ID_STRINGS,
-    THIRDWEB_CHAIN_IDS,
     USDC_ADDRESSES,
     CHAIN_CONFIG,
     getActiveChainId,
     getUsdcAddress,
     getChainConfig,
+    getRpcUrl,
     isTestnet,
     getSupportedChainIds,
     getTestnetChainIds,
     getMainnetChainIds,
+    getViemChain,
+    VIEM_CHAIN_MAP,
     type ChainId,
     type ChainConfig,
 } from "./chains.js";
 
-// ThirdWeb client and x402 setup
+// Wallet addresses and payment chain setup
 export {
-    serverClient,
     serverWalletAddress,
     merchantWalletAddress,
     treasuryWalletAddress,
     paymentChain,
     paymentChainId,
     paymentAsset,
-    thirdwebFacilitator,
-    PRICE_PER_TOKEN_WEI,
-    MAX_TOKENS_PER_CALL,
-    SESSION_BUDGET_PRESETS,
-    calculateCostUSDC,
-    formatUsdcAmount,
-    parseUsdcAmount,
-} from "../thirdweb.js";
+} from "../wallets.js";
 
+// Pricing
 export { INFERENCE_PRICE_WEI } from "../pricing.js";
-
-// Chain objects (from chains.js single source of truth)
-export {
-    cronosTestnet,
-    CHAIN_MAP,
-    getChainObject,
-} from "./chains.js";
 
 /**
  * Default payment configuration for Compose Market
- * Defaults to Cronos Testnet with devUSDC.e token
+ * Defaults to Avalanche Fuji with USDC.
  */
 export const DEFAULT_PAYMENT_CONFIG = {
-    network: "338", // Cronos Testnet (default for x402 payments)
+    network: "43113",
     assetSymbol: "USDC",
-    assetAddress: "0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0" as `0x${string}`, // devUSDC.e
-    scheme: "upto" as const,
+    assetAddress: "0x5425890298aed601595a70AB815c96711a31Bc65" as `0x${string}`,
+    scheme: "exact" as const,
 };
 
 /**
