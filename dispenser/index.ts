@@ -8,7 +8,7 @@
  * - Cross-chain claim prevention (Redis global tracking)
  * - Atomic operations with SETNX to prevent race conditions
  * - Automatic rollback on transaction failure
- * - Multi-chain support (Cronos, Avalanche, Arbitrum)
+ * - Multi-chain support (Avalanche, Arbitrum)
  *
  * @module shared/dispenser
  */
@@ -25,20 +25,16 @@ import {
     CHAIN_IDS,
     CHAIN_CONFIG,
     USDC_ADDRESSES,
-    getChainObject,
 } from "../x402/configs/chains.js";
-import { serverClient } from "../x402/thirdweb.js";
 import {
     createPublicClient,
     createWalletClient,
     http,
-    encodeFunctionData,
-    decodeFunctionResult,
     type Address,
     type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { cronosTestnet, avalancheFuji, arbitrumSepolia } from "viem/chains";
+import { avalancheFuji, arbitrumSepolia } from "viem/chains";
 
 // =============================================================================
 // Constants
@@ -62,7 +58,6 @@ const SHARED_DISPENSER_ADDRESS = process.env.DISPENSER_CONTRACT as Address;
 
 /** Supported dispenser chains */
 export const DISPENSER_CHAINS = [
-    CHAIN_IDS.cronosTestnet,
     CHAIN_IDS.avalancheFuji,
     CHAIN_IDS.arbitrumSepolia,
 ] as const;
@@ -177,13 +172,11 @@ const DISPENSER_ABI = [
 // =============================================================================
 
 const CHAIN_RPC_URLS: Record<number, string> = {
-    [CHAIN_IDS.cronosTestnet]: process.env.CRONOS_TESTNET_RPC || "https://evm-t3.cronos.org",
     [CHAIN_IDS.avalancheFuji]: process.env.AVALANCHE_FUJI_RPC as string,
     [CHAIN_IDS.arbitrumSepolia]: process.env.ARBITRUM_SEPOLIA_RPC as string,
 };
 
-const VIEM_CHAINS: Record<number, typeof cronosTestnet | typeof avalancheFuji | typeof arbitrumSepolia> = {
-    [CHAIN_IDS.cronosTestnet]: cronosTestnet,
+const VIEM_CHAINS: Record<number, typeof avalancheFuji | typeof arbitrumSepolia> = {
     [CHAIN_IDS.avalancheFuji]: avalancheFuji,
     [CHAIN_IDS.arbitrumSepolia]: arbitrumSepolia,
 };
