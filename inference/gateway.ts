@@ -30,9 +30,11 @@ import {
   normalizeResponsesRequest,
   toChatCompletionsResponse,
   toChatStreamEvent,
+  toChatUsageStreamEvent,
   toEmbeddingsResponse,
   toResponsesResponse,
   toResponsesStreamEvent,
+  type UnifiedMessage,
   type UnifiedOutput,
   type UnifiedRequest,
 } from "./core.js";
@@ -270,6 +272,8 @@ interface StoredResponseRecord {
   provider: ModelProvider;
   createdAt: number;
   status: "in_progress" | "completed" | "failed" | "cancelled";
+  inputMessages?: UnifiedMessage[];
+  previousResponseId?: string;
   output?: UnifiedOutput;
   jobId?: string;
   error?: string;
@@ -312,6 +316,7 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model" },
   { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical unified responses API" },
   { method: "GET", path: "/v1/responses/:id", handler: handleGetResponse, description: "Retrieve response by ID" },
+  { method: "GET", path: "/v1/responses/:id/input_items", handler: handleGetResponseInputItems, description: "Retrieve response input items" },
   { method: "POST", path: "/v1/responses/:id/cancel", handler: handleCancelResponse, description: "Cancel response by ID" },
   { method: "POST", path: "/v1/chat/completions", handler: handleChatCompletions, description: "Chat completions" },
   { method: "POST", path: "/v1/images/generations", handler: handleImageGeneration, description: "Image generation" },
@@ -758,6 +763,7 @@ function responseFromRecord(record: StoredResponseRecord): Record<string, unknow
       status: record.status,
       model: record.model,
       output: [],
+      ...(record.previousResponseId ? { previous_response_id: record.previousResponseId } : {}),
       ...(record.error ? { error: { message: record.error } } : {}),
       ...(record.jobId ? { job_id: record.jobId } : {}),
     };
@@ -765,6 +771,9 @@ function responseFromRecord(record: StoredResponseRecord): Record<string, unknow
 
   const payload = toResponsesResponse(record.model, record.id, record.output) as unknown as Record<string, unknown>;
   payload.status = record.status;
+  if (record.previousResponseId) {
+    payload.previous_response_id = record.previousResponseId;
+  }
   if (record.jobId) {
     payload.job_id = record.jobId;
   }
@@ -774,21 +783,103 @@ function responseFromRecord(record: StoredResponseRecord): Record<string, unknow
   return payload;
 }
 
+function outputToAssistantMessage(output: UnifiedOutput): UnifiedMessage | null {
+  if (output.modality === "embedding") {
+    return null;
+  }
+
+  if (output.modality !== "text") {
+    return {
+      role: "assistant",
+      content: output.content
+        || output.media?.url
+        || output.media?.jobId
+        || `[${output.modality}]`,
+    };
+  }
+
+  return {
+    role: "assistant",
+    content: output.content || "",
+    ...(output.toolCalls?.length
+      ? {
+        tool_calls: output.toolCalls.map((call, index) => ({
+          id: call.id || `call_${index}`,
+          type: "function" as const,
+          function: {
+            name: call.name,
+            arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
+          },
+        })),
+      }
+      : {}),
+  };
+}
+
+async function buildResponsesHistory(responseId: string, visited = new Set<string>()): Promise<UnifiedMessage[]> {
+  if (visited.has(responseId)) {
+    throw Object.assign(new Error(`Response history cycle detected for '${responseId}'`), { statusCode: 400 });
+  }
+
+  visited.add(responseId);
+  const record = await getResponseRecord(responseId);
+  if (!record) {
+    throw Object.assign(new Error(`Response '${responseId}' not found`), { statusCode: 404 });
+  }
+
+  const prior = record.previousResponseId
+    ? await buildResponsesHistory(record.previousResponseId, visited)
+    : [];
+  const inputMessages = Array.isArray(record.inputMessages) ? record.inputMessages : [];
+  const assistantMessage = record.output ? outputToAssistantMessage(record.output) : null;
+
+  return assistantMessage
+    ? [...prior, ...inputMessages, assistantMessage]
+    : [...prior, ...inputMessages];
+}
+
+async function hydrateResponsesRequest(unified: UnifiedRequest): Promise<UnifiedRequest> {
+  const priorMessages = unified.previousResponseId
+    ? await buildResponsesHistory(unified.previousResponseId)
+    : [];
+  const currentMessages = unified.instructions
+    ? [{ role: "system", content: unified.instructions } satisfies UnifiedMessage, ...priorMessages, ...unified.messages]
+    : [...priorMessages, ...unified.messages];
+
+  return {
+    ...unified,
+    messages: currentMessages,
+  };
+}
+
+function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unknown>[] {
+  return (record.inputMessages || []).map((message) => ({
+    role: message.role,
+    content: message.content,
+    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+    ...(message.name ? { name: message.name } : {}),
+  }));
+}
+
 async function executeUnifiedRequest(args: {
   req: Request;
   res: Response;
   unified: UnifiedRequest;
   shape: ResponseShape;
 }): Promise<void> {
-  const modelId = args.unified.model;
+  const unified = args.shape === "responses"
+    ? await hydrateResponsesRequest(args.unified)
+    : args.unified;
+  const modelId = unified.model;
   if (!modelId) {
     args.res.status(400).json(createCoreErrorResponse("model is required", "invalid_request_error", "missing_model"));
     return;
   }
 
-  const resolved = resolveModel(modelId, args.unified.provider);
+  const resolved = resolveModel(modelId, unified.provider);
   const authorizationInput = buildResolvedAuthorizationInput({
-    request: args.unified,
+    request: unified,
     resolved,
   }) as ResolvedAuthorizationInput;
   const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
@@ -797,11 +888,13 @@ async function executeUnifiedRequest(args: {
   }
 
   const baseRecord: StoredResponseRecord = {
-    id: args.unified.responseId,
+    id: unified.responseId,
     model: modelId,
     provider: resolved.provider,
     createdAt: Math.floor(Date.now() / 1000),
     status: "in_progress",
+    inputMessages: args.shape === "responses" ? args.unified.messages : undefined,
+    previousResponseId: args.shape === "responses" ? args.unified.previousResponseId : undefined,
   };
   await saveResponseRecord(baseRecord);
 
@@ -810,7 +903,7 @@ async function executeUnifiedRequest(args: {
       args.res.setHeader("Content-Type", "text/event-stream");
       args.res.setHeader("Cache-Control", "no-cache");
       args.res.setHeader("Connection", "keep-alive");
-      args.res.setHeader("X-Request-Id", args.unified.responseId);
+      args.res.setHeader("X-Request-Id", unified.responseId);
 
       const routed = await runWithPolicy({
         context: {
@@ -822,7 +915,7 @@ async function executeUnifiedRequest(args: {
           const { streamAdapter } = await loadAdapterRuntime();
           return {
             target,
-            stream: streamAdapter(args.unified, {
+            stream: streamAdapter(unified, {
               modelId: target.modelId,
               provider: target.provider,
             }),
@@ -845,8 +938,8 @@ async function executeUnifiedRequest(args: {
           if (event.type === "text-delta") {
             aggregatedText += event.text || "";
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(args.unified.responseId, modelId, event, isFirstToken)
-              : toResponsesStreamEvent(args.unified.responseId, modelId, event);
+              ? toChatStreamEvent(unified.responseId, modelId, event, isFirstToken)
+              : toResponsesStreamEvent(unified.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
             isFirstToken = false;
             continue;
@@ -854,8 +947,8 @@ async function executeUnifiedRequest(args: {
 
           if (event.type === "tool-call") {
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(args.unified.responseId, modelId, event)
-              : toResponsesStreamEvent(args.unified.responseId, modelId, event);
+              ? toChatStreamEvent(unified.responseId, modelId, event)
+              : toResponsesStreamEvent(unified.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
             continue;
           }
@@ -866,9 +959,12 @@ async function executeUnifiedRequest(args: {
             }
             finishReason = event.finishReason || "stop";
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(args.unified.responseId, modelId, event)
-              : toResponsesStreamEvent(args.unified.responseId, modelId, event);
+              ? toChatStreamEvent(unified.responseId, modelId, event)
+              : toResponsesStreamEvent(unified.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
+            if (args.shape === "chat" && event.usage) {
+              args.res.write(formatCoreSSE(toChatUsageStreamEvent(unified.responseId, modelId, event.usage)));
+            }
           }
         }
 
@@ -890,7 +986,7 @@ async function executeUnifiedRequest(args: {
           args.res,
           {
             meter: buildSettlementMeterFromOutput({
-              request: args.unified,
+              request: unified,
               output: finalOutput,
               resolved,
             }).meter as MeteredSettlementInput,
@@ -921,7 +1017,7 @@ async function executeUnifiedRequest(args: {
         card: resolved.card,
       },
       execute: async (target) =>
-        (await loadAdapterRuntime()).invokeAdapter(args.unified, {
+        (await loadAdapterRuntime()).invokeAdapter(unified, {
           modelId: target.modelId,
           provider: target.provider,
         }),
@@ -935,7 +1031,7 @@ async function executeUnifiedRequest(args: {
       args.res,
       {
         meter: buildSettlementMeterFromOutput({
-          request: args.unified,
+          request: unified,
           output,
           resolved,
         }).meter as MeteredSettlementInput,
@@ -951,7 +1047,7 @@ async function executeUnifiedRequest(args: {
     await saveResponseRecord(record);
 
     if (args.shape === "chat") {
-      args.res.status(200).json(toChatCompletionsResponse(modelId, args.unified.responseId, output));
+      args.res.status(200).json(toChatCompletionsResponse(modelId, unified.responseId, output));
       return;
     }
 
@@ -960,7 +1056,7 @@ async function executeUnifiedRequest(args: {
       return;
     }
 
-    const payload = toResponsesResponse(modelId, args.unified.responseId, output) as unknown as Record<string, unknown>;
+    const payload = toResponsesResponse(modelId, unified.responseId, output) as unknown as Record<string, unknown>;
     if (record.status !== "completed") {
       payload.status = record.status;
     }
@@ -1000,7 +1096,7 @@ async function handleResponses(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    if (unified.modality !== "embedding" && unified.messages.length === 0) {
+    if (unified.modality !== "embedding" && unified.messages.length === 0 && !unified.previousResponseId) {
       res.status(400).json(createCoreErrorResponse("input is required", "invalid_request_error", "missing_input"));
       return;
     }
@@ -1056,6 +1152,37 @@ async function handleGetResponse(req: Request, res: Response): Promise<void> {
     }
 
     res.status(200).json(responseFromRecord(record));
+  } catch (error) {
+    const { status, body } = adaptError(error, 500);
+    res.status(status).json(body);
+  }
+}
+
+async function handleGetResponseInputItems(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    if (!id) {
+      res.status(400).json(createCoreErrorResponse("response id is required", "invalid_request_error", "missing_response_id"));
+      return;
+    }
+
+    const record = await getResponseRecord(id);
+    if (!record) {
+      res.status(404).json(createCoreErrorResponse(`Response '${id}' not found`, "invalid_request_error", "response_not_found"));
+      return;
+    }
+
+    res.status(200).json({
+      object: "list",
+      data: inputItemsFromRecord(record),
+    });
   } catch (error) {
     const { status, body } = adaptError(error, 500);
     res.status(status).json(body);
@@ -1161,15 +1288,11 @@ async function prepareInferencePayment(
     res.status(401).json({ error: "Compose key authorization is required" });
     return null;
   }
-  if (!chainId) {
-    res.status(400).json({ error: "x-chain-id header is required" });
-    return null;
-  }
 
   const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
   const prepared = await authorizePaymentIntent({
     authorization,
-    chainId,
+    chainId: chainId ?? Number.NaN,
     service: "api",
     action: "inference",
     resource: resourceUrl,

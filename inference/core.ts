@@ -11,6 +11,8 @@ export interface UnifiedContentPart {
   video_url?: { url: string } | string;
   toolCallId?: string;
   toolName?: string;
+  input?: unknown;
+  output?: unknown;
   result?: unknown;
   args?: unknown;
 }
@@ -49,6 +51,7 @@ export interface UnifiedRequest {
   stream: boolean;
   modality: UnifiedModality;
   messages: UnifiedMessage[];
+  instructions?: string;
   tools?: UnifiedTool[];
   toolChoice?: UnifiedToolChoice;
   maxTokens?: number;
@@ -74,7 +77,7 @@ export interface UnifiedRequest {
     resolution?: string;
     imageUrl?: string;
   };
-  retrievalId?: string;
+  previousResponseId?: string;
 }
 
 export interface UnifiedUsage {
@@ -241,7 +244,7 @@ function normalizeContentParts(parts: unknown[]): UnifiedContentPart[] {
         type: "tool-call",
         toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
         toolName: typeof part.toolName === "string" ? part.toolName : typeof part.name === "string" ? part.name : undefined,
-        args: part.args ?? part.input ?? {},
+        input: part.input ?? part.args ?? {},
       });
       continue;
     }
@@ -251,7 +254,7 @@ function normalizeContentParts(parts: unknown[]): UnifiedContentPart[] {
         type: "tool-result",
         toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
         toolName: typeof part.toolName === "string" ? part.toolName : undefined,
-        result: part.result,
+        output: part.output ?? part.result,
       });
       continue;
     }
@@ -411,6 +414,9 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
   const model = typeof body.model === "string" ? body.model : "";
   const modality = pickModality(body, "text");
   const messages = normalizeResponsesInput(body.input);
+  const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
+  const previousResponseId =
+    typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
 
   return {
     mode: "responses",
@@ -419,6 +425,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
     stream: Boolean(body.stream),
     modality,
     messages,
+    instructions,
     tools: Array.isArray(body.tools) ? body.tools as UnifiedTool[] : undefined,
     toolChoice: body.tool_choice as UnifiedToolChoice | undefined,
     maxTokens: typeof body.max_output_tokens === "number" ? body.max_output_tokens : undefined,
@@ -445,7 +452,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
       resolution: typeof body.size === "string" ? body.size : undefined,
       imageUrl: typeof body.image_url === "string" ? body.image_url : undefined,
     },
-    retrievalId: typeof body.response_id === "string" ? body.response_id : undefined,
+    previousResponseId,
   };
 }
 
@@ -674,6 +681,25 @@ export function toChatStreamEvent(
         finish_reason: event.finishReason || "stop",
       },
     ],
+  };
+}
+
+export function toChatUsageStreamEvent(
+  requestId: string,
+  model: string,
+  usage: UnifiedUsage,
+): Record<string, unknown> {
+  return {
+    id: requestId,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [],
+    usage: {
+      prompt_tokens: usage.promptTokens,
+      completion_tokens: usage.completionTokens,
+      total_tokens: usage.totalTokens,
+    },
   };
 }
 

@@ -142,7 +142,7 @@ function normalizeContentParts(contentArray: unknown[]): unknown[] {
         type: "tool-call",
         toolCallId: part.toolCallId || part.id || "",
         toolName: part.toolName || part.name || "",
-        args: part.args || part.input || {},
+        input: part.input ?? part.args ?? {},
       });
       continue;
     }
@@ -152,7 +152,7 @@ function normalizeContentParts(contentArray: unknown[]): unknown[] {
         type: "tool-result",
         toolCallId: part.toolCallId || "",
         toolName: part.toolName || "",
-        result: typeof part.result === "string" ? part.result : JSON.stringify(part.result ?? ""),
+        output: normalizeToolOutput(part.output ?? part.result),
       });
       continue;
     }
@@ -163,7 +163,25 @@ function normalizeContentParts(contentArray: unknown[]): unknown[] {
   return normalized;
 }
 
-function mapMessagesForAISDK(messages: UnifiedMessage[]): Array<{ role: string; content: unknown }> {
+function normalizeToolOutput(value: unknown): unknown {
+  if (value && typeof value === "object" && "type" in (value as Record<string, unknown>)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return {
+      type: "text",
+      value,
+    };
+  }
+
+  return {
+    type: "json",
+    value: value ?? null,
+  };
+}
+
+export function mapMessagesForAISDK(messages: UnifiedMessage[]): Array<{ role: string; content: unknown }> {
   return messages.map((message) => {
     if (message.role === "system") {
       return { role: "system", content: normalizeContentToString(message.content) };
@@ -176,8 +194,8 @@ function mapMessagesForAISDK(messages: UnifiedMessage[]): Array<{ role: string; 
           {
             type: "tool-result",
             toolCallId: message.tool_call_id || "",
-            toolName: message.name || "",
-            result: normalizeContentToString(message.content),
+            toolName: message.name || "tool",
+            output: normalizeToolOutput(normalizeContentToString(message.content)),
           },
         ],
       };
@@ -202,7 +220,7 @@ function mapMessagesForAISDK(messages: UnifiedMessage[]): Array<{ role: string; 
           type: "tool-call",
           toolCallId: call.id,
           toolName: call.function.name,
-          args,
+          input: args,
         });
       }
 

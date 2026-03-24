@@ -371,8 +371,6 @@ async function deployJobs(image: string) {
             secretNames: [
                 "GOOGLE_CLOUD_PROJECT_ID",
                 "VERTEX_PROJECT_ID",
-                "CRONOS_TESTNET_CHAIN_ID",
-                "DEV_USDC_E_ADDRESS",
                 "DISPENSER_CONTRACT",
                 "REDIS_TLS",
                 "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT",
