@@ -6,8 +6,8 @@
  *
  * Key patterns:
  *   backpack:authconfig:{slug}        → auth_config_id (permanent)
- *   backpack:linkcode:{code}          → JSON { userId, toolkit, createdAt } (10 min TTL)
- *   backpack:channel:{userId}:{slug}  → JSON { chatId, waId, boundAt } (permanent)
+ *   backpack:linkcode:{code}          → JSON { userAddress, toolkit, createdAt } (10 min TTL)
+ *   backpack:channel:{userAddress}:{slug}  → JSON { chatId, waId, boundAt } (permanent)
  *   backpack:system:connected:{slug}  → connected_account_id (permanent, system bot)
  */
 
@@ -56,7 +56,7 @@ const LINK_CODE_PREFIX = "backpack:linkcode:";
 const LINK_CODE_TTL = 600; // 10 minutes
 
 export interface LinkCodeData {
-    userId: string;
+    userAddress: string;
     toolkit: string;
     createdAt: number;
 }
@@ -64,10 +64,10 @@ export interface LinkCodeData {
 /**
  * Generate a short, URL-safe link code and store it with a 10-minute TTL.
  */
-export async function createLinkCode(userId: string, toolkit: string): Promise<string> {
+export async function createLinkCode(userAddress: string, toolkit: string): Promise<string> {
     const code = crypto.randomBytes(16).toString("base64url");
     const data: LinkCodeData = {
-        userId,
+        userAddress,
         toolkit,
         createdAt: Date.now(),
     };
@@ -106,8 +106,8 @@ export interface ChannelBinding {
     boundAt: number;
 }
 
-export async function getChannelBinding(userId: string, slug: string): Promise<ChannelBinding | null> {
-    const raw = await redisGet(`${CHANNEL_PREFIX}${userId}:${slug}`);
+export async function getChannelBinding(userAddress: string, slug: string): Promise<ChannelBinding | null> {
+    const raw = await redisGet(`${CHANNEL_PREFIX}${userAddress}:${slug}`);
     if (!raw) return null;
     try {
         return JSON.parse(raw) as ChannelBinding;
@@ -117,13 +117,13 @@ export async function getChannelBinding(userId: string, slug: string): Promise<C
 }
 
 export async function setChannelBinding(
-    userId: string,
+    userAddress: string,
     slug: string,
     binding: ChannelBinding
 ): Promise<void> {
-    await redisSet(`${CHANNEL_PREFIX}${userId}:${slug}`, JSON.stringify(binding));
+    await redisSet(`${CHANNEL_PREFIX}${userAddress}:${slug}`, JSON.stringify(binding));
 }
 
-export async function deleteChannelBinding(userId: string, slug: string): Promise<void> {
-    await redisDel(`${CHANNEL_PREFIX}${userId}:${slug}`);
+export async function deleteChannelBinding(userAddress: string, slug: string): Promise<void> {
+    await redisDel(`${CHANNEL_PREFIX}${userAddress}:${slug}`);
 }

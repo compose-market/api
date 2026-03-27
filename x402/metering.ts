@@ -3,7 +3,7 @@ import type {
   UnifiedOutput,
   UnifiedRequest,
 } from "../inference/core.js";
-import { resolveModel } from "../inference/modelsRegistry.js";
+import { resolveModel } from "../inference/models-registry.js";
 import {
   buildAuthoritativeBilling,
   resolveBillingPrice,

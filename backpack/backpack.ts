@@ -37,7 +37,7 @@ export type OAuthProvider =
 
 /** User permission record */
 export interface UserPermission {
-    userId: string;
+    userAddress: string;
     sessionId?: string;  // Optional: session-scoped
     agentId?: string;    // Optional: agent-scoped
     consentType: ConsentType | string;
@@ -48,7 +48,7 @@ export interface UserPermission {
 
 /** OAuth token record */
 export interface OAuthToken {
-    userId: string;
+    userAddress: string;
     provider: OAuthProvider;
     accessToken: string;
     refreshToken?: string;
@@ -59,7 +59,7 @@ export interface OAuthToken {
 
 /** API key record (for tools needing user's own API keys) */
 export interface UserApiKey {
-    userId: string;
+    userAddress: string;
     service: string;  // e.g., "perplexity", "notion"
     apiKey: string;
     addedAt: number;
@@ -75,16 +75,16 @@ const oauthTokens = new Map<string, OAuthToken>();
 const apiKeys = new Map<string, UserApiKey>();
 
 // Storage key helpers
-function permissionKey(userId: string, consentType: string, sessionId?: string, agentId?: string): string {
-    return `${userId}:${consentType}:${sessionId || '*'}:${agentId || '*'}`;
+function permissionKey(userAddress: string, consentType: string, sessionId?: string, agentId?: string): string {
+    return `${userAddress}:${consentType}:${sessionId || '*'}:${agentId || '*'}`;
 }
 
-function oauthKey(userId: string, provider: string): string {
-    return `${userId}:${provider}`;
+function oauthKey(userAddress: string, provider: string): string {
+    return `${userAddress}:${provider}`;
 }
 
-function apiKeyKey(userId: string, service: string): string {
-    return `${userId}:${service}`;
+function apiKeyKey(userAddress: string, service: string): string {
+    return `${userAddress}:${service}`;
 }
 
 // =============================================================================
@@ -96,29 +96,29 @@ function apiKeyKey(userId: string, service: string): string {
  * Checks in order: agent-specific → session-specific → user-wide
  */
 export function checkPermission(
-    userId: string,
+    userAddress: string,
     consentType: ConsentType | string,
     sessionId?: string,
     agentId?: string
 ): boolean {
     // Check agent-specific first
     if (agentId && sessionId) {
-        const agentPerm = permissions.get(permissionKey(userId, consentType, sessionId, agentId));
+        const agentPerm = permissions.get(permissionKey(userAddress, consentType, sessionId, agentId));
         if (agentPerm?.granted) return true;
     }
 
     // Check session-specific
     if (sessionId) {
-        const sessionPerm = permissions.get(permissionKey(userId, consentType, sessionId));
+        const sessionPerm = permissions.get(permissionKey(userAddress, consentType, sessionId));
         if (sessionPerm?.granted) return true;
     }
 
     // Check user-wide
-    const userPerm = permissions.get(permissionKey(userId, consentType));
+    const userPerm = permissions.get(permissionKey(userAddress, consentType));
     if (userPerm?.granted) {
         // Check expiry
         if (userPerm.expiresAt && Date.now() > userPerm.expiresAt) {
-            permissions.delete(permissionKey(userId, consentType));
+            permissions.delete(permissionKey(userAddress, consentType));
             return false;
         }
         return true;
@@ -131,15 +131,15 @@ export function checkPermission(
  * Grant a permission
  */
 export function grantPermission(params: {
-    userId: string;
+    userAddress: string;
     consentType: ConsentType | string;
     sessionId?: string;
     agentId?: string;
     expiresAt?: number;
 }): void {
-    const key = permissionKey(params.userId, params.consentType, params.sessionId, params.agentId);
+    const key = permissionKey(params.userAddress, params.consentType, params.sessionId, params.agentId);
     permissions.set(key, {
-        userId: params.userId,
+        userAddress: params.userAddress,
         sessionId: params.sessionId,
         agentId: params.agentId,
         consentType: params.consentType,
@@ -147,30 +147,30 @@ export function grantPermission(params: {
         grantedAt: Date.now(),
         expiresAt: params.expiresAt,
     });
-    console.log(`[Backpack] Permission granted: ${params.consentType} for user ${params.userId}`);
+    console.log(`[Backpack] Permission granted: ${params.consentType} for user ${params.userAddress}`);
 }
 
 /**
  * Revoke a permission
  */
 export function revokePermission(
-    userId: string,
+    userAddress: string,
     consentType: ConsentType | string,
     sessionId?: string,
     agentId?: string
 ): void {
-    const key = permissionKey(userId, consentType, sessionId, agentId);
+    const key = permissionKey(userAddress, consentType, sessionId, agentId);
     permissions.delete(key);
-    console.log(`[Backpack] Permission revoked: ${consentType} for user ${userId}`);
+    console.log(`[Backpack] Permission revoked: ${consentType} for user ${userAddress}`);
 }
 
 /**
  * List all permissions for a user
  */
-export function listPermissions(userId: string): UserPermission[] {
+export function listPermissions(userAddress: string): UserPermission[] {
     const userPerms: UserPermission[] = [];
     for (const [key, perm] of permissions) {
-        if (key.startsWith(`${userId}:`)) {
+        if (key.startsWith(`${userAddress}:`)) {
             userPerms.push(perm);
         }
     }
@@ -185,16 +185,16 @@ export function listPermissions(userId: string): UserPermission[] {
  * Store an OAuth token
  */
 export function storeOAuthToken(token: OAuthToken): void {
-    const key = oauthKey(token.userId, token.provider);
+    const key = oauthKey(token.userAddress, token.provider);
     oauthTokens.set(key, token);
-    console.log(`[Backpack] OAuth token stored: ${token.provider} for user ${token.userId}`);
+    console.log(`[Backpack] OAuth token stored: ${token.provider} for user ${token.userAddress}`);
 }
 
 /**
  * Get an OAuth token
  */
-export function getOAuthToken(userId: string, provider: OAuthProvider): OAuthToken | null {
-    const key = oauthKey(userId, provider);
+export function getOAuthToken(userAddress: string, provider: OAuthProvider): OAuthToken | null {
+    const key = oauthKey(userAddress, provider);
     const token = oauthTokens.get(key);
 
     if (!token) return null;
@@ -202,7 +202,7 @@ export function getOAuthToken(userId: string, provider: OAuthProvider): OAuthTok
     // Check expiry
     if (token.expiresAt && Date.now() > token.expiresAt) {
         // Token expired - could trigger refresh here
-        console.log(`[Backpack] OAuth token expired: ${provider} for user ${userId}`);
+        console.log(`[Backpack] OAuth token expired: ${provider} for user ${userAddress}`);
         return null; // Caller should handle refresh
     }
 
@@ -212,19 +212,19 @@ export function getOAuthToken(userId: string, provider: OAuthProvider): OAuthTok
 /**
  * Remove an OAuth token (disconnect account)
  */
-export function removeOAuthToken(userId: string, provider: OAuthProvider): void {
-    const key = oauthKey(userId, provider);
+export function removeOAuthToken(userAddress: string, provider: OAuthProvider): void {
+    const key = oauthKey(userAddress, provider);
     oauthTokens.delete(key);
-    console.log(`[Backpack] OAuth token removed: ${provider} for user ${userId}`);
+    console.log(`[Backpack] OAuth token removed: ${provider} for user ${userAddress}`);
 }
 
 /**
  * List all OAuth tokens for a user
  */
-export function listOAuthTokens(userId: string): Array<{ provider: string; connected: boolean; expiresAt?: number }> {
+export function listOAuthTokens(userAddress: string): Array<{ provider: string; connected: boolean; expiresAt?: number }> {
     const tokens: Array<{ provider: string; connected: boolean; expiresAt?: number }> = [];
     for (const [key, token] of oauthTokens) {
-        if (key.startsWith(`${userId}:`)) {
+        if (key.startsWith(`${userAddress}:`)) {
             tokens.push({
                 provider: token.provider,
                 connected: true,
@@ -243,46 +243,46 @@ export function listOAuthTokens(userId: string): Array<{ provider: string; conne
  * Store a user's API key for a service
  */
 export function storeApiKey(params: {
-    userId: string;
+    userAddress: string;
     service: string;
     apiKey: string;
     metadata?: Record<string, unknown>;
 }): void {
-    const key = apiKeyKey(params.userId, params.service);
+    const key = apiKeyKey(params.userAddress, params.service);
     apiKeys.set(key, {
-        userId: params.userId,
+        userAddress: params.userAddress,
         service: params.service,
         apiKey: params.apiKey,
         addedAt: Date.now(),
         metadata: params.metadata,
     });
-    console.log(`[Backpack] API key stored: ${params.service} for user ${params.userId}`);
+    console.log(`[Backpack] API key stored: ${params.service} for user ${params.userAddress}`);
 }
 
 /**
  * Get a user's API key for a service
  */
-export function getApiKey(userId: string, service: string): string | null {
-    const key = apiKeyKey(userId, service);
+export function getApiKey(userAddress: string, service: string): string | null {
+    const key = apiKeyKey(userAddress, service);
     return apiKeys.get(key)?.apiKey || null;
 }
 
 /**
  * Remove a user's API key
  */
-export function removeApiKey(userId: string, service: string): void {
-    const key = apiKeyKey(userId, service);
+export function removeApiKey(userAddress: string, service: string): void {
+    const key = apiKeyKey(userAddress, service);
     apiKeys.delete(key);
-    console.log(`[Backpack] API key removed: ${service} for user ${userId}`);
+    console.log(`[Backpack] API key removed: ${service} for user ${userAddress}`);
 }
 
 /**
  * List all API keys for a user (service names only, not the actual keys)
  */
-export function listApiKeys(userId: string): string[] {
+export function listApiKeys(userAddress: string): string[] {
     const services: string[] = [];
     for (const [key] of apiKeys) {
-        if (key.startsWith(`${userId}:`)) {
+        if (key.startsWith(`${userAddress}:`)) {
             const service = key.split(':')[1];
             services.push(service);
         }
@@ -304,7 +304,7 @@ export interface ToolRequirement {
  * Returns list of missing requirements
  */
 export function checkToolRequirements(
-    userId: string,
+    userAddress: string,
     requirements: ToolRequirement[],
     sessionId?: string,
     agentId?: string
@@ -314,17 +314,17 @@ export function checkToolRequirements(
     for (const req of requirements) {
         switch (req.type) {
             case "permission":
-                if (!checkPermission(userId, req.value, sessionId, agentId)) {
+                if (!checkPermission(userAddress, req.value, sessionId, agentId)) {
                     missing.push(req);
                 }
                 break;
             case "oauth":
-                if (!getOAuthToken(userId, req.value)) {
+                if (!getOAuthToken(userAddress, req.value)) {
                     missing.push(req);
                 }
                 break;
             case "apiKey":
-                if (!getApiKey(userId, req.value)) {
+                if (!getApiKey(userAddress, req.value)) {
                     missing.push(req);
                 }
                 break;

@@ -203,10 +203,10 @@ export interface ConnectionRequest {
  * After auth, the popup redirects to /auth-success.html which auto-closes.
  */
 export async function initiateConnection(
-    userId: string,
+    userAddress: string,
     toolkit: string
 ): Promise<ConnectionRequest> {
-    console.log(`[Composio] Initiating connection: ${toolkit} for user ${userId}`);
+    console.log(`[Composio] Initiating connection: ${toolkit} for user ${userAddress}`);
 
     const client = getClient();
 
@@ -221,7 +221,7 @@ export async function initiateConnection(
 
     const linkResult = await client.link.create({
         auth_config_id: authConfigId,
-        user_id: userId,
+        user_id: userAddress,
         callback_url: successUrl,
         connection_data: {
             redirectUrl: successUrl,
@@ -258,13 +258,13 @@ const TG_BOT_USERNAME = process.env.TG_BOT_USERNAME;
  * Create a Telegram deep-link URL for binding a user's chat_id.
  * The code is stored in Redis with a 10-minute TTL.
  */
-export async function initiateTelegramLink(userId: string): Promise<{
+export async function initiateTelegramLink(userAddress: string): Promise<{
     deepLinkUrl: string;
     linkCode: string;
 }> {
-    console.log(`[Composio] Generating Telegram deep link for user ${userId}`);
+    console.log(`[Composio] Generating Telegram deep link for user ${userAddress}`);
 
-    const code = await createLinkCode(userId, "telegram");
+    const code = await createLinkCode(userAddress, "telegram");
     const deepLinkUrl = `https://t.me/${TG_BOT_USERNAME}?start=${code}`;
 
     console.log(`[Composio] Telegram deep link: ${deepLinkUrl}`);
@@ -277,7 +277,7 @@ export async function initiateTelegramLink(userId: string): Promise<{
  */
 export async function handleTelegramWebhook(update: any): Promise<{
     bound: boolean;
-    userId?: string;
+    userAddress?: string;
     chatId?: string;
 }> {
     const msg = update?.message;
@@ -298,20 +298,20 @@ export async function handleTelegramWebhook(update: any): Promise<{
     }
 
     const chatId = String(msg.chat.id);
-    const userId = linkData.userId;
+    const userAddress = linkData.userAddress;
 
     // Store the channel binding
-    await setChannelBinding(userId, "telegram", {
+    await setChannelBinding(userAddress, "telegram", {
         chatId,
         boundAt: Date.now(),
     });
 
-    console.log(`[Composio] Bound Telegram chat ${chatId} to user ${userId}`);
+    console.log(`[Composio] Bound Telegram chat ${chatId} to user ${userAddress}`);
 
     // Ensure we have a system connected account for Telegram
     await ensureSystemTelegramAccount();
 
-    return { bound: true, userId, chatId };
+    return { bound: true, userAddress, chatId };
 }
 
 /**
@@ -392,11 +392,11 @@ async function ensureSystemTelegramAccount(): Promise<string | null> {
 /**
  * Check if a user has a Telegram channel binding.
  */
-export async function checkTelegramBinding(userId: string): Promise<{
+export async function checkTelegramBinding(userAddress: string): Promise<{
     bound: boolean;
     chatId?: string;
 }> {
-    const binding = await getChannelBinding(userId, "telegram");
+    const binding = await getChannelBinding(userAddress, "telegram");
     return {
         bound: !!binding?.chatId,
         chatId: binding?.chatId,
@@ -419,13 +419,13 @@ export interface ConnectionInfo {
  * List all connected accounts for a user.
  * Fetches from Composio's connectedAccounts API.
  */
-export async function listConnections(userId: string): Promise<ConnectionInfo[]> {
-    console.log(`[Composio] Listing connections for user ${userId}`);
+export async function listConnections(userAddress: string): Promise<ConnectionInfo[]> {
+    console.log(`[Composio] Listing connections for user ${userAddress}`);
 
     const client = getClient();
 
     const result = await client.connectedAccounts.list({
-        user_id: userId,
+        user_id: userAddress,
     } as any);
 
     const accounts = (result as any).items || [];
@@ -439,7 +439,7 @@ export async function listConnections(userId: string): Promise<ConnectionInfo[]>
     }));
 
     // Also check for channel bindings (Telegram, WhatsApp)
-    const tgBinding = await getChannelBinding(userId, "telegram");
+    const tgBinding = await getChannelBinding(userAddress, "telegram");
     if (tgBinding?.chatId) {
         const hasTg = connections.some(c => c.slug === "telegram");
         if (!hasTg) {
@@ -453,7 +453,7 @@ export async function listConnections(userId: string): Promise<ConnectionInfo[]>
     }
 
     const connectedCount = connections.filter(c => c.connected).length;
-    console.log(`[Composio] Found ${connectedCount}/${connections.length} connected accounts for user ${userId}`);
+    console.log(`[Composio] Found ${connectedCount}/${connections.length} connected accounts for user ${userAddress}`);
 
     return connections;
 }
@@ -462,16 +462,16 @@ export async function listConnections(userId: string): Promise<ConnectionInfo[]>
  * Check if a specific toolkit is connected for a user.
  */
 export async function checkConnection(
-    userId: string,
+    userAddress: string,
     toolkit: string
 ): Promise<{ connected: boolean; accountId?: string }> {
     // For channel-based toolkits, check bindings
     if (toolkit === "telegram") {
-        const binding = await checkTelegramBinding(userId);
+        const binding = await checkTelegramBinding(userAddress);
         return { connected: binding.bound };
     }
 
-    const connections = await listConnections(userId);
+    const connections = await listConnections(userAddress);
     const match = connections.find(c => c.slug === toolkit);
 
     return {
@@ -481,7 +481,7 @@ export async function checkConnection(
 }
 
 export interface ToolkitActionExecutionParams {
-    userId: string;
+    userAddress: string;
     toolkit: string;
     action: string;
     params?: Record<string, unknown>;
@@ -491,8 +491,8 @@ export interface ToolkitActionExecutionParams {
 export async function executeToolkitAction(
     params: ToolkitActionExecutionParams
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
-    if (!params.userId || !params.toolkit || !params.action) {
-        return { success: false, error: "userId, toolkit and action are required" };
+    if (!params.userAddress || !params.toolkit || !params.action) {
+        return { success: false, error: "userAddress, toolkit and action are required" };
     }
 
     try {
@@ -502,11 +502,11 @@ export async function executeToolkitAction(
         if (params.toolkit === "telegram" || params.toolkit === "whatsapp") {
             connectedAccountId = await getSystemConnectedAccount(params.toolkit) || undefined;
         } else {
-            const connection = await checkConnection(params.userId, params.toolkit);
+            const connection = await checkConnection(params.userAddress, params.toolkit);
             if (!connection.connected || !connection.accountId) {
                 return {
                     success: false,
-                    error: `Toolkit '${params.toolkit}' is not connected for user ${params.userId}`,
+                    error: `Toolkit '${params.toolkit}' is not connected for user ${params.userAddress}`,
                 };
             }
             connectedAccountId = connection.accountId;
@@ -514,7 +514,7 @@ export async function executeToolkitAction(
 
         const result = await client.tools.execute(params.action, {
             connected_account_id: connectedAccountId,
-            user_id: params.userId,
+            user_id: params.userAddress,
             arguments: params.params,
             text: params.text,
         } as any);
@@ -532,36 +532,36 @@ export async function executeToolkitAction(
  * Disconnect a toolkit for a user.
  */
 export async function disconnectToolkit(
-    userId: string,
+    userAddress: string,
     toolkit: string
 ): Promise<{ success: boolean }> {
-    console.log(`[Composio] Disconnecting ${toolkit} for user ${userId}`);
+    console.log(`[Composio] Disconnecting ${toolkit} for user ${userAddress}`);
 
     try {
         // For channel-based toolkits, delete the binding
         if (toolkit === "telegram") {
-            await deleteChannelBinding(userId, "telegram");
-            console.log(`[Composio] Removed Telegram binding for user ${userId}`);
+            await deleteChannelBinding(userAddress, "telegram");
+            console.log(`[Composio] Removed Telegram binding for user ${userAddress}`);
             return { success: true };
         }
 
         if (toolkit === "whatsapp") {
-            await deleteChannelBinding(userId, "whatsapp");
-            console.log(`[Composio] Removed WhatsApp binding for user ${userId}`);
+            await deleteChannelBinding(userAddress, "whatsapp");
+            console.log(`[Composio] Removed WhatsApp binding for user ${userAddress}`);
             return { success: true };
         }
 
         // For OAuth toolkits, delete the connected account
-        const connection = await checkConnection(userId, toolkit);
+        const connection = await checkConnection(userAddress, toolkit);
         if (!connection.connected || !connection.accountId) {
-            console.log(`[Composio] ${toolkit} is not connected for user ${userId}`);
+            console.log(`[Composio] ${toolkit} is not connected for user ${userAddress}`);
             return { success: true }; // Already disconnected
         }
 
         const client = getClient();
         await client.connectedAccounts.delete(connection.accountId);
 
-        console.log(`[Composio] Disconnected ${toolkit} for user ${userId}`);
+        console.log(`[Composio] Disconnected ${toolkit} for user ${userAddress}`);
         return { success: true };
     } catch (error) {
         console.error(`[Composio] Error disconnecting ${toolkit}:`, error);

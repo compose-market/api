@@ -1,7 +1,7 @@
 import { embedMany, generateText, jsonSchema, streamText } from "ai";
 import { GoogleGenAI } from "@google/genai";
 
-import { getEmbeddingModel, getLanguageModel, getModelById } from "../modelsRegistry.js";
+import { getEmbeddingModel, getLanguageModel, getModelById } from "../models-registry.js";
 import type { ModelProvider } from "../types.js";
 import type {
   UnifiedMessage,

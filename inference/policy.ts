@@ -1,5 +1,5 @@
 import type { ModelProvider } from "./types.js";
-import type { ModelCard } from "./modelsRegistry.js";
+import type { ModelCard } from "./models-registry.js";
 
 export interface RoutingTarget {
   modelId: string;

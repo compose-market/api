@@ -1,7 +1,7 @@
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
 
 import { normalizeResponsesRequest } from "./inference/core.js";
-import { getCompiledModels } from "./inference/modelsRegistry.js";
+import { getCompiledModels } from "./inference/models-registry.js";
 import {
   buildResolvedSettlementMeter,
   buildUsageRecordSettlementMeter,
@@ -34,7 +34,7 @@ interface PublicRouteResult {
   isBase64Encoded?: boolean;
 }
 
-interface AgentCard {
+export interface AgentCard {
   schemaVersion: string;
   name: string;
   description: string;
@@ -46,10 +46,11 @@ interface AgentCard {
   walletTimestamp?: number;
   chain: number;
   model: string;
-  framework?: "eliza" | "langchain" | string;
+  framework?: "manowar" | "langchain" | string;
   licensePrice: string;
   licenses: number;
   cloneable: boolean;
+  knowledge?: string[];
   endpoint?: string;
   protocols: Array<{ name: string; version: string }>;
   plugins?: Array<{
@@ -115,19 +116,14 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 const FRAMEWORKS = [
   {
-    id: "eliza",
-    name: "ElizaOS",
-    description: "Agent framework with plugin-driven actions and social automation",
+    id: "manowar",
+    name: "Manowar",
+    description: "Manowar agent framework with LangGraph support",
   },
   {
     id: "langchain",
-    name: "LangChain",
-    description: "LangChain agent framework with LangGraph support",
-  },
-  {
-    id: "openclaw",
-    name: "OpenClaw",
-    description: "Skills-first continuous agent runtime with Backpack connectors",
+    name: "Langchain",
+    description: "Manowar agent framework with LangGraph support",
   },
 ] as const;
 
@@ -243,7 +239,7 @@ async function listPinsByType(type: "agent-card" | "workflow-metadata"): Promise
   return items.filter((value): value is AgentCard | WorkflowMetadata => value !== null);
 }
 
-async function findAgentByWallet(walletAddress: string): Promise<AgentCard | null> {
+export async function findAgentByWallet(walletAddress: string): Promise<AgentCard | null> {
   const agents = await listPinsByType("agent-card");
   const normalizedAddress = walletAddress.toLowerCase();
   return agents.find((agent) => (agent as AgentCard).walletAddress?.toLowerCase() === normalizedAddress) as AgentCard | null;
@@ -857,8 +853,6 @@ function payableStreamRoute(config: {
 }
 
 export function registerWorkflowRoutes(app: Application): void {
-  app.post("/agent/:walletAddress/knowledge", passthroughJsonRoute());
-  app.get("/agent/:walletAddress/knowledge", passthroughJsonRoute());
   app.post(
     "/agent/:walletAddress/chat",
     payableJsonRoute({
@@ -950,6 +944,4 @@ export function registerWorkflowRoutes(app: Application): void {
   app.post("/api/local/memory/search", passthroughJsonRoute());
   app.get("/api/local/memory/:agentWallet", passthroughJsonRoute());
   app.post("/api/local/memory/context", passthroughJsonRoute());
-  app.get("/api/local/skills/recommended", passthroughJsonRoute());
-  app.post("/api/local/skills/learn", passthroughJsonRoute());
 }

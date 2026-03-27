@@ -5,7 +5,7 @@ import {
   getExtendedModels,
   getModelById,
   resolveModel,
-} from "./modelsRegistry.js";
+} from "./models-registry.js";
 import type { ModelCard, ModelProvider } from "./types.js";
 import {
   buildResolvedAuthorizationInput,
@@ -1438,7 +1438,7 @@ export async function handleListModels(req: Request, res: Response, extended = f
 }
 
 async function handleModelParams(req: Request, res: Response): Promise<void> {
-  const { handleGetModelParams } = await import("./paramsHandler.js");
+  const { handleGetModelParams } = await import("./params-handler.js");
   await handleGetModelParams(req, res);
 }
 

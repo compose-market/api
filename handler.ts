@@ -73,7 +73,7 @@ const loadBackpack = () => import("./backpack/composio.js");
 const loadBackpackPermissions = () => import("./backpack/backpack.js");
 
 // Model Registry
-const loadRegistry = () => import("./inference/modelsRegistry.js");
+const loadRegistry = () => import("./inference/models-registry.js");
 
 // Dispenser
 const loadDispenser = () => import("./dispenser/index.js");
@@ -201,7 +201,7 @@ async function generateDecorativeImage(prompt: string, size: string): Promise<st
     const [{ normalizeResponsesRequest }, { invokeAdapter }, { getModelById }] = await Promise.all([
         import("./inference/core.js"),
         import("./inference/providers/adapter.js"),
-        import("./inference/modelsRegistry.js"),
+        import("./inference/models-registry.js"),
     ]);
 
     const card = getModelById(modelId);
@@ -1273,27 +1273,27 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
     try {
         // GET /api/backpack/permissions
         if (path === "/api/backpack/permissions" && method === "GET") {
-            const userId = event.queryStringParameters?.userId;
-            if (!userId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            const userAddress = event.queryStringParameters?.userAddress;
+            if (!userAddress) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
             }
             const permissions = await loadBackpackPermissions();
             return {
                 statusCode: 200,
                 headers: corsHeaders,
-                body: JSON.stringify({ permissions: permissions.listPermissions(userId) }),
+                body: JSON.stringify({ permissions: permissions.listPermissions(userAddress) }),
             };
         }
 
         // POST /api/backpack/permissions/grant
         if (path === "/api/backpack/permissions/grant" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userId || !body.consentType) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and consentType required" }) };
+            if (!body.userAddress || !body.consentType) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and consentType required" }) };
             }
             const permissions = await loadBackpackPermissions();
             permissions.grantPermission({
-                userId: body.userId,
+                userAddress: body.userAddress,
                 consentType: body.consentType,
                 sessionId: body.sessionId,
                 agentId: body.agentId,
@@ -1305,67 +1305,67 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
         // POST /api/backpack/permissions/revoke
         if (path === "/api/backpack/permissions/revoke" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userId || !body.consentType) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and consentType required" }) };
+            if (!body.userAddress || !body.consentType) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and consentType required" }) };
             }
             const permissions = await loadBackpackPermissions();
-            permissions.revokePermission(body.userId, body.consentType, body.sessionId, body.agentId);
+            permissions.revokePermission(body.userAddress, body.consentType, body.sessionId, body.agentId);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
         }
 
         // POST /api/backpack/connect
         if (path === "/api/backpack/connect" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userId || !body.toolkit) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and toolkit required" }) };
+            if (!body.userAddress || !body.toolkit) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and toolkit required" }) };
             }
-            const result = await bp.initiateConnection(body.userId, body.toolkit);
+            const result = await bp.initiateConnection(body.userAddress, body.toolkit);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
         }
 
         // GET /api/backpack/connections
         if (path === "/api/backpack/connections" && method === "GET") {
-            const userId = event.queryStringParameters?.userId;
-            if (!userId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            const userAddress = event.queryStringParameters?.userAddress;
+            if (!userAddress) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
             }
-            const connections = await bp.listConnections(userId);
+            const connections = await bp.listConnections(userAddress);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ connections }) };
         }
 
         // GET /api/backpack/status/:toolkit
         if (path.startsWith("/api/backpack/status/") && method === "GET") {
             const toolkit = decodeURIComponent(path.replace("/api/backpack/status/", ""));
-            const userId = event.queryStringParameters?.userId;
-            if (!userId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            const userAddress = event.queryStringParameters?.userAddress;
+            if (!userAddress) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
             }
-            const status = await bp.checkConnection(userId, toolkit);
+            const status = await bp.checkConnection(userAddress, toolkit);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, ...status }) };
         }
 
         // POST /api/backpack/disconnect
         if (path === "/api/backpack/disconnect" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userId || !body.toolkit) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId and toolkit required" }) };
+            if (!body.userAddress || !body.toolkit) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and toolkit required" }) };
             }
-            const result = await bp.disconnectToolkit(body.userId, body.toolkit);
+            const result = await bp.disconnectToolkit(body.userAddress, body.toolkit);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
         }
 
         // POST /api/backpack/execute
         if (path === "/api/backpack/execute" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userId || !body.toolkit || !body.action) {
+            if (!body.userAddress || !body.toolkit || !body.action) {
                 return {
                     statusCode: 400,
                     headers: corsHeaders,
-                    body: JSON.stringify({ error: "userId, toolkit and action required" }),
+                    body: JSON.stringify({ error: "userAddress, toolkit and action required" }),
                 };
             }
             const result = await bp.executeToolkitAction({
-                userId: body.userId,
+                userAddress: body.userAddress,
                 toolkit: body.toolkit,
                 action: body.action,
                 params: body.params,
@@ -1395,20 +1395,20 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
         // POST /api/backpack/telegram/link
         if (path === "/api/backpack/telegram/link" && method === "POST") {
             const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            if (!body.userAddress) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
             }
-            const result = await bp.initiateTelegramLink(body.userId);
+            const result = await bp.initiateTelegramLink(body.userAddress);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
         }
 
         // GET /api/backpack/telegram/status
         if (path === "/api/backpack/telegram/status" && method === "GET") {
-            const userId = event.queryStringParameters?.userId;
-            if (!userId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userId required" }) };
+            const userAddress = event.queryStringParameters?.userAddress;
+            if (!userAddress) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
             }
-            const status = await bp.checkTelegramBinding(userId);
+            const status = await bp.checkTelegramBinding(userAddress);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit: "telegram", ...status }) };
         }
 
