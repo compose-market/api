@@ -24,6 +24,14 @@ export interface ModelParams {
     params: Record<string, ParamDefinition>;
 }
 
+export interface ResolvedModelParams {
+    modelId: string;
+    type: "video" | "image";
+    provider: string;
+    params: Record<string, ParamDefinition>;
+    defaults: Record<string, unknown>;
+}
+
 // Cache for loaded param files
 let videoParamsCache: Record<string, ModelParams> | null = null;
 let imageParamsCache: Record<string, ModelParams> | null = null;
@@ -39,17 +47,11 @@ function getDataBasePath(): string {
     if (dataBasePath !== null) return dataBasePath;
 
     const candidatePaths: string[] = [
-        // 1. Api-specific paths (dist/data contains the json files)
-        "/var/task/dist/data",                    // Api deployment structure
-        "/var/task/data",                         // Alternative Api structure
-
-        // 2. process.cwd() based paths (reliable in Api)
-        path.join(process.cwd(), "dist", "data"), // Api with dist folder
-        path.join(process.cwd(), "data"),         // Direct data folder
-
-        // 3. Relative to source (for local development with tsx)
-        path.join(process.cwd(), "shared", "models", "data", "params"),
-        path.join(process.cwd(), "backend", "api", "shared", "models", "data", "params"),
+        "/var/task/dist/data",
+        "/var/task/data",
+        path.join(process.cwd(), "dist", "data"),
+        path.join(process.cwd(), "inference", "data", "params"),
+        path.join(process.cwd(), "data", "params"),
     ];
 
     // Try each candidate path
@@ -82,7 +84,7 @@ function getDataBasePath(): string {
     }
 
     // Return best guess
-    dataBasePath = path.join(process.cwd(), "dist", "data");
+    dataBasePath = path.join(process.cwd(), "inference", "data", "params");
     return dataBasePath;
 }
 
@@ -186,6 +188,213 @@ function findMatchingParams(
     return null;
 }
 
+function filterOptionalParams(params: Record<string, ParamDefinition>): Record<string, ParamDefinition> {
+    return Object.fromEntries(
+        Object.entries(params).filter(([, definition]) => definition.required !== true),
+    );
+}
+
+export function rankOptionValue(value: string | number): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const trimmed = value.trim().toLowerCase();
+    const ordinalRank = (() => {
+        switch (trimmed) {
+            case "low":
+            case "standard":
+                return 1;
+            case "medium":
+                return 2;
+            case "high":
+            case "hd":
+                return 3;
+            default:
+                return null;
+        }
+    })();
+    if (ordinalRank !== null) {
+        return ordinalRank;
+    }
+
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+        return numeric;
+    }
+
+    const dimensions = trimmed.match(/^(\d+)\s*x\s*(\d+)$/);
+    if (dimensions) {
+        const width = Number.parseInt(dimensions[1], 10);
+        const height = Number.parseInt(dimensions[2], 10);
+        if (Number.isFinite(width) && Number.isFinite(height)) {
+            return width * height;
+        }
+    }
+
+    const resolution = trimmed.match(/^(\d+)\s*p$/);
+    if (resolution) {
+        return Number.parseInt(resolution[1], 10);
+    }
+
+    const duration = trimmed.match(/^(\d+(?:\.\d+)?)\s*s$/);
+    if (duration) {
+        return Number.parseFloat(duration[1]);
+    }
+
+    return null;
+}
+
+function getLowestOptionValue(definition: ParamDefinition): unknown {
+    if (!Array.isArray(definition.options) || definition.options.length === 0) {
+        return undefined;
+    }
+
+    const ranked = definition.options
+        .map((option, index) => ({
+            option,
+            index,
+            rank: rankOptionValue(option),
+        }));
+
+    const comparable = ranked.filter((entry) => entry.rank !== null) as Array<{
+        option: string | number;
+        index: number;
+        rank: number;
+    }>;
+    if (comparable.length === definition.options.length) {
+        comparable.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
+        return comparable[0].option;
+    }
+
+    return definition.options[0];
+}
+
+function getParamDefaultValue(definition: ParamDefinition): unknown {
+    const lowestOption = getLowestOptionValue(definition);
+    if (lowestOption !== undefined) {
+        return lowestOption;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(definition, "default")) {
+        return definition.default;
+    }
+
+    return undefined;
+}
+
+export function buildModelParamDefaults(params: Record<string, ParamDefinition>): Record<string, unknown> {
+    const defaults: Record<string, unknown> = {};
+
+    for (const [key, definition] of Object.entries(params)) {
+        const value = getParamDefaultValue(definition);
+        if (value !== undefined) {
+            defaults[key] = value;
+        }
+    }
+
+    return defaults;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+
+    return value as Record<string, unknown>;
+}
+
+function extractProvidedParamValues(
+    params: Record<string, ParamDefinition>,
+    requestBody?: Record<string, unknown>,
+): Record<string, unknown> {
+    if (!requestBody) {
+        return {};
+    }
+
+    const customParams = asRecord(requestBody.custom_params);
+    const provided: Record<string, unknown> = {};
+
+    for (const key of Object.keys(params)) {
+        if (customParams && customParams[key] !== undefined) {
+            provided[key] = customParams[key];
+            continue;
+        }
+
+        if (requestBody[key] !== undefined) {
+            provided[key] = requestBody[key];
+        }
+    }
+
+    return provided;
+}
+
+export function resolveModelParams(
+    modelId: string,
+    preferredType?: "video" | "image",
+): ResolvedModelParams | null {
+    const decodedModelId = decodeURIComponent(modelId);
+    const lookups: Array<{
+        type: "video" | "image";
+        map: Record<string, ModelParams>;
+    }> = preferredType === "video"
+        ? [
+            { type: "video", map: getVideoParams() },
+            { type: "image", map: getImageParams() },
+        ]
+        : preferredType === "image"
+            ? [
+                { type: "image", map: getImageParams() },
+                { type: "video", map: getVideoParams() },
+            ]
+            : [
+                { type: "video", map: getVideoParams() },
+                { type: "image", map: getImageParams() },
+            ];
+
+    for (const lookup of lookups) {
+        const match = findMatchingParams(decodedModelId, lookup.map);
+        if (!match) {
+            continue;
+        }
+
+        const params = filterOptionalParams(match.params.params);
+        return {
+            modelId: decodedModelId,
+            type: lookup.type,
+            provider: match.params.provider,
+            params,
+            defaults: buildModelParamDefaults(params),
+        };
+    }
+
+    return null;
+}
+
+export function resolveOptionalModelParamValues(
+    modelId: string,
+    preferredType?: "video" | "image",
+    requestBody?: Record<string, unknown>,
+): ResolvedModelParams & { values: Record<string, unknown> } | null {
+    const resolved = resolveModelParams(modelId, preferredType);
+    if (!resolved) {
+        return null;
+    }
+
+    const provided = extractProvidedParamValues(resolved.params, requestBody);
+    return {
+        ...resolved,
+        values: {
+            ...resolved.defaults,
+            ...provided,
+        },
+    };
+}
+
 /**
  * GET /v1/models/:model/params
  * 
@@ -205,41 +414,18 @@ export async function handleGetModelParams(
         return;
     }
 
-    // Decode URL-encoded model ID (e.g., "flux%2Fschnell" -> "flux/schnell")
-    const decodedModelId = decodeURIComponent(modelId);
-
-    // Search in video params first
-    const videoParams = getVideoParams();
-    const videoMatch = findMatchingParams(decodedModelId, videoParams);
-    if (videoMatch) {
-        res.json({
-            modelId: decodedModelId,
-            type: "video",
-            params: videoMatch.params.params,
-            provider: videoMatch.params.provider,
-        });
-        return;
-    }
-
-    // Search in image params
-    const imageParams = getImageParams();
-    const imageMatch = findMatchingParams(decodedModelId, imageParams);
-    if (imageMatch) {
-        res.json({
-            modelId: decodedModelId,
-            type: "image",
-            params: imageMatch.params.params,
-            provider: imageMatch.params.provider,
-        });
+    const resolved = resolveModelParams(modelId);
+    if (resolved) {
+        res.json(resolved);
         return;
     }
 
     // No params found - return empty (not an error, just no optional params)
     res.json({
-        modelId: decodedModelId,
+        modelId: decodeURIComponent(modelId),
         type: null,
         params: {},
+        defaults: {},
         provider: null,
     });
 }
-
