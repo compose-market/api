@@ -43,6 +43,8 @@ export interface FireworksImageOptions {
     outputFormat?: "image/jpeg" | "image/png";
     /** Number of images (Fireworks doesn't support n>1 in a single call) */
     n?: number;
+    /** Provider-native request parameters */
+    parameters?: Record<string, unknown>;
 }
 
 /**
@@ -71,7 +73,10 @@ export async function generateFireworksImage(
     const url = `https://api.fireworks.ai/inference/v1/workflows/${modelPath}/text_to_image`;
     const accept = options.outputFormat || "image/jpeg";
 
-    const body: Record<string, unknown> = { prompt };
+    const body: Record<string, unknown> = {
+        prompt,
+        ...(options.parameters || {}),
+    };
     if (options.steps != null) body.steps = options.steps;
     if (options.guidanceScale != null) body.guidance_scale = options.guidanceScale;
     if (options.seed != null) body.seed = options.seed;

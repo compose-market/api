@@ -89,6 +89,8 @@ export interface CloudflareImageOptions {
     num_steps?: number;
     /** Guidance scale */
     guidance?: number;
+    /** Provider-native request parameters */
+    parameters?: Record<string, unknown>;
 }
 
 /**
@@ -104,7 +106,10 @@ export async function generateCloudflareImage(
     prompt: string,
     options: CloudflareImageOptions = {},
 ): Promise<{ buffer: Buffer; mimeType: string }> {
-    const body: Record<string, unknown> = { prompt };
+    const body: Record<string, unknown> = {
+        prompt,
+        ...(options.parameters || {}),
+    };
     if (options.width != null) body.width = options.width;
     if (options.height != null) body.height = options.height;
     if (options.num_steps != null) body.num_steps = options.num_steps;

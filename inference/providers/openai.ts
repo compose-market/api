@@ -150,7 +150,16 @@ export async function openaiGenerateImage(
         quality?: "standard" | "hd";
         n?: number;
     }
-): Promise<Buffer> {
+): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        billingMetrics?: Record<string, unknown>;
+    };
+}> {
     if (!OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY not configured");
     }
@@ -161,7 +170,7 @@ export async function openaiGenerateImage(
         const result = await generateImage({
             model: openai.image(modelId),
             prompt,
-            n: options?.n || 1,
+            ...(options?.n !== undefined ? { n: options.n } : {}),
             size: options?.size,
             providerOptions: options?.quality ? {
                 openai: { quality: options.quality }
@@ -173,10 +182,47 @@ export async function openaiGenerateImage(
         }
 
         const image = result.images[0];
+        const providerImages = Array.isArray((result as { providerMetadata?: { openai?: { images?: Array<Record<string, unknown>> } } }).providerMetadata?.openai?.images)
+            ? ((result as { providerMetadata?: { openai?: { images?: Array<Record<string, unknown>> } } }).providerMetadata?.openai?.images ?? [])
+            : [];
+        const firstProviderImage = providerImages[0];
+        const inputTextTokens = providerImages.reduce((total, item) => total + (typeof item.textTokens === "number" ? item.textTokens : 0), 0);
+        const inputImageTokens = providerImages.reduce((total, item) => total + (typeof item.imageTokens === "number" ? item.imageTokens : 0), 0);
+        const billingMetrics: Record<string, unknown> = {};
+        if (inputTextTokens > 0) {
+            billingMetrics.input_text_tokens = inputTextTokens;
+        }
+        if (inputImageTokens > 0) {
+            billingMetrics.input_image_tokens = inputImageTokens;
+        }
+        if (typeof result.usage?.outputTokens === "number" && result.usage.outputTokens > 0) {
+            billingMetrics.output_image_tokens = result.usage.outputTokens;
+        }
+        if (typeof firstProviderImage?.quality === "string" && firstProviderImage.quality.length > 0) {
+            billingMetrics.quality = firstProviderImage.quality;
+        }
+        if (typeof firstProviderImage?.size === "string" && firstProviderImage.size.length > 0) {
+            billingMetrics.size = firstProviderImage.size;
+        }
+        const promptTokens = result.usage?.inputTokens ?? (inputTextTokens + inputImageTokens);
+        const completionTokens = result.usage?.outputTokens ?? (typeof billingMetrics.output_image_tokens === "number" ? billingMetrics.output_image_tokens as number : 0);
+        const totalTokens = result.usage?.totalTokens ?? (promptTokens + completionTokens);
+        const usage = (result.usage || Object.keys(billingMetrics).length > 0)
+            ? {
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
+            }
+            : undefined;
 
         // Return base64 as buffer
         if (image.base64) {
-            return Buffer.from(image.base64, "base64");
+            return {
+                buffer: Buffer.from(image.base64, "base64"),
+                mimeType: "image/png",
+                ...(usage ? { usage } : {}),
+            };
         }
 
         throw new Error("No image data returned");
@@ -202,9 +248,8 @@ export async function openaiGenerateVideo(
     modelId: string,
     prompt: string,
     options?: {
-        duration?: number; // seconds (5-20)
-        resolution?: "720p" | "1080p" | "1792p";
-        aspectRatio?: "16:9" | "9:16" | "1:1";
+        duration?: number;
+        size?: string;
     }
 ): Promise<{ videoBuffer: Buffer; mimeType: string }> {
     if (!OPENAI_API_KEY) {
@@ -224,8 +269,8 @@ export async function openaiGenerateVideo(
             body: JSON.stringify({
                 model: modelId,
                 prompt,
-                seconds: String(options?.duration && options.duration >= 8 ? (options.duration >= 12 ? 12 : 8) : 4),
-                size: options?.aspectRatio === "9:16" ? "720x1280" : "1280x720",
+                ...(options?.duration ? { seconds: String(options.duration) } : {}),
+                ...(options?.size ? { size: options.size } : {}),
             }),
         });
 
@@ -391,4 +436,3 @@ export async function openaiTranscribeAudio(
         throw new Error(`OpenAI transcription failed: ${message}`);
     }
 }
-

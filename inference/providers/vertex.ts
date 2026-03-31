@@ -355,8 +355,8 @@ export async function generateVertexImage(
     }
 
     // Parse size (e.g., "1024x1024" -> {width: 1024, height: 1024})
-    const size = options?.size || "1024x1024";
-    const [width, height] = size.split("x").map(Number);
+    const size = options?.size;
+    const [width, height] = size ? size.split("x").map(Number) : [undefined, undefined];
 
     const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predict`;
 
@@ -365,8 +365,8 @@ export async function generateVertexImage(
             { prompt: prompt }
         ],
         parameters: {
-            sampleCount: options?.n || 1,
-            aspectRatio: width && height ? `${width}:${height}` : "1:1",
+            ...(options?.n !== undefined ? { sampleCount: options.n } : {}),
+            ...(width && height ? { aspectRatio: `${width}:${height}` } : {}),
         }
     };
 
@@ -427,16 +427,16 @@ export async function generateVertexVideo(
     const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${VERTEX_LOCATION}/publishers/google/models/${modelId}:predictLongRunning`;
 
     // Veo uses aspect ratio, not exact dimensions
-    const aspectRatio = options?.aspectRatio || "16:9";
-    const duration = options?.duration || 8; // Default 8 seconds
+    const aspectRatio = options?.aspectRatio;
+    const duration = options?.duration;
 
     const requestBody = {
         instances: [
             { prompt: prompt }
         ],
         parameters: {
-            aspectRatio: aspectRatio,
-            durationSeconds: duration,
+            ...(aspectRatio ? { aspectRatio } : {}),
+            ...(duration ? { durationSeconds: duration } : {}),
         }
     };
 

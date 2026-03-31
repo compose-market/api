@@ -48,6 +48,72 @@ function getClient(): GoogleGenAI {
     return genaiClient;
 }
 
+function normalizeUsageMetadata(value: unknown): {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    billingMetrics?: Record<string, unknown>;
+} | undefined {
+    if (!value || typeof value !== "object") {
+        return undefined;
+    }
+
+    const record = value as {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        responseTokenCount?: number;
+        totalTokenCount?: number;
+        promptTokensDetails?: Array<{ modality?: string; tokenCount?: number }>;
+        responseTokensDetails?: Array<{ modality?: string; tokenCount?: number }>;
+        candidatesTokensDetails?: Array<{ modality?: string; tokenCount?: number }>;
+        cacheTokensDetails?: Array<{ modality?: string; tokenCount?: number }>;
+        thoughtsTokenCount?: number;
+    };
+    const promptTokens = typeof record.promptTokenCount === "number" ? record.promptTokenCount : undefined;
+    const completionTokens = typeof record.candidatesTokenCount === "number"
+        ? record.candidatesTokenCount
+        : typeof record.responseTokenCount === "number"
+            ? record.responseTokenCount
+            : undefined;
+    if (promptTokens === undefined || completionTokens === undefined) {
+        return undefined;
+    }
+
+    const billingMetrics: Record<string, unknown> = {};
+    const assignModalityMetrics = (
+        details: Array<{ modality?: string; tokenCount?: number }> | undefined,
+        prefix: "input" | "output" | "cached_input",
+    ) => {
+        for (const entry of details || []) {
+            if (typeof entry?.tokenCount !== "number" || entry.tokenCount <= 0) {
+                continue;
+            }
+
+            const modality = typeof entry.modality === "string" ? entry.modality.trim().toLowerCase() : "";
+            if (!modality) {
+                continue;
+            }
+
+            billingMetrics[`${prefix}_${modality}_tokens`] = entry.tokenCount;
+        }
+    };
+
+    assignModalityMetrics(record.promptTokensDetails, "input");
+    assignModalityMetrics(record.responseTokensDetails ?? record.candidatesTokensDetails, "output");
+    assignModalityMetrics(record.cacheTokensDetails, "cached_input");
+
+    if (typeof record.thoughtsTokenCount === "number" && record.thoughtsTokenCount > 0) {
+        billingMetrics.reasoning_tokens = record.thoughtsTokenCount;
+    }
+
+    return {
+        promptTokens,
+        completionTokens,
+        totalTokens: typeof record.totalTokenCount === "number" ? record.totalTokenCount : promptTokens + completionTokens,
+        ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
+    };
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -297,7 +363,15 @@ export async function generateImage(
         numberOfImages?: number;
         outputMimeType?: "image/png" | "image/jpeg" | "image/webp";
     }
-): Promise<Buffer> {
+): Promise<{
+    buffer: Buffer;
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        billingMetrics?: Record<string, unknown>;
+    };
+}> {
     const client = getClient();
     const cleanModelId = modelId.replace("models/", "");
 
@@ -331,6 +405,8 @@ export async function generateImage(
             },
         }) as GenerateContentResponse;
 
+        const usage = normalizeUsageMetadata(response.usageMetadata);
+
         // Extract image from response
         const candidates = response.candidates;
         if (!candidates || candidates.length === 0) {
@@ -345,7 +421,10 @@ export async function generateImage(
         // Find the inline data part (base64 image)
         for (const part of parts2) {
             if ("inlineData" in part && part.inlineData?.data) {
-                return Buffer.from(part.inlineData.data, "base64");
+                return {
+                    buffer: Buffer.from(part.inlineData.data, "base64"),
+                    ...(usage ? { usage } : {}),
+                };
             }
         }
 
@@ -520,7 +599,15 @@ export async function generateSpeech(
         voice?: string;
         languageCode?: string;
     }
-): Promise<Buffer> {
+): Promise<{
+    buffer: Buffer;
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        billingMetrics?: Record<string, unknown>;
+    };
+}> {
     const cleanModelId = modelId.replace("models/", "");
 
     console.log(`[genai] Generating speech with model: ${cleanModelId}`);
@@ -564,12 +651,17 @@ export async function generateSpeech(
             }>;
         };
 
+        const usage = normalizeUsageMetadata((data as { usageMetadata?: unknown }).usageMetadata);
+
         const audioPart = data.candidates?.[0]?.content?.parts?.find(
             (p: TTSResponsePart) => p.inlineData
         );
 
         if (audioPart?.inlineData?.data) {
-            return Buffer.from(audioPart.inlineData.data, "base64");
+            return {
+                buffer: Buffer.from(audioPart.inlineData.data, "base64"),
+                ...(usage ? { usage } : {}),
+            };
         }
 
         throw new Error("No audio in TTS response");

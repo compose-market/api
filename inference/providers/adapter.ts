@@ -401,13 +401,74 @@ type LanguageModelUsageLike = {
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
+  cachedInputTokens?: number;
+  inputTokenDetails?: {
+    noCacheTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
   outputTokenDetails?: {
+    textTokens?: number;
     reasoningTokens?: number;
   };
+  raw?: Record<string, unknown>;
 };
 
 function readTokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function assignMetric(metrics: Record<string, unknown>, key: string, value: unknown): void {
+  const numericValue = readTokenCount(value);
+  if (numericValue !== undefined) {
+    metrics[key] = numericValue;
+  }
+}
+
+function extractUsageBillingMetrics(result: LanguageModelUsageLike): Record<string, unknown> | undefined {
+  const metrics: Record<string, unknown> = {};
+  const raw = asRecord(result.raw);
+
+  assignMetric(metrics, "cached_input_tokens", result.cachedInputTokens ?? result.inputTokenDetails?.cacheReadTokens);
+  assignMetric(metrics, "uncached_input_tokens", result.inputTokenDetails?.noCacheTokens);
+  assignMetric(metrics, "output_text_tokens", result.outputTokenDetails?.textTokens);
+  assignMetric(metrics, "reasoning_tokens", result.reasoningTokens ?? result.outputTokenDetails?.reasoningTokens);
+
+  const inputDetails = asRecord(
+    raw?.prompt_tokens_details
+    ?? raw?.promptTokenDetails
+    ?? raw?.input_tokens_details
+    ?? raw?.inputTokenDetails,
+  );
+  const cachedInputDetails = asRecord(inputDetails?.cached_tokens_details ?? inputDetails?.cachedTokensDetails);
+  assignMetric(metrics, "cached_input_tokens", inputDetails?.cached_tokens ?? inputDetails?.cachedTokens);
+  assignMetric(metrics, "input_text_tokens", inputDetails?.text_tokens ?? inputDetails?.textTokens);
+  assignMetric(metrics, "input_audio_tokens", inputDetails?.audio_tokens ?? inputDetails?.audioTokens);
+  assignMetric(metrics, "input_image_tokens", inputDetails?.image_tokens ?? inputDetails?.imageTokens);
+  assignMetric(metrics, "cached_input_text_tokens", cachedInputDetails?.text_tokens ?? cachedInputDetails?.textTokens);
+  assignMetric(metrics, "cached_input_audio_tokens", cachedInputDetails?.audio_tokens ?? cachedInputDetails?.audioTokens);
+  assignMetric(metrics, "cached_input_image_tokens", cachedInputDetails?.image_tokens ?? cachedInputDetails?.imageTokens);
+
+  const outputDetails = asRecord(
+    raw?.completion_tokens_details
+    ?? raw?.completionTokenDetails
+    ?? raw?.output_tokens_details
+    ?? raw?.outputTokenDetails,
+  );
+  assignMetric(metrics, "output_text_tokens", outputDetails?.text_tokens ?? outputDetails?.textTokens);
+  assignMetric(metrics, "output_audio_tokens", outputDetails?.audio_tokens ?? outputDetails?.audioTokens);
+  assignMetric(metrics, "output_image_tokens", outputDetails?.image_tokens ?? outputDetails?.imageTokens);
+  assignMetric(metrics, "reasoning_tokens", outputDetails?.reasoning_tokens ?? outputDetails?.reasoningTokens);
+
+  return Object.keys(metrics).length > 0 ? metrics : undefined;
 }
 
 export function normalizeLanguageModelUsage(result: LanguageModelUsageLike): UnifiedUsage {
@@ -417,12 +478,20 @@ export function normalizeLanguageModelUsage(result: LanguageModelUsageLike): Uni
   const reasoningTokens =
     readTokenCount(result.reasoningTokens)
     ?? readTokenCount(result.outputTokenDetails?.reasoningTokens);
+  const cachedInputTokens =
+    readTokenCount(result.cachedInputTokens)
+    ?? readTokenCount(result.inputTokenDetails?.cacheReadTokens);
+  const billingMetrics = extractUsageBillingMetrics(result);
+  const raw = asRecord(result.raw);
 
   return {
     promptTokens,
     completionTokens,
     totalTokens,
     ...(typeof reasoningTokens === "number" ? { reasoningTokens } : {}),
+    ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+    ...(billingMetrics ? { billingMetrics } : {}),
+    ...(raw ? { raw } : {}),
   };
 }
 
@@ -443,6 +512,44 @@ function speechMimeType(format?: string, fallback = "audio/mpeg"): string {
     default:
       return fallback;
   }
+}
+
+function readImageDimensions(buffer: Buffer): { width: number; height: number } | null {
+  if (buffer.length >= 24 && buffer.readUInt32BE(0) === 0x89504e47) {
+    return {
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20),
+    };
+  }
+
+  if (buffer.length >= 10 && buffer.toString("ascii", 0, 3) === "GIF") {
+    return {
+      width: buffer.readUInt16LE(6),
+      height: buffer.readUInt16LE(8),
+    };
+  }
+
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      const blockLength = buffer.readUInt16BE(offset + 2);
+      const isStartOfFrame = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+      if (isStartOfFrame) {
+        return {
+          height: buffer.readUInt16BE(offset + 5),
+          width: buffer.readUInt16BE(offset + 7),
+        };
+      }
+      offset += blockLength + 2;
+    }
+  }
+
+  return null;
 }
 
 class AsyncEventQueue<T> {
@@ -614,20 +721,40 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
   const prompt = getPrimaryText(request.messages);
   const imageUrl = request.imageOptions?.imageUrl || findUrl(request.messages, "image_url");
   const card = getModelById(target.modelId);
+  const customParams = request.customParams || {};
+  const imageCount = typeof request.imageOptions?.n === "number" && request.imageOptions.n > 0
+    ? request.imageOptions.n
+    : 1;
 
-  const output = await withRetry(async () => {
+  const output = await withRetry(async (): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    usage?: UnifiedUsage;
+  }> => {
     switch (target.provider) {
       case "gemini": {
-        const buffer = await googleGenerateImage(target.modelId, prompt, { numberOfImages: request.imageOptions?.n });
-        return { buffer, mimeType: "image/png" };
+        const result = await googleGenerateImage(target.modelId, prompt, {
+          numberOfImages: request.imageOptions?.n,
+          aspectRatio: request.customParams?.aspect_ratio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | undefined,
+          outputMimeType: request.customParams?.output_mime_type as "image/png" | "image/jpeg" | "image/webp" | undefined,
+        });
+        return {
+          buffer: result.buffer,
+          mimeType: "image/png",
+          ...(result.usage ? { usage: result.usage } : {}),
+        };
       }
       case "openai": {
-        const buffer = await openaiGenerateImage(target.modelId, prompt, {
+        const result = await openaiGenerateImage(target.modelId, prompt, {
           size: request.imageOptions?.size as any,
           quality: request.imageOptions?.quality as any,
           n: request.imageOptions?.n,
         });
-        return { buffer, mimeType: "image/png" };
+        return {
+          buffer: result.buffer,
+          mimeType: result.mimeType,
+          ...(result.usage ? { usage: result.usage } : {}),
+        };
       }
       case "vertex": {
         const result = await generateVertexImage(target.modelId, prompt, {
@@ -641,6 +768,7 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
           modelId: target.modelId,
           task: "text-to-image",
           prompt,
+          parameters: customParams,
           inferenceProvider: card?.hfInferenceProvider,
         };
         const result = await executeHFInference(input);
@@ -661,8 +789,9 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
           body: JSON.stringify({
             model: target.modelId,
             prompt,
-            n: request.imageOptions?.n || 1,
-            size: request.imageOptions?.size || "1024x1024",
+            ...customParams,
+            ...(request.imageOptions?.n !== undefined ? { n: request.imageOptions.n } : {}),
+            ...(request.imageOptions?.size ? { size: request.imageOptions.size } : {}),
             ...(imageUrl ? { image_url: imageUrl } : {}),
           }),
         });
@@ -694,6 +823,17 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
       }
       case "fireworks": {
         const result = await generateFireworksImage(target.modelId, prompt, {
+          parameters: request.customParams,
+          steps: typeof request.customParams?.steps === "number"
+            ? request.customParams.steps
+            : typeof request.customParams?.num_steps === "number"
+              ? request.customParams.num_steps
+              : undefined,
+          guidanceScale: typeof request.customParams?.guidance_scale === "number"
+            ? request.customParams.guidance_scale
+            : typeof request.customParams?.guidance === "number"
+              ? request.customParams.guidance
+              : undefined,
           width: request.imageOptions?.size ? parseInt(request.imageOptions.size.split("x")[0]) : undefined,
           height: request.imageOptions?.size ? parseInt(request.imageOptions.size.split("x")[1]) : undefined,
         });
@@ -701,6 +841,17 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
       }
       case "cloudflare": {
         const result = await generateCloudflareImage(target.modelId, prompt, {
+          parameters: request.customParams,
+          num_steps: typeof request.customParams?.num_steps === "number"
+            ? request.customParams.num_steps
+            : typeof request.customParams?.steps === "number"
+              ? request.customParams.steps
+              : undefined,
+          guidance: typeof request.customParams?.guidance === "number"
+            ? request.customParams.guidance
+            : typeof request.customParams?.guidance_scale === "number"
+              ? request.customParams.guidance_scale
+              : undefined,
           width: request.imageOptions?.size ? parseInt(request.imageOptions.size.split("x")[0]) : undefined,
           height: request.imageOptions?.size ? parseInt(request.imageOptions.size.split("x")[1]) : undefined,
         });
@@ -711,23 +862,38 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
     }
   });
 
+  const imageDimensions = readImageDimensions(output.buffer);
+  const imageMegapixels = imageDimensions
+    ? (imageDimensions.width * imageDimensions.height) / 1_000_000
+    : undefined;
+
   return {
     modality: "image",
     media: {
       mimeType: output.mimeType,
       base64: output.buffer.toString("base64"),
-      generatedUnits: 1,
+      generatedUnits: imageCount,
       status: "completed",
+      billingMetrics: {
+        ...(request.billingMetrics || {}),
+        ...(output.usage?.billingMetrics || {}),
+        ...(typeof imageMegapixels === "number" ? { megapixel: imageMegapixels * imageCount } : {}),
+      },
     },
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    usage: output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   };
 }
 
 async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
   duration?: number;
   aspectRatio?: string;
+  resolution?: string;
+  size?: string;
   imageUrl?: string;
+  customParams?: Record<string, unknown>;
 }): Promise<{ jobId: string; status: "queued" | "processing" }> {
+  const customParams = options?.customParams || {};
+
   switch (target.provider) {
     case "aiml": {
       const apiKey = process.env.AI_ML_API_KEY;
@@ -744,8 +910,11 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
         body: JSON.stringify({
           model: target.modelId,
           prompt,
-          aspect_ratio: options?.aspectRatio || "16:9",
+          ...customParams,
+          ...(options?.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
           ...(options?.duration ? { duration: String(options.duration) } : {}),
+          ...(options?.resolution ? { resolution: options.resolution } : {}),
+          ...(options?.size ? { size: options.size } : {}),
           ...(options?.imageUrl ? { image_url: options.imageUrl } : {}),
         }),
       });
@@ -777,8 +946,9 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
         body: JSON.stringify({
           model: target.modelId,
           prompt,
-          size: options?.aspectRatio === "9:16" ? "720x1280" : "1280x720",
-          seconds: String(options?.duration && options.duration >= 8 ? (options.duration >= 12 ? 12 : 8) : 4),
+          ...customParams,
+          ...(options?.size ? { size: options.size } : {}),
+          ...(options?.duration ? { seconds: String(options.duration) } : {}),
         }),
       });
 
@@ -833,8 +1003,9 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
         body: JSON.stringify({
           instances: [{ prompt }],
           parameters: {
-            aspectRatio: options?.aspectRatio || "16:9",
-            durationSeconds: options?.duration || 8,
+            ...customParams,
+            ...(options?.aspectRatio ? { aspectRatio: options.aspectRatio } : {}),
+            ...(options?.duration ? { durationSeconds: options.duration } : {}),
           },
         }),
       });
@@ -860,12 +1031,16 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
   const prompt = getPrimaryText(request.messages);
   const imageUrl = request.videoOptions?.imageUrl || findUrl(request.messages, "image_url");
   const card = getModelById(target.modelId);
+  const customParams = request.customParams || {};
 
   if (["aiml", "openai", "gemini", "vertex"].includes(target.provider)) {
     const job = await submitVideoJob(target, prompt, {
       duration: request.videoOptions?.duration,
       aspectRatio: request.videoOptions?.aspectRatio,
+      resolution: request.videoOptions?.resolution,
+      size: typeof request.customParams?.size === "string" ? request.customParams.size : undefined,
       imageUrl,
+      customParams,
     });
 
     return {
@@ -877,6 +1052,7 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
         progress: job.status === "queued" ? 0 : 1,
         duration: request.videoOptions?.duration,
         generatedUnits: 1,
+        billingMetrics: request.billingMetrics,
       },
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     };
@@ -888,14 +1064,15 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
         const result = await googleGenerateVideo(target.modelId, prompt, {
           duration: request.videoOptions?.duration,
           aspectRatio: request.videoOptions?.aspectRatio as "16:9" | "9:16" | undefined,
+          resolution: request.videoOptions?.resolution as "720p" | "1080p" | undefined,
+          negativePrompt: typeof request.customParams?.negative_prompt === "string" ? request.customParams.negative_prompt : undefined,
         });
         return { buffer: result.videoBuffer, mimeType: result.mimeType };
       }
       case "openai": {
         const result = await openaiGenerateVideo(target.modelId, prompt, {
           duration: request.videoOptions?.duration,
-          resolution: request.videoOptions?.resolution as any,
-          aspectRatio: request.videoOptions?.aspectRatio as any,
+          size: typeof request.customParams?.size === "string" ? request.customParams.size : undefined,
         });
         return { buffer: result.videoBuffer, mimeType: result.mimeType };
       }
@@ -911,6 +1088,7 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
           modelId: target.modelId,
           task: "text-to-video",
           prompt,
+          parameters: customParams,
           inferenceProvider: card?.hfInferenceProvider,
         };
         const result = await executeHFInference(input);
@@ -929,6 +1107,7 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
       status: "completed",
       duration: request.videoOptions?.duration,
       generatedUnits: 1,
+      billingMetrics: request.billingMetrics,
     },
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   };
@@ -938,6 +1117,7 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
   const audioUrl = findUrl(request.messages, "input_audio");
   const prompt = getPrimaryText(request.messages);
   const card = getModelById(target.modelId);
+  const promptCharacterCount = prompt ? Array.from(prompt).length : 0;
 
   if (audioUrl && !prompt) {
     const audioBuffer = await fetchRemoteBuffer(audioUrl);
@@ -994,7 +1174,11 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
     };
   }
 
-  const output = await withRetry(async (): Promise<{ buffer: Buffer; mimeType: string }> => {
+  const output = await withRetry(async (): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    usage?: UnifiedUsage;
+  }> => {
     switch (target.provider) {
       case "openai":
         return {
@@ -1006,10 +1190,14 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
           mimeType: speechMimeType(request.audioOptions?.responseFormat),
         };
       case "gemini":
-        return {
-          buffer: await googleGenerateSpeech(target.modelId, prompt),
-          mimeType: speechMimeType(request.audioOptions?.responseFormat, "audio/wav"),
-        };
+        {
+          const result = await googleGenerateSpeech(target.modelId, prompt);
+          return {
+            buffer: result.buffer,
+            ...(result.usage ? { usage: result.usage } : {}),
+            mimeType: speechMimeType(request.audioOptions?.responseFormat, "audio/wav"),
+          };
+        }
       case "vertex": {
         const result = await generateVertexSpeech(target.modelId, prompt, {
           voice: request.audioOptions?.voice as any,
@@ -1027,7 +1215,7 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
         const result = await executeHFInference(payload);
         return {
           buffer: result.data as Buffer,
-          mimeType: speechMimeType(request.audioOptions?.responseFormat),
+          mimeType: speechMimeType(request.audioOptions?.responseFormat, "audio/wav"),
         };
       }
       case "cloudflare":
@@ -1063,8 +1251,17 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
       mimeType: output.mimeType,
       base64: output.buffer.toString("base64"),
       status: "completed",
+      ...((request.billingMetrics || output.usage?.billingMetrics || promptCharacterCount > 0)
+        ? {
+            billingMetrics: {
+              ...(request.billingMetrics || {}),
+              ...(output.usage?.billingMetrics || {}),
+              ...(promptCharacterCount > 0 ? { character: promptCharacterCount } : {}),
+            },
+          }
+        : {}),
     },
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    usage: output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   };
 }
 
