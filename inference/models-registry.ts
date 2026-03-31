@@ -8,7 +8,7 @@
  */
 
 import { PROVIDER_PRIORITY, type ModelCard, type ModelProvider, type CompiledModelsData, type ModelPricing } from "./types.js";
-import { normalizeCompiledPricing, resolveBillingPrice } from "./telemetry.js";
+import { normalizeCompiledPricing } from "./telemetry.js";
 
 // Re-export types for external use
 export type { ModelCard, ModelProvider, CompiledModelsData, ModelPricing };
@@ -567,78 +567,6 @@ export function getEmbeddingModel(modelId: string, provider?: ModelProvider): an
         default:
             throw new Error(`Unknown provider: ${modelProvider} for model: ${modelId}`);
     }
-}
-
-// =============================================================================
-// Pricing Calculations (x402)
-// =============================================================================
-
-const PLATFORM_FEE_RATE = 0.01; // 1%
-
-/**
- * Calculate inference cost for x402 payment
- */
-export async function calculateInferenceCost(
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number
-): Promise<{ providerCost: number; platformFee: number; totalCost: number; costUsdcWei: bigint; provider?: string }> {
-    const model = await getModelInfo(modelId);
-    if (!model?.pricing) {
-        throw new Error(`pricing is required for ${modelId}`);
-    }
-
-    const pricing = resolveBillingPrice(model.pricing, "text");
-    if (pricing.unit !== "usd_per_1m_tokens") {
-        throw new Error(`token cost calculation is not supported for pricing unit ${pricing.unit}`);
-    }
-    if (typeof pricing.values.input !== "number" || typeof pricing.values.output !== "number") {
-        throw new Error(`token pricing values are required for ${modelId}`);
-    }
-
-    const inputCost = (inputTokens / 1_000_000) * pricing.values.input;
-    const outputCost = (outputTokens / 1_000_000) * pricing.values.output;
-    const providerCost = inputCost + outputCost;
-    const platformFee = providerCost * PLATFORM_FEE_RATE;
-    const totalCost = providerCost + platformFee;
-
-    return {
-        providerCost,
-        platformFee,
-        totalCost,
-        costUsdcWei: BigInt(Math.ceil(totalCost * 1_000_000)),
-        provider: model.provider,
-    };
-}
-
-/**
- * Calculate action cost: 1% platform fee
- */
-export function calculateActionCost(actionCost: number): { providerCost: number; platformFee: number; totalCost: number; costUsdcWei: bigint } {
-    const platformFee = actionCost * 0.01;
-    const totalCost = actionCost + platformFee;
-    return {
-        providerCost: actionCost,
-        platformFee,
-        totalCost,
-        costUsdcWei: BigInt(Math.ceil(totalCost * 1_000_000)),
-    };
-}
-
-/**
- * Calculate cost (legacy wrapper)
- */
-export async function calculateCost(
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number
-): Promise<{ costUsd: number; costUsdcWei: bigint; provider?: string }> {
-    const result = await calculateInferenceCost(modelId, inputTokens, outputTokens);
-    return {
-        costUsd: result.totalCost,
-        costUsdcWei: result.costUsdcWei,
-        provider: result.provider,
-    };
 }
 
 // Legacy type alias - use ModelCard instead

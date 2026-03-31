@@ -1,4 +1,5 @@
 import type { ModelProvider } from "./types.js";
+import { resolveOptionalModelParamValues } from "./params-handler.js";
 
 export type UnifiedMode = "responses" | "chat" | "embeddings";
 export type UnifiedModality = "text" | "image" | "audio" | "video" | "embedding";
@@ -78,6 +79,8 @@ export interface UnifiedRequest {
     imageUrl?: string;
   };
   previousResponseId?: string;
+  customParams?: Record<string, unknown>;
+  billingMetrics?: Record<string, unknown>;
 }
 
 export interface UnifiedUsage {
@@ -85,6 +88,9 @@ export interface UnifiedUsage {
   completionTokens: number;
   totalTokens: number;
   reasoningTokens?: number;
+  cachedInputTokens?: number;
+  billingMetrics?: Record<string, unknown>;
+  raw?: Record<string, unknown>;
 }
 
 export interface UnifiedToolCall {
@@ -109,6 +115,7 @@ export interface UnifiedOutput {
     jobId?: string;
     status?: "queued" | "processing" | "completed" | "failed";
     progress?: number;
+    billingMetrics?: Record<string, unknown>;
   };
 }
 
@@ -297,6 +304,142 @@ function normalizeMessages(input: unknown): UnifiedMessage[] {
     });
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function pickStringValue(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function pickNumberValue(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function getPrimaryText(messages: UnifiedMessage[]): string {
+  for (const message of messages) {
+    if (typeof message.content === "string" && message.content.trim().length > 0) {
+      return message.content;
+    }
+
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+
+    const text = message.content
+      .filter((part): part is UnifiedContentPart & { text: string } => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0)
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+    if (text.length > 0) {
+      return text;
+    }
+  }
+
+  return "";
+}
+
+function parseMegapixels(size: string | undefined): number | undefined {
+  if (!size) {
+    return undefined;
+  }
+
+  const match = size.trim().toLowerCase().match(/^(\d+)\s*x\s*(\d+)$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const width = Number.parseInt(match[1], 10);
+  const height = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return undefined;
+  }
+
+  return (width * height) / 1_000_000;
+}
+
+function buildRequestBillingMetrics(
+  modality: UnifiedModality,
+  resolvedParams: Record<string, unknown>,
+  promptText?: string,
+): Record<string, unknown> {
+  const metrics: Record<string, unknown> = {
+    request: 1,
+  };
+
+  for (const [key, value] of Object.entries(resolvedParams)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      metrics[key] = value;
+    }
+  }
+
+  if (modality === "image") {
+    const generatedUnits = pickNumberValue(resolvedParams.n, resolvedParams.num_images);
+    if (typeof generatedUnits === "number" && generatedUnits > 0) {
+      metrics.generation = generatedUnits;
+      metrics.image = generatedUnits;
+    }
+
+    const megapixels = parseMegapixels(pickStringValue(
+      resolvedParams.size,
+      resolvedParams.image_size,
+    ));
+    if (typeof megapixels === "number" && typeof generatedUnits === "number" && generatedUnits > 0) {
+      metrics.megapixel = megapixels * generatedUnits;
+    }
+  }
+
+  if (modality === "video") {
+    const duration = pickNumberValue(resolvedParams.duration);
+    if (typeof duration === "number" && duration > 0) {
+      metrics.second = duration;
+      metrics.minute = duration / 60;
+      metrics.duration = duration;
+    }
+
+    const resolution = pickStringValue(resolvedParams.resolution, resolvedParams.size);
+    if (resolution) {
+      metrics.resolution = resolution;
+    }
+
+    const aspectRatio = pickStringValue(resolvedParams.aspect_ratio, resolvedParams.aspectRatio);
+    if (aspectRatio) {
+      metrics.aspect_ratio = aspectRatio;
+    }
+
+    metrics.video = 1;
+    metrics.generation = 1;
+  }
+
+  if (modality === "audio" && promptText) {
+    const characters = Array.from(promptText).length;
+    if (characters > 0) {
+      metrics.character = characters;
+    }
+  }
+
+  return metrics;
+}
+
 function normalizeResponsesInput(input: unknown): UnifiedMessage[] {
   if (typeof input === "string") {
     return [{ role: "user", content: input }];
@@ -414,9 +557,20 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
   const model = typeof body.model === "string" ? body.model : "";
   const modality = pickModality(body, "text");
   const messages = normalizeResponsesInput(body.input);
+  const promptText = getPrimaryText(messages);
   const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
   const previousResponseId =
     typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
+  const rawCustomParams = asRecord(body.custom_params);
+  const resolvedModelParams = modality === "image" || modality === "video"
+    ? resolveOptionalModelParamValues(model, modality, body)
+    : null;
+  const resolvedParams = {
+    ...(rawCustomParams || {}),
+    ...(resolvedModelParams?.values ?? {}),
+  };
+  const customParams = Object.keys(resolvedParams).length > 0 ? resolvedParams : undefined;
+  const customParamsRecord = asRecord(customParams);
 
   return {
     mode: "responses",
@@ -435,10 +589,19 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
       ? (typeof body.input === "string" || Array.isArray(body.input) ? body.input as string | string[] : "")
       : undefined,
     imageOptions: {
-      n: typeof body.n === "number" ? body.n : undefined,
-      size: typeof body.size === "string" ? body.size : undefined,
-      quality: typeof body.quality === "string" ? body.quality : undefined,
-      imageUrl: typeof body.image_url === "string" ? body.image_url : undefined,
+      n: pickNumberValue(body.n, customParamsRecord?.n, customParamsRecord?.num_images),
+      size: pickStringValue(
+        typeof body.size === "string" ? body.size : undefined,
+        customParamsRecord?.size,
+      ),
+      quality: pickStringValue(
+        typeof body.quality === "string" ? body.quality : undefined,
+        customParamsRecord?.quality,
+      ),
+      imageUrl: pickStringValue(
+        typeof body.image_url === "string" ? body.image_url : undefined,
+        customParamsRecord?.image_url,
+      ),
     },
     audioOptions: {
       voice: typeof body.voice === "string" ? body.voice : undefined,
@@ -447,12 +610,30 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
       responseFormat: typeof body.response_format === "string" ? body.response_format : undefined,
     },
     videoOptions: {
-      duration: typeof body.duration === "number" ? body.duration : undefined,
-      aspectRatio: typeof body.aspect_ratio === "string" ? body.aspect_ratio : undefined,
-      resolution: typeof body.size === "string" ? body.size : undefined,
-      imageUrl: typeof body.image_url === "string" ? body.image_url : undefined,
+      duration: pickNumberValue(
+        typeof body.duration === "number" ? body.duration : undefined,
+        customParamsRecord?.duration,
+      ),
+      aspectRatio: pickStringValue(
+        typeof body.aspect_ratio === "string" ? body.aspect_ratio : undefined,
+        customParamsRecord?.aspect_ratio,
+      ),
+      resolution: pickStringValue(
+        typeof body.resolution === "string" ? body.resolution : undefined,
+        typeof body.size === "string" ? body.size : undefined,
+        customParamsRecord?.resolution,
+        customParamsRecord?.size,
+      ),
+      imageUrl: pickStringValue(
+        typeof body.image_url === "string" ? body.image_url : undefined,
+        customParamsRecord?.image_url,
+      ),
     },
     previousResponseId,
+    customParams,
+    billingMetrics: (modality === "image" || modality === "video" || modality === "audio")
+      ? buildRequestBillingMetrics(modality, resolvedParams, promptText)
+      : undefined,
   };
 }
 
