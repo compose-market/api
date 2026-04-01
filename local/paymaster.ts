@@ -23,6 +23,13 @@ const EnvSchema = z.object({
   FILECOIN_MAINNET_RPC: z.string().trim().min(1).optional(),
 });
 
+function normalizeInlineCommentedEnvValue(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value.replace(/\s+#.*$/, "").trim();
+}
+
 interface LocalSynapseSessionRequest {
   agentWallet: string;
   deviceId: string;
@@ -136,8 +143,16 @@ function resolveSynapseChain(network: SynapseRouteConfig["network"]): Chain {
   }
 }
 
-function loadSynapseRouteConfig(env: NodeJS.ProcessEnv = process.env): SynapseRouteConfig {
-  const parsed = EnvSchema.parse(env);
+export function loadSynapseRouteConfig(env: NodeJS.ProcessEnv = process.env): SynapseRouteConfig {
+  const parsed = EnvSchema.parse({
+    ...env,
+    SYNAPSE_NETWORK: normalizeInlineCommentedEnvValue(env.SYNAPSE_NETWORK),
+    SYNAPSE_WALLET_PRIVATE_KEY: normalizeInlineCommentedEnvValue(env.SYNAPSE_WALLET_PRIVATE_KEY),
+    SYNAPSE_PROJECT_NAMESPACE: normalizeInlineCommentedEnvValue(env.SYNAPSE_PROJECT_NAMESPACE),
+    SYNAPSE_RPC_URL: normalizeInlineCommentedEnvValue(env.SYNAPSE_RPC_URL),
+    FILECOIN_CALIBRATION_RPC: normalizeInlineCommentedEnvValue(env.FILECOIN_CALIBRATION_RPC),
+    FILECOIN_MAINNET_RPC: normalizeInlineCommentedEnvValue(env.FILECOIN_MAINNET_RPC),
+  });
   const rpcUrl = parsed.SYNAPSE_RPC_URL
     || (parsed.SYNAPSE_NETWORK === "mainnet" ? parsed.FILECOIN_MAINNET_RPC : undefined)
     || (parsed.SYNAPSE_NETWORK === "calibration" ? parsed.FILECOIN_CALIBRATION_RPC : undefined)
