@@ -39,6 +39,7 @@ export interface AgentCard {
   name: string;
   description: string;
   skills: string[];
+  x402Support: boolean;
   image?: string;
   avatar?: string;
   dnaHash: string;
@@ -453,7 +454,7 @@ async function prepareRoutePayment(
   const chainId = chainHeader ? parseInt(chainHeader, 10) : Number.NaN;
 
   let sessionContext: {
-    maxAmountWei: string;
+    authorizationInput: { useBudgetCap: true } | { maxAmountWei: string };
     userAddress: string;
     sessionBudgetRemaining: string;
   } | null = null;
@@ -477,7 +478,7 @@ async function prepareRoutePayment(
     action,
     resource: `https://${req.get("host")}${req.originalUrl}`,
     method: req.method,
-    maxAmountWei: sessionContext.maxAmountWei,
+    ...sessionContext.authorizationInput,
     composeRunId: getHeader(req, "x-compose-run-id"),
     idempotencyKey: getHeader(req, "x-idempotency-key"),
   });
@@ -526,7 +527,7 @@ async function settlePreparedPayment(
 }
 
 async function resolveSessionBudgetReservation(authorization: string): Promise<{
-  maxAmountWei: string;
+  authorizationInput: { useBudgetCap: true } | { maxAmountWei: string };
   userAddress: string;
   sessionBudgetRemaining: string;
 }> {
@@ -555,7 +556,7 @@ async function resolveSessionBudgetReservation(authorization: string): Promise<{
     }
 
     return {
-      maxAmountWei: availableWei,
+      authorizationInput: { useBudgetCap: true },
       userAddress: validation.payload.sub,
       sessionBudgetRemaining: availableWei,
     };
@@ -573,7 +574,7 @@ async function resolveSessionBudgetReservation(authorization: string): Promise<{
 
   const availableWei = available.toString();
   return {
-    maxAmountWei: availableWei,
+    authorizationInput: { maxAmountWei: availableWei },
     userAddress: validation.payload.sub,
     sessionBudgetRemaining: availableWei,
   };
@@ -939,9 +940,4 @@ export function registerWorkflowRoutes(app: Application): void {
   app.get("/frameworks", (_req, res) => {
     res.json({ frameworks: FRAMEWORKS });
   });
-
-  app.post("/api/local/memory/add", passthroughJsonRoute());
-  app.post("/api/local/memory/search", passthroughJsonRoute());
-  app.get("/api/local/memory/:agentWallet", passthroughJsonRoute());
-  app.post("/api/local/memory/context", passthroughJsonRoute());
 }

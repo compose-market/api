@@ -9,7 +9,6 @@
  */
 
 import type { Application, NextFunction, Request, Response, RequestHandler } from "express";
-import { createPublicClient, http } from "viem";
 
 // Define types locally - Cloud Run uses Express request/response via mock pattern
 interface APIGatewayProxyEventV2 {
@@ -46,7 +45,10 @@ import {
     getKeyBudgetInfo,
 } from "./x402/keys/middleware.js";
 
-import { initializeSessionBudget } from "./x402/session-budget.js";
+import {
+    getBudgetInfo as getSessionBudgetInfo,
+    initializeSessionBudget,
+} from "./x402/session-budget.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalSynapseRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
@@ -58,8 +60,7 @@ import {
     abortPaymentIntent,
     settlePaymentIntent,
 } from "./x402/intents.js";
-import { merchantWalletAddress } from "./x402/wallets.js";
-import { getActiveChainId, getViemChain, getUsdcAddress, getRpcUrl } from "./x402/configs/chains.js";
+import { getActiveChainId } from "./x402/configs/chains.js";
 import {
     getComposeFacilitatorSupported,
     parseComposeFacilitatorSettleRequest,
@@ -120,47 +121,6 @@ function parsePositiveIntegerInput(value: unknown, fieldName: string): number {
 
     throw new Error(`${fieldName} must be a positive integer`);
 }
-
-async function hasSufficientSessionAllowance(input: {
-    userAddress: string;
-    chainId: number;
-    minimumBudgetWei: number;
-}): Promise<boolean> {
-    const chain = getViemChain(input.chainId);
-    const usdcAddress = getUsdcAddress(input.chainId);
-    const rpcUrl = getRpcUrl(input.chainId);
-
-    if (!chain || !usdcAddress) {
-        throw new Error(`Unsupported chain for session creation: ${input.chainId}`);
-    }
-
-    const publicClient = createPublicClient({
-        chain,
-        transport: http(rpcUrl),
-    });
-
-    const currentAllowance = await publicClient.readContract({
-        address: usdcAddress,
-        abi: [{
-            name: "allowance",
-            type: "function",
-            inputs: [
-                { name: "owner", type: "address" },
-                { name: "spender", type: "address" },
-            ],
-            outputs: [{ name: "", type: "uint256" }],
-            stateMutability: "view",
-        }] as const,
-        functionName: "allowance",
-        args: [
-            input.userAddress as `0x${string}`,
-            merchantWalletAddress,
-        ],
-    });
-
-    return currentAllowance >= BigInt(input.minimumBudgetWei);
-}
-
 function getHeader(event: APIGatewayProxyEventV2, name: string): string | undefined {
     const normalized = name.toLowerCase();
     for (const [key, value] of Object.entries(event.headers || {})) {
@@ -343,6 +303,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/local/link-token/redeem", routeHandler);
     app.post("/api/local/deployments/register", routeHandler);
     app.post("/api/local/synapse/session", routeHandler);
+    app.post("/api/local/paymaster/session", routeHandler);
     app.get("/api/local/updates/config", routeHandler);
     app.get(/^\/api\/local\/updates\/[^/]+\/[^/]+\/[^/]+$/, routeHandler);
     app.post("/api/local/network/peers/upsert", routeHandler);
@@ -753,10 +714,11 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
             body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason)),
         };
     }
-    const budgetLimit = BigInt(session.budgetLimit);
-    const budgetUsed = BigInt(session.budgetUsed);
-    const budgetLocked = BigInt(session.budgetLocked);
-    const budgetRemaining = BigInt(session.budgetRemaining);
+    const liveBudget = await getSessionBudgetInfo(userAddress, chainId);
+    const budgetLimit = BigInt(liveBudget?.totalWei ?? session.budgetLimit);
+    const budgetUsed = BigInt(liveBudget?.usedWei ?? session.budgetUsed);
+    const budgetLocked = BigInt(liveBudget?.lockedWei ?? session.budgetLocked);
+    const budgetRemaining = BigInt(liveBudget?.availableWei ?? session.budgetRemaining);
 
     const response: Record<string, any> = {
         hasSession: true,
@@ -1031,24 +993,6 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
     }
 
     const userAddress = requireUserAddressHeader(event);
-    if (purpose === "session") {
-        const hasAllowance = await hasSufficientSessionAllowance({
-            userAddress,
-            chainId,
-            minimumBudgetWei: budgetLimit,
-        });
-
-        if (!hasAllowance) {
-            return {
-                statusCode: 409,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                    error: "On-chain session allowance is missing or below the requested budget",
-                    hint: "Approve the USDC session budget on-chain before creating the session",
-                }),
-            };
-        }
-    }
 
     const result = await createComposeKey(userAddress, {
         budgetLimit,
@@ -1079,8 +1023,11 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
     }
 
     const budgetLimitString = String(result.budgetLimit);
-    const budgetUsed = "0";
-    const budgetRemaining = budgetLimitString;
+    const liveBudget = purpose === "session"
+        ? await getSessionBudgetInfo(userAddress, chainId)
+        : null;
+    const budgetUsed = liveBudget?.usedWei || "0";
+    const budgetRemaining = liveBudget?.availableWei || budgetLimitString;
     const createdAt = Date.now();
 
     return {
