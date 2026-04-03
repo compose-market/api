@@ -37,9 +37,6 @@ export {
     paymentAsset,
 } from "../wallets.js";
 
-// Pricing
-export { INFERENCE_PRICE_WEI } from "../pricing.js";
-
 /**
  * Default payment configuration for Compose Market
  * Defaults to Avalanche Fuji with USDC.
@@ -49,12 +46,4 @@ export const DEFAULT_PAYMENT_CONFIG = {
     assetSymbol: "USDC",
     assetAddress: "0x5425890298aed601595a70AB815c96711a31Bc65" as `0x${string}`,
     scheme: "exact" as const,
-};
-
-/**
- * Pricing configuration for AI inference
- */
-export const PRICING_CONFIG = {
-    pricePerTokenWei: 1, // 0.000001 USDC per token
-    maxTokensPerCall: 100_000,
 };

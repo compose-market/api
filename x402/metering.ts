@@ -6,20 +6,16 @@ import type {
 import { resolveModel } from "../inference/models-registry.js";
 import {
   buildAuthoritativeBilling,
+  buildRequestBilling,
+  pricingHasTokenSections,
   resolveBillingPrice,
 } from "../inference/telemetry.js";
 import type { ModelCard, ModelProvider } from "../inference/types.js";
 
 const MICRO_SCALE = 1_000_000n;
-const TOKENS_PER_UNIT = 1_000_000n;
 const PLATFORM_FEE_BASIS_POINTS = 100n; // 1%
 
-export type MeterPriceUnit =
-  | "usd_per_1m_tokens"
-  | "usd_per_image"
-  | "usd_per_second"
-  | "usd_per_minute"
-  | "usd_per_request";
+export type MeterPriceUnit = string;
 
 export interface MeterLineItem {
   key: string;
@@ -112,8 +108,21 @@ function decimalToMicros(value: number, fieldName: string): bigint {
 }
 
 function unitScale(unit: MeterPriceUnit): bigint {
-  if (unit === "usd_per_1m_tokens") {
-    return TOKENS_PER_UNIT;
+  const normalized = unit.trim().toLowerCase();
+
+  if (/_per_1m_/.test(normalized)) {
+    return 1_000_000n;
+  }
+
+  const scaledMetric = normalized.match(/_per_(\d+)(k|m)_/);
+  if (scaledMetric) {
+    const value = BigInt(scaledMetric[1]);
+    return scaledMetric[2] === "m" ? value * 1_000_000n : value * 1_000n;
+  }
+
+  const scaledSeconds = normalized.match(/_per_(\d+)_seconds$/);
+  if (scaledSeconds) {
+    return BigInt(scaledSeconds[1]);
   }
 
   return 1n;
@@ -189,39 +198,9 @@ function requireResolvedCard(resolved: ResolvedBillingModel, phase: "authorizati
   return resolved.card;
 }
 
-function readPositiveInteger(value: unknown): number | undefined {
-  return Number.isInteger(value) && typeof value === "number" && value > 0 ? value : undefined;
-}
-
-function getContextWindowLimit(card: ModelCard): { inputTokens: number; outputTokens?: number } {
-  const contextWindow = card.contextWindow;
-
-  const scalarLimit = readPositiveInteger(contextWindow);
-  if (scalarLimit !== undefined) {
-    return { inputTokens: scalarLimit };
-  }
-
-  if (!contextWindow || typeof contextWindow !== "object" || Array.isArray(contextWindow)) {
-    throw new Error(`contextWindow is required for metered billing: ${card.modelId}`);
-  }
-
-  const record = contextWindow as Record<string, unknown>;
-  const inputTokens = readPositiveInteger(record.inputTokens);
-  if (inputTokens === undefined) {
-    throw new Error(`contextWindow.inputTokens is required for metered billing: ${card.modelId}`);
-  }
-  return {
-    inputTokens,
-    outputTokens: readPositiveInteger(record.outputTokens),
-  };
-}
-
-function requirePositiveInteger(value: number | undefined, fieldName: string): number {
-  if (!Number.isInteger(value) || !value || value <= 0) {
-    throw new Error(`${fieldName} is required`);
-  }
-
-  return value;
+function isMissingMeterQuantityError(error: unknown): boolean {
+  return error instanceof Error
+    && /authoritative billable quantity is required|token pricing cannot be authorized from request metrics/i.test(error.message);
 }
 
 function requireUsageRecords(usageRecords: UsageRecord[]): UsageRecord[] {
@@ -253,185 +232,17 @@ export function buildResolvedAuthorizationMeter(args: {
   resolved: ResolvedBillingModel;
 }): MeteredModelQuote {
   const card = requireResolvedCard(args.resolved, "authorization");
-  const pricing = resolveBillingPrice(card.pricing, args.request.modality);
   const subject = meterSubject(args.resolved.provider, args.request.model);
 
-  if (pricing.unit === "usd_per_1m_tokens") {
-    const contextWindow = getContextWindowLimit(card);
-
-    if (args.request.modality === "text") {
-      if (!Number.isInteger(args.request.maxTokens) || !args.request.maxTokens || args.request.maxTokens <= 0) {
-        throw new Error("max_output_tokens is required for metered text billing");
-      }
-      if (contextWindow.outputTokens && args.request.maxTokens > contextWindow.outputTokens) {
-        throw new Error(`max_output_tokens exceeds output token limit for ${args.request.model}`);
-      }
-      if (args.request.maxTokens > contextWindow.inputTokens) {
-        throw new Error(`max_output_tokens exceeds context window for ${args.request.model}`);
-      }
-
-      const lineItems: MeterLineItem[] = [];
-      if (typeof pricing.values.input === "number") {
-        lineItems.push({
-          key: "input_tokens",
-          unit: pricing.unit,
-          quantity: contextWindow.inputTokens,
-          unitPriceUsd: pricing.values.input,
-        });
-      }
-      if (typeof pricing.values.output === "number") {
-        lineItems.push({
-          key: "output_tokens",
-          unit: pricing.unit,
-          quantity: args.request.maxTokens,
-          unitPriceUsd: pricing.values.output,
-        });
-      }
-
-      if (lineItems.length === 0) {
-        throw new Error(`token pricing values are required for metered billing: ${args.request.model}`);
-      }
-
-      const meter: MeteredAuthorizationInput = { subject, lineItems };
-      return {
-        modelId: args.resolved.modelId,
-        provider: args.resolved.provider,
-        known: args.resolved.known,
-        meter,
-        ...quoteMeteredAuthorization(meter),
-      };
-    }
-
-    if (args.request.modality === "embedding") {
-      const itemCount = Array.isArray(args.request.embeddingInput) ? args.request.embeddingInput.length : 1;
-      if (!Number.isInteger(itemCount) || itemCount <= 0) {
-        throw new Error("embedding input is required for metered embedding billing");
-      }
-      if (typeof pricing.values.input !== "number") {
-        throw new Error(`pricing.values.input is required for metered embedding billing: ${args.request.model}`);
-      }
-
-      const meter: MeteredAuthorizationInput = {
-        subject,
-        lineItems: [
-          {
-            key: "input_tokens",
-            unit: pricing.unit,
-            quantity: contextWindow.inputTokens * itemCount,
-            unitPriceUsd: pricing.values.input,
-          },
-        ],
-      };
-
-      return {
-        modelId: args.resolved.modelId,
-        provider: args.resolved.provider,
-        known: args.resolved.known,
-        meter,
-        ...quoteMeteredAuthorization(meter),
-      };
-    }
-
-    throw new Error(`token pricing is not supported for ${args.request.modality} authorization: ${args.request.model}`);
-  }
-
-  if (pricing.unit === "usd_per_image") {
-    const quantity = readPositiveInteger(args.request.imageOptions?.n) ?? 1;
-    const unitPriceUsd = pricing.values.generation ?? pricing.values.image;
-    if (typeof unitPriceUsd !== "number") {
-      throw new Error(`pricing.values.generation is required for metered image billing: ${args.request.model}`);
-    }
-
-    const meter: MeteredAuthorizationInput = {
-      subject,
-      lineItems: [
-        {
-          key: "generation",
-          unit: pricing.unit,
-          quantity,
-          unitPriceUsd,
-        },
-      ],
-    };
-
-    return {
-      modelId: args.resolved.modelId,
-      provider: args.resolved.provider,
-      known: args.resolved.known,
-      meter,
-      ...quoteMeteredAuthorization(meter),
-    };
-  }
-
-  if (pricing.unit === "usd_per_second") {
-    const quantity = requirePositiveInteger(args.request.videoOptions?.duration, "duration");
-    if (typeof pricing.values.second !== "number") {
-      throw new Error(`pricing.values.second is required for metered duration billing: ${args.request.model}`);
-    }
-
-    const meter: MeteredAuthorizationInput = {
-      subject,
-      lineItems: [
-        {
-          key: "duration",
-          unit: pricing.unit,
-          quantity,
-          unitPriceUsd: pricing.values.second,
-        },
-      ],
-    };
-
-    return {
-      modelId: args.resolved.modelId,
-      provider: args.resolved.provider,
-      known: args.resolved.known,
-      meter,
-      ...quoteMeteredAuthorization(meter),
-    };
-  }
-
-  if (pricing.unit === "usd_per_minute") {
-    const durationSeconds = requirePositiveInteger(args.request.videoOptions?.duration, "duration");
-    if (typeof pricing.values.minute !== "number") {
-      throw new Error(`pricing.values.minute is required for metered duration billing: ${args.request.model}`);
-    }
-
-    const meter: MeteredAuthorizationInput = {
-      subject,
-      lineItems: [
-        {
-          key: "duration",
-          unit: pricing.unit,
-          quantity: durationSeconds / 60,
-          unitPriceUsd: pricing.values.minute,
-        },
-      ],
-    };
-
-    return {
-      modelId: args.resolved.modelId,
-      provider: args.resolved.provider,
-      known: args.resolved.known,
-      meter,
-      ...quoteMeteredAuthorization(meter),
-    };
-  }
-
-  const unitPriceUsd = pricing.values.request ?? pricing.values.generation ?? pricing.values.call;
-  if (typeof unitPriceUsd !== "number") {
-    throw new Error(`pricing.values.request is required for metered request billing: ${args.request.model}`);
-  }
-
-  const meter: MeteredAuthorizationInput = {
+  const billing = buildRequestBilling({
     subject,
-    lineItems: [
-      {
-        key: "request",
-        unit: "usd_per_request",
-        quantity: 1,
-        unitPriceUsd,
-      },
-    ],
+    modality: args.request.modality,
+    pricing: card.pricing!,
+    metrics: args.request.billingMetrics,
+  });
+  const meter: MeteredAuthorizationInput = {
+    subject: billing.subject,
+    lineItems: billing.lineItems.map(({ source: _source, ...lineItem }) => lineItem),
   };
 
   return {
@@ -448,22 +259,20 @@ export function buildResolvedAuthorizationInput(args: {
   resolved: ResolvedBillingModel;
 }): ResolvedAuthorizationInput {
   const card = requireResolvedCard(args.resolved, "authorization");
-  const pricing = resolveBillingPrice(card.pricing, args.request.modality);
-
-  if (pricing.unit === "usd_per_1m_tokens") {
+  if (pricingHasTokenSections(card.pricing!)) {
     return { useBudgetCap: true };
   }
 
-  if (pricing.unit === "usd_per_second" || pricing.unit === "usd_per_minute") {
-    const duration = readPositiveInteger(args.request.videoOptions?.duration);
-    if (duration === undefined) {
+  try {
+    return {
+      meter: buildResolvedAuthorizationMeter(args).meter as MeteredAuthorizationInput,
+    };
+  } catch (error) {
+    if (isMissingMeterQuantityError(error)) {
       return { useBudgetCap: true };
     }
+    throw error;
   }
-
-  return {
-    meter: buildResolvedAuthorizationMeter(args).meter as MeteredAuthorizationInput,
-  };
 }
 
 export function buildResolvedSettlementMeter(args: SettlementMeterArgs): MeteredModelQuote {
@@ -505,6 +314,11 @@ export function buildSettlementMeterFromOutput(args: {
       generatedSeconds: args.output.media?.duration,
       generatedMinutes: typeof args.output.media?.duration === "number" ? args.output.media.duration / 60 : undefined,
       requests: 1,
+      billingMetrics: {
+        ...(args.request.billingMetrics || {}),
+        ...(args.output.media?.billingMetrics || {}),
+        request: 1,
+      },
     },
   });
 }
@@ -523,7 +337,7 @@ export function buildUsageRecordSettlementMeter(args: {
     const card = requireResolvedCard(resolved, "settlement");
     const pricing = resolveBillingPrice(card.pricing, "text");
 
-    if (pricing.unit !== "usd_per_1m_tokens") {
+    if (!pricing.unit.endsWith("_per_1m_tokens")) {
       throw new Error(`workflow usage record pricing must be token-based: ${usageRecord.model}`);
     }
 

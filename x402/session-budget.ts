@@ -26,7 +26,10 @@ import {
     redisSRem,
     redisExists,
 } from "./keys/redis.js";
-import { INFERENCE_PRICE_WEI } from "./pricing.js";
+import {
+    getSpendableSessionBudgetWei,
+    readSessionAllowanceWei,
+} from "./session-allowance.js";
 
 // =============================================================================
 // Configuration
@@ -103,6 +106,30 @@ function getIntentKey(intentId: string): string {
 
 function getUserIntentsKey(address: string): string {
     return `${SESSION_KEY_PREFIX}${address.toLowerCase()}:intents`;
+}
+
+async function getLiveBudgetAvailability(input: {
+    userAddress: string;
+    chainId: number;
+    totalWei: bigint;
+    lockedWei: bigint;
+    usedWei: bigint;
+}): Promise<{
+    allowanceWei: bigint;
+    availableWei: bigint;
+}> {
+    const allowanceWei = await readSessionAllowanceWei(input.userAddress, input.chainId);
+    const availableWei = getSpendableSessionBudgetWei({
+        budgetLimitWei: input.totalWei,
+        usedWei: input.usedWei,
+        lockedWei: input.lockedWei,
+        allowanceWei,
+    });
+
+    return {
+        allowanceWei,
+        availableWei,
+    };
 }
 
 // =============================================================================
@@ -206,8 +233,7 @@ export interface SessionStatus {
 export async function getSessionStatus(
     userAddress: string,
     chainId: number,
-    // Default inference cost (centralized in config/thirdweb + pricing.ts)
-    requestCostWei: string = String(INFERENCE_PRICE_WEI),
+    requestCostWei?: string,
 ): Promise<SessionStatus | null> {
     const budget = await getSessionBudget(userAddress, chainId);
 
@@ -219,30 +245,36 @@ export async function getSessionStatus(
     const total = BigInt(budget.totalBudgetWei);
     const locked = BigInt(budget.lockedBudgetWei);
     const used = BigInt(budget.usedBudgetWei);
-    const available = total - locked - used;
-    const requestCost = BigInt(requestCostWei);
+    const { availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        chainId,
+        totalWei: total,
+        lockedWei: locked,
+        usedWei: used,
+    });
+    const requestCost = requestCostWei ? BigInt(requestCostWei) : 0n;
 
     const expiresInMs = budget.expiresAt - now;
     const expiresInSeconds = Math.max(0, Math.floor(expiresInMs / 1000));
     const isExpired = now > budget.expiresAt;
 
     const totalNum = Number(total);
-    const availableNum = Number(available);
+    const availableNum = Number(availableWei);
     const budgetPercentRemaining = totalNum > 0 ? (availableNum / totalNum) * 100 : 0;
 
     return {
-        isActive: !isExpired && available > 0n,
+        isActive: !isExpired && availableWei > 0n,
         isExpired,
         expiresAt: budget.expiresAt,
         expiresInSeconds,
         totalBudget: budget.totalBudgetWei,
-        availableBudget: available.toString(),
+        availableBudget: availableWei.toString(),
         lockedBudget: budget.lockedBudgetWei,
         usedBudget: budget.usedBudgetWei,
         budgetPercentRemaining,
         warnings: {
             budgetLow: budgetPercentRemaining < 20,
-            budgetDepleted: available < requestCost,
+            budgetDepleted: requestCost > 0n ? availableWei < requestCost : availableWei <= 0n,
             expiringSoon: expiresInSeconds < 300 && !isExpired, // < 5 minutes
             expired: isExpired,
         },
@@ -265,9 +297,15 @@ export async function getAvailableBudget(
     const total = BigInt(budget.totalBudgetWei);
     const locked = BigInt(budget.lockedBudgetWei);
     const used = BigInt(budget.usedBudgetWei);
+    const { availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        chainId,
+        totalWei: total,
+        lockedWei: locked,
+        usedWei: used,
+    });
 
-    const available = total - locked - used;
-    return available > 0n ? available : 0n;
+    return availableWei;
 }
 
 /**
@@ -317,15 +355,21 @@ export async function lockBudget(
     const currentLocked = BigInt(budget.lockedBudgetWei);
     const used = BigInt(budget.usedBudgetWei);
     const requestAmount = BigInt(amountWei);
+    const { allowanceWei, availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        chainId,
+        totalWei: total,
+        lockedWei: currentLocked,
+        usedWei: used,
+    });
 
     // Check if sufficient budget available
-    const available = total - currentLocked - used;
-    if (available < requestAmount) {
+    if (availableWei < requestAmount) {
         return {
             success: false,
-            availableWei: available.toString(),
+            availableWei: availableWei.toString(),
             lockedWei: currentLocked.toString(),
-            error: `Insufficient budget: need ${amountWei}, have ${available.toString()}`,
+            error: `Insufficient spendable session budget: need ${amountWei}, have ${availableWei.toString()}`,
         };
     }
 
@@ -335,12 +379,12 @@ export async function lockBudget(
     const newLocked = BigInt(newLockedStr);
 
     // Double-check we didn't over-allocate (race condition protection)
-    if (newLocked + used > total) {
+    if (newLocked + used > total || newLocked > allowanceWei) {
         // Rollback the increment
         await redisHIncrBy(key, "lockedBudgetWei", -Number(requestAmount));
         return {
             success: false,
-            availableWei: (total - currentLocked - used).toString(),
+            availableWei: availableWei.toString(),
             lockedWei: currentLocked.toString(),
             error: "Race condition: budget exhausted",
         };
@@ -363,7 +407,12 @@ export async function lockBudget(
     // Store intent
     await storePaymentIntent(intent);
 
-    const newAvailable = total - newLocked - used;
+    const newAvailable = getSpendableSessionBudgetWei({
+        budgetLimitWei: total,
+        usedWei: used,
+        lockedWei: newLocked,
+        allowanceWei,
+    });
 
     console.log(`[sessionBudget] Locked ${amountWei} wei for ${userAddress} chain ${chainId}, available: ${newAvailable.toString()}`);
 
@@ -454,7 +503,13 @@ export async function getBudgetInfo(
     const total = BigInt(budget.totalBudgetWei);
     const locked = BigInt(budget.lockedBudgetWei);
     const used = BigInt(budget.usedBudgetWei);
-    const available = total - locked - used;
+    const { availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        chainId,
+        totalWei: total,
+        lockedWei: locked,
+        usedWei: used,
+    });
 
     // Get pending intent count
     const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
@@ -465,7 +520,7 @@ export async function getBudgetInfo(
         totalWei: total.toString(),
         lockedWei: locked.toString(),
         usedWei: used.toString(),
-        availableWei: available > 0n ? available.toString() : "0",
+        availableWei: availableWei.toString(),
         pendingIntents: pendingCount,
     };
 }

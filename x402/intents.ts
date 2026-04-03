@@ -425,6 +425,23 @@ async function buildPaymentBudgetHeaders(input: {
     return buildBudgetHeaders(input.keyId);
 }
 
+function appendSettlementAmountHeaders(
+    headers: Record<string, string>,
+    input: {
+        finalAmountWei?: string;
+        txHash?: string;
+    },
+): Record<string, string> {
+    if (input.finalAmountWei) {
+        headers["x-compose-key-final-amount-wei"] = input.finalAmountWei;
+    }
+    if (input.txHash) {
+        headers["x-compose-key-tx-hash"] = input.txHash;
+        headers["X-Transaction-Hash"] = input.txHash;
+    }
+    return headers;
+}
+
 export async function authorizePaymentIntent(
     input: AuthorizePaymentIntentInput,
 ): Promise<PaymentIntentResult<AuthorizedPaymentIntentBody>> {
@@ -485,19 +502,24 @@ export async function authorizePaymentIntent(
                     };
                 }
 
-                const reservation = await lockBudget(
-                    validation.payload!.sub,
-                    chainId,
-                    requestedAmountWei,
-                    merchantWalletAddress,
-                    paymentIntentId,
-                    authorizationAmount.metering?.subject,
-                );
+                let resolvedSessionBudgetIntentId = "";
+                if (!authorizationAmount.useBudgetCap) {
+                    const reservation = await lockBudget(
+                        validation.payload!.sub,
+                        chainId,
+                        requestedAmountWei,
+                        merchantWalletAddress,
+                        paymentIntentId,
+                        authorizationAmount.metering?.subject,
+                    );
 
-                if (!reservation.success) {
-                    return {
-                        ok: false as const,
-                    };
+                    if (!reservation.success) {
+                        return {
+                            ok: false as const,
+                        };
+                    }
+
+                    resolvedSessionBudgetIntentId = reservation.intentId || "";
                 }
 
                 const now = Date.now();
@@ -515,7 +537,7 @@ export async function authorizePaymentIntent(
                     status: "authorized",
                     composeRunId: toOptionalString(normalizedInput.composeRunId || ""),
                     idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
-                    sessionBudgetIntentId: toOptionalString(reservation.intentId || ""),
+                    sessionBudgetIntentId: toOptionalString(resolvedSessionBudgetIntentId || ""),
                     ...meteringRedisFields(authorizationAmount.metering),
                     createdAt: String(now),
                     updatedAt: String(now),
@@ -632,11 +654,13 @@ export async function settlePaymentIntent(
             }
 
             if (intent.status === "settled") {
-                const headers = await buildPaymentBudgetHeaders(intent);
-                if (intent.txHash) {
-                    headers["x-compose-key-tx-hash"] = intent.txHash;
-                    headers["X-Transaction-Hash"] = intent.txHash;
-                }
+                const headers = appendSettlementAmountHeaders(
+                    await buildPaymentBudgetHeaders(intent),
+                    {
+                        finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
+                        txHash: intent.txHash,
+                    },
+                );
                 return {
                     ok: true,
                     status: 200,
@@ -664,6 +688,35 @@ export async function settlePaymentIntent(
                 return failure(409, "finalAmountWei cannot exceed the reserved amount");
             }
 
+            let sessionBudgetIntentId = intent.sessionBudgetIntentId;
+            let reservedSessionAmount = reservedAmount;
+            if (intent.purpose === "session" && !sessionBudgetIntentId) {
+                const exactReservation = await lockBudget(
+                    intent.userAddress,
+                    intent.chainId,
+                    finalAmountStr,
+                    merchantWalletAddress,
+                    intent.paymentIntentId,
+                    settlementResolved.metering?.subject || intent.meterSubject,
+                );
+
+                if (!exactReservation.success || !exactReservation.intentId) {
+                    const headers = await buildPaymentBudgetHeaders(intent);
+                    return {
+                        ok: false,
+                        status: 402,
+                        body: { error: exactReservation.error || "Compose key budget exhausted" },
+                        headers,
+                    };
+                }
+
+                sessionBudgetIntentId = exactReservation.intentId;
+                reservedSessionAmount = finalAmount;
+                await redisHSet(paymentIntentKey(intent.paymentIntentId), {
+                    sessionBudgetIntentId,
+                });
+            }
+
             await redisHSet(paymentIntentKey(intent.paymentIntentId), {
                 status: "settling",
                 updatedAt: String(Date.now()),
@@ -681,10 +734,8 @@ export async function settlePaymentIntent(
 
             if (!settlement.success) {
                 if (intent.purpose === "session") {
-                    if (intent.sessionBudgetIntentId) {
-                        await cancelBudgetIntent(intent.sessionBudgetIntentId, settlement.error || "Payment settlement failed");
-                    } else {
-                        await unlockBudget(intent.userAddress, intent.chainId, intent.maxAmountWei);
+                    if (sessionBudgetIntentId) {
+                        await cancelBudgetIntent(sessionBudgetIntentId, settlement.error || "Payment settlement failed");
                     }
                 } else {
                     await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
@@ -706,13 +757,13 @@ export async function settlePaymentIntent(
             }
 
             if (intent.purpose === "session") {
-                const unlockedAmount = reservedAmount - finalAmount;
+                const unlockedAmount = reservedSessionAmount - finalAmount;
                 if (unlockedAmount > 0n) {
                     await unlockBudget(intent.userAddress, intent.chainId, unlockedAmount.toString());
                 }
                 await markSettled(intent.userAddress, intent.chainId, finalAmountStr);
-                if (intent.sessionBudgetIntentId) {
-                    await markIntentsSettled([intent.sessionBudgetIntentId], settlement.txHash || "");
+                if (sessionBudgetIntentId) {
+                    await markIntentsSettled([sessionBudgetIntentId], settlement.txHash || "");
                 }
                 await redisHSet(composeKeyRecordKey(intent.keyId), "lastUsedAt", String(Date.now()));
             } else {
@@ -741,11 +792,13 @@ export async function settlePaymentIntent(
                 }),
             });
 
-            const headers = await buildPaymentBudgetHeaders(intent);
-            if (settlement.txHash) {
-                headers["x-compose-key-tx-hash"] = settlement.txHash;
-                headers["X-Transaction-Hash"] = settlement.txHash;
-            }
+            const headers = appendSettlementAmountHeaders(
+                await buildPaymentBudgetHeaders(intent),
+                {
+                    finalAmountWei: finalAmountStr,
+                    txHash: settlement.txHash,
+                },
+            );
 
             return {
                 ok: true,
@@ -808,8 +861,6 @@ export async function abortPaymentIntent(
             if (intent.purpose === "session") {
                 if (intent.sessionBudgetIntentId) {
                     await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
-                } else {
-                    await unlockBudget(intent.userAddress, intent.chainId, intent.maxAmountWei);
                 }
             } else {
                 await withRedisLock(composeKeyLockKey(intent.keyId), async () => {

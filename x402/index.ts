@@ -16,7 +16,6 @@ import {
 import {
     getActiveChainId,
 } from "./configs/chains.js";
-import { INFERENCE_PRICE_WEI, DEFAULT_PRICES, DYNAMIC_PRICES, getPriceForRequest } from "./pricing.js";
 import type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 import {
     createComposePaymentRequired,
@@ -35,6 +34,7 @@ import {
     validateComposeKey,
     consumeKeyBudget,
     getKeyBudgetInfo,
+    getActiveSessionStatus,
 } from "./keys/index.js";
 
 // Session Budget - Deferred Payment (locked/used tracking for batch settlement)
@@ -69,20 +69,6 @@ function getComposeSessionInvalidReason(error: string | undefined): string {
     return "invalid_key";
 }
 
-// Re-export pricing
-export {
-    DYNAMIC_PRICES,
-    DEFAULT_PRICES,
-    INFERENCE_PRICE_WEI,
-    getToolPrice,
-    getMultimodalPrice,
-    calculateInferenceCost,
-    calculateActionCost,
-    calculateTotalCost,
-    getPriceForRequest,
-    formatPrice,
-} from "./pricing.js";
-
 // getActiveChainId imported from chains.js above
 
 // =============================================================================
@@ -95,14 +81,14 @@ export {
 export function createPaymentRequired402Response(params: {
     error?: string;
     errorMessage?: string;
-    amountWei?: number;
+    amountWei: number;
     resourceUrl?: string;
     chainId?: number;
 }): PaymentRequired {
     const chainId = params.chainId || getActiveChainId();
 
     return createComposePaymentRequired({
-        amountWei: params.amountWei || INFERENCE_PRICE_WEI,
+        amountWei: params.amountWei,
         chainId,
         resourceUrl: params.resourceUrl || "",
         description: "Compose.Market AI Agent Inference",
@@ -140,6 +126,97 @@ export function extractPaymentInfo(headers: Record<string, string | string[] | u
         sessionActive,
         sessionBudgetRemaining,
         sessionUserAddress,
+    };
+}
+
+async function resolveComposeSessionContext(
+    headers: Record<string, string | string[] | undefined>,
+    explicitChainId: number,
+): Promise<{
+    paymentData: string | null;
+    composeKeyToken: string | null;
+    composeKeyValidation: Awaited<ReturnType<typeof validateComposeKey>> | null;
+    sessionActive: boolean;
+    sessionBudgetRemaining: number;
+    sessionUserAddress: string | null;
+    sessionInvalidReason: string | null;
+}> {
+    const { paymentData } = extractPaymentInfo(headers);
+    const authHeader = typeof headers["authorization"] === "string" ? headers["authorization"] : undefined;
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+
+    if (!composeKeyToken) {
+        return {
+            paymentData,
+            composeKeyToken: null,
+            composeKeyValidation: null,
+            sessionActive: false,
+            sessionBudgetRemaining: 0,
+            sessionUserAddress: null,
+            sessionInvalidReason: null,
+        };
+    }
+
+    const composeKeyValidation = await validateComposeKey(composeKeyToken, 0);
+    if (!composeKeyValidation.valid || !composeKeyValidation.payload || !composeKeyValidation.record) {
+        return {
+            paymentData,
+            composeKeyToken,
+            composeKeyValidation,
+            sessionActive: false,
+            sessionBudgetRemaining: 0,
+            sessionUserAddress: null,
+            sessionInvalidReason: getComposeSessionInvalidReason(composeKeyValidation.error),
+        };
+    }
+
+    const sessionUserAddress = composeKeyValidation.payload.sub;
+    if (composeKeyValidation.record.chainId && composeKeyValidation.record.chainId !== explicitChainId) {
+        return {
+            paymentData,
+            composeKeyToken,
+            composeKeyValidation,
+            sessionActive: false,
+            sessionBudgetRemaining: 0,
+            sessionUserAddress,
+            sessionInvalidReason: "invalid_key",
+        };
+    }
+
+    if (composeKeyValidation.record.purpose !== "session") {
+        return {
+            paymentData,
+            composeKeyToken,
+            composeKeyValidation,
+            sessionActive: false,
+            sessionBudgetRemaining: 0,
+            sessionUserAddress,
+            sessionInvalidReason: null,
+        };
+    }
+
+    const sessionStatus = await getActiveSessionStatus(sessionUserAddress, explicitChainId);
+    const activeSession = sessionStatus.session;
+    if (!activeSession || activeSession.keyId !== composeKeyValidation.record.keyId) {
+        return {
+            paymentData,
+            composeKeyToken,
+            composeKeyValidation,
+            sessionActive: false,
+            sessionBudgetRemaining: 0,
+            sessionUserAddress,
+            sessionInvalidReason: activeSession ? "invalid_key" : sessionStatus.reason,
+        };
+    }
+
+    return {
+        paymentData,
+        composeKeyToken,
+        composeKeyValidation,
+        sessionActive: true,
+        sessionBudgetRemaining: activeSession.budgetRemaining,
+        sessionUserAddress,
+        sessionInvalidReason: null,
     };
 }
 
@@ -342,14 +419,20 @@ export interface PreparedPayment {
  */
 export async function prepareDeferredPayment(
     req: Request,
-    amountWei: number = INFERENCE_PRICE_WEI,
+    amountWei: number,
 ): Promise<PreparedPayment> {
     const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
     const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader), 10) : getActiveChainId();
-    const authHeader = req.headers["authorization"] as string | undefined;
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
-    const { paymentData, sessionActive, sessionBudgetRemaining, sessionUserAddress } = extractPaymentInfo(
+    const {
+        paymentData,
+        composeKeyToken,
+        composeKeyValidation,
+        sessionActive,
+        sessionUserAddress,
+        sessionInvalidReason,
+    } = await resolveComposeSessionContext(
         req.headers as Record<string, string | string[] | undefined>,
+        explicitChainId,
     );
 
     // Check for internal Workflow bypass first
@@ -369,7 +452,7 @@ export async function prepareDeferredPayment(
     // ==========================================================================
     // Session bypass flow (deferred settlement with lock/abort lifecycle)
     // ==========================================================================
-    if (sessionActive && sessionBudgetRemaining > 0 && sessionUserAddress) {
+    if (sessionActive && sessionUserAddress) {
         const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
         if (!sessionBudget) {
             return {
@@ -434,6 +517,32 @@ export async function prepareDeferredPayment(
                 }),
             };
         }
+
+        return {
+            valid: false,
+            error: lockResult.error || "Session budget exhausted",
+            method: "session",
+            metadata: { amountWei, chainId: explicitChainId, userAddress: sessionUserAddress },
+            settle: async () => ({
+                success: false,
+                error: lockResult.error || "Session budget exhausted",
+            }),
+            abort: async () => { },
+            getHeaders: () => ({ "x-compose-session-invalid": "budget_exhausted" }),
+        };
+    }
+
+    if (composeKeyValidation?.record?.purpose === "session") {
+        const reason = sessionInvalidReason || "invalid_key";
+        return {
+            valid: false,
+            error: "The compose-key session is inactive or expired.",
+            method: "session",
+            metadata: { amountWei, chainId: explicitChainId, userAddress: sessionUserAddress || undefined },
+            settle: async () => ({ success: false, error: "Inactive session" }),
+            abort: async () => { },
+            getHeaders: () => ({ "x-compose-session-invalid": reason }),
+        };
     }
 
     // ==========================================================================
@@ -442,14 +551,14 @@ export async function prepareDeferredPayment(
     if (composeKeyToken) {
         console.log(`[x402] preparePayment: Compose Key detected, validating...`);
 
-        const validation = await validateComposeKey(composeKeyToken, amountWei);
+        const validation = composeKeyValidation;
 
-        if (!validation.valid) {
-            console.log(`[x402] preparePayment: Compose Key invalid: ${validation.error}`);
-            const reason = getComposeSessionInvalidReason(validation.error);
+        if (!validation || !validation.valid || !validation.payload || !validation.record) {
+            console.log(`[x402] preparePayment: Compose Key invalid: ${validation?.error}`);
+            const reason = getComposeSessionInvalidReason(validation?.error);
             return {
                 valid: false,
-                error: validation.error,
+                error: validation?.error,
                 method: "compose-key",
                 metadata: { amountWei, chainId: explicitChainId },
                 settle: async () => ({ success: false, error: "Invalid key" }),
@@ -617,21 +726,32 @@ const RUNTIME_INTERNAL_MARKER = requireEnv("RUNTIME_INTERNAL_SECRET");
  * The session-based bypass ensures:
  * - Users still pay at the agent/workflow endpoint level
  * - Nested LLM/tool calls don't require individual x402 settlements
- * - Budget is still tracked client-side via session budget remaining
- * - Can't be abused: no session = no bypass
+ * - Session validity comes from the compose key plus Redis-backed session state
+ * - Can't be abused: no active server-side session = no bypass
  * 
  * @param req - Express request
  * @param res - Express response
- * @param amountWei - Price in USDC wei (6 decimals). Defaults to INFERENCE_PRICE_WEI ($0.005)
+ * @param amountWei - Price in USDC wei (6 decimals)
  * @returns true if payment verified, false if 402 response sent
  */
 export async function requirePayment(
     req: Request,
     res: Response,
-    amountWei: number = INFERENCE_PRICE_WEI,
+    amountWei: number,
 ): Promise<boolean> {
-    const { paymentData, sessionActive, sessionBudgetRemaining, sessionUserAddress } = extractPaymentInfo(
-        req.headers as Record<string, string | string[] | undefined>
+    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
+    const {
+        paymentData,
+        composeKeyToken,
+        composeKeyValidation,
+        sessionActive,
+        sessionBudgetRemaining,
+        sessionUserAddress,
+        sessionInvalidReason,
+    } = await resolveComposeSessionContext(
+        req.headers as Record<string, string | string[] | undefined>,
+        explicitChainId,
     );
 
     // DEBUG: Log incoming headers for bypass check
@@ -642,8 +762,6 @@ export async function requirePayment(
     console.log(`[x402-debug] User-Agent: ${userAgent.substring(0, 50)}`);
     console.log(`[x402-debug] sec-fetch-mode: ${req.headers["sec-fetch-mode"] || 'N/A'}`);
     console.log(`[x402-debug] Session: active=${sessionActive}, budget=${sessionBudgetRemaining}`);
-
-    const hasValidSession = sessionActive && sessionBudgetRemaining > 0;
 
     // @dev: Security Note:
     // If internal marker matches, allow the request
@@ -661,39 +779,8 @@ export async function requirePayment(
     // TIER 1: Session Budget Bypass - Deferred Settlement
     // Lock budget in Redis, skip on-chain settlement (batch settles every 2 min)
     // ==========================================================================
-    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
-    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
-    const authHeader = req.headers["authorization"] as string | undefined;
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
-
-    if (hasValidSession && sessionUserAddress && composeKeyToken) {
+    if (sessionActive && sessionUserAddress && composeKeyValidation?.record?.purpose === "session") {
         console.log(`[x402] Session bypass attempt: ${sessionUserAddress}, chain=${explicitChainId}, amount=${amountWei}`);
-
-        const validation = await validateComposeKey(composeKeyToken, amountWei);
-        if (!validation.valid || !validation.payload || !validation.record) {
-            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation.error));
-            res.status(401).json({
-                error: "Invalid Compose Key",
-                details: validation.error,
-            });
-            return false;
-        }
-        if (validation.payload.sub.toLowerCase() !== sessionUserAddress.toLowerCase()) {
-            setComposeSessionInvalidHeader(res, "invalid_key");
-            res.status(401).json({
-                error: "Invalid Compose Key",
-                details: "Compose Key user does not match session user",
-            });
-            return false;
-        }
-        if (validation.record.chainId && validation.record.chainId !== explicitChainId) {
-            setComposeSessionInvalidHeader(res, "invalid_key");
-            res.status(401).json({
-                error: "Invalid Compose Key",
-                details: "Compose Key chain does not match request chain",
-            });
-            return false;
-        }
 
         const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
         if (!sessionBudget) {
@@ -756,10 +843,25 @@ export async function requirePayment(
             }
 
             return true;
-        } else {
-            // Budget insufficient or no session - fall through to standard flows
-            console.log(`[x402] Session bypass FAILED: ${lockResult.error}`);
         }
+
+        console.log(`[x402] Session bypass FAILED: ${lockResult.error}`);
+        setComposeSessionInvalidHeader(res, "budget_exhausted");
+        res.status(402).json({
+            error: "Compose session budget exhausted",
+            details: lockResult.error || "Insufficient available session budget",
+        });
+        return false;
+    }
+
+    if (composeKeyValidation?.record?.purpose === "session") {
+        const reason = sessionInvalidReason || "invalid_key";
+        setComposeSessionInvalidHeader(res, reason);
+        res.status(401).json({
+            error: "Inactive Compose session",
+            details: "The compose-key session is inactive or expired.",
+        });
+        return false;
     }
 
     // ==========================================================================
@@ -769,14 +871,14 @@ export async function requirePayment(
     if (composeKeyToken) {
         console.log(`[x402] Compose Key detected, validating...`);
 
-        const validation = await validateComposeKey(composeKeyToken, amountWei);
+        const validation = composeKeyValidation;
 
-        if (!validation.valid) {
-            console.log(`[x402] Compose Key invalid: ${validation.error}`);
-            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation.error));
+        if (!validation || !validation.valid || !validation.payload || !validation.record) {
+            console.log(`[x402] Compose Key invalid: ${validation?.error}`);
+            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation?.error));
             res.status(401).json({
                 error: "Invalid Compose Key",
-                details: validation.error,
+                details: validation?.error,
             });
             return false;
         }
@@ -871,20 +973,6 @@ export async function requirePayment(
 
     console.log(`[x402] Payment verified for ${resourceUrl}`);
     return true;
-}
-
-/**
- * Require payment with dynamic pricing based on model or tool
- */
-export async function requireDynamicPayment(
-    req: Request,
-    res: Response,
-    modelId?: string,
-    toolSource?: "goat" | "mcp" | "eliza",
-    toolName?: string,
-): Promise<boolean> {
-    const priceWei = getPriceForRequest({ modelId, toolSource, toolName });
-    return requirePayment(req, res, parseInt(priceWei));
 }
 
 // =============================================================================
