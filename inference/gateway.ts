@@ -292,7 +292,7 @@ export function setCorsHeaders(res: Response): void {
   );
   res.setHeader(
     "Access-Control-Expose-Headers",
-    "X-Transaction-Hash, PAYMENT-RESPONSE, payment-response, X-Request-Id, X-Compose-Key-Budget-Remaining, x-compose-key-tx-hash, *",
+    "X-Transaction-Hash, PAYMENT-RESPONSE, payment-response, X-Request-Id, X-Compose-Key-Budget-Remaining, x-compose-key-tx-hash, x-compose-key-final-amount-wei, *",
   );
 }
 
@@ -1246,7 +1246,7 @@ interface PreparedInferencePayment {
     settlement:
       | { finalAmountWei: string }
       | { meter: MeteredSettlementInput },
-  ) => Promise<{ success: boolean; txHash?: string; error?: string }>;
+  ) => Promise<{ success: boolean; txHash?: string; finalAmountWei?: string; error?: string }>;
   abort: (reason?: string) => Promise<void>;
   getHeaders: () => Record<string, string>;
 }
@@ -1277,7 +1277,7 @@ async function prepareInferencePayment(
     return {
       paymentIntentId: "",
       maxAmountWei: "0",
-      settle: async () => ({ success: true }),
+      settle: async () => ({ success: true, finalAmountWei: "0" }),
       abort: async () => undefined,
       getHeaders: () => ({}),
     };
@@ -1332,6 +1332,7 @@ async function prepareInferencePayment(
       return {
         success: true,
         txHash: settled.body.txHash,
+        finalAmountWei: settled.body.finalAmountWei,
       };
     },
     abort: async (reason?: string) => {
@@ -1359,6 +1360,9 @@ async function settlePreparedPayment(
   if (!res.headersSent) {
     for (const [key, value] of Object.entries(payment.getHeaders())) {
       res.setHeader(key, value);
+    }
+    if (settlement.finalAmountWei) {
+      res.setHeader("x-compose-key-final-amount-wei", settlement.finalAmountWei);
     }
   }
 
