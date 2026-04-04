@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.66",
-    "@ai-sdk/google": "^3.0.57",
+    "@ai-sdk/google": "^3.0.58",
     "@ai-sdk/openai": "^3.0.50",
     "@ai-sdk/openai-compatible": "^2.0.38",
     "@composio/core": "^0.6.8",
@@ -29,14 +29,14 @@
     "@huggingface/inference": "^4.13.15",
     "@x402/core": "^2.9.0",
     "@x402/evm": "^2.9.0",
-    "ai": "^6.0.145",
+    "ai": "^6.0.146",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.0",
     "express": "^5.2.1",
     "puppeteer": "^24.40.0",
     "redis": "^5.11.0",
-    "viem": "^2.47.6",
+    "viem": "^2.47.10",
     "zod": "^4.3.6"
   },
   "devDependencies": {
