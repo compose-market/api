@@ -50,7 +50,7 @@ import {
     initializeSessionBudget,
 } from "./x402/session-budget.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
-import { handleLocalSynapseRoute } from "./local/paymaster.js";
+import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
 import type { UnifiedModality, UnifiedUsage } from "./inference/core.js";
@@ -303,7 +303,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/local/link-token/redeem", routeHandler);
     app.post("/api/local/deployments/register", routeHandler);
     app.post("/api/local/synapse/session", routeHandler);
-    app.post("/api/local/paymaster/session", routeHandler);
+    app.post("/api/local/filecoin-pin/session", routeHandler);
     app.get("/api/local/updates/config", routeHandler);
     app.get(/^\/api\/local\/updates\/[^/]+\/[^/]+\/[^/]+$/, routeHandler);
     app.post("/api/local/network/peers/upsert", routeHandler);
@@ -365,9 +365,9 @@ export async function handler(
             return publicRouteResult;
         }
 
-        const localSynapseRouteResult = await handleLocalSynapseRoute(event, corsHeaders);
-        if (localSynapseRouteResult) {
-            return localSynapseRouteResult;
+        const localStorageProvisionRouteResult = await handleLocalStorageProvisionRoute(event, corsHeaders);
+        if (localStorageProvisionRouteResult) {
+            return localStorageProvisionRouteResult;
         }
 
         if (method === "POST" && path === "/api/payments/prepare") {

@@ -2,8 +2,8 @@ import { createWalletClient, http } from "viem";
 import { createNonceManager, jsonRpc } from "viem/nonce";
 import { privateKeyToAccount } from "viem/accounts";
 import * as SessionKey from "@filoz/synapse-core/session-key";
-import { Synapse, calibration, mainnet, type Chain } from "@filoz/synapse-sdk";
-import { checkAndSetAllowances, depositUSDFC } from "filecoin-pin/core/payments";
+import { METADATA_KEYS, Synapse, calibration, mainnet, type Chain } from "@filoz/synapse-sdk";
+import { depositUSDFC } from "filecoin-pin/core/payments";
 import { z } from "zod";
 import { getActiveChainId } from "../x402/configs/chains.js";
 import { getActiveSessionStatus } from "../x402/keys/index.js";
@@ -26,6 +26,9 @@ const PAYMASTER_NONCE_ERROR_PATTERNS = [
   /invalid transaction nonce/i,
 ] as const;
 const paymasterNonceManager = createNonceManager({ source: jsonRpc() });
+const COMPOSE_STORAGE_SOURCE = "compose";
+const DEFAULT_FILECOIN_PIN_COPIES = 2;
+const LEARNING_DATASET_SCHEMA = "compose.mesh.learning.v1";
 
 const EnvSchema = z.object({
   SYNAPSE_NETWORK: z.enum(["calibration", "mainnet"]).default("calibration"),
@@ -49,7 +52,15 @@ interface LocalSynapseSessionRequest {
   sessionKeyAddress: string;
   sessionKeyExpiresAt: number;
   depositAmount?: string;
-  ensureAllowances?: boolean;
+}
+
+interface LocalFilecoinPinSessionRequest {
+  agentWallet: string;
+  deviceId: string;
+  sessionKeyAddress: string;
+  sessionKeyExpiresAt: number;
+  fileSizeBytes: number;
+  copies?: number;
 }
 
 interface SynapseRouteConfig {
@@ -57,6 +68,19 @@ interface SynapseRouteConfig {
   walletPrivateKey: `0x${string}`;
   source: string;
   rpcUrl: string | null;
+}
+
+interface ValidatedProvisioningRequest {
+  chainId: number;
+  userAddress: `0x${string}`;
+  activeSessionExpiresAt: number;
+}
+
+interface PaymasterClients {
+  account: ReturnType<typeof privateKeyToAccount>;
+  chain: Chain;
+  walletClient: Parameters<typeof SessionKey.loginSync>[0];
+  synapse: Synapse;
 }
 
 function normalizeSynapseExpiryMs(value: number): number {
@@ -139,23 +163,11 @@ function parseDepositAmount(value: unknown): bigint {
   return BigInt(normalized);
 }
 
-function parseEnsureAllowances(value: unknown): boolean {
+function parseOptionalCopies(value: unknown): number {
   if (value === undefined || value === null || value === "") {
-    return false;
+    return DEFAULT_FILECOIN_PIN_COPIES;
   }
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") {
-      return true;
-    }
-    if (normalized === "false") {
-      return false;
-    }
-  }
-  throw new Error("ensureAllowances must be a boolean");
+  return parsePositiveInt(value, "copies");
 }
 
 function normalizeHexPrivateKey(value: string): `0x${string}` {
@@ -193,8 +205,19 @@ export function loadSynapseRouteConfig(env: NodeJS.ProcessEnv = process.env): Sy
   return {
     network: parsed.SYNAPSE_NETWORK,
     walletPrivateKey: normalizeHexPrivateKey(parsed.SYNAPSE_WALLET_PRIVATE_KEY),
-    source: parsed.SYNAPSE_PROJECT_NAMESPACE,
+    source: COMPOSE_STORAGE_SOURCE,
     rpcUrl,
+  };
+}
+
+function createLearningDatasetMetadata(
+  config: SynapseRouteConfig,
+): Record<string, string> {
+  return {
+    Collection: "learnings",
+    Schema: LEARNING_DATASET_SCHEMA,
+    [METADATA_KEYS.SOURCE]: config.source,
+    [METADATA_KEYS.WITH_IPFS_INDEXING]: "",
   };
 }
 
@@ -257,6 +280,80 @@ async function runPaymasterWrite<T>(input: {
   throw new Error("Paymaster funding failed");
 }
 
+async function validateProvisioningRequest(event: LocalRouteEvent): Promise<ValidatedProvisioningRequest> {
+  const chainId = getHeader(event, "x-chain-id")
+    ? parsePositiveInt(getHeader(event, "x-chain-id"), "x-chain-id")
+    : getActiveChainId();
+  const userAddress = normalizeWallet(getHeader(event, "x-session-user-address"), "x-session-user-address");
+
+  const authHeader = getHeader(event, "authorization");
+  const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+  if (!composeKeyToken) {
+    throw new Error("Authorization header with Compose Key token is required");
+  }
+
+  const payload = verifyComposeKey(composeKeyToken);
+  if (!payload) {
+    throw new Error("Invalid or expired Compose Key token");
+  }
+  if (payload.sub.toLowerCase() !== userAddress) {
+    throw new Error("Compose Key token user does not match x-session-user-address");
+  }
+
+  const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
+  if (!activeSession || activeSession.keyId !== payload.keyId) {
+    throw new Error("Compose Key token does not match the active session");
+  }
+
+  return {
+    chainId,
+    userAddress,
+    activeSessionExpiresAt: activeSession.expiresAt,
+  };
+}
+
+function createPaymasterClients(config: SynapseRouteConfig): PaymasterClients {
+  const account = privateKeyToAccount(config.walletPrivateKey, {
+    nonceManager: paymasterNonceManager,
+  });
+  const chain = resolveSynapseChain(config.network);
+  const transport = config.rpcUrl ? http(config.rpcUrl) : http();
+  return {
+    account,
+    chain,
+    walletClient: createWalletClient({
+      account,
+      chain,
+      transport,
+    }) as Parameters<typeof SessionKey.loginSync>[0],
+    synapse: Synapse.create({
+      account,
+      chain,
+      transport,
+      source: config.source,
+      withCDN: false,
+    }),
+  };
+}
+
+async function authorizeSessionKey(input: {
+  walletClient: Parameters<typeof SessionKey.loginSync>[0];
+  accountAddress: `0x${string}`;
+  chainId: number;
+  sessionKeyAddress: `0x${string}`;
+  expiresAt: number;
+}): Promise<void> {
+  await runPaymasterWrite({
+    accountAddress: input.accountAddress,
+    chainId: input.chainId,
+    task: async () => SessionKey.loginSync(input.walletClient, {
+      address: input.sessionKeyAddress,
+      expiresAt: BigInt(Math.floor(input.expiresAt / 1000)),
+      origin: "compose.local.mesh",
+    }),
+  });
+}
+
 async function handleEnsureLocalSynapseSession(
   event: LocalRouteEvent,
   corsHeaders: Record<string, string>,
@@ -274,88 +371,36 @@ async function handleEnsureLocalSynapseSession(
     const sessionKeyAddress = normalizeWallet(body.sessionKeyAddress, "sessionKeyAddress");
     const sessionKeyExpiresAt = parsePositiveInt(body.sessionKeyExpiresAt, "sessionKeyExpiresAt");
     const depositAmount = parseDepositAmount(body.depositAmount);
-    const ensureAllowances = parseEnsureAllowances(body.ensureAllowances);
-    const chainId = getHeader(event, "x-chain-id")
-      ? parsePositiveInt(getHeader(event, "x-chain-id"), "x-chain-id")
-      : getActiveChainId();
-    const userAddress = normalizeWallet(getHeader(event, "x-session-user-address"), "x-session-user-address");
-
-    const authHeader = getHeader(event, "authorization");
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
-    if (!composeKeyToken) {
-      throw new Error("Authorization header with Compose Key token is required");
-    }
-
-    const payload = verifyComposeKey(composeKeyToken);
-    if (!payload) {
-      throw new Error("Invalid or expired Compose Key token");
-    }
-    if (payload.sub.toLowerCase() !== userAddress) {
-      throw new Error("Compose Key token user does not match x-session-user-address");
-    }
-
-    const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
-    if (!activeSession || activeSession.keyId !== payload.keyId) {
-      throw new Error("Compose Key token does not match the active session");
-    }
-
+    const validated = await validateProvisioningRequest(event);
     const config = loadSynapseRouteConfig();
-    const account = privateKeyToAccount(config.walletPrivateKey, {
-      nonceManager: paymasterNonceManager,
-    });
-    const chain = resolveSynapseChain(config.network);
-    const transport = config.rpcUrl ? http(config.rpcUrl) : http();
-    const walletClient = createWalletClient({
-      account,
-      chain,
-      transport,
-    });
+    const clients = createPaymasterClients(config);
+    const expiresAt = effectiveExpiry(sessionKeyExpiresAt, validated.activeSessionExpiresAt);
 
-    const expiresAt = effectiveExpiry(sessionKeyExpiresAt, activeSession.expiresAt);
-
-    const synapse = Synapse.create({
-      account,
-      chain,
-      transport,
-      source: config.source,
-      withCDN: false,
-    });
-
-    await runPaymasterWrite({
-      accountAddress: account.address,
-      chainId: chain.id,
-      task: async () => SessionKey.loginSync(walletClient, {
-        address: sessionKeyAddress,
-        expiresAt: BigInt(Math.floor(expiresAt / 1000)),
-        origin: "compose.local.mesh",
-      }),
+    await authorizeSessionKey({
+      walletClient: clients.walletClient,
+      accountAddress: clients.account.address,
+      chainId: clients.chain.id,
+      sessionKeyAddress,
+      expiresAt,
     });
 
     let depositExecuted = false;
     if (depositAmount > 0n) {
       await runPaymasterWrite({
-        accountAddress: account.address,
-        chainId: chain.id,
-        task: async () => depositUSDFC(synapse, depositAmount),
+        accountAddress: clients.account.address,
+        chainId: clients.chain.id,
+        task: async () => depositUSDFC(clients.synapse, depositAmount),
       });
       depositExecuted = true;
     }
 
-    if (ensureAllowances) {
-      await runPaymasterWrite({
-        accountAddress: account.address,
-        chainId: chain.id,
-        task: async () => checkAndSetAllowances(synapse),
-      });
-    }
-
-    const accountInfo = await synapse.payments.accountInfo();
+    const accountInfo = await clients.synapse.payments.accountInfo();
 
     return json(200, {
       success: true,
       agentWallet,
       deviceId,
-      payerAddress: account.address,
+      payerAddress: clients.account.address,
       sessionKeyAddress,
       sessionKeyExpiresAt: expiresAt,
       availableFunds: accountInfo.availableFunds.toString(),
@@ -369,18 +414,105 @@ async function handleEnsureLocalSynapseSession(
   }
 }
 
-export async function handleLocalSynapseRoute(
+async function handleEnsureLocalFilecoinPinSession(
+  event: LocalRouteEvent,
+  corsHeaders: Record<string, string>,
+): Promise<LocalRouteResult> {
+  let body: LocalFilecoinPinSessionRequest;
+  try {
+    body = parseJsonBody<LocalFilecoinPinSessionRequest>(event);
+  } catch (error) {
+    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+  }
+
+  try {
+    const agentWallet = normalizeWallet(body.agentWallet, "agentWallet");
+    const deviceId = normalizeDeviceId(body.deviceId);
+    const sessionKeyAddress = normalizeWallet(body.sessionKeyAddress, "sessionKeyAddress");
+    const sessionKeyExpiresAt = parsePositiveInt(body.sessionKeyExpiresAt, "sessionKeyExpiresAt");
+    const fileSizeBytes = parsePositiveInt(body.fileSizeBytes, "fileSizeBytes");
+    const copies = parseOptionalCopies(body.copies);
+    const validated = await validateProvisioningRequest(event);
+    const config = loadSynapseRouteConfig();
+    const clients = createPaymasterClients(config);
+    const expiresAt = effectiveExpiry(sessionKeyExpiresAt, validated.activeSessionExpiresAt);
+
+    await authorizeSessionKey({
+      walletClient: clients.walletClient,
+      accountAddress: clients.account.address,
+      chainId: clients.chain.id,
+      sessionKeyAddress,
+      expiresAt,
+    });
+
+    const contexts = await clients.synapse.storage.createContexts({
+      copies,
+      withCDN: true,
+      metadata: createLearningDatasetMetadata(config),
+    });
+
+    let preparation = await clients.synapse.storage.prepare({
+      context: contexts,
+      dataSize: BigInt(fileSizeBytes),
+    });
+    const initialDepositAmount = preparation.transaction?.depositAmount ?? 0n;
+
+    if (preparation.transaction != null) {
+      await runPaymasterWrite({
+        accountAddress: clients.account.address,
+        chainId: clients.chain.id,
+        task: async () => preparation.transaction!.execute(),
+      });
+      preparation = await clients.synapse.storage.prepare({
+        context: contexts,
+        dataSize: BigInt(fileSizeBytes),
+      });
+      if (preparation.transaction != null) {
+        throw new Error(
+          `Filecoin Pin payer still requires funding after control-plane preparation (deposit=${preparation.transaction.depositAmount.toString()} approval=${String(preparation.transaction.includesApproval)})`,
+        );
+      }
+    }
+
+    const accountInfo = await clients.synapse.payments.accountInfo();
+
+    return json(200, {
+      success: true,
+      agentWallet,
+      deviceId,
+      payerAddress: clients.account.address,
+      sessionKeyAddress,
+      sessionKeyExpiresAt: expiresAt,
+      availableFunds: accountInfo.availableFunds.toString(),
+      depositAmount: initialDepositAmount.toString(),
+      depositExecuted: initialDepositAmount > 0n,
+      network: config.network,
+      source: config.source,
+      fileSizeBytes,
+      providerIds: contexts.map((context) => context.provider.id.toString()),
+    }, corsHeaders);
+  } catch (error) {
+    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+  }
+}
+
+export async function handleLocalStorageProvisionRoute(
   event: LocalRouteEvent,
   corsHeaders: Record<string, string>,
 ): Promise<LocalRouteResult | null> {
   const path = event.rawPath;
   const method = event.requestContext.http.method;
 
-  if (
-    method === "POST"
-    && (path === "/api/local/synapse/session" || path === "/api/local/paymaster/session")
-  ) {
+  if (method !== "POST") {
+    return null;
+  }
+
+  if (path === "/api/local/synapse/session") {
     return handleEnsureLocalSynapseSession(event, corsHeaders);
+  }
+
+  if (path === "/api/local/filecoin-pin/session") {
+    return handleEnsureLocalFilecoinPinSession(event, corsHeaders);
   }
 
   return null;
