@@ -403,6 +403,17 @@ export async function checkTelegramBinding(userAddress: string): Promise<{
     };
 }
 
+export async function checkWhatsAppBinding(userAddress: string): Promise<{
+    bound: boolean;
+    waId?: string;
+}> {
+    const binding = await getChannelBinding(userAddress, "whatsapp");
+    return {
+        bound: !!binding?.waId,
+        waId: binding?.waId,
+    };
+}
+
 // =============================================================================
 // Connection Management (shared)
 // =============================================================================
@@ -413,6 +424,9 @@ export interface ConnectionInfo {
     connected: boolean;
     accountId?: string;
     status?: string;
+    source?: string;
+    sourceLabel?: string;
+    bindingId?: string;
 }
 
 /**
@@ -436,6 +450,8 @@ export async function listConnections(userAddress: string): Promise<ConnectionIn
         connected: account.status === "ACTIVE",
         accountId: account.id,
         status: account.status,
+        source: "composio",
+        sourceLabel: "Composio",
     }));
 
     // Also check for channel bindings (Telegram, WhatsApp)
@@ -448,6 +464,25 @@ export async function listConnections(userAddress: string): Promise<ConnectionIn
                 name: "telegram",
                 connected: true,
                 status: "CHANNEL_BOUND",
+                source: "telegram-bot",
+                sourceLabel: "Telegram Bot",
+                bindingId: tgBinding.chatId,
+            });
+        }
+    }
+
+    const waBinding = await getChannelBinding(userAddress, "whatsapp");
+    if (waBinding?.waId) {
+        const hasWa = connections.some(c => c.slug === "whatsapp" && c.source === "whatsapp-personal");
+        if (!hasWa) {
+            connections.push({
+                slug: "whatsapp",
+                name: "whatsapp",
+                connected: true,
+                status: "CHANNEL_BOUND",
+                source: "whatsapp-personal",
+                sourceLabel: "WhatsApp Personal",
+                bindingId: waBinding.waId,
             });
         }
     }
@@ -468,6 +503,11 @@ export async function checkConnection(
     // For channel-based toolkits, check bindings
     if (toolkit === "telegram") {
         const binding = await checkTelegramBinding(userAddress);
+        return { connected: binding.bound };
+    }
+
+    if (toolkit === "whatsapp") {
+        const binding = await checkWhatsAppBinding(userAddress);
         return { connected: binding.bound };
     }
 
