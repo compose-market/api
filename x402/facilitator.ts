@@ -22,6 +22,7 @@ import type {
     VerifyResponse,
 } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
+import { UptoEvmScheme as UptoEvmFacilitatorScheme } from "@x402/evm/upto/facilitator";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { createPublicClient, createWalletClient, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -147,7 +148,14 @@ function createExactSchemeForChain(chainId: ChainId) {
 
     const signer = toFacilitatorEvmSigner({
         address: account.address,
-        readContract: (args) => publicClient.readContract(args),
+        // Inject `account` into every readContract / eth_call so upstream
+        // simulations (e.g. @x402/evm's `simulatePermit2Settle`) run with
+        // `msg.sender = facilitator`. Without this, the x402UptoPermit2Proxy's
+        // `settle()` call reverts during simulation because its own
+        // `require(msg.sender == witness.facilitator)` check fails for the
+        // zero-address caller the viem default uses. See @x402/evm
+        // dist/cjs/upto/facilitator/index.js:634 `simulatePermit2Settle`.
+        readContract: (args) => publicClient.readContract({ ...args, account }),
         verifyTypedData: (args) => publicClient.verifyTypedData(args as never),
         writeContract: (args) =>
             walletClient.writeContract({
@@ -169,6 +177,21 @@ function createExactSchemeForChain(chainId: ChainId) {
     return new ExactEvmScheme(signer);
 }
 
+function createUptoSchemeForChain(chainId: ChainId) {
+    const cached = signerCache.get(chainId);
+    if (cached) {
+        return new UptoEvmFacilitatorScheme(cached);
+    }
+
+    createExactSchemeForChain(chainId);
+    const signer = signerCache.get(chainId);
+    if (!signer) {
+        throw new Error(`Compose facilitator signer missing for chain ${chainId}`);
+    }
+
+    return new UptoEvmFacilitatorScheme(signer);
+}
+
 function createComposeFacilitator(): x402Facilitator {
     const chainIds = getConfiguredFacilitatorChainIds();
     if (chainIds.length === 0) {
@@ -182,6 +205,7 @@ function createComposeFacilitator(): x402Facilitator {
 
     for (const chainId of chainIds) {
         facilitator.register(`eip155:${chainId}`, createExactSchemeForChain(chainId));
+        facilitator.register(`eip155:${chainId}`, createUptoSchemeForChain(chainId));
     }
 
     return facilitator;
@@ -225,28 +249,38 @@ export function createComposePaymentExtensions(): Record<string, unknown> {
 export function createComposePaymentRequirement(input: {
     amountWei: number | string;
     chainId: number;
+    scheme?: "exact" | "upto";
     payTo?: `0x${string}`;
     maxTimeoutSeconds?: number;
 }): PaymentRequirements {
+    const scheme = input.scheme === "upto" ? "upto" : "exact";
+    const extra: Record<string, unknown> = {
+        compose: {
+            metering: "authoritative_usage",
+            intents: "supported",
+        },
+    };
+
+    if (scheme === "upto") {
+        extra.assetTransferMethod = "permit2";
+        extra.facilitatorAddress = getFacilitatorAccount().address;
+    }
+
     return parseV2PaymentRequirements({
-        scheme: "exact",
+        scheme,
         network: `eip155:${input.chainId}`,
         amount: String(input.amountWei),
         asset: getUsdcAddress(input.chainId),
         payTo: input.payTo || merchantWalletAddress,
         maxTimeoutSeconds: input.maxTimeoutSeconds ?? 300,
-        extra: {
-            compose: {
-                metering: "authoritative_usage",
-                intents: "supported",
-            },
-        },
+        extra,
     });
 }
 
 export function createComposePaymentRequired(input: {
     amountWei: number | string;
     chainId: number;
+    scheme?: "exact" | "upto";
     resourceUrl: string;
     description: string;
     mimeType: string;
@@ -263,6 +297,7 @@ export function createComposePaymentRequired(input: {
         accepts: [createComposePaymentRequirement({
             amountWei: input.amountWei,
             chainId: input.chainId,
+            scheme: input.scheme,
         })],
         extensions: createComposePaymentExtensions(),
     });

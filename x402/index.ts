@@ -45,6 +45,17 @@ import {
     getSessionStatus,
     shouldTriggerImmediateSettlement,
 } from "./session-budget.js";
+import {
+    quoteMeteredAuthorization,
+    quoteMeteredSettlement,
+    type MeteredAuthorizationInput,
+    type MeteredSettlementInput,
+} from "./metering.js";
+import {
+    authorizePaymentIntent,
+    abortPaymentIntent,
+    settlePaymentIntent,
+} from "./intents.js";
 
 // Re-export types
 export type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
@@ -377,13 +388,9 @@ export async function handleX402Payment(
 // Universal Payment Wrapper
 // =============================================================================
 
-// Set in .env
-function requireEnv(name: string): string {
-    const value = process.env[name];
-    if (!value) {
-        throw new Error(`${name} environment variable is required`);
-    }
-    return value;
+function getRuntimeInternalMarker(): string | null {
+    const value = process.env.RUNTIME_INTERNAL_SECRET;
+    return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 // Internal marker for Workflow nested calls - the secret IS the proof of payment
@@ -413,6 +420,428 @@ export interface PreparedPayment {
     getHeaders: () => Record<string, string>;
 }
 
+export type InferenceAuthorizationInput =
+    | { useBudgetCap: true }
+    | { maxAmountWei: string }
+    | { meter: MeteredAuthorizationInput };
+
+export type InferenceSettlementInput =
+    | { finalAmountWei: string }
+    | { meter: MeteredSettlementInput };
+
+interface InferencePaymentSettlementResult {
+    success: boolean;
+    txHash?: string;
+    finalAmountWei?: string;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    meterSubject?: string;
+    lineItems?: Array<{
+        key: string;
+        unit: string;
+        quantity: number;
+        unitPriceUsd: number;
+        amountWei: string;
+    }>;
+    chainId?: number;
+    settledAt?: number;
+    error?: string;
+    statusCode?: number;
+    paymentRequired?: PaymentRequired;
+    paymentRequiredHeader?: string | null;
+}
+
+export interface PreparedInferencePayment {
+    maxAmountWei: string;
+    settle: (settlement: InferenceSettlementInput) => Promise<InferencePaymentSettlementResult>;
+    abort: (reason?: string) => Promise<void>;
+    applyHeaders: (res: Response, settlement?: InferencePaymentSettlementResult) => void;
+}
+
+export function getChainIdFromRequest(req: Request): number | undefined {
+    const chainIdHeader = req.get?.("x-chain-id") || req.headers["x-chain-id"];
+    if (!chainIdHeader) {
+        return undefined;
+    }
+
+    const parsed = parseInt(String(chainIdHeader), 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function getPaymentSignatureFromRequest(req: Request): string | null {
+    const paymentHeader = req.get?.("payment-signature")
+        || req.get?.("PAYMENT-SIGNATURE")
+        || req.headers["payment-signature"]
+        || req.headers["PAYMENT-SIGNATURE"];
+
+    return typeof paymentHeader === "string" && paymentHeader.trim().length > 0
+        ? paymentHeader.trim()
+        : null;
+}
+
+export function parsePositiveIntegerHeader(value: unknown): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    if (!/^\d+$/u.test(trimmed)) {
+        return null;
+    }
+
+    return BigInt(trimmed) > 0n ? trimmed : null;
+}
+
+export function getRawInferenceMaxAmount(req: Request): string | null {
+    const headerValue = req.get?.("x-x402-max-amount-wei")
+        || req.get?.("X-X402-Max-Amount-Wei")
+        || req.headers["x-x402-max-amount-wei"]
+        || req.headers["X-X402-Max-Amount-Wei"];
+
+    const parsedHeader = parsePositiveIntegerHeader(headerValue);
+    if (parsedHeader) {
+        return parsedHeader;
+    }
+
+    const bodyValue = req.body && typeof req.body === "object"
+        ? (req.body as Record<string, unknown>).max_payment_amount_wei
+        : undefined;
+    return parsePositiveIntegerHeader(bodyValue);
+}
+
+function resolveInferenceAuthorizationRequirement(
+    req: Request,
+    authorizationInput: InferenceAuthorizationInput,
+): { scheme: "exact" | "upto"; maxAmountWei: string } {
+    if ("maxAmountWei" in authorizationInput) {
+        return {
+            scheme: "exact",
+            maxAmountWei: authorizationInput.maxAmountWei,
+        };
+    }
+
+    if ("meter" in authorizationInput) {
+        return {
+            scheme: "exact",
+            maxAmountWei: quoteMeteredAuthorization(authorizationInput.meter).finalAmountWei,
+        };
+    }
+
+    const maxAmountWei = getRawInferenceMaxAmount(req);
+    if (!maxAmountWei) {
+        throw Object.assign(
+            new Error("x-x402-max-amount-wei is required for usage-priced x402 inference requests"),
+            { statusCode: 400 },
+        );
+    }
+
+    return {
+        scheme: "upto",
+        maxAmountWei,
+    };
+}
+
+function isInternalInferenceRequest(authorization: string): boolean {
+    if (!authorization) {
+        return false;
+    }
+
+    const internalToken = process.env.RUNTIME_INTERNAL_SECRET;
+    if (!internalToken) {
+        return false;
+    }
+
+    return authorization === `Bearer ${internalToken}`;
+}
+
+async function prepareRawInferenceX402Payment(
+    req: Request,
+    res: Response,
+    authorizationInput: InferenceAuthorizationInput,
+): Promise<PreparedInferencePayment | null> {
+    const requirement = resolveInferenceAuthorizationRequirement(req, authorizationInput);
+    const fallbackChainId = getChainIdFromRequest(req) ?? getActiveChainId();
+    const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+
+    const buildPaymentRequired = (chainId: number, error?: string) => createComposePaymentRequired({
+        amountWei: requirement.maxAmountWei,
+        chainId,
+        scheme: requirement.scheme,
+        resourceUrl,
+        description: "Compose.Market AI Agent Inference",
+        mimeType: "application/json",
+        ...(error ? { error } : {}),
+    });
+
+    const paymentSignature = getPaymentSignatureFromRequest(req);
+    if (!paymentSignature) {
+        const paymentRequired = buildPaymentRequired(fallbackChainId);
+        res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
+        res.status(402).json(paymentRequired);
+        return null;
+    }
+
+    let paymentPayload;
+    let paymentChainId = fallbackChainId;
+    try {
+        paymentPayload = decodeComposePaymentSignatureHeader(paymentSignature);
+        paymentChainId = getChainIdFromPaymentPayload(paymentPayload);
+    } catch (error) {
+        const paymentRequired = buildPaymentRequired(
+            fallbackChainId,
+            error instanceof Error ? error.message : "Invalid payment payload",
+        );
+        res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
+        res.status(402).json(paymentRequired);
+        return null;
+    }
+
+    const verificationRequirement = createComposePaymentRequirement({
+        amountWei: requirement.maxAmountWei,
+        chainId: paymentChainId,
+        scheme: requirement.scheme,
+    });
+    const verifyResult = await verifyComposePayment(paymentPayload, verificationRequirement);
+    if (!verifyResult.isValid) {
+        const paymentRequired = buildPaymentRequired(
+            paymentChainId,
+            verifyResult.invalidMessage || verifyResult.invalidReason || "Payment verification failed",
+        );
+        res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
+        res.status(402).json(paymentRequired);
+        return null;
+    }
+
+    let currentHeaders: Record<string, string> = {};
+
+    return {
+        maxAmountWei: requirement.maxAmountWei,
+        settle: async (settlementInput) => {
+            const finalAmountWei = requirement.scheme === "exact"
+                ? requirement.maxAmountWei
+                : ("finalAmountWei" in settlementInput
+                    ? settlementInput.finalAmountWei
+                    : quoteMeteredSettlement(settlementInput.meter).finalAmountWei);
+
+            if (requirement.scheme === "upto" && BigInt(finalAmountWei) > BigInt(requirement.maxAmountWei)) {
+                return {
+                    success: false,
+                    error: "finalAmountWei cannot exceed the x402 authorized maximum",
+                };
+            }
+
+            const settled = await settleComposePayment(
+                paymentPayload,
+                createComposePaymentRequirement({
+                    amountWei: finalAmountWei,
+                    chainId: paymentChainId,
+                    scheme: requirement.scheme,
+                }),
+            );
+
+            currentHeaders = {
+                "PAYMENT-RESPONSE": encodeComposePaymentResponseHeader(settled),
+            };
+            if (settled.transaction) {
+                currentHeaders["X-Transaction-Hash"] = settled.transaction;
+            }
+
+            if (!settled.success) {
+                return {
+                    success: false,
+                    error: settled.errorMessage || settled.errorReason || "Payment settlement failed",
+                };
+            }
+
+            return {
+                success: true,
+                txHash: settled.transaction || undefined,
+                finalAmountWei,
+            };
+        },
+        abort: async () => undefined,
+        applyHeaders: (response) => {
+            if (response.headersSent) {
+                return;
+            }
+            for (const [key, value] of Object.entries(currentHeaders)) {
+                response.setHeader(key, value);
+            }
+        },
+    };
+}
+
+export async function prepareInferencePayment(
+    req: Request,
+    res: Response,
+    authorizationInput: InferenceAuthorizationInput,
+): Promise<PreparedInferencePayment | null> {
+    const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+    if (isInternalInferenceRequest(authorization)) {
+        return {
+            maxAmountWei: "0",
+            settle: async () => ({ success: true, finalAmountWei: "0" }),
+            abort: async () => { },
+            applyHeaders: () => { },
+        };
+    }
+
+    const composeKeyToken = extractComposeKeyFromHeader(authorization);
+    if (!composeKeyToken) {
+        return prepareRawInferenceX402Payment(req, res, authorizationInput);
+    }
+
+    const chainId = getChainIdFromRequest(req);
+    const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+    const prepared = await authorizePaymentIntent({
+        authorization,
+        chainId: chainId ?? Number.NaN,
+        service: "api",
+        action: "inference",
+        resource: resourceUrl,
+        method: req.method || "POST",
+        ...authorizationInput,
+        composeRunId: typeof req.headers["x-compose-run-id"] === "string" ? req.headers["x-compose-run-id"] : undefined,
+        idempotencyKey: typeof req.headers["x-idempotency-key"] === "string" ? req.headers["x-idempotency-key"] : undefined,
+    });
+
+    if (!prepared.ok) {
+        for (const [key, value] of Object.entries(prepared.headers)) {
+            res.setHeader(key, value);
+        }
+        res.status(prepared.status).json(prepared.body);
+        return null;
+    }
+
+    let currentHeaders = { ...prepared.headers };
+
+    return {
+        maxAmountWei: prepared.body.maxAmountWei,
+        settle: async (settlementInput) => {
+            const settled = await settlePaymentIntent({
+                paymentIntentId: prepared.body.paymentIntentId,
+                ...settlementInput,
+            });
+
+            if (!settled.ok) {
+                const paymentRequiredHeader = settled.headers["PAYMENT-REQUIRED"]
+                    || settled.headers["payment-required"]
+                    || null;
+                const paymentRequired = settled.body && typeof settled.body === "object"
+                    && "x402Version" in settled.body
+                    && Array.isArray((settled.body as PaymentRequired).accepts)
+                    ? settled.body as PaymentRequired
+                    : undefined;
+                return {
+                    success: false,
+                    error: typeof settled.body.error === "string" ? settled.body.error : "Payment settlement failed",
+                    statusCode: settled.status,
+                    paymentRequired,
+                    paymentRequiredHeader,
+                };
+            }
+
+            currentHeaders = { ...settled.headers };
+            return {
+                success: true,
+                txHash: settled.body.txHash,
+                finalAmountWei: settled.body.finalAmountWei,
+                providerAmountWei: settled.body.providerAmountWei,
+                platformFeeWei: settled.body.platformFeeWei,
+                meterSubject: settled.body.meterSubject,
+                lineItems: settled.body.lineItems,
+                chainId,
+                settledAt: Date.now(),
+            };
+        },
+        abort: async (reason?: string) => {
+            await abortPaymentIntent({
+                paymentIntentId: prepared.body.paymentIntentId,
+                reason: reason || "inference_failed",
+            });
+        },
+        applyHeaders: (response, settlement) => {
+            if (response.headersSent) {
+                return;
+            }
+
+            for (const [key, value] of Object.entries(currentHeaders)) {
+                response.setHeader(key, value);
+            }
+
+            if (settlement?.finalAmountWei) {
+                response.setHeader("x-compose-key-final-amount-wei", settlement.finalAmountWei);
+            }
+
+            if (settlement?.txHash) {
+                response.setHeader("X-Transaction-Hash", settlement.txHash);
+                response.setHeader("x-compose-key-tx-hash", settlement.txHash);
+            }
+        },
+    };
+}
+
+export interface InferenceSettlementReceipt {
+    finalAmountWei: string;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    meterSubject?: string;
+    lineItems?: Array<{
+        key: string;
+        unit: string;
+        quantity: number;
+        unitPriceUsd: number;
+        amountWei: string;
+    }>;
+    txHash?: string;
+    chainId?: number;
+    settledAt: number;
+}
+
+export async function settlePreparedInferencePayment(
+    payment: PreparedInferencePayment,
+    res: Response,
+    settlementInput: InferenceSettlementInput = {
+        finalAmountWei: payment.maxAmountWei,
+    },
+): Promise<InferenceSettlementReceipt | null> {
+    const settlement = await payment.settle(settlementInput);
+    if (!settlement.success) {
+        const error = new Error(settlement.error || "Payment settlement failed") as Error & {
+            statusCode?: number;
+            paymentRequired?: PaymentRequired;
+            paymentRequiredHeader?: string | null;
+        };
+        if (settlement.statusCode) {
+            error.statusCode = settlement.statusCode;
+        }
+        if (settlement.paymentRequired) {
+            error.paymentRequired = settlement.paymentRequired;
+        }
+        if (settlement.paymentRequiredHeader) {
+            error.paymentRequiredHeader = settlement.paymentRequiredHeader;
+        }
+        throw error;
+    }
+
+    payment.applyHeaders(res, settlement);
+
+    if (!settlement.finalAmountWei) {
+        return null;
+    }
+
+    return {
+        finalAmountWei: settlement.finalAmountWei,
+        providerAmountWei: settlement.providerAmountWei,
+        platformFeeWei: settlement.platformFeeWei,
+        meterSubject: settlement.meterSubject,
+        lineItems: settlement.lineItems,
+        txHash: settlement.txHash,
+        chainId: settlement.chainId,
+        settledAt: settlement.settledAt ?? Date.now(),
+    };
+}
+
 /**
  * Prepare payment without charging immediately.
  * Use settle() when first output is emitted, and abort() on failures before settlement.
@@ -437,7 +866,8 @@ export async function prepareDeferredPayment(
 
     // Check for internal Workflow bypass first
     const internalMarker = req.headers["x-workflow-internal"] as string | undefined;
-    if (internalMarker === RUNTIME_INTERNAL_MARKER) {
+    const runtimeInternalMarker = getRuntimeInternalMarker();
+    if (internalMarker && runtimeInternalMarker && internalMarker === runtimeInternalMarker) {
         console.log(`[x402] preparePayment: Internal bypass - Workflow verified payment upstream`);
         return {
             valid: true,
@@ -712,8 +1142,6 @@ export async function prepareDeferredPayment(
     };
 }
 
-const RUNTIME_INTERNAL_MARKER = requireEnv("RUNTIME_INTERNAL_SECRET");
-
 /**
  * Require x402 payment for any endpoint.
  * 
@@ -756,9 +1184,10 @@ export async function requirePayment(
 
     // DEBUG: Log incoming headers for bypass check
     const internalMarker = req.headers["x-workflow-internal"] as string | undefined;
+    const runtimeInternalMarker = getRuntimeInternalMarker();
     const userAgent = req.headers["user-agent"] as string || "";
     console.log(`[x402-debug] Internal marker: ${internalMarker ? 'PRESENT' : 'MISSING'}, value: ${internalMarker?.substring(0, 20) || 'N/A'}`);
-    console.log(`[x402-debug] Expected marker: ${RUNTIME_INTERNAL_MARKER.substring(0, 20)}`);
+    console.log(`[x402-debug] Expected marker: ${runtimeInternalMarker?.substring(0, 20) || 'UNSET'}`);
     console.log(`[x402-debug] User-Agent: ${userAgent.substring(0, 50)}`);
     console.log(`[x402-debug] sec-fetch-mode: ${req.headers["sec-fetch-mode"] || 'N/A'}`);
     console.log(`[x402-debug] Session: active=${sessionActive}, budget=${sessionBudgetRemaining}`);
@@ -770,7 +1199,7 @@ export async function requirePayment(
     // 2. The secret is stored in RUNTIME_INTERNAL_SECRET .env
     // 3. If someone knows the secret, they're either Workflow or have access to our infrastructure
 
-    if (internalMarker === RUNTIME_INTERNAL_MARKER) {
+    if (internalMarker && runtimeInternalMarker && internalMarker === runtimeInternalMarker) {
         console.log(`[x402] Internal bypass - Workflow verified payment upstream, session=${sessionActive}`);
         return true;
     }

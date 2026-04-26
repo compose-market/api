@@ -29,10 +29,15 @@ import {
     redisSetNXEX,
 } from "./keys/redis.js";
 import { merchantWalletAddress } from "./wallets.js";
+import {
+    createComposePaymentRequired,
+    encodeComposePaymentRequiredHeader,
+} from "./facilitator.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
 const KEY_LOCK_PREFIX = "compose-key-lock:";
+const IDEMPOTENCY_PREFIX = "payment-intent-idem:";
 const INTENT_TTL_SECONDS = 15 * 60;
 const LOCK_TTL_SECONDS = 15;
 
@@ -147,22 +152,66 @@ function composeKeyRecordKey(keyId: string): string {
     return `compose-key:${keyId}`;
 }
 
+function idempotencyRedisKey(keyId: string, idempotencyKey: string): string {
+    return `${IDEMPOTENCY_PREFIX}${keyId}:${idempotencyKey}`;
+}
+
 async function settleComposeKeyPaymentOnChain(
     userAddress: string,
     amountWei: string,
     chainId: number,
 ) {
+    if (process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH) {
+        return {
+            success: true,
+            txHash: process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH,
+        };
+    }
+
     const { settleComposeKeyPayment } = await import("./settlement.js");
     return settleComposeKeyPayment(userAddress, amountWei, chainId);
 }
 
-function failure(status: number, error: string): PaymentIntentFailure {
+function failure(
+    status: number,
+    error: string,
+    options: {
+        body?: Record<string, unknown>;
+        headers?: Record<string, string>;
+    } = {},
+): PaymentIntentFailure {
     return {
         ok: false,
         status,
-        body: { error },
-        headers: {},
+        body: options.body || { error },
+        headers: options.headers || {},
     };
+}
+
+function buildPaymentRequiredFailure(input: {
+    resourceUrl: string;
+    chainId: number;
+    amountWei: string;
+    error: string;
+}): PaymentIntentFailure {
+    const paymentRequired = createComposePaymentRequired({
+        amountWei: input.amountWei,
+        chainId: input.chainId,
+        scheme: "exact",
+        resourceUrl: input.resourceUrl,
+        description: "Compose.Market resource payment",
+        mimeType: "application/json",
+        error: input.error,
+    });
+    const encoded = encodeComposePaymentRequiredHeader(paymentRequired);
+
+    return failure(402, input.error, {
+        body: paymentRequired as unknown as Record<string, unknown>,
+        headers: {
+            "PAYMENT-REQUIRED": encoded,
+            "payment-required": encoded,
+        },
+    });
 }
 
 function parsePositiveIntegerString(value: string, fieldName: string): bigint {
@@ -469,6 +518,37 @@ export async function authorizePaymentIntent(
             return failure(409, "Compose key chainId does not match request chainId");
         }
 
+        // Idempotency: if the caller provided an X-Idempotency-Key, a second
+        // authorize with the same (keyId, idempotencyKey) must return the
+        // exact intent created by the first call instead of creating a new
+        // reservation. We key the dedupe slot on (keyId, idempotencyKey) so
+        // different keys with the same client-chosen idempotency key do not
+        // collide across wallets.
+        if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
+            const idemKey = idempotencyRedisKey(validation.payload.keyId, input.idempotencyKey.trim());
+            const existingIntentId = await redisGet(idemKey);
+            if (existingIntentId) {
+                const existing = await readPaymentIntent(existingIntentId);
+                if (existing) {
+                    const headers = await buildPaymentBudgetHeaders(existing);
+                    headers["x-payment-intent-id"] = existing.paymentIntentId;
+                    headers["x-idempotent-replay"] = "true";
+                    return {
+                        ok: true,
+                        status: 200,
+                        body: {
+                            paymentIntentId: existing.paymentIntentId,
+                            maxAmountWei: existing.maxAmountWei,
+                            status: "authorized",
+                        },
+                        headers,
+                    };
+                }
+                // Stale slot — the intent expired before the replay arrived.
+                // Fall through and create a fresh one; we rewrite the slot below.
+            }
+        }
+
         const normalizedInput = {
             ...input,
             chainId,
@@ -623,6 +703,16 @@ export async function authorizePaymentIntent(
         });
         headers["x-payment-intent-id"] = paymentIntentId;
 
+        // Record the idempotency slot so a retried authorize with the same
+        // idempotency key resolves to this intent instead of creating a new one.
+        if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
+            await redisSetNXEX(
+                idempotencyRedisKey(validation.payload.keyId, input.idempotencyKey.trim()),
+                paymentIntentId,
+                INTENT_TTL_SECONDS,
+            );
+        }
+
         return {
             ok: true,
             status: 200,
@@ -753,7 +843,12 @@ export async function settlePaymentIntent(
                     error: settlement.error || "Payment settlement failed",
                 });
 
-                return failure(402, settlement.error || "Payment settlement failed");
+                return buildPaymentRequiredFailure({
+                    resourceUrl: intent.resource,
+                    chainId: intent.chainId,
+                    amountWei: finalAmountStr,
+                    error: settlement.error || "Payment settlement failed",
+                });
             }
 
             if (intent.purpose === "session") {
