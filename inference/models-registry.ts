@@ -571,3 +571,127 @@ export function getEmbeddingModel(modelId: string, provider?: ModelProvider): an
 
 // Legacy type alias - use ModelCard instead
 export type ModelInfo = ModelCard;
+
+// =============================================================================
+// Search + OpenAI-shape Exports
+// =============================================================================
+
+export interface ModelSearchInput {
+    q?: string;
+    modality?: "text" | "image" | "audio" | "video" | "embedding";
+    provider?: ModelProvider;
+    /** Max price in USD per 1M input tokens, inclusive. Only applies to token-priced models. */
+    priceMaxPerMTok?: number;
+    /** Minimum context window in tokens, inclusive. */
+    contextWindowMin?: number;
+    /** Only include models that support streaming. */
+    streaming?: boolean;
+    cursor?: string;
+    limit?: number;
+}
+
+export interface ModelSearchResult {
+    data: ModelCard[];
+    next_cursor: string | null;
+    total: number;
+}
+
+/**
+ * Pure in-process catalog search over the full ~45k-model extended set.
+ *
+ * We deliberately do not pull in Algolia / OpenSearch here — the registry is
+ * less than 30 MB of JSON in-memory, and a linear scan with indexable filters
+ * is fast enough for the expected call volume. The cursor is a stable offset
+ * string so clients can round-trip it.
+ */
+export function searchModels(input: ModelSearchInput): ModelSearchResult {
+    const registry = getExtendedModels();
+    const q = (input.q || "").trim().toLowerCase();
+    const modality = input.modality;
+    const provider = input.provider;
+    const contextMin = Number.isFinite(input.contextWindowMin) && input.contextWindowMin! >= 0
+        ? input.contextWindowMin!
+        : 0;
+    const priceMax = Number.isFinite(input.priceMaxPerMTok) && input.priceMaxPerMTok! > 0
+        ? input.priceMaxPerMTok!
+        : Number.POSITIVE_INFINITY;
+    const streaming = input.streaming === true ? true : null;
+    const limit = Math.min(Math.max(Number.isInteger(input.limit) ? input.limit! : 50, 1), 200);
+    const cursor = typeof input.cursor === "string" && /^\d+$/.test(input.cursor)
+        ? parseInt(input.cursor, 10)
+        : 0;
+
+    const filtered: ModelCard[] = [];
+    for (const model of registry.models) {
+        if (modality) {
+            if (modality === "text" && model.type !== "chat" && model.type !== "responses" && model.type !== "completion") continue;
+            if (modality === "image" && model.type !== "image") continue;
+            if (modality === "audio" && model.type !== "audio") continue;
+            if (modality === "video" && model.type !== "video") continue;
+            if (modality === "embedding" && model.type !== "embedding") continue;
+        }
+
+        if (provider && model.provider !== provider) continue;
+
+        if (contextMin > 0) {
+            const ctx = typeof model.contextWindow === "number" ? model.contextWindow : 0;
+            if (ctx < contextMin) continue;
+        }
+
+        if (streaming === true) {
+            // Models that explicitly lack streaming capability should be filtered
+            // out. Absence of the capability list is treated as "unknown" (kept)
+            // because most text models stream and the compiled set omits the
+            // capability array for ubiquitous features.
+            if (Array.isArray(model.capabilities) && !model.capabilities.includes("streaming")) continue;
+        }
+
+        if (priceMax !== Number.POSITIVE_INFINITY) {
+            const inputPrice = extractInputPricePerMTok(model.pricing);
+            if (inputPrice === null || inputPrice > priceMax) continue;
+        }
+
+        if (q) {
+            const haystack = `${model.modelId} ${model.name || ""} ${model.description || ""} ${model.provider}`.toLowerCase();
+            if (!haystack.includes(q)) continue;
+        }
+
+        filtered.push(model);
+    }
+
+    const slice = filtered.slice(cursor, cursor + limit);
+    const next = cursor + slice.length < filtered.length ? String(cursor + slice.length) : null;
+
+    return {
+        data: slice,
+        next_cursor: next,
+        total: filtered.length,
+    };
+}
+
+function extractInputPricePerMTok(pricing: unknown): number | null {
+    if (!pricing || typeof pricing !== "object") return null;
+    const p = pricing as Record<string, unknown>;
+
+    // Shape 1: { unit, values: { input } }
+    const values = p.values as Record<string, unknown> | undefined;
+    if (values && typeof values === "object") {
+        const input = values.input;
+        if (typeof input === "number" && input > 0) return input;
+    }
+
+    // Shape 2: { sections: [{ unit, entries: { input } }] }
+    const sections = p.sections;
+    if (Array.isArray(sections)) {
+        for (const section of sections) {
+            if (!section || typeof section !== "object") continue;
+            const entries = (section as Record<string, unknown>).entries as Record<string, unknown> | undefined;
+            if (entries && typeof entries === "object") {
+                const input = entries.input;
+                if (typeof input === "number" && input > 0) return input;
+            }
+        }
+    }
+
+    return null;
+}

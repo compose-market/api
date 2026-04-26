@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { embedMany, generateText, jsonSchema, streamText } from "ai";
 import { GoogleGenAI } from "@google/genai";
 
@@ -14,11 +15,13 @@ import type {
 } from "../core.js";
 import {
   generateImage as googleGenerateImage,
+  streamImage as googleStreamImage,
   generateSpeech as googleGenerateSpeech,
   generateVideo as googleGenerateVideo,
 } from "./genai.js";
 import {
   openaiGenerateImage,
+  openaiStreamImage,
   openaiGenerateSpeech,
   openaiGenerateVideo,
   openaiTranscribeAudio,
@@ -552,6 +555,49 @@ function readImageDimensions(buffer: Buffer): { width: number; height: number } 
   return null;
 }
 
+function generatedImageCount(request: UnifiedRequest): number {
+  return typeof request.imageOptions?.n === "number" && request.imageOptions.n > 0
+    ? request.imageOptions.n
+    : 1;
+}
+
+function elapsedSecondsSince(startedAt: number): number {
+  const elapsed = (performance.now() - startedAt) / 1000;
+  return Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0.000001;
+}
+
+function imageBillingMetricsFromOutput(args: {
+  request: UnifiedRequest;
+  buffer: Buffer;
+  usage?: UnifiedUsage;
+  generatedUnits: number;
+  elapsedSeconds?: number;
+}): Record<string, unknown> {
+  const metrics: Record<string, unknown> = {
+    ...(args.request.billingMetrics || {}),
+  };
+
+  if (typeof args.elapsedSeconds === "number" && Number.isFinite(args.elapsedSeconds) && args.elapsedSeconds > 0) {
+    if (metrics.second === undefined) metrics.second = args.elapsedSeconds;
+    if (metrics.duration === undefined) metrics.duration = args.elapsedSeconds;
+    if (metrics.compute_second === undefined) metrics.compute_second = args.elapsedSeconds;
+  }
+
+  Object.assign(metrics, args.usage?.billingMetrics || {});
+
+  const imageDimensions = readImageDimensions(args.buffer);
+  if (imageDimensions) {
+    const outputMegapixels = (imageDimensions.width * imageDimensions.height * args.generatedUnits) / 1_000_000;
+    const outputPixels = imageDimensions.width * imageDimensions.height * args.generatedUnits;
+    metrics.megapixel = outputMegapixels;
+    if (metrics.processed_megapixel === undefined) metrics.processed_megapixel = outputMegapixels;
+    if (metrics.pixel === undefined) metrics.pixel = outputPixels;
+    if (metrics.processed_pixel === undefined) metrics.processed_pixel = outputPixels;
+  }
+
+  return metrics;
+}
+
 class AsyncEventQueue<T> {
   private values: T[] = [];
   private waiters: Array<{ resolve: (value: IteratorResult<T>) => void; reject: (error: unknown) => void }> = [];
@@ -722,10 +768,9 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
   const imageUrl = request.imageOptions?.imageUrl || findUrl(request.messages, "image_url");
   const card = getModelById(target.modelId);
   const customParams = request.customParams || {};
-  const imageCount = typeof request.imageOptions?.n === "number" && request.imageOptions.n > 0
-    ? request.imageOptions.n
-    : 1;
+  const imageCount = generatedImageCount(request);
 
+  const startedAt = performance.now();
   const output = await withRetry(async (): Promise<{
     buffer: Buffer;
     mimeType: string;
@@ -861,11 +906,7 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
         throw new Error(`Image generation not supported for provider: ${target.provider}`);
     }
   });
-
-  const imageDimensions = readImageDimensions(output.buffer);
-  const imageMegapixels = imageDimensions
-    ? (imageDimensions.width * imageDimensions.height) / 1_000_000
-    : undefined;
+  const elapsedSeconds = elapsedSecondsSince(startedAt);
 
   return {
     modality: "image",
@@ -874,11 +915,13 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
       base64: output.buffer.toString("base64"),
       generatedUnits: imageCount,
       status: "completed",
-      billingMetrics: {
-        ...(request.billingMetrics || {}),
-        ...(output.usage?.billingMetrics || {}),
-        ...(typeof imageMegapixels === "number" ? { megapixel: imageMegapixels * imageCount } : {}),
-      },
+      billingMetrics: imageBillingMetricsFromOutput({
+        request,
+        buffer: output.buffer,
+        usage: output.usage,
+        generatedUnits: imageCount,
+        elapsedSeconds,
+      }),
     },
     usage: output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   };
@@ -1294,8 +1337,166 @@ export async function* streamAdapter(
   request: UnifiedRequest,
   target: AdapterTarget,
 ): AsyncGenerator<UnifiedStreamEvent> {
+  if (request.modality === "image") {
+    // Provider-native partial-image streaming where available.
+    if (target.provider === "openai") {
+      const prompt = getPrimaryText(request.messages);
+      let lastUsage: UnifiedUsage | undefined;
+      const startedAt = performance.now();
+      for await (const event of openaiStreamImage(target.modelId, prompt, {
+        size: request.imageOptions?.size as any,
+        quality: request.imageOptions?.quality as any,
+        n: request.imageOptions?.n,
+        partialImages: typeof request.customParams?.partial_images === "number"
+          ? request.customParams.partial_images
+          : typeof request.customParams?.partialImages === "number"
+            ? request.customParams.partialImages
+            : 2,
+      })) {
+        if (event.type === "image-partial") {
+          yield {
+            type: "image-partial",
+            image: {
+              base64: event.b64,
+              index: event.index,
+              mimeType: "image/png",
+            },
+          };
+          continue;
+        }
+
+        const completionTokens = event.usage?.completionTokens ?? 0;
+        const promptTokens = event.usage?.promptTokens ?? 0;
+        lastUsage = event.usage ?? {
+          promptTokens,
+          completionTokens,
+          totalTokens: promptTokens + completionTokens,
+        };
+
+        const imageBuffer = Buffer.from(event.b64, "base64");
+        const generatedUnits = generatedImageCount(request);
+        yield {
+          type: "image-complete",
+          image: {
+            base64: event.b64,
+            mimeType: "image/png",
+            revisedPrompt: event.revisedPrompt,
+            generatedUnits,
+            billingMetrics: imageBillingMetricsFromOutput({
+              request,
+              buffer: imageBuffer,
+              usage: lastUsage,
+              generatedUnits,
+              elapsedSeconds: elapsedSecondsSince(startedAt),
+            }),
+          },
+          ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+      }
+
+      yield {
+        type: "done",
+        finishReason: "stop",
+        ...(lastUsage ? { usage: lastUsage } : { usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }),
+      };
+      return;
+    }
+
+    if (target.provider === "gemini") {
+      const prompt = getPrimaryText(request.messages);
+      const imageUrl = request.imageOptions?.imageUrl || findUrl(request.messages, "image_url");
+      const imageBuffer = await fetchRemoteBuffer(imageUrl);
+      const refs = imageBuffer ? [imageBuffer] : undefined;
+      let lastUsage: UnifiedUsage | undefined;
+      const startedAt = performance.now();
+
+      for await (const event of googleStreamImage(target.modelId, prompt, {
+        referenceImages: refs,
+        aspectRatio: request.customParams?.aspect_ratio as any,
+        numberOfImages: request.imageOptions?.n,
+        outputMimeType: request.customParams?.output_mime_type as any,
+        includeThoughts: typeof request.customParams?.include_thoughts === "boolean"
+          ? request.customParams.include_thoughts
+          : typeof request.customParams?.includeThoughts === "boolean"
+            ? request.customParams.includeThoughts
+            : true,
+      })) {
+        if (event.type === "thinking") {
+          yield { type: "thinking", thinking: event.text };
+          continue;
+        }
+        if (event.type === "image-partial") {
+          yield {
+            type: "image-partial",
+            image: {
+              base64: event.base64,
+              index: event.index,
+              mimeType: event.mimeType || "image/png",
+            },
+          };
+          continue;
+        }
+        lastUsage = event.usage
+          ? {
+              promptTokens: event.usage.promptTokens,
+              completionTokens: event.usage.completionTokens,
+              totalTokens: event.usage.totalTokens,
+              ...(event.usage.billingMetrics ? { billingMetrics: event.usage.billingMetrics } : {}),
+            }
+          : undefined;
+        const finalImageBuffer = Buffer.from(event.base64, "base64");
+        const generatedUnits = generatedImageCount(request);
+        yield {
+          type: "image-complete",
+          image: {
+            base64: event.base64,
+            mimeType: event.mimeType || "image/png",
+            generatedUnits,
+            billingMetrics: imageBillingMetricsFromOutput({
+              request,
+              buffer: finalImageBuffer,
+              usage: lastUsage,
+              generatedUnits,
+              elapsedSeconds: elapsedSecondsSince(startedAt),
+            }),
+          },
+          ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+      }
+
+      yield {
+        type: "done",
+        finishReason: "stop",
+        ...(lastUsage ? { usage: lastUsage } : { usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }),
+      };
+      return;
+    }
+
+    // Universal fallback: reuse the already-correct final image generation
+    // path and simply surface its terminal image through the unified stream
+    // contract. No duplicated generation logic, no duplicated metering.
+    const output = await invokeImage(request, target);
+    yield {
+      type: "image-complete",
+      image: {
+        base64: output.media?.base64 || "",
+        mimeType: output.media?.mimeType,
+        ...(typeof output.media?.generatedUnits === "number" ? { generatedUnits: output.media.generatedUnits } : {}),
+        ...(typeof output.media?.duration === "number" ? { duration: output.media.duration } : {}),
+        ...(output.media?.billingMetrics ? { billingMetrics: output.media.billingMetrics } : {}),
+      },
+      ...(output.usage ? { usage: output.usage } : {}),
+    };
+    yield {
+      type: "done",
+      finishReason: output.finishReason || "stop",
+      ...(output.usage ? { usage: output.usage } : { usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }),
+    };
+    return;
+  }
+
   if (request.modality !== "text") {
-    throw new Error(`Streaming is only supported for text modality. Requested: ${request.modality}`);
+    throw new Error(`Streaming is only supported for text and image modalities. Requested: ${request.modality}`);
   }
 
   if (target.provider === "vertex") {

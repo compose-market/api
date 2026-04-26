@@ -110,6 +110,7 @@ export interface UnifiedOutput {
     mimeType: string;
     base64?: string;
     url?: string;
+    revisedPrompt?: string;
     duration?: number;
     generatedUnits?: number;
     jobId?: string;
@@ -120,9 +121,20 @@ export interface UnifiedOutput {
 }
 
 export interface UnifiedStreamEvent {
-  type: "text-delta" | "tool-call" | "done";
+  type: "text-delta" | "tool-call" | "tool-call-delta" | "thinking" | "image-partial" | "image-complete" | "done";
   text?: string;
   toolCall?: { id: string; name: string; arguments: string };
+  toolCallDelta?: { id?: string; name?: string; arguments?: string; index: number };
+  thinking?: string;
+  image?: {
+    base64: string;
+    index?: number;
+    mimeType?: string;
+    revisedPrompt?: string;
+    duration?: number;
+    generatedUnits?: number;
+    billingMetrics?: Record<string, unknown>;
+  };
   usage?: UnifiedUsage;
   finishReason?: string;
 }
@@ -762,6 +774,73 @@ export function formatSSEDone(): string {
   return "data: [DONE]\n\n";
 }
 
+/**
+ * Format a named-event SSE frame:
+ *
+ *   event: <name>
+ *   data: <json>
+ *
+ * Used for out-of-band events like `compose.receipt`, `compose.error`,
+ * `compose.video.status`, and `compose.budget` that are semantically distinct
+ * from regular streaming deltas and which integrator SDKs should recognise
+ * via `event:` rather than by parsing the shape of the JSON body.
+ */
+export function formatSSENamedEvent(name: string, data: unknown): string {
+  return `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * Compose-specific SSE event payloads. These are emitted in addition to the
+ * OpenAI-shaped chunks on both /v1/chat/completions and /v1/responses streams
+ * so SDK consumers can react to:
+ *   - reasoning/thinking deltas (model internal reasoning where the provider
+ *     exposes it)
+ *   - structured tool-call deltas assembled across chunks
+ *   - cost receipts after settlement completes
+ *   - structured error frames when the stream fails mid-flight
+ *   - video-job poll status updates when clients ask for SSE polling
+ */
+export interface ComposeReceiptStreamPayload {
+  finalAmountWei: string;
+  providerAmountWei?: string;
+  platformFeeWei?: string;
+  meterSubject?: string;
+  lineItems?: Array<{
+    key: string;
+    unit: string;
+    quantity: number;
+    unitPriceUsd: number;
+    amountWei: string;
+  }>;
+  txHash?: string;
+  network?: string;
+  settledAt: number;
+}
+
+export function toComposeReceiptStreamEvent(
+  payload: ComposeReceiptStreamPayload,
+): string {
+  return formatSSENamedEvent("compose.receipt", payload);
+}
+
+export function toComposeErrorStreamEvent(payload: {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}): string {
+  return formatSSENamedEvent("compose.error", payload);
+}
+
+export function toComposeVideoStatusStreamEvent(payload: {
+  jobId: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  progress?: number;
+  url?: string;
+  error?: string;
+}): string {
+  return formatSSENamedEvent("compose.video.status", payload);
+}
+
 export function toResponsesStreamEvent(requestId: string, model: string, event: UnifiedStreamEvent): Record<string, unknown> {
   if (event.type === "text-delta") {
     return {
@@ -772,12 +851,63 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
     };
   }
 
+  if (event.type === "thinking") {
+    return {
+      type: "response.reasoning.delta",
+      response_id: requestId,
+      model,
+      delta: event.thinking || "",
+    };
+  }
+
   if (event.type === "tool-call") {
     return {
       type: "response.tool_call",
       response_id: requestId,
       model,
       tool_call: event.toolCall,
+    };
+  }
+
+  if (event.type === "tool-call-delta") {
+    return {
+      type: "response.tool_call.delta",
+      response_id: requestId,
+      model,
+      index: event.toolCallDelta?.index ?? 0,
+      delta: {
+        ...(event.toolCallDelta?.id ? { id: event.toolCallDelta.id } : {}),
+        ...(event.toolCallDelta?.name ? { name: event.toolCallDelta.name } : {}),
+        ...(event.toolCallDelta?.arguments ? { arguments: event.toolCallDelta.arguments } : {}),
+      },
+    };
+  }
+
+  if (event.type === "image-partial") {
+    return {
+      type: "response.image_generation_call.partial_image",
+      response_id: requestId,
+      model,
+      partial_image_index: event.image?.index ?? 0,
+      partial_image_b64: event.image?.base64 || "",
+    };
+  }
+
+  if (event.type === "image-complete") {
+    return {
+      type: "response.image_generation_call.completed",
+      response_id: requestId,
+      model,
+      image_b64: event.image?.base64 || "",
+      mime_type: event.image?.mimeType,
+      revised_prompt: event.image?.revisedPrompt,
+      usage: event.usage
+        ? {
+          input_tokens: event.usage.promptTokens,
+          output_tokens: event.usage.completionTokens,
+          total_tokens: event.usage.totalTokens,
+        }
+        : undefined,
     };
   }
 
@@ -821,6 +951,25 @@ export function toChatStreamEvent(
     };
   }
 
+  if (event.type === "thinking") {
+    return {
+      id: requestId,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            ...(isFirstToken ? { role: "assistant" } : {}),
+            reasoning_content: event.thinking || "",
+          },
+          finish_reason: null,
+        },
+      ],
+    };
+  }
+
   if (event.type === "tool-call") {
     return {
       id: requestId,
@@ -831,7 +980,7 @@ export function toChatStreamEvent(
         {
           index: 0,
           delta: {
-            role: "assistant",
+            ...(isFirstToken ? { role: "assistant" } : {}),
             tool_calls: [
               {
                 index: 0,
@@ -840,6 +989,34 @@ export function toChatStreamEvent(
                 function: {
                   name: event.toolCall?.name,
                   arguments: event.toolCall?.arguments,
+                },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    };
+  }
+
+  if (event.type === "tool-call-delta") {
+    return {
+      id: requestId,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: event.toolCallDelta?.index ?? 0,
+                ...(event.toolCallDelta?.id ? { id: event.toolCallDelta.id } : {}),
+                type: "function",
+                function: {
+                  ...(event.toolCallDelta?.name ? { name: event.toolCallDelta.name } : {}),
+                  ...(event.toolCallDelta?.arguments ? { arguments: event.toolCallDelta.arguments } : {}),
                 },
               },
             ],

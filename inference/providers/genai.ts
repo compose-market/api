@@ -452,6 +452,115 @@ export async function generateImage(
     }
 }
 
+/**
+ * Stream Gemini image generation through `generateContentStream()`.
+ *
+ * Gemini's native image-generation docs do not advertise a dedicated
+ * `partial_image` event taxonomy like OpenAI. Instead, `streamGenerateContent`
+ * yields ordinary `GenerateContentResponse` chunks whose `candidates[0].content.parts`
+ * may contain:
+ *   - `text` parts flagged with `thought: true` (reasoning / thought summaries)
+ *   - one or more `inlineData` image parts
+ *
+ * We surface these as the universal stream contract:
+ *   - every `thought` text part delta => `{ type: "thinking", ... }`
+ *   - every inlineData image prior to the terminal one => `image-partial`
+ *   - the last inlineData observed when the stream ends => `image-complete`
+ *
+ * This is intentionally provider-native and zero-heuristic on model names.
+ * It simply reflects the sequence of parts Google emits for the chosen model.
+ */
+export async function* streamImage(
+    modelId: string,
+    prompt: string,
+    options?: {
+        referenceImages?: Buffer[];
+        aspectRatio?: string;
+        numberOfImages?: number;
+        outputMimeType?: string;
+        includeThoughts?: boolean;
+    }
+): AsyncGenerator<
+    | { type: "thinking"; text: string }
+    | { type: "image-partial"; base64: string; mimeType?: string; index: number }
+    | { type: "image-complete"; base64: string; mimeType?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown> } }
+> {
+    const client = getClient();
+    const cleanModelId = modelId.replace("models/", "");
+
+    const parts: Part[] = [{ text: prompt }];
+    if (options?.referenceImages) {
+        for (const imageBuffer of options.referenceImages) {
+            parts.push({
+                inlineData: {
+                    data: imageBuffer.toString("base64"),
+                    mimeType: "image/png",
+                },
+            });
+        }
+    }
+
+    const stream = await client.models.generateContentStream({
+        model: cleanModelId,
+        contents: [{ role: "user", parts }],
+        config: {
+            responseModalities: ["IMAGE", "TEXT"],
+            ...(options?.aspectRatio && { aspectRatio: options.aspectRatio as any }),
+            ...(options?.numberOfImages && { numberOfImages: options.numberOfImages }),
+            ...(options?.outputMimeType && { outputMimeType: options.outputMimeType as any }),
+            ...(typeof options?.includeThoughts === "boolean" ? { includeThoughts: options.includeThoughts } : {}),
+        },
+    });
+
+    let imageIndex = 0;
+    let lastImage: { base64: string; mimeType?: string } | null = null;
+    let usage = undefined as ReturnType<typeof normalizeUsageMetadata>;
+
+    for await (const chunk of stream) {
+        usage = normalizeUsageMetadata((chunk as GenerateContentResponse).usageMetadata) ?? usage;
+        const candidate = chunk.candidates?.[0];
+        const parts2 = candidate?.content?.parts;
+        if (!parts2 || parts2.length === 0) continue;
+
+        for (const part of parts2) {
+            if ((part as { text?: unknown }).text && (part as { thought?: boolean }).thought) {
+                const text = (part as { text: string }).text;
+                if (text) {
+                    yield { type: "thinking", text };
+                }
+            }
+
+            if ("inlineData" in part && part.inlineData?.data) {
+                const current = {
+                    base64: part.inlineData.data,
+                    mimeType: part.inlineData.mimeType,
+                };
+                if (lastImage) {
+                    yield {
+                        type: "image-partial",
+                        base64: lastImage.base64,
+                        mimeType: lastImage.mimeType,
+                        index: imageIndex,
+                    };
+                    imageIndex += 1;
+                }
+                lastImage = current;
+            }
+        }
+    }
+
+    if (!lastImage) {
+        throw new Error(`Gemini image stream returned no inline image parts for model ${cleanModelId}`);
+    }
+
+    yield {
+        type: "image-complete",
+        base64: lastImage.base64,
+        mimeType: lastImage.mimeType,
+        ...(usage ? { usage } : {}),
+    };
+}
+
 // =============================================================================
 // Video Generation (Veo)
 // =============================================================================

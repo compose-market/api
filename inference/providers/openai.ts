@@ -234,6 +234,110 @@ export async function openaiGenerateImage(
 }
 
 /**
+ * Stream partial images from OpenAI's native image-generation SSE surface.
+ * Uses `partial_images` so the UI can progressively refine the image behind a
+ * blur while generation is in flight.
+ */
+export async function* openaiStreamImage(
+    modelId: string,
+    prompt: string,
+    options?: {
+        size?: "1024x1024" | "1792x1024" | "1024x1792" | "256x256" | "512x512";
+        quality?: "standard" | "hd" | "low" | "medium" | "high" | "auto";
+        n?: number;
+        partialImages?: number;
+    }
+): AsyncGenerator<
+    | { type: "image-partial"; index: number; b64: string }
+    | { type: "image-complete"; b64: string; revisedPrompt?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown> } }
+> {
+    if (!OPENAI_API_KEY) {
+        throw new Error("OPENAI_API_KEY not configured");
+    }
+
+    const response = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            model: modelId,
+            prompt,
+            ...(options?.n !== undefined ? { n: options.n } : {}),
+            ...(options?.size ? { size: options.size } : {}),
+            ...(options?.quality ? { quality: options.quality } : {}),
+            stream: true,
+            partial_images: options?.partialImages ?? 2,
+        }),
+    });
+
+    if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`OpenAI image streaming failed: ${response.status} - ${text}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("OpenAI image streaming returned no body");
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        while (true) {
+            const sep = buffer.indexOf("\n\n");
+            if (sep === -1) break;
+            const raw = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const lines = raw.split("\n");
+            const dataLines = lines.filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart());
+            if (dataLines.length === 0) continue;
+            const data = dataLines.join("\n").trim();
+            if (!data || data === "[DONE]") continue;
+
+            let parsed: Record<string, unknown>;
+            try {
+                parsed = JSON.parse(data) as Record<string, unknown>;
+            } catch {
+                continue;
+            }
+
+            if (parsed.type === "image_generation.partial_image") {
+                const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
+                if (b64) {
+                    yield {
+                        type: "image-partial",
+                        index: typeof parsed.partial_image_index === "number" ? parsed.partial_image_index : 0,
+                        b64,
+                    };
+                }
+                continue;
+            }
+
+            if (parsed.type === "image_generation.completed") {
+                const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
+                if (!b64) continue;
+                const usage = parsed.usage && typeof parsed.usage === "object"
+                    ? {
+                        promptTokens: typeof (parsed.usage as { input_tokens?: unknown }).input_tokens === "number" ? (parsed.usage as { input_tokens: number }).input_tokens : 0,
+                        completionTokens: typeof (parsed.usage as { output_tokens?: unknown }).output_tokens === "number" ? (parsed.usage as { output_tokens: number }).output_tokens : 0,
+                        totalTokens: typeof (parsed.usage as { total_tokens?: unknown }).total_tokens === "number" ? (parsed.usage as { total_tokens: number }).total_tokens : 0,
+                    }
+                    : undefined;
+                yield {
+                    type: "image-complete",
+                    b64,
+                    revisedPrompt: typeof parsed.revised_prompt === "string" ? parsed.revised_prompt : undefined,
+                    ...(usage ? { usage } : {}),
+                };
+            }
+        }
+    }
+}
+
+/**
  * Generate video using OpenAI Sora models
  * 
  * API: POST https://api.openai.com/v1/videos

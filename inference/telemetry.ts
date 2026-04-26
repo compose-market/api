@@ -401,6 +401,7 @@ function normalizeUnitWord(value: string): string {
       return "page";
     case "megapixel":
     case "megapixels":
+    case "mp":
       return "megapixel";
     default:
       return value;
@@ -416,14 +417,15 @@ function normalizeUnitFragment(words: string[]): string {
     .map((word) => normalizeUnitWord(word))
     .filter((word) => word !== "per" && word !== "usd" && word !== "usdc")
     .filter((word) => word !== "token" && word !== "tokens");
+  const deduped = normalized.filter((word, index) => index === 0 || word !== normalized[index - 1]);
 
-  if (normalized.length === 0) {
+  if (deduped.length === 0) {
     return "token";
   }
 
   const directions = new Set(["input", "output", "prompt", "completion", "cached", "reasoning"]);
-  const scaleIndex = normalized.findIndex((word) => /^\d+[km]$/.test(word));
-  const stemWords = [...normalized];
+  const scaleIndex = deduped.findIndex((word) => /^\d+[km]$/.test(word));
+  const stemWords = [...deduped];
 
   if (scaleIndex >= 0) {
     const scale = stemWords.splice(scaleIndex, 1)[0];
@@ -440,10 +442,12 @@ function normalizeUnitFragment(words: string[]): string {
 }
 
 function normalizeCanonicalFragment(fragment: string): string {
-  return fragment
+  const words = fragment
     .split("_")
     .filter(Boolean)
-    .map((word) => normalizeUnitWord(word))
+    .map((word) => normalizeUnitWord(word));
+  return words
+    .filter((word, index) => index === 0 || word !== words[index - 1])
     .join("_");
 }
 
@@ -1050,6 +1054,131 @@ function buildMetricMap(media: BillingMediaEvidence): Record<string, unknown> {
   return metrics;
 }
 
+function primaryKeyIncludes(primaryKey: string, fragment: string): boolean {
+  return primaryKey.split("_").includes(fragment);
+}
+
+function resolveTileQuantity(primaryKey: string, metrics: Record<string, unknown>): number | undefined {
+  const direct = readPositiveMetric(metrics, [primaryKey, "tile"]);
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  const dimensionMatch = primaryKey.match(/(\d+)(?:x|_by_)(\d+)_tile/);
+  if (!dimensionMatch) {
+    return undefined;
+  }
+
+  const width = Number.parseInt(dimensionMatch[1], 10);
+  const height = Number.parseInt(dimensionMatch[2], 10);
+  const pixels = readPositiveMetric(metrics, ["pixel"]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || pixels === undefined) {
+    return undefined;
+  }
+
+  return pixels / (width * height);
+}
+
+function resolveDerivedMediaQuantity(primaryKey: string, metrics: Record<string, unknown>): number | undefined {
+  const factors: number[] = [];
+
+  if (primaryKeyIncludes(primaryKey, "tile")) {
+    const tileQuantity = resolveTileQuantity(primaryKey, metrics);
+    if (tileQuantity !== undefined) {
+      factors.push(tileQuantity);
+    }
+  } else if (primaryKeyIncludes(primaryKey, "megapixel")) {
+    const megapixels = readPositiveMetric(metrics, [primaryKey, "megapixel"]);
+    if (megapixels !== undefined) {
+      factors.push(megapixels);
+    }
+  } else if (primaryKeyIncludes(primaryKey, "pixel")) {
+    const pixels = readPositiveMetric(metrics, [primaryKey, "pixel"]);
+    if (pixels !== undefined) {
+      factors.push(pixels);
+    }
+  }
+
+  if (primaryKeyIncludes(primaryKey, "step")) {
+    const steps = readPositiveMetric(metrics, ["step"]);
+    if (steps !== undefined) {
+      factors.push(steps);
+    }
+  }
+
+  if (primaryKeyIncludes(primaryKey, "second")) {
+    const seconds = readPositiveMetric(metrics, [primaryKey, "second", "duration"]);
+    if (seconds !== undefined) {
+      factors.push(seconds);
+    }
+  }
+
+  if (primaryKeyIncludes(primaryKey, "minute")) {
+    const minutes = readPositiveMetric(metrics, [primaryKey, "minute"]);
+    if (minutes !== undefined) {
+      factors.push(minutes);
+    }
+  }
+
+  if (factors.length > 0) {
+    return factors.reduce((product, factor) => product * factor, 1);
+  }
+
+  if (primaryKeyIncludes(primaryKey, "image") || primaryKeyIncludes(primaryKey, "generation")) {
+    return readPositiveMetric(metrics, [primaryKey, "generation", "image", "request"]);
+  }
+
+  if (primaryKeyIncludes(primaryKey, "video")) {
+    return readPositiveMetric(metrics, [primaryKey, "generation", "video", "request"]);
+  }
+
+  if (primaryKeyIncludes(primaryKey, "request") || primaryKeyIncludes(primaryKey, "run")) {
+    return readPositiveMetric(metrics, [primaryKey, "request"]);
+  }
+
+  return undefined;
+}
+
+function unitPriceAliasesForMediaPrimaryKey(primaryKey: string): string[] {
+  const aliases = ["output", "cost", "price"];
+
+  if (primaryKey === "generation") {
+    aliases.push("image", "video");
+  }
+  if (primaryKey === "image") {
+    aliases.push("generation");
+  }
+  if (primaryKey === "video") {
+    aliases.push("generation");
+  }
+  if (primaryKeyIncludes(primaryKey, "step")) {
+    aliases.push("step");
+  }
+  if (primaryKeyIncludes(primaryKey, "tile")) {
+    aliases.push("tile");
+  }
+  if (primaryKeyIncludes(primaryKey, "megapixel")) {
+    aliases.push("megapixel");
+  }
+  if (primaryKeyIncludes(primaryKey, "pixel")) {
+    aliases.push("pixel");
+  }
+  if (primaryKeyIncludes(primaryKey, "second")) {
+    aliases.push("second", "duration");
+  }
+  if (primaryKeyIncludes(primaryKey, "minute")) {
+    aliases.push("minute");
+  }
+  if (primaryKeyIncludes(primaryKey, "image")) {
+    aliases.push("image", "generation");
+  }
+  if (primaryKeyIncludes(primaryKey, "video")) {
+    aliases.push("video", "generation");
+  }
+
+  return [...new Set(aliases.flatMap((alias) => [alias, `per_${alias}`]))];
+}
+
 function resolveValuePrice(values: Record<string, number>, key: string, aliases: string[] = []): number {
   for (const alias of [key, ...aliases]) {
     const value = values[alias];
@@ -1403,17 +1532,22 @@ function buildMeteredMediaBilling(args: {
           ? ["second", "duration"]
           : primaryKey === "minute"
             ? ["minute"]
-            : [primaryKey];
+            : primaryKey.endsWith("_megapixel")
+              ? [primaryKey, "megapixel"]
+              : primaryKey.endsWith("_pixel")
+                ? [primaryKey, "pixel"]
+                : primaryKey.endsWith("_second")
+                  ? [primaryKey, "second", "duration"]
+                  : primaryKey.endsWith("_minute")
+                    ? [primaryKey, "minute"]
+                    : [primaryKey];
 
-  const unitPriceAliases = primaryKey === "generation"
-    ? ["image", "video"]
-    : primaryKey === "image"
-      ? ["generation"]
-      : primaryKey === "video"
-        ? ["generation"]
-        : [];
+  const unitPriceAliases = unitPriceAliasesForMediaPrimaryKey(primaryKey);
 
-  const quantity = requirePositiveQuantity(readPositiveMetric(metrics, quantityAliases), primaryKey);
+  const quantity = requirePositiveQuantity(
+    readPositiveMetric(metrics, quantityAliases) ?? resolveDerivedMediaQuantity(primaryKey, metrics),
+    primaryKey,
+  );
   const unitPriceUsd = resolveValuePrice(args.pricing.values, primaryKey, unitPriceAliases);
 
   return {

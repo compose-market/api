@@ -1,10 +1,13 @@
 import type { Express, NextFunction, Request, Response } from "express";
+import type { PaymentRequired } from "@x402/core/types";
 
 import {
   getCompiledModels,
   getExtendedModels,
   getModelById,
   resolveModel,
+  searchModels,
+  type ModelSearchInput,
 } from "./models-registry.js";
 import type { ModelCard, ModelProvider } from "./types.js";
 import {
@@ -12,14 +15,18 @@ import {
   buildSettlementMeterFromOutput,
 } from "../x402/metering.js";
 import {
-  authorizePaymentIntent,
-  abortPaymentIntent,
-  settlePaymentIntent,
-} from "../x402/intents.js";
-import type {
-  MeteredAuthorizationInput,
-  MeteredSettlementInput,
-  ResolvedAuthorizationInput,
+  prepareInferencePayment,
+  settlePreparedInferencePayment,
+  type InferenceAuthorizationInput,
+  type InferenceSettlementReceipt,
+} from "../x402/index.js";
+import {
+  encodeReceiptHeader,
+  RECEIPT_HEADER,
+  type ComposeReceipt,
+} from "../http/request-context.js";
+import {
+  type MeteredSettlementInput,
 } from "../x402/metering.js";
 import {
   createErrorResponse as createCoreErrorResponse,
@@ -34,9 +41,13 @@ import {
   toEmbeddingsResponse,
   toResponsesResponse,
   toResponsesStreamEvent,
+  toComposeReceiptStreamEvent,
+  toComposeErrorStreamEvent,
+  toComposeVideoStatusStreamEvent,
   type UnifiedMessage,
   type UnifiedOutput,
   type UnifiedRequest,
+  type UnifiedStreamEvent,
 } from "./core.js";
 import { runWithPolicy } from "./policy.js";
 import { redisGet, redisSet } from "../x402/keys/redis.js";
@@ -283,17 +294,12 @@ interface StoredResponseRecord {
 // CORS
 // =============================================================================
 
-export function setCorsHeaders(res: Response): void {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Chain-Id, x-chain-id, X-Payment-Data, PAYMENT-SIGNATURE, payment-signature",
-  );
-  res.setHeader(
-    "Access-Control-Expose-Headers",
-    "X-Transaction-Hash, PAYMENT-RESPONSE, payment-response, X-Request-Id, X-Compose-Key-Budget-Remaining, x-compose-key-tx-hash, x-compose-key-final-amount-wei, *",
-  );
+// CORS is set by the top-level middleware (api/http/cors.ts). This helper is
+// kept for backward compatibility with test callers that mock an Express
+// response without the middleware chain in front of it; in the real server it
+// is a no-op on top of the canonical headers the middleware has already set.
+export function setCorsHeaders(_res: Response): void {
+  // Intentional no-op. See api/http/cors.ts for the canonical policy.
 }
 
 // =============================================================================
@@ -312,6 +318,7 @@ export interface InferenceRoute {
 export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "GET", path: "/v1/models", handler: (req, res) => handleListModels(req, res, false), description: "List models" },
   { method: "GET", path: "/v1/models/all", handler: (req, res) => handleListModels(req, res, true), description: "List all models" },
+  { method: "POST", path: "/v1/models/search", handler: handleSearchModels, description: "Search models" },
   { method: "GET", path: "/v1/models/:model/params", handler: handleModelParams, description: "Model optional params" },
   { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model" },
   { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical unified responses API" },
@@ -326,6 +333,7 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "POST", path: "/v1/embeddings", handler: handleEmbeddings, description: "Embeddings" },
   { method: "POST", path: "/v1/videos/generations", handler: handleVideoGeneration, description: "Video generation" },
   { method: "GET", path: "/v1/videos/:id", handler: handleVideoStatus, description: "Video status" },
+  { method: "GET", path: "/v1/videos/:id/stream", handler: handleVideoStatusStream, description: "Video status SSE stream" },
   { method: "POST", path: "/api/inference", handler: handleChatCompletions, description: "Legacy inference alias" },
 ];
 
@@ -359,6 +367,72 @@ function createErrorResponse(message: string, type: string, code?: string, param
   if (code) error.code = code;
   if (param) error.param = param;
   return { error };
+}
+
+type AdaptedErrorBody = ReturnType<typeof createErrorResponse> | PaymentRequired;
+
+interface AdaptedErrorResult {
+  status: number;
+  body: AdaptedErrorBody;
+  headers?: Record<string, string>;
+}
+
+function getErrorRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function getErrorStatusCode(record: Record<string, unknown> | null): number | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  if (typeof record.statusCode === "number") {
+    return record.statusCode;
+  }
+
+  if (typeof record.status === "number") {
+    return record.status;
+  }
+
+  return undefined;
+}
+
+function getPaymentRequiredBody(record: Record<string, unknown> | null): PaymentRequired | undefined {
+  const candidate = record?.paymentRequired;
+  if (
+    candidate
+    && typeof candidate === "object"
+    && "x402Version" in candidate
+    && Array.isArray((candidate as PaymentRequired).accepts)
+  ) {
+    return candidate as PaymentRequired;
+  }
+
+  return undefined;
+}
+
+function getPaymentRequiredHeader(record: Record<string, unknown> | null): string | null {
+  if (!record) {
+    return null;
+  }
+
+  const candidate = record.paymentRequiredHeader;
+  if (typeof candidate === "string" && candidate.trim().length > 0) {
+    return candidate;
+  }
+
+  return null;
+}
+
+function buildPaymentRequiredHeaders(paymentRequiredHeader: string | null): Record<string, string> | undefined {
+  if (!paymentRequiredHeader) {
+    return undefined;
+  }
+
+  return {
+    "PAYMENT-REQUIRED": paymentRequiredHeader,
+    "payment-required": paymentRequiredHeader,
+  };
 }
 
 function adaptChatResponse(result: ChatResult, model: string, requestId: string) {
@@ -498,23 +572,23 @@ function adaptVideoResponse(result: { videos: Array<{ base64?: string; url?: str
   };
 }
 
-function adaptError(
+export function adaptError(
   error: unknown,
   defaultStatus = 500,
-): { status: number; body: ReturnType<typeof createErrorResponse> } {
-  const asRecord = error && typeof error === "object" ? (error as Record<string, unknown>) : null;
-  const statusCode =
-    (typeof asRecord?.statusCode === "number" ? asRecord.statusCode : undefined)
-    ?? (typeof asRecord?.status === "number" ? asRecord.status : undefined)
-    ?? (asRecord?.cause && typeof asRecord.cause === "object"
-      ? (
-        typeof (asRecord.cause as Record<string, unknown>).statusCode === "number"
-          ? (asRecord.cause as Record<string, unknown>).statusCode as number
-          : typeof (asRecord.cause as Record<string, unknown>).status === "number"
-            ? (asRecord.cause as Record<string, unknown>).status as number
-            : undefined
-      )
-      : undefined);
+): AdaptedErrorResult {
+  const asRecord = getErrorRecord(error);
+  const causeRecord = getErrorRecord(asRecord?.cause);
+  const statusCode = getErrorStatusCode(asRecord) ?? getErrorStatusCode(causeRecord);
+  const paymentRequired = getPaymentRequiredBody(asRecord) ?? getPaymentRequiredBody(causeRecord);
+  const paymentRequiredHeader = getPaymentRequiredHeader(asRecord) ?? getPaymentRequiredHeader(causeRecord);
+
+  if ((statusCode === 402 || paymentRequired || paymentRequiredHeader) && paymentRequired) {
+    return {
+      status: 402,
+      body: paymentRequired,
+      headers: buildPaymentRequiredHeaders(paymentRequiredHeader),
+    };
+  }
 
   if (statusCode === 404) {
     return {
@@ -560,6 +634,18 @@ function adaptError(
     };
   }
 
+  if (statusCode === 402 || paymentRequiredHeader) {
+    return {
+      status: 402,
+      body: createErrorResponse(
+        error instanceof Error ? error.message : "Payment required",
+        "payment_error",
+        "payment_required",
+      ),
+      headers: buildPaymentRequiredHeaders(paymentRequiredHeader),
+    };
+  }
+
   if (error instanceof Error) {
     const message = error.message.toLowerCase();
     if (
@@ -600,6 +686,25 @@ function adaptError(
       "internal_error",
     ),
   };
+}
+
+function writeAdaptedError(res: Response, error: unknown, defaultStatus = 500): void {
+  const { status, body, headers } = adaptError(error, defaultStatus);
+
+  if (!res.headersSent && headers) {
+    for (const [key, value] of Object.entries(headers)) {
+      res.setHeader(key, value);
+    }
+  }
+
+  if (res.headersSent) {
+    if (!res.writableEnded) {
+      res.end();
+    }
+    return;
+  }
+
+  res.status(status).json(body);
 }
 
 function requireModel(modelId: string): { provider: ModelProvider; card: ModelCard } {
@@ -754,6 +859,67 @@ function applyRoutingHeaders(
   res.setHeader("x-routing-fallback-used", routing.fallbackUsed ? "true" : "false");
 }
 
+function receiptFromSettlement(
+  settlement: InferenceSettlementReceipt | null,
+  chainId?: number,
+): ComposeReceipt | null {
+  if (!settlement) {
+    return null;
+  }
+
+  const resolvedChainId = settlement.chainId ?? chainId;
+  if (typeof resolvedChainId !== "number" || !Number.isFinite(resolvedChainId)) {
+    return null;
+  }
+
+  const receipt: ComposeReceipt = {
+    finalAmountWei: settlement.finalAmountWei,
+    network: `eip155:${resolvedChainId}` as `eip155:${number}`,
+    settledAt: settlement.settledAt,
+  };
+
+  if (settlement.meterSubject) receipt.subject = settlement.meterSubject;
+  if (settlement.lineItems && settlement.lineItems.length > 0) receipt.lineItems = settlement.lineItems;
+  if (settlement.providerAmountWei) receipt.providerAmountWei = settlement.providerAmountWei;
+  if (settlement.platformFeeWei) receipt.platformFeeWei = settlement.platformFeeWei;
+  if (settlement.txHash) receipt.txHash = settlement.txHash;
+
+  return receipt;
+}
+
+function applyReceiptHeader(res: Response, receipt: ComposeReceipt | null): void {
+  if (!receipt || res.headersSent) return;
+  res.setHeader(RECEIPT_HEADER, encodeReceiptHeader(receipt));
+}
+
+function receiptForJsonBody(receipt: ComposeReceipt | null): Record<string, unknown> | undefined {
+  if (!receipt) return undefined;
+  return {
+    subject: receipt.subject,
+    line_items: receipt.lineItems?.map((item) => ({
+      key: item.key,
+      unit: item.unit,
+      quantity: item.quantity,
+      unit_price_usd: item.unitPriceUsd,
+      amount_wei: item.amountWei,
+    })),
+    provider_amount_wei: receipt.providerAmountWei,
+    platform_fee_wei: receipt.platformFeeWei,
+    final_amount_wei: receipt.finalAmountWei,
+    tx_hash: receipt.txHash,
+    network: receipt.network,
+    settled_at: receipt.settledAt,
+  };
+}
+
+function getChainIdFromInferenceRequest(req: Request): number | undefined {
+  const header = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+  if (!header) return undefined;
+  const value = Array.isArray(header) ? header[0] : header;
+  const parsed = parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function responseFromRecord(record: StoredResponseRecord): Record<string, unknown> {
   if (!record.output) {
     return {
@@ -881,7 +1047,7 @@ async function executeUnifiedRequest(args: {
   const authorizationInput = buildResolvedAuthorizationInput({
     request: unified,
     resolved,
-  }) as ResolvedAuthorizationInput;
+  }) as InferenceAuthorizationInput;
   const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
   if (!payment) {
     return;
@@ -899,11 +1065,14 @@ async function executeUnifiedRequest(args: {
   await saveResponseRecord(baseRecord);
 
   try {
-    if (args.unified.stream && args.unified.modality === "text") {
+    if (args.unified.stream && (args.unified.modality === "text" || args.unified.modality === "image")) {
       args.res.setHeader("Content-Type", "text/event-stream");
       args.res.setHeader("Cache-Control", "no-cache");
       args.res.setHeader("Connection", "keep-alive");
-      args.res.setHeader("X-Request-Id", unified.responseId);
+      // X-Request-Id is set by the top-level middleware. We also keep the
+      // inference-specific response id available under x-compose-response-id
+      // so clients can round-trip it for /v1/responses/:id retrieval.
+      args.res.setHeader("x-compose-response-id", unified.responseId);
 
       const routed = await runWithPolicy({
         context: {
@@ -924,14 +1093,22 @@ async function executeUnifiedRequest(args: {
       });
 
       applyRoutingHeaders(args.res, routed);
-      for (const [key, value] of Object.entries(payment.getHeaders())) {
-        args.res.setHeader(key, value);
-      }
+      payment.applyHeaders(args.res);
 
       let isFirstToken = true;
       let aggregatedText = "";
       let lastUsage: TokenUsage | undefined;
       let finishReason = "stop";
+      let streamedImage: {
+        base64: string;
+        mimeType?: string;
+        revisedPrompt?: string;
+        duration?: number;
+        generatedUnits?: number;
+        billingMetrics?: Record<string, unknown>;
+      } | null = null;
+      let pendingImageCompleteEvent: UnifiedStreamEvent | null = null;
+      let pendingImageDoneEvent: UnifiedStreamEvent | null = null;
 
       try {
         for await (const event of routed.result.stream) {
@@ -953,11 +1130,39 @@ async function executeUnifiedRequest(args: {
             continue;
           }
 
+          if (event.type === "image-partial") {
+            const payload = toResponsesStreamEvent(unified.responseId, modelId, event);
+            args.res.write(formatCoreSSE(payload));
+            continue;
+          }
+
+          if (event.type === "image-complete") {
+            streamedImage = event.image
+              ? {
+                  base64: event.image.base64,
+                  ...(event.image.mimeType ? { mimeType: event.image.mimeType } : {}),
+                  ...(event.image.revisedPrompt ? { revisedPrompt: event.image.revisedPrompt } : {}),
+                  ...(typeof event.image.duration === "number" ? { duration: event.image.duration } : {}),
+                  ...(typeof event.image.generatedUnits === "number" ? { generatedUnits: event.image.generatedUnits } : {}),
+                  ...(event.image.billingMetrics ? { billingMetrics: event.image.billingMetrics } : {}),
+                }
+              : null;
+            if (event.usage) {
+              lastUsage = event.usage;
+            }
+            pendingImageCompleteEvent = event;
+            continue;
+          }
+
           if (event.type === "done") {
             if (event.usage) {
               lastUsage = event.usage;
             }
             finishReason = event.finishReason || "stop";
+            if (streamedImage) {
+              pendingImageDoneEvent = event;
+              continue;
+            }
             const payload = args.shape === "chat"
               ? toChatStreamEvent(unified.responseId, modelId, event)
               : toResponsesStreamEvent(unified.responseId, modelId, event);
@@ -975,13 +1180,25 @@ async function executeUnifiedRequest(args: {
         }
 
         const finalOutput: UnifiedOutput = {
-          modality: "text",
-          content: aggregatedText,
+          modality: streamedImage ? "image" : "text",
+          ...(streamedImage
+            ? {
+                media: {
+                  mimeType: streamedImage.mimeType || "image/png",
+                  base64: streamedImage.base64,
+                  ...(streamedImage.revisedPrompt ? { revisedPrompt: streamedImage.revisedPrompt } : {}),
+                  ...(typeof streamedImage.duration === "number" ? { duration: streamedImage.duration } : {}),
+                  ...(typeof streamedImage.generatedUnits === "number" ? { generatedUnits: streamedImage.generatedUnits } : {}),
+                  ...(streamedImage.billingMetrics ? { billingMetrics: streamedImage.billingMetrics } : {}),
+                  status: "completed" as const,
+                },
+              }
+            : { content: aggregatedText }),
           usage: lastUsage,
           finishReason,
         };
 
-        await settlePreparedPayment(
+        const settlementReceipt = await settlePreparedInferencePayment(
           payment,
           args.res,
           {
@@ -992,6 +1209,34 @@ async function executeUnifiedRequest(args: {
             }).meter as MeteredSettlementInput,
           },
         );
+
+        if (pendingImageCompleteEvent) {
+          args.res.write(formatCoreSSE(toResponsesStreamEvent(unified.responseId, modelId, pendingImageCompleteEvent)));
+          args.res.write(formatCoreSSE(toResponsesStreamEvent(
+            unified.responseId,
+            modelId,
+            pendingImageDoneEvent ?? {
+              type: "done",
+              usage: lastUsage,
+              finishReason,
+            },
+          )));
+        }
+
+        const streamChainId = getChainIdFromInferenceRequest(args.req);
+        const streamReceipt = receiptFromSettlement(settlementReceipt, streamChainId);
+        if (streamReceipt) {
+          args.res.write(toComposeReceiptStreamEvent({
+            finalAmountWei: streamReceipt.finalAmountWei,
+            providerAmountWei: streamReceipt.providerAmountWei,
+            platformFeeWei: streamReceipt.platformFeeWei,
+            meterSubject: streamReceipt.subject,
+            lineItems: streamReceipt.lineItems,
+            txHash: streamReceipt.txHash,
+            network: streamReceipt.network,
+            settledAt: streamReceipt.settledAt,
+          }));
+        }
         args.res.write(formatCoreSSEDone());
         args.res.end();
 
@@ -1001,8 +1246,22 @@ async function executeUnifiedRequest(args: {
           output: finalOutput,
         });
       } catch (error) {
-        if (!args.res.headersSent) {
+        try {
           await payment.abort(error instanceof Error ? error.message : "stream_failed");
+        } catch { /* best-effort */ }
+        if (!args.res.headersSent) {
+          // Let the outer Express error handler send the JSON error response.
+        } else {
+          // Emit structured error frame before propagating so clients know why
+          // the stream closed without a final `done` event.
+          try {
+            args.res.write(toComposeErrorStreamEvent({
+              code: "upstream_error",
+              message: error instanceof Error ? error.message : String(error),
+            }));
+          } catch { /* best-effort */ }
+          try { args.res.write(formatCoreSSEDone()); } catch { /* best-effort */ }
+          try { args.res.end(); } catch { /* best-effort */ }
         }
         throw error;
       }
@@ -1026,7 +1285,7 @@ async function executeUnifiedRequest(args: {
     applyRoutingHeaders(args.res, routed);
 
     const output = routed.result.output;
-    await settlePreparedPayment(
+    const jsonSettlementReceipt = await settlePreparedInferencePayment(
       payment,
       args.res,
       {
@@ -1037,6 +1296,9 @@ async function executeUnifiedRequest(args: {
         }).meter as MeteredSettlementInput,
       },
     );
+    const jsonChainId = getChainIdFromInferenceRequest(args.req);
+    const jsonReceipt = receiptFromSettlement(jsonSettlementReceipt, jsonChainId);
+    applyReceiptHeader(args.res, jsonReceipt);
 
     const record: StoredResponseRecord = {
       ...baseRecord,
@@ -1046,13 +1308,19 @@ async function executeUnifiedRequest(args: {
     };
     await saveResponseRecord(record);
 
+    const receiptJson = receiptForJsonBody(jsonReceipt);
+
     if (args.shape === "chat") {
-      args.res.status(200).json(toChatCompletionsResponse(modelId, unified.responseId, output));
+      const body = toChatCompletionsResponse(modelId, unified.responseId, output) as unknown as Record<string, unknown>;
+      if (receiptJson) body.compose_receipt = receiptJson;
+      args.res.status(200).json(body);
       return;
     }
 
     if (args.shape === "embeddings") {
-      args.res.status(200).json(toEmbeddingsResponse(modelId, output));
+      const body = toEmbeddingsResponse(modelId, output) as unknown as Record<string, unknown>;
+      if (receiptJson) body.compose_receipt = receiptJson;
+      args.res.status(200).json(body);
       return;
     }
 
@@ -1062,6 +1330,9 @@ async function executeUnifiedRequest(args: {
     }
     if (record.jobId) {
       payload.job_id = record.jobId;
+    }
+    if (receiptJson) {
+      payload.compose_receipt = receiptJson;
     }
     args.res.status(200).json(payload);
   } catch (error) {
@@ -1103,8 +1374,7 @@ async function handleResponses(req: Request, res: Response): Promise<void> {
 
     await executeUnifiedRequest({ req, res, unified, shape: "responses" });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1153,8 +1423,7 @@ async function handleGetResponse(req: Request, res: Response): Promise<void> {
 
     res.status(200).json(responseFromRecord(record));
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1184,8 +1453,7 @@ async function handleGetResponseInputItems(req: Request, res: Response): Promise
       data: inputItemsFromRecord(record),
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1220,155 +1488,7 @@ async function handleCancelResponse(req: Request, res: Response): Promise<void> 
     await saveResponseRecord(record);
     res.status(200).json(responseFromRecord(record));
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
-  }
-}
-
-// =============================================================================
-// Payment Helpers
-// =============================================================================
-
-function getChainIdFromReq(req: Request): number | undefined {
-  const chainIdHeader = req.get?.("x-chain-id") || req.headers["x-chain-id"];
-  if (!chainIdHeader) {
-    return undefined;
-  }
-
-  const parsed = parseInt(String(chainIdHeader), 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-interface PreparedInferencePayment {
-  paymentIntentId: string;
-  maxAmountWei: string;
-  settle: (
-    settlement:
-      | { finalAmountWei: string }
-      | { meter: MeteredSettlementInput },
-  ) => Promise<{ success: boolean; txHash?: string; finalAmountWei?: string; error?: string }>;
-  abort: (reason?: string) => Promise<void>;
-  getHeaders: () => Record<string, string>;
-}
-
-function isInternalInferenceRequest(authorization: string): boolean {
-  if (!authorization) {
-    return false;
-  }
-
-  const internalToken = process.env.RUNTIME_INTERNAL_SECRET;
-  if (!internalToken) {
-    return false;
-  }
-
-  return authorization === `Bearer ${internalToken}`;
-}
-
-async function prepareInferencePayment(
-  req: Request,
-  res: Response,
-  authorizationInput:
-    | { useBudgetCap: true }
-    | { maxAmountWei: string }
-    | { meter: MeteredAuthorizationInput },
-): Promise<PreparedInferencePayment | null> {
-  const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-  if (isInternalInferenceRequest(authorization)) {
-    return {
-      paymentIntentId: "",
-      maxAmountWei: "0",
-      settle: async () => ({ success: true, finalAmountWei: "0" }),
-      abort: async () => undefined,
-      getHeaders: () => ({}),
-    };
-  }
-
-  const chainId = getChainIdFromReq(req);
-  if (!authorization) {
-    res.status(401).json({ error: "Compose key authorization is required" });
-    return null;
-  }
-
-  const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
-  const prepared = await authorizePaymentIntent({
-    authorization,
-    chainId: chainId ?? Number.NaN,
-    service: "api",
-    action: "inference",
-    resource: resourceUrl,
-    method: req.method || "POST",
-    ...authorizationInput,
-    composeRunId: typeof req.headers["x-compose-run-id"] === "string" ? req.headers["x-compose-run-id"] : undefined,
-    idempotencyKey: typeof req.headers["x-idempotency-key"] === "string" ? req.headers["x-idempotency-key"] : undefined,
-  });
-
-  if (!prepared.ok) {
-    for (const [key, value] of Object.entries(prepared.headers)) {
-      res.setHeader(key, value);
-    }
-    res.status(prepared.status).json(prepared.body);
-    return null;
-  }
-
-  let currentHeaders = { ...prepared.headers };
-
-  return {
-    paymentIntentId: prepared.body.paymentIntentId,
-    maxAmountWei: prepared.body.maxAmountWei,
-    settle: async (settlementInput) => {
-      const settled = await settlePaymentIntent({
-        paymentIntentId: prepared.body.paymentIntentId,
-        ...settlementInput,
-      });
-
-      if (!settled.ok) {
-        return {
-          success: false,
-          error: typeof settled.body.error === "string" ? settled.body.error : "Payment settlement failed",
-        };
-      }
-
-      currentHeaders = { ...settled.headers };
-      return {
-        success: true,
-        txHash: settled.body.txHash,
-        finalAmountWei: settled.body.finalAmountWei,
-      };
-    },
-    abort: async (reason?: string) => {
-      await abortPaymentIntent({
-        paymentIntentId: prepared.body.paymentIntentId,
-        reason: reason || "inference_failed",
-      });
-    },
-    getHeaders: () => currentHeaders,
-  };
-}
-
-async function settlePreparedPayment(
-  payment: PreparedInferencePayment,
-  res: Response,
-  settlementInput: { finalAmountWei: string } | { meter: MeteredSettlementInput } = {
-    finalAmountWei: payment.maxAmountWei,
-  },
-): Promise<void> {
-  const settlement = await payment.settle(settlementInput);
-  if (!settlement.success) {
-    throw new Error(settlement.error || "Payment settlement failed");
-  }
-
-  if (!res.headersSent) {
-    for (const [key, value] of Object.entries(payment.getHeaders())) {
-      res.setHeader(key, value);
-    }
-    if (settlement.finalAmountWei) {
-      res.setHeader("x-compose-key-final-amount-wei", settlement.finalAmountWei);
-    }
-  }
-
-  if (settlement.txHash && !res.headersSent) {
-    res.setHeader("X-Transaction-Hash", settlement.txHash);
-    res.setHeader("x-compose-key-tx-hash", settlement.txHash);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1389,7 +1509,7 @@ async function runDeferredInference(args: {
       known: true,
       card: args.card,
     },
-  }) as ResolvedAuthorizationInput;
+  }) as InferenceAuthorizationInput;
   const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
   if (!payment) {
     return;
@@ -1397,7 +1517,7 @@ async function runDeferredInference(args: {
 
   try {
     const result = await args.execute();
-    await settlePreparedPayment(payment, args.res, {
+    await settlePreparedInferencePayment(payment, args.res, {
       meter: buildSettlementMeterFromOutput({
         request: args.unified,
         output: result,
@@ -1429,15 +1549,69 @@ export async function handleListModels(req: Request, res: Response, extended = f
 
   try {
     const models = extended ? getExtendedModels() : getCompiledModels();
-    const response: ModelsListResponse = {
-      object: "list",
-      data: models.models,
+    res.status(200).json({ object: "list", data: models.models });
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleSearchModels(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const body = (req.body || {}) as Record<string, unknown>;
+    const query = (req.query || {}) as Record<string, unknown>;
+    const pickString = (key: string): string | undefined => {
+      const v = body[key] ?? query[key];
+      return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+    };
+    const pickNumber = (key: string): number | undefined => {
+      const v = body[key] ?? query[key];
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string" && v.trim().length > 0) {
+        const parsed = Number(v);
+        return Number.isFinite(parsed) ? parsed : undefined;
+      }
+      return undefined;
+    };
+    const pickBoolean = (key: string): boolean | undefined => {
+      const v = body[key] ?? query[key];
+      if (typeof v === "boolean") return v;
+      if (v === "true") return true;
+      if (v === "false") return false;
+      return undefined;
     };
 
-    res.status(200).json(response);
+    const modality = pickString("modality");
+    const validModalities = ["text", "image", "audio", "video", "embedding"] as const;
+    if (modality && !validModalities.includes(modality as typeof validModalities[number])) {
+      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      return;
+    }
+
+    const result = searchModels({
+      q: pickString("q"),
+      modality: modality as ModelSearchInput["modality"],
+      provider: pickString("provider") as ModelProvider | undefined,
+      priceMaxPerMTok: pickNumber("priceMaxPerMTok") ?? pickNumber("price_max_per_mtok"),
+      contextWindowMin: pickNumber("contextWindowMin") ?? pickNumber("context_window_min"),
+      streaming: pickBoolean("streaming"),
+      cursor: pickString("cursor"),
+      limit: pickNumber("limit"),
+    });
+
+    res.status(200).json({
+      object: "list",
+      data: result.data,
+      total: result.total,
+      next_cursor: result.next_cursor,
+    });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1471,8 +1645,7 @@ export async function handleGetModel(req: Request, res: Response): Promise<void>
 
     res.status(200).json(model);
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1512,8 +1685,7 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
       shape: "chat",
     });
   } catch (error) {
-    const { status, body: payload } = adaptError(error, 500);
-    res.status(status).json(payload);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1569,8 +1741,7 @@ export async function handleImageGeneration(req: Request, res: Response): Promis
       },
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1629,8 +1800,7 @@ export async function handleImageEdit(req: Request, res: Response): Promise<void
       },
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1679,8 +1849,7 @@ export async function handleAudioSpeech(req: Request, res: Response): Promise<vo
       },
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1731,8 +1900,7 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
       },
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1762,8 +1930,7 @@ export async function handleEmbeddings(req: Request, res: Response): Promise<voi
       shape: "embeddings",
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1833,8 +2000,7 @@ export async function handleVideoGeneration(req: Request, res: Response): Promis
       },
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
   }
 }
 
@@ -1866,7 +2032,107 @@ export async function handleVideoStatus(req: Request, res: Response): Promise<vo
       progress: status.progress,
     });
   } catch (error) {
-    const { status, body } = adaptError(error, 500);
-    res.status(status).json(body);
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+/**
+ * Server-Sent Events stream that polls the video job until it reaches a
+ * terminal state and forwards every intermediate status update as a
+ * `compose.video.status` event. Not billable — the inference charge happens
+ * on /v1/videos/generations submission.
+ *
+ * Query params:
+ *   - pollIntervalMs  (default 2000, min 500, max 30000)
+ *   - timeoutMs       (default 600000, min 5000, max 3600000)
+ */
+export async function handleVideoStatusStream(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  const jobIdParam = req.params.id;
+  const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
+  if (!jobId) {
+    res.status(400).json(createErrorResponse("Video job ID is required", "invalid_request_error", "missing_job_id"));
+    return;
+  }
+
+  const pollInterval = Math.min(Math.max(
+    parseInt(String(req.query.pollIntervalMs ?? ""), 10) || 2000,
+    500,
+  ), 30_000);
+  const timeoutMs = Math.min(Math.max(
+    parseInt(String(req.query.timeoutMs ?? ""), 10) || 600_000,
+    5_000,
+  ), 3_600_000);
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const startedAt = Date.now();
+  let cancelled = false;
+  req.on("close", () => { cancelled = true; });
+
+  try {
+    while (!cancelled) {
+      let status: { status: "queued" | "processing" | "completed" | "failed"; url?: string; error?: string; progress?: number };
+      try {
+        status = await retrieveDirectAdapter(jobId);
+      } catch (pollError) {
+        res.write(toComposeErrorStreamEvent({
+          code: "upstream_error",
+          message: pollError instanceof Error ? pollError.message : String(pollError),
+        }));
+        res.write(formatCoreSSEDone());
+        res.end();
+        return;
+      }
+
+      res.write(toComposeVideoStatusStreamEvent({
+        jobId,
+        status: status.status,
+        progress: status.progress,
+        url: status.url,
+        error: status.error,
+      }));
+
+      if (status.status === "completed" || status.status === "failed") {
+        res.write(formatCoreSSEDone());
+        res.end();
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        res.write(toComposeErrorStreamEvent({
+          code: "upstream_timeout",
+          message: `Video job ${jobId} did not complete within ${timeoutMs}ms`,
+        }));
+        res.write(formatCoreSSEDone());
+        res.end();
+        return;
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    // Client disconnected
+    try { res.end(); } catch { /* already closed */ }
+  } catch (error) {
+    if (!res.headersSent) {
+      writeAdaptedError(res, error, 500);
+      return;
+    }
+    try {
+      res.write(toComposeErrorStreamEvent({
+        code: "internal_error",
+        message: error instanceof Error ? error.message : String(error),
+      }));
+      res.write(formatCoreSSEDone());
+      res.end();
+    } catch { /* best-effort */ }
   }
 }
