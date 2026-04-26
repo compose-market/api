@@ -32,6 +32,7 @@ type Context = Record<string, unknown>;
 // Compose Keys
 import {
     createComposeKey,
+    getKeyRecord,
     listUserKeys,
     revokeKey,
     getActiveSessionStatus,
@@ -49,6 +50,9 @@ import {
     getBudgetInfo as getSessionBudgetInfo,
     initializeSessionBudget,
 } from "./x402/session-budget.js";
+import {
+    getSessionFundingReadiness,
+} from "./x402/session-allowance.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
@@ -60,9 +64,10 @@ import {
     abortPaymentIntent,
     settlePaymentIntent,
 } from "./x402/intents.js";
-import { getActiveChainId } from "./x402/configs/chains.js";
+import { getActiveChainId, CHAIN_CONFIG, USDC_ADDRESSES, type ChainId } from "./x402/configs/chains.js";
 import {
     getComposeFacilitatorSupported,
+    getComposeFacilitatorChainMetadata,
     parseComposeFacilitatorSettleRequest,
     parseComposeFacilitatorVerifyRequest,
     settleComposePayment,
@@ -83,19 +88,13 @@ const loadDispenser = () => import("./dispenser/index.js");
 // Configuration
 // =============================================================================
 
-const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers":
-        "Content-Type, Authorization, PAYMENT-SIGNATURE, payment-signature, " +
-        "x-session-active, x-session-budget-remaining, " +
-        "x-session-user-address, x-network-internal, x-chain-id, x-payment-intent-id, Access-Control-Expose-Headers",
-    "Access-Control-Expose-Headers":
-        "PAYMENT-REQUIRED, payment-required, PAYMENT-RESPONSE, payment-response, x-compose-key-budget-limit, " +
-        "x-compose-key-budget-used, x-compose-key-budget-reserved, x-compose-key-budget-remaining, " +
-        "x-session-budget-limit, x-session-budget-used, x-session-budget-locked, x-session-budget-remaining, " +
-        "x-session-status, x-session-expires-in, x-session-budget-percent, x-compose-session-invalid, x-payment-intent-id, *",
-};
+// CORS is applied by the top-level middleware in api/index.ts (http/cors.ts).
+// The duplicate header set used to live here; per the single-layer CORS
+// policy it is now removed so browsers don't see conflicting values. Handlers
+// continue to merge extra response headers (x-compose-key-*, x-session-*,
+// x-payment-intent-id, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Transaction-Hash,
+// X-Compose-Receipt) freely on top of the middleware-set CORS + X-Request-Id.
+const corsHeaders: Record<string, string> = {};
 
 function buildInactiveSessionPayload(reason: SessionInactiveReason): {
     hasSession: false;
@@ -257,6 +256,11 @@ async function delegateExpressToApiHandler(req: Request, res: Response, next: Ne
             return;
         }
 
+        // Default to JSON; handlers that need other content types set the
+        // `content-type` entry in `result.headers` explicitly.
+        if (!res.getHeader("content-type")) {
+            res.setHeader("content-type", "application/json; charset=utf-8");
+        }
         res.send(result.body ?? "");
     } catch (error) {
         next(error);
@@ -288,6 +292,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/payments/abort", routeHandler);
     app.post("/api/payments/meter/model", routeHandler);
     app.get("/api/x402/facilitator/supported", routeHandler);
+    app.get("/api/x402/facilitator/chains", routeHandler);
     app.post("/api/x402/facilitator/verify", routeHandler);
     app.post("/api/x402/facilitator/settle", routeHandler);
 
@@ -295,6 +300,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/keys", routeHandler);
     app.get("/api/keys", routeHandler);
     app.post("/api/keys/settle", routeHandler);
+    app.get(/^\/api\/keys\/[^/]+$/, routeHandler);
     app.delete(/^\/api\/keys\/[^/]+$/, routeHandler);
 
     app.use("/api/backpack", routeHandler);
@@ -330,7 +336,8 @@ export async function handler(
     event: APIGatewayProxyEventV2,
     _context: Context
 ): Promise<APIGatewayProxyResultV2> {
-    // Handle CORS preflight
+    // OPTIONS preflight is handled by the top-level CORS middleware. When the
+    // handler is called directly (tests) we still short-circuit defensively.
     if (event.requestContext.http.method === "OPTIONS") {
         return {
             statusCode: 204,
@@ -390,6 +397,10 @@ export async function handler(
             return handleComposeFacilitatorSupported();
         }
 
+        if (method === "GET" && path === "/api/x402/facilitator/chains") {
+            return handleComposeFacilitatorChains();
+        }
+
         if (method === "POST" && path === "/api/x402/facilitator/verify") {
             return handleComposeFacilitatorVerify(event);
         }
@@ -427,6 +438,12 @@ export async function handler(
         // POST /api/keys/settle - Settle payment using Compose Key
         if (method === "POST" && path === "/api/keys/settle") {
             return handleSettleKeyPayment(event);
+        }
+
+        // GET /api/keys/:keyId - Inspect one Compose Key. Requires Authorization
+        // header containing the very key being inspected (JWT-possession proof).
+        if (method === "GET" && /^\/api\/keys\/[^/]+$/.test(path) && path !== "/api/keys/settle") {
+            return handleGetKeyDetails(event);
         }
 
         // DELETE /api/keys/:keyId - Revoke a Compose Key
@@ -720,10 +737,21 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
     const budgetLocked = BigInt(liveBudget?.lockedWei ?? session.budgetLocked);
     const budgetRemaining = BigInt(liveBudget?.availableWei ?? session.budgetRemaining);
 
+    // NOTE: The Compose Key JWT (`session.token`) is deliberately NOT returned
+    // from this endpoint anymore. It is returned exactly once by POST /api/keys
+    // and the caller MUST persist it client-side (localStorage, keychain,
+    // secret-store). This endpoint now only returns session *metadata* so an
+    // integrator can query status, budget, and expiry at any time without
+    // re-vending the authoritative bearer token.
+    //
+    // Rationale: previous versions leaked live session JWTs to anyone who
+    // knew a funded wallet address. Dropping the token from the read-side
+    // closes that leak cleanly without breaking the signless-only UX — the
+    // integrator keeps the token in their own storage exactly like any API
+    // key issued by Stripe, OpenAI, etc.
     const response: Record<string, any> = {
         hasSession: true,
         keyId: session.keyId,
-        token: session.token,
         budgetLimit: budgetLimit.toString(),
         budgetUsed: budgetUsed.toString(),
         budgetLocked: budgetLocked.toString(),
@@ -991,8 +1019,51 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             body: JSON.stringify({ error: "expiresAt must be in the future" }),
         };
     }
-
     const userAddress = requireUserAddressHeader(event);
+
+    if (purpose === "session" || purpose === "api") {
+        try {
+            const readiness = await getSessionFundingReadiness({
+                userAddress,
+                chainId,
+                requiredBudgetWei: budgetLimit,
+            });
+
+            if (!readiness.ready) {
+                const budgetLabel = purpose === "session" ? "session budget" : "Compose key budget";
+                const actionLabel = purpose === "session" ? "session creation" : "key creation";
+                return {
+                    statusCode: 402,
+                    headers: corsHeaders,
+                    body: JSON.stringify({
+                        error: readiness.reason === "insufficient_balance"
+                            ? `Insufficient USDC balance for requested ${budgetLabel}`
+                            : `Insufficient USDC allowance for requested ${budgetLabel}`,
+                        hint: readiness.reason === "insufficient_balance"
+                            ? `Fund the tied wallet/smart account with at least the selected ${budgetLabel}, then retry ${actionLabel}.`
+                            : `Approve Compose.Market to spend at least the selected ${budgetLabel}, then retry ${actionLabel}.`,
+                        code: readiness.reason,
+                        details: {
+                            requiredWei: readiness.requiredWei,
+                            balanceWei: readiness.balanceWei,
+                            allowanceWei: readiness.allowanceWei,
+                            spender: readiness.spender,
+                        },
+                    }),
+                };
+            }
+        } catch (error) {
+            return {
+                statusCode: 503,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    error: error instanceof Error
+                        ? error.message
+                        : "Failed to verify Compose key funding readiness",
+                }),
+            };
+        }
+    }
 
     const result = await createComposeKey(userAddress, {
         budgetLimit,
@@ -1069,6 +1140,93 @@ async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGateway
     };
 }
 
+async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const keyId = event.rawPath.replace("/api/keys/", "");
+
+    const authHeader = event.headers["authorization"] || event.headers["Authorization"];
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    if (!composeKeyToken) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: {
+                    code: "authentication_required",
+                    message: "Authorization: Bearer compose-<jwt> of a key belonging to the same wallet is required",
+                },
+            }),
+        };
+    }
+
+    const validation = await validateComposeKey(composeKeyToken, 0);
+    if (!validation.valid || !validation.payload) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: {
+                    code: "authentication_failed",
+                    message: validation.error || "Invalid Compose key",
+                },
+            }),
+        };
+    }
+
+    // Accept either (a) the target key's own JWT, or (b) any live JWT whose
+    // `sub` matches the target key's owner. The second path makes the
+    // "manage my keys" UX in web/ and mesh work: the user's active session
+    // token is used to inspect/revoke their OTHER keys (e.g. API keys)
+    // without having to surface every key's token to the client.
+    const record = validation.payload.keyId === keyId
+        ? validation.record ?? (await getKeyRecord(keyId))
+        : await getKeyRecord(keyId);
+
+    if (!record) {
+        return {
+            statusCode: 404,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: { code: "key_not_found", message: "Key not found" },
+            }),
+        };
+    }
+
+    if (record.userAddress.toLowerCase() !== validation.payload.sub.toLowerCase()) {
+        return {
+            statusCode: 403,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: {
+                    code: "forbidden",
+                    message: "Authorization token does not belong to the owner of this key",
+                },
+            }),
+        };
+    }
+
+    return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+            keyId: record.keyId,
+            purpose: record.purpose,
+            budgetLimit: record.budgetLimit,
+            budgetUsed: record.budgetUsed,
+            budgetReserved: record.budgetReserved ?? 0,
+            budgetRemaining: Math.max(
+                0,
+                record.budgetLimit - record.budgetUsed - (record.budgetReserved ?? 0),
+            ),
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            revokedAt: record.revokedAt,
+            lastUsedAt: record.lastUsedAt,
+            name: record.name,
+            chainId: record.chainId,
+        }),
+    };
+}
+
 async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const authHeader = event.headers["authorization"];
     const composeKeyToken = extractComposeKeyFromHeader(authHeader);
@@ -1130,14 +1288,83 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
 
 async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const keyId = event.rawPath.replace("/api/keys/", "");
-    const userAddress = requireUserAddressHeader(event);
-    const success = await revokeKey(keyId, userAddress);
+
+    // Identity cross-check: revocation requires proof of possession of a
+    // Compose Key belonging to the same wallet. This covers both
+    //   (a) revoke-self: the target key's own JWT, and
+    //   (b) revoke-other: an active session JWT revoking an API key
+    //       (or vice versa) that belongs to the same wallet.
+    // The unsigned `x-session-user-address` header is never a trust input;
+    // the JWT's signed `sub` is.
+    const authHeader = event.headers["authorization"] || event.headers["Authorization"];
+    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    if (!composeKeyToken) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: {
+                    code: "authentication_required",
+                    message: "Authorization: Bearer compose-<jwt> of a key belonging to the same wallet is required",
+                },
+            }),
+        };
+    }
+
+    const validation = await validateComposeKey(composeKeyToken, 0);
+    if (!validation.valid || !validation.payload) {
+        return {
+            statusCode: 401,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: {
+                    code: "authentication_failed",
+                    message: validation.error || "Invalid Compose key",
+                },
+            }),
+        };
+    }
+
+    const callerAddress = validation.payload.sub.toLowerCase();
+    const targetRecord = validation.payload.keyId === keyId
+        ? validation.record ?? (await getKeyRecord(keyId))
+        : await getKeyRecord(keyId);
+
+    if (!targetRecord) {
+        return {
+            statusCode: 404,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: { code: "key_not_found", message: "Key not found" },
+            }),
+        };
+    }
+
+    if (targetRecord.userAddress.toLowerCase() !== callerAddress) {
+        return {
+            statusCode: 403,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: {
+                    code: "forbidden",
+                    message: "Authorization token does not belong to the owner of this key",
+                },
+            }),
+        };
+    }
+
+    const success = await revokeKey(keyId, callerAddress);
 
     if (!success) {
         return {
             statusCode: 404,
             headers: corsHeaders,
-            body: JSON.stringify({ error: "Key not found or not authorized" }),
+            body: JSON.stringify({
+                error: {
+                    code: "key_not_found",
+                    message: "Key not found or already revoked",
+                },
+            }),
         };
     }
 
@@ -1157,6 +1384,34 @@ async function handleComposeFacilitatorSupported(): Promise<APIGatewayProxyResul
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify(getComposeFacilitatorSupported()),
+    };
+}
+
+async function handleComposeFacilitatorChains(): Promise<APIGatewayProxyResultV2> {
+    // Enumerates the chains the facilitator is currently configured for,
+    // including USDC contract + explorer + CAIP-2 network id, so SDK consumers
+    // don't have to ship a duplicate chain table that can drift out of sync.
+    const base = getComposeFacilitatorChainMetadata();
+    const enriched = base.map((entry) => {
+        const cfg = CHAIN_CONFIG[entry.chainId as ChainId];
+        const usdcAddress = USDC_ADDRESSES[entry.chainId as ChainId];
+        return {
+            chainId: entry.chainId,
+            name: entry.name,
+            network: entry.network,
+            shortName: cfg?.shortName,
+            isTestnet: cfg?.isTestnet ?? false,
+            explorer: cfg?.explorer,
+            usdcAddress,
+            schemes: ["exact", "upto"] as const,
+            asset: "USDC",
+            decimals: 6,
+        };
+    });
+    return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({ chains: enriched, defaultChainId: getActiveChainId() }),
     };
 }
 

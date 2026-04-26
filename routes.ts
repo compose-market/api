@@ -21,6 +21,14 @@ import {
 } from "./x402/keys/middleware.js";
 import { getKeyReservedBudget } from "./x402/keys/storage.js";
 import { getActiveSessionStatus } from "./x402/keys/index.js";
+import {
+  prepareInferencePayment,
+  settlePreparedInferencePayment,
+  type InferenceSettlementReceipt,
+  type PreparedInferencePayment,
+} from "./x402/index.js";
+import { type ComposeReceipt } from "./http/request-context.js";
+import { toComposeReceiptStreamEvent } from "./inference/core.js";
 
 interface PublicRouteEvent {
   rawPath: string;
@@ -128,12 +136,20 @@ const FRAMEWORKS = [
   },
 ] as const;
 
-type PaymentPreparation = {
-  paymentIntentId: string;
-  maxAmountWei: string;
-  headers: Record<string, string>;
-  runtimeHeaders: Record<string, string>;
-};
+type PaymentPreparation =
+  | {
+      mode: "compose-key";
+      paymentIntentId: string;
+      maxAmountWei: string;
+      headers: Record<string, string>;
+      runtimeHeaders: Record<string, string>;
+    }
+  | {
+      mode: "raw-x402";
+      prepared: PreparedInferencePayment;
+      headers: Record<string, string>;
+      runtimeHeaders: Record<string, string>;
+    };
 
 type RouteSettlement = { meter: MeteredSettlementInput };
 
@@ -445,85 +461,195 @@ async function prepareRoutePayment(
   action: string,
 ): Promise<PaymentPreparation | null> {
   const authorization = getHeader(req, "authorization");
-  if (!authorization) {
-    res.status(401).json({ error: "Compose key authorization is required" });
-    return null;
+
+  // Path 1 — caller provided a Compose Key. Use the existing session-budget
+  // reservation flow; the Compose Key bears the cap and metered amount is
+  // debited from the key's remaining budget.
+  if (authorization) {
+    const chainHeader = getHeader(req, "x-chain-id");
+    const chainId = chainHeader ? parseInt(chainHeader, 10) : Number.NaN;
+
+    let sessionContext: {
+      authorizationInput: { useBudgetCap: true } | { maxAmountWei: string };
+      userAddress: string;
+      sessionBudgetRemaining: string;
+    } | null = null;
+    try {
+      sessionContext = await resolveSessionBudgetReservation(authorization);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Compose key budget validation failed";
+      const status = /authorization|required|invalid compose key/i.test(message)
+        ? 401
+        : /budget exhausted/i.test(message)
+          ? 402
+          : 400;
+      res.status(status).json({ error: message });
+      return null;
+    }
+
+    const prepared = await authorizePaymentIntent({
+      authorization,
+      chainId,
+      service,
+      action,
+      resource: `https://${req.get("host")}${req.originalUrl}`,
+      method: req.method,
+      ...sessionContext.authorizationInput,
+      composeRunId: getHeader(req, "x-compose-run-id"),
+      idempotencyKey: getHeader(req, "x-idempotency-key"),
+    });
+
+    applyHeaders(res, prepared.headers);
+    if (!prepared.ok) {
+      res.status(prepared.status).json(prepared.body);
+      return null;
+    }
+
+    return {
+      mode: "compose-key",
+      paymentIntentId: prepared.body.paymentIntentId,
+      maxAmountWei: prepared.body.maxAmountWei,
+      headers: prepared.headers,
+      runtimeHeaders: buildRuntimeSessionHeaders({
+        userAddress: sessionContext.userAddress,
+        sessionBudgetRemaining: sessionContext.sessionBudgetRemaining,
+      }),
+    };
   }
 
-  const chainHeader = getHeader(req, "x-chain-id");
-  const chainId = chainHeader ? parseInt(chainHeader, 10) : Number.NaN;
-
-  let sessionContext: {
-    authorizationInput: { useBudgetCap: true } | { maxAmountWei: string };
-    userAddress: string;
-    sessionBudgetRemaining: string;
-  } | null = null;
+  // Path 2 — raw x402 v2 flow. The caller supplies PAYMENT-SIGNATURE and
+  // `x-x402-max-amount-wei` as the `upto` ceiling; settlement uses the
+  // metered amount computed from the SSE body. `prepareInferencePayment`
+  // already handles the `scheme: "upto"` dance, response-body verification,
+  // and facilitator settle — we pass `{ useBudgetCap: true }` as a sentinel
+  // so `resolveInferenceAuthorizationRequirement` falls through to its
+  // `scheme: "upto"` branch (which reads the `x-x402-max-amount-wei`
+  // header). The authorizationInput is ONLY used for requirement construction
+  // in this branch; there is no Compose Key budget to cap against.
+  //
+  // If no PAYMENT-SIGNATURE is present either, `prepareInferencePayment`
+  // emits the standard 402 PAYMENT-REQUIRED response + header; that's the
+  // correct x402 challenge for the caller to sign and retry.
   try {
-    sessionContext = await resolveSessionBudgetReservation(authorization);
+    const prepared = await prepareInferencePayment(req, res, { useBudgetCap: true });
+    if (!prepared) {
+      // 402 PAYMENT-REQUIRED (or 400/402 error) was already emitted by
+      // prepareInferencePayment.
+      return null;
+    }
+
+    return {
+      mode: "raw-x402",
+      prepared,
+      headers: {},
+      runtimeHeaders: buildRuntimeRawPaymentHeaders(req, prepared.maxAmountWei),
+    };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Compose key budget validation failed";
-    const status = /authorization|required|invalid compose key/i.test(message)
-      ? 401
-      : /budget exhausted/i.test(message)
-        ? 402
-        : 400;
-    res.status(status).json({ error: message });
+    const message = error instanceof Error ? error.message : "Payment preparation failed";
+    const statusCode = (error as { statusCode?: number })?.statusCode ?? 400;
+    res.status(statusCode).json({ error: message });
     return null;
   }
+}
 
-  const prepared = await authorizePaymentIntent({
-    authorization,
-    chainId,
-    service,
-    action,
-    resource: `https://${req.get("host")}${req.originalUrl}`,
-    method: req.method,
-    ...sessionContext.authorizationInput,
-    composeRunId: getHeader(req, "x-compose-run-id"),
-    idempotencyKey: getHeader(req, "x-idempotency-key"),
-  });
-
-  applyHeaders(res, prepared.headers);
-  if (!prepared.ok) {
-    res.status(prepared.status).json(prepared.body);
-    return null;
-  }
-
-  return {
-    paymentIntentId: prepared.body.paymentIntentId,
-    maxAmountWei: prepared.body.maxAmountWei,
-    headers: prepared.headers,
-    runtimeHeaders: buildRuntimeSessionHeaders({
-      userAddress: sessionContext.userAddress,
-      sessionBudgetRemaining: sessionContext.sessionBudgetRemaining,
-    }),
+/**
+ * Runtime forwarding headers for a raw-x402 request. Raw x402 requests have
+ * no Compose Key session context; forward the sender address (recovered from
+ * the payment payload by the facilitator) and the caller-supplied cap so the
+ * runtime can enforce its own upper bound.
+ */
+function buildRuntimeRawPaymentHeaders(req: Request, maxAmountWei: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "x-session-active": "false",
+    "x-session-budget-remaining": maxAmountWei,
   };
+  const userAddress = getHeader(req, "x-session-user-address");
+  if (userAddress) {
+    headers["x-session-user-address"] = userAddress.toLowerCase();
+  }
+  return headers;
 }
 
 async function abortPreparedPayment(prepared: PaymentPreparation, reason: string): Promise<void> {
-  await abortPaymentIntent({
-    paymentIntentId: prepared.paymentIntentId,
-    reason,
-  });
+  if (prepared.mode === "compose-key") {
+    await abortPaymentIntent({
+      paymentIntentId: prepared.paymentIntentId,
+      reason,
+    });
+    return;
+  }
+  await prepared.prepared.abort(reason);
 }
 
 async function settlePreparedPayment(
   prepared: PaymentPreparation,
   res: ExpressResponse,
   settlement: RouteSettlement,
-): Promise<void> {
-  const settled = await settlePaymentIntent({
-    paymentIntentId: prepared.paymentIntentId,
-    ...settlement,
-  });
+  chainId?: number,
+): Promise<ComposeReceipt | null> {
+  if (prepared.mode === "compose-key") {
+    const settled = await settlePaymentIntent({
+      paymentIntentId: prepared.paymentIntentId,
+      ...settlement,
+    });
 
-  applyHeaders(res, prepared.headers);
-  applyHeaders(res, settled.headers);
+    applyHeaders(res, prepared.headers);
+    applyHeaders(res, settled.headers);
 
-  if (!settled.ok) {
-    const error = settled.body as { error?: string };
-    throw new Error(typeof error.error === "string" ? error.error : "Payment settlement failed");
+    if (!settled.ok) {
+      const error = settled.body as { error?: string };
+      throw new Error(typeof error.error === "string" ? error.error : "Payment settlement failed");
+    }
+    return receiptFromSettledIntentBody(settled.body, chainId);
   }
+
+  // Raw x402 — settle via prepareInferencePayment's built-in settle harness.
+  // It handles the facilitator call, applies receipt headers, and surfaces
+  // settlement errors.
+  const receipt = await settlePreparedInferencePayment(prepared.prepared, res, settlement);
+  return receipt ? receiptToComposeReceipt(receipt, chainId) : null;
+}
+
+function receiptToComposeReceipt(
+  receipt: InferenceSettlementReceipt,
+  chainId?: number,
+): ComposeReceipt | null {
+  const resolvedChainId = receipt.chainId ?? chainId;
+  if (!resolvedChainId || !Number.isFinite(resolvedChainId)) {
+    return null;
+  }
+  return {
+    finalAmountWei: receipt.finalAmountWei,
+    network: `eip155:${resolvedChainId}` as `eip155:${number}`,
+    settledAt: receipt.settledAt,
+    ...(receipt.meterSubject ? { subject: receipt.meterSubject } : {}),
+    ...(receipt.lineItems ? { lineItems: receipt.lineItems } : {}),
+    ...(receipt.providerAmountWei ? { providerAmountWei: receipt.providerAmountWei } : {}),
+    ...(receipt.platformFeeWei ? { platformFeeWei: receipt.platformFeeWei } : {}),
+    ...(receipt.txHash ? { txHash: receipt.txHash } : {}),
+  };
+}
+
+function receiptFromSettledIntentBody(
+  body: { finalAmountWei?: string; txHash?: string; meterSubject?: string; lineItems?: Array<{ key: string; unit: string; quantity: number; unitPriceUsd: number; amountWei: string }>; providerAmountWei?: string; platformFeeWei?: string },
+  chainId?: number,
+): ComposeReceipt | null {
+  if (!body.finalAmountWei) {
+    return null;
+  }
+  if (!chainId || !Number.isFinite(chainId)) {
+    return null;
+  }
+  return {
+    finalAmountWei: body.finalAmountWei,
+    network: `eip155:${chainId}` as `eip155:${number}`,
+    settledAt: Date.now(),
+    ...(body.meterSubject ? { subject: body.meterSubject } : {}),
+    ...(body.lineItems ? { lineItems: body.lineItems } : {}),
+    ...(body.providerAmountWei ? { providerAmountWei: body.providerAmountWei } : {}),
+    ...(body.platformFeeWei ? { platformFeeWei: body.platformFeeWei } : {}),
+    ...(body.txHash ? { txHash: body.txHash } : {}),
+  };
 }
 
 async function resolveSessionBudgetReservation(authorization: string): Promise<{
@@ -785,6 +911,8 @@ function payableStreamRoute(config: {
       let sawExplicitErrorEvent = false;
       let buffer = "";
       const decoder = new TextDecoder();
+      const chainIdHeader = getHeader(req, "x-chain-id");
+      const chainId = chainIdHeader ? Number.parseInt(chainIdHeader, 10) : Number.NaN;
 
       try {
         while (!ended) {
@@ -843,7 +971,31 @@ function payableStreamRoute(config: {
           return;
         }
 
-        await settlePreparedPayment(prepared, res, settlement);
+        const receipt = await settlePreparedPayment(
+          prepared,
+          res,
+          settlement,
+          Number.isFinite(chainId) ? chainId : undefined,
+        );
+
+        // Streaming receipts must be emitted in-band. The underlying
+        // Node response flushes headers on the first `res.write`, so any
+        // settlement headers set after the stream starts are not visible to
+        // clients. The gateway solves this by writing `event: compose.receipt`
+        // before ending the stream; the generic runtime paywall must do the
+        // same for agent/workflow SSE routes.
+        if (receipt) {
+          res.write(toComposeReceiptStreamEvent({
+            finalAmountWei: receipt.finalAmountWei,
+            providerAmountWei: receipt.providerAmountWei,
+            platformFeeWei: receipt.platformFeeWei,
+            meterSubject: receipt.subject,
+            lineItems: receipt.lineItems,
+            txHash: receipt.txHash,
+            network: receipt.network,
+            settledAt: receipt.settledAt,
+          }));
+        }
         res.end();
       } catch (error) {
         await abortPreparedPayment(prepared, error instanceof Error ? error.message : "runtime_stream_failed");

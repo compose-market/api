@@ -126,6 +126,65 @@ function buildAuthConfigName(toolkitSlug: string): string {
     return `${brandName} ${toolkitSlug}`;
 }
 
+function normalizeComposioAddress(value: string, label: string): string {
+    const normalized = value.trim().toLowerCase();
+    if (!/^0x[a-f0-9]{40}$/u.test(normalized)) {
+        throw new Error(`[Composio] ${label} must be a valid 0x-prefixed EVM address`);
+    }
+    return normalized;
+}
+
+export function buildAgentScopedComposioUserId(ownerAddress: string, agentAddress: string): string {
+    const normalizedOwner = normalizeComposioAddress(ownerAddress, "ownerAddress");
+    const normalizedAgent = normalizeComposioAddress(agentAddress, "agentAddress");
+    return `mesh:${normalizedOwner}:agent:${normalizedAgent}`;
+}
+
+export interface ToolRouterSessionConfig {
+    manage_connections: {
+        enable: true;
+        enable_connection_removal: true;
+        enable_wait_for_connections: true;
+        callback_url: string;
+    };
+    multi_account: {
+        enable: true;
+        max_accounts_per_toolkit: 10;
+        require_explicit_selection: true;
+    };
+    workbench: {
+        enable: true;
+        enable_proxy_execution: true;
+        auto_offload_threshold: 20000;
+    };
+}
+
+export function buildToolRouterSessionConfig(callbackUrl: string): ToolRouterSessionConfig {
+    const normalizedCallbackUrl = callbackUrl.trim();
+    if (!normalizedCallbackUrl) {
+        throw new Error("[Composio] callbackUrl is required");
+    }
+
+    return {
+        manage_connections: {
+            enable: true,
+            enable_connection_removal: true,
+            enable_wait_for_connections: true,
+            callback_url: normalizedCallbackUrl,
+        },
+        multi_account: {
+            enable: true,
+            max_accounts_per_toolkit: 10,
+            require_explicit_selection: true,
+        },
+        workbench: {
+            enable: true,
+            enable_proxy_execution: true,
+            auto_offload_threshold: 20_000,
+        },
+    };
+}
+
 /**
  * Get or create a Composio-managed auth config for a toolkit.
  * Auth config IDs are cached in Redis (permanent) to survive Api cold starts.
