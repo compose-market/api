@@ -61,6 +61,8 @@ const ALLOWED_HEADERS = [
     "x-idempotency-key",
     "X-Compose-Run-Id",
     "x-compose-run-id",
+    "X-Compose-SDK",
+    "x-compose-sdk",
     "X-Internal-Secret",
     "x-internal-secret",
     "X-Workflow-Internal",
