@@ -24,7 +24,7 @@ import {
     redisExpire,
     redisGet,
     redisHGetAll,
-    redisHIncrBy,
+    redisHIncrByAmount,
     redisHSet,
     redisSetNXEX,
 } from "./keys/redis.js";
@@ -225,14 +225,6 @@ function parsePositiveIntegerString(value: string, fieldName: string): bigint {
     }
 
     return parsed;
-}
-
-function toRedisInteger(value: bigint, fieldName: string): number {
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error(`${fieldName} exceeds Redis safe integer range`);
-    }
-
-    return Number(value);
 }
 
 function toOptionalString(value: string): string {
@@ -651,7 +643,7 @@ export async function authorizePaymentIntent(
                 };
             }
 
-            await redisHIncrBy(recordKey, "budgetReserved", toRedisInteger(reservedAmount, "maxAmountWei"));
+            await redisHIncrByAmount(recordKey, "budgetReserved", reservedAmount);
 
             const now = Date.now();
             await redisHSet(paymentIntentKey(paymentIntentId), {
@@ -829,10 +821,10 @@ export async function settlePaymentIntent(
                     }
                 } else {
                     await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                        await redisHIncrBy(
+                        await redisHIncrByAmount(
                             composeKeyRecordKey(intent.keyId),
                             "budgetReserved",
-                            -toRedisInteger(reservedAmount, "maxAmountWei"),
+                            -reservedAmount,
                         );
                     });
                 }
@@ -864,8 +856,8 @@ export async function settlePaymentIntent(
             } else {
                 await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
                     const recordKey = composeKeyRecordKey(intent.keyId);
-                    await redisHIncrBy(recordKey, "budgetReserved", -toRedisInteger(reservedAmount, "maxAmountWei"));
-                    await redisHIncrBy(recordKey, "budgetUsed", toRedisInteger(finalAmount, "finalAmountWei"));
+                    await redisHIncrByAmount(recordKey, "budgetReserved", -reservedAmount);
+                    await redisHIncrByAmount(recordKey, "budgetUsed", finalAmount);
                     await redisHSet(recordKey, "lastUsedAt", String(Date.now()));
                 });
             }
@@ -959,10 +951,10 @@ export async function abortPaymentIntent(
                 }
             } else {
                 await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                    await redisHIncrBy(
+                    await redisHIncrByAmount(
                         composeKeyRecordKey(intent.keyId),
                         "budgetReserved",
-                        -toRedisInteger(reservedAmount, "maxAmountWei"),
+                        -reservedAmount,
                     );
                 });
             }

@@ -7,7 +7,6 @@ import { resolveModel } from "../inference/models-registry.js";
 import {
   buildAuthoritativeBilling,
   buildRequestBilling,
-  pricingHasTokenSections,
   resolveBillingPrice,
 } from "../inference/telemetry.js";
 import type { ModelCard, ModelProvider } from "../inference/types.js";
@@ -198,11 +197,6 @@ function requireResolvedCard(resolved: ResolvedBillingModel, phase: "authorizati
   return resolved.card;
 }
 
-function isMissingMeterQuantityError(error: unknown): boolean {
-  return error instanceof Error
-    && /authoritative billable quantity is required|token pricing cannot be authorized from request metrics/i.test(error.message);
-}
-
 function requireUsageRecords(usageRecords: UsageRecord[]): UsageRecord[] {
   if (!Array.isArray(usageRecords) || usageRecords.length === 0) {
     throw new Error("usageRecords must contain at least one authoritative usage record");
@@ -258,21 +252,14 @@ export function buildResolvedAuthorizationInput(args: {
   request: UnifiedRequest;
   resolved: ResolvedBillingModel;
 }): ResolvedAuthorizationInput {
-  const card = requireResolvedCard(args.resolved, "authorization");
-  if (pricingHasTokenSections(card.pricing!)) {
-    return { useBudgetCap: true };
+  requireResolvedCard(args.resolved, "authorization");
+  if (args.request.modality === "audio") {
+    return {
+      meter: buildResolvedAuthorizationMeter(args).meter,
+    };
   }
 
-  try {
-    return {
-      meter: buildResolvedAuthorizationMeter(args).meter as MeteredAuthorizationInput,
-    };
-  } catch (error) {
-    if (isMissingMeterQuantityError(error)) {
-      return { useBudgetCap: true };
-    }
-    throw error;
-  }
+  return { useBudgetCap: true };
 }
 
 export function buildResolvedSettlementMeter(args: SettlementMeterArgs): MeteredModelQuote {

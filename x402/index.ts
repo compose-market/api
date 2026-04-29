@@ -509,6 +509,31 @@ export function getRawInferenceMaxAmount(req: Request): string | null {
     return parsePositiveIntegerHeader(bodyValue);
 }
 
+/**
+ * Default per-request envelope (atomic units) when a client dials a usage-priced
+ * x402 inference endpoint without sending an explicit `x-x402-max-amount-wei`.
+ *
+ * x402 v2 `upto` semantics: this is the MAX the client authorizes via Permit2
+ * for one request. Authoritative metering inside the server determines the
+ * ACTUAL settled amount (which is `<=` this envelope).
+ *
+ * The client's wallet allowance to the Permit2 facilitator is the real safety
+ * cap; this default just lets `accepts.amount` be a finite number in the 402
+ * challenge so the negotiation handshake can fire without an upfront client
+ * quote. Tune via `INFERENCE_DEFAULT_UPTO_ENVELOPE_WEI`.
+ *
+ * Default: 1 USDC (10^6 atomic units on USDC's 6-decimal layout). Generous for
+ * a single chat turn including a multi-tool loop, while still bounding the
+ * blast radius of a misbehaving server.
+ */
+function getDefaultUptoEnvelopeWei(): string {
+    const raw = process.env.INFERENCE_DEFAULT_UPTO_ENVELOPE_WEI?.trim();
+    if (raw && /^\d+$/u.test(raw) && BigInt(raw) > 0n) {
+        return raw;
+    }
+    return "1000000";
+}
+
 function resolveInferenceAuthorizationRequirement(
     req: Request,
     authorizationInput: InferenceAuthorizationInput,
@@ -527,17 +552,18 @@ function resolveInferenceAuthorizationRequirement(
         };
     }
 
-    const maxAmountWei = getRawInferenceMaxAmount(req);
-    if (!maxAmountWei) {
-        throw Object.assign(
-            new Error("x-x402-max-amount-wei is required for usage-priced x402 inference requests"),
-            { statusCode: 400 },
-        );
-    }
-
+    // Pure pay-per-usage path. The client may dial blind: no Compose Key,
+    // no `x-x402-max-amount-wei`, no payment-intent. The x402 v2 spec
+    // requires the server to advertise a finite `accepts.amount` in the 402
+    // challenge so the client can sign Permit2 and retry. We default to a
+    // conservative envelope; authoritative metering during inference
+    // determines the actual settled amount, which is always `<=` the
+    // envelope. This is the standard `upto` shape — never 400 for a missing
+    // upfront cap.
+    const explicitMaxAmountWei = getRawInferenceMaxAmount(req);
     return {
         scheme: "upto",
-        maxAmountWei,
+        maxAmountWei: explicitMaxAmountWei || getDefaultUptoEnvelopeWei(),
     };
 }
 
@@ -657,6 +683,7 @@ async function prepareRawInferenceX402Payment(
                 success: true,
                 txHash: settled.transaction || undefined,
                 finalAmountWei,
+                chainId: paymentChainId,
             };
         },
         abort: async () => undefined,

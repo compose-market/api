@@ -217,6 +217,39 @@ export async function redisHIncrBy(key: string, field: string, increment: number
     return redis.hIncrBy(key, field, increment);
 }
 
+function normalizeRedisInteger(value: string | number | bigint): string {
+    if (typeof value === "bigint") {
+        return value.toString();
+    }
+    if (typeof value === "number") {
+        if (!Number.isSafeInteger(value)) {
+            throw new Error("Redis integer increment must be a safe integer when passed as a number");
+        }
+        return String(value);
+    }
+    const trimmed = value.trim();
+    if (!/^-?\d+$/.test(trimmed)) {
+        throw new Error("Redis integer increment must be a base-10 integer");
+    }
+    return trimmed.replace(/^-?0+(?=\d)/, (match) => match.startsWith("-") ? "-" : "");
+}
+
+/**
+ * Increment a hash field by a decimal integer string/BigInt.
+ * Use this for USDC atomic amounts so financial paths do not coerce through
+ * JavaScript number before Redis performs the atomic HINCRBY.
+ */
+export async function redisHIncrByAmount(
+    key: string,
+    field: string,
+    increment: string | number | bigint,
+): Promise<string> {
+    const redis = await getRedisClient();
+    const result = await (redis as unknown as { sendCommand(command: string[]): Promise<unknown> })
+        .sendCommand(["HINCRBY", key, field, normalizeRedisInteger(increment)]);
+    return String(result);
+}
+
 /**
  * Set key expiration
  */

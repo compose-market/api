@@ -19,7 +19,7 @@ import {
     redisSet,
     redisHGetAll,
     redisHSet,
-    redisHIncrBy,
+    redisHIncrByAmount,
     redisExpire,
     redisSAdd,
     redisSMembers,
@@ -375,13 +375,13 @@ export async function lockBudget(
 
     // Atomically increment locked amount
     // HINCRBY is atomic in Redis
-    const newLockedStr = await redisHIncrBy(key, "lockedBudgetWei", Number(requestAmount));
+    const newLockedStr = await redisHIncrByAmount(key, "lockedBudgetWei", requestAmount);
     const newLocked = BigInt(newLockedStr);
 
     // Double-check we didn't over-allocate (race condition protection)
     if (newLocked + used > total || newLocked > allowanceWei) {
         // Rollback the increment
-        await redisHIncrBy(key, "lockedBudgetWei", -Number(requestAmount));
+        await redisHIncrByAmount(key, "lockedBudgetWei", -requestAmount);
         return {
             success: false,
             availableWei: availableWei.toString(),
@@ -437,7 +437,7 @@ export async function unlockBudget(
     const key = getSessionKey(userAddress, chainId);
 
     // Atomically decrement locked amount
-    await redisHIncrBy(key, "lockedBudgetWei", -Number(BigInt(amountWei)));
+    await redisHIncrByAmount(key, "lockedBudgetWei", -BigInt(amountWei));
 
     // Mark intent as failed if provided
     if (intentId) {
@@ -478,11 +478,11 @@ export async function markSettled(
     amountWei: string,
 ): Promise<void> {
     const key = getSessionKey(userAddress, chainId);
-    const amount = Number(BigInt(amountWei));
+    const amount = BigInt(amountWei);
 
     // Atomically: decrement locked, increment used
-    await redisHIncrBy(key, "lockedBudgetWei", -amount);
-    await redisHIncrBy(key, "usedBudgetWei", amount);
+    await redisHIncrByAmount(key, "lockedBudgetWei", -amount);
+    await redisHIncrByAmount(key, "usedBudgetWei", amount);
 
     console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userAddress} chain ${chainId}`);
 }
