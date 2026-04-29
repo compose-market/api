@@ -34,6 +34,7 @@ export interface ResolvedModelParams {
 
 // Cache for loaded param files
 let videoParamsCache: Record<string, ModelParams> | null = null;
+let videoParamAliasesCache: Record<string, string | Record<string, string>> | null = null;
 let imageParamsCache: Record<string, ModelParams> | null = null;
 let dataBasePath: string | null = null;
 
@@ -49,8 +50,8 @@ function getDataBasePath(): string {
     const candidatePaths: string[] = [
         "/var/task/dist/data",
         "/var/task/data",
-        path.join(process.cwd(), "dist", "data"),
         path.join(process.cwd(), "inference", "data", "params"),
+        path.join(process.cwd(), "dist", "data"),
         path.join(process.cwd(), "data", "params"),
     ];
 
@@ -105,6 +106,7 @@ function getVideoParams(): Record<string, ModelParams> {
 
         const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
         const params: Record<string, ModelParams> = data.parameters || {};
+        videoParamAliasesCache = data.aliases || {};
         videoParamsCache = params;
         console.log(`[paramsHandler] Loaded ${Object.keys(params).length} video model params`);
         return params;
@@ -112,6 +114,12 @@ function getVideoParams(): Record<string, ModelParams> {
         console.error("[paramsHandler] Failed to load video.json:", err);
         return {};
     }
+}
+
+function getVideoParamAliases(): Record<string, string | Record<string, string>> {
+    if (videoParamAliasesCache !== null) return videoParamAliasesCache;
+    getVideoParams();
+    return videoParamAliasesCache || {};
 }
 
 /**
@@ -308,6 +316,128 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
 }
 
+function requestBodyHasImageInput(requestBody?: Record<string, unknown>): boolean {
+    if (!requestBody) {
+        return false;
+    }
+
+    if (typeof requestBody.image_url === "string" || typeof requestBody.image === "string") {
+        return true;
+    }
+
+    const attachmentCandidates = [
+        requestBody.attachment,
+        ...(Array.isArray(requestBody.attachments) ? requestBody.attachments : []),
+    ];
+    if (attachmentCandidates.some((attachment) => {
+        const record = asRecord(attachment);
+        if (!record) {
+            return false;
+        }
+        const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+        const mimeType = typeof record.mimeType === "string"
+            ? record.mimeType.toLowerCase()
+            : typeof record.mime_type === "string"
+                ? record.mime_type.toLowerCase()
+                : typeof record.contentType === "string"
+                    ? record.contentType.toLowerCase()
+                    : typeof record.content_type === "string"
+                        ? record.content_type.toLowerCase()
+                        : "";
+        return type.includes("image")
+            || mimeType.startsWith("image/")
+            || typeof record.image_url === "string";
+    })) {
+        return true;
+    }
+
+    const customParams = asRecord(requestBody.custom_params);
+    if (typeof customParams?.image_url === "string" || typeof customParams?.image === "string") {
+        return true;
+    }
+
+    const input = requestBody.input;
+    const inputs = Array.isArray(input) ? input : [];
+    for (const item of inputs) {
+        const record = asRecord(item);
+        if (!record) {
+            continue;
+        }
+        if (record.type === "input_image" && typeof record.image_url === "string") {
+            return true;
+        }
+        const content = Array.isArray(record.content) ? record.content : [];
+        if (content.some((part) => {
+            const contentPart = asRecord(part);
+            return contentPart?.type === "image_url" || contentPart?.type === "input_image";
+        })) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function resolveVideoParamAlias(
+    modelId: string,
+    requestBody?: Record<string, unknown>,
+): string | null {
+    const alias = getVideoParamAliases()[modelId];
+    if (typeof alias === "string" && alias.length > 0) {
+        return alias;
+    }
+    const aliasRecord = asRecord(alias);
+    if (!aliasRecord) {
+        return null;
+    }
+
+    const operation = requestBodyHasImageInput(requestBody) ? "image-to-video" : "text-to-video";
+    const target = aliasRecord[operation];
+    return typeof target === "string" && target.length > 0 ? target : null;
+}
+
+function coerceParamValue(definition: ParamDefinition, value: unknown): unknown {
+    if (value === undefined || value === null) {
+        return undefined;
+    }
+
+    if (definition.type === "integer") {
+        if (typeof value === "number" && Number.isInteger(value)) {
+            return value;
+        }
+        if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+            return Number.parseInt(value.trim(), 10);
+        }
+        return value;
+    }
+
+    if (definition.type === "number") {
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return value;
+        }
+        if (typeof value === "string" && value.trim().length > 0) {
+            const parsed = Number(value.trim());
+            if (Number.isFinite(parsed)) {
+                return parsed;
+            }
+        }
+        return value;
+    }
+
+    if (definition.type === "boolean") {
+        if (typeof value === "boolean") {
+            return value;
+        }
+        if (typeof value === "string") {
+            const normalized = value.trim().toLowerCase();
+            if (normalized === "true") return true;
+            if (normalized === "false") return false;
+        }
+    }
+
+    return value;
+}
+
 function extractProvidedParamValues(
     params: Record<string, ParamDefinition>,
     requestBody?: Record<string, unknown>,
@@ -320,13 +450,14 @@ function extractProvidedParamValues(
     const provided: Record<string, unknown> = {};
 
     for (const key of Object.keys(params)) {
+        const definition = params[key];
         if (customParams && customParams[key] !== undefined) {
-            provided[key] = customParams[key];
+            provided[key] = coerceParamValue(definition, customParams[key]);
             continue;
         }
 
         if (requestBody[key] !== undefined) {
-            provided[key] = requestBody[key];
+            provided[key] = coerceParamValue(definition, requestBody[key]);
         }
     }
 
@@ -336,6 +467,7 @@ function extractProvidedParamValues(
 export function resolveModelParams(
     modelId: string,
     preferredType?: "video" | "image",
+    requestBody?: Record<string, unknown>,
 ): ResolvedModelParams | null {
     const decodedModelId = decodeURIComponent(modelId);
     const lookups: Array<{
@@ -357,7 +489,8 @@ export function resolveModelParams(
             ];
 
     for (const lookup of lookups) {
-        const match = findMatchingParams(decodedModelId, lookup.map);
+        const aliasTarget = lookup.type === "video" ? resolveVideoParamAlias(decodedModelId, requestBody) : null;
+        const match = findMatchingParams(aliasTarget || decodedModelId, lookup.map);
         if (!match) {
             continue;
         }
@@ -380,7 +513,7 @@ export function resolveOptionalModelParamValues(
     preferredType?: "video" | "image",
     requestBody?: Record<string, unknown>,
 ): ResolvedModelParams & { values: Record<string, unknown> } | null {
-    const resolved = resolveModelParams(modelId, preferredType);
+    const resolved = resolveModelParams(modelId, preferredType, requestBody);
     if (!resolved) {
         return null;
     }
@@ -392,6 +525,22 @@ export function resolveOptionalModelParamValues(
             ...resolved.defaults,
             ...provided,
         },
+    };
+}
+
+export function resolveProvidedOptionalModelParamValues(
+    modelId: string,
+    preferredType?: "video" | "image",
+    requestBody?: Record<string, unknown>,
+): ResolvedModelParams & { values: Record<string, unknown> } | null {
+    const resolved = resolveModelParams(modelId, preferredType, requestBody);
+    if (!resolved) {
+        return null;
+    }
+
+    return {
+        ...resolved,
+        values: extractProvidedParamValues(resolved.params, requestBody),
     };
 }
 

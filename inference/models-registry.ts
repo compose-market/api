@@ -9,6 +9,11 @@
 
 import { PROVIDER_PRIORITY, type ModelCard, type ModelProvider, type CompiledModelsData, type ModelPricing } from "./types.js";
 import { normalizeCompiledPricing } from "./telemetry.js";
+import {
+    modelMatchesModalityOperation,
+    type CanonicalModality,
+    type CanonicalOperation,
+} from "./modality/index.js";
 
 // Re-export types for external use
 export type { ModelCard, ModelProvider, CompiledModelsData, ModelPricing };
@@ -59,7 +64,7 @@ const aimlProvider = createOpenAICompatible({
 const cloudflareProvider = createOpenAICompatible({
     name: "cloudflare",
     apiKey: process.env.CF_API_TOKEN!,
-    baseURL: `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/ai/run/{model_id}`,
+    baseURL: `https://api.cloudflare.com/client/v4/accounts/${process.env.CF_ACCOUNT_ID}/ai/v1`,
 });
 
 const fireworksProvider = createOpenAICompatible({
@@ -578,7 +583,8 @@ export type ModelInfo = ModelCard;
 
 export interface ModelSearchInput {
     q?: string;
-    modality?: "text" | "image" | "audio" | "video" | "embedding";
+    modality?: CanonicalModality;
+    operation?: CanonicalOperation;
     provider?: ModelProvider;
     /** Max price in USD per 1M input tokens, inclusive. Only applies to token-priced models. */
     priceMaxPerMTok?: number;
@@ -608,6 +614,7 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
     const registry = getExtendedModels();
     const q = (input.q || "").trim().toLowerCase();
     const modality = input.modality;
+    const operation = input.operation;
     const provider = input.provider;
     const contextMin = Number.isFinite(input.contextWindowMin) && input.contextWindowMin! >= 0
         ? input.contextWindowMin!
@@ -623,27 +630,11 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
 
     const filtered: ModelCard[] = [];
     for (const model of registry.models) {
-        if (modality) {
-            if (modality === "text" && model.type !== "chat" && model.type !== "responses" && model.type !== "completion") continue;
-            if (modality === "image" && model.type !== "image") continue;
-            if (modality === "audio" && model.type !== "audio") continue;
-            if (modality === "video" && model.type !== "video") continue;
-            if (modality === "embedding" && model.type !== "embedding") continue;
-        }
-
         if (provider && model.provider !== provider) continue;
 
         if (contextMin > 0) {
             const ctx = typeof model.contextWindow === "number" ? model.contextWindow : 0;
             if (ctx < contextMin) continue;
-        }
-
-        if (streaming === true) {
-            // Models that explicitly lack streaming capability should be filtered
-            // out. Absence of the capability list is treated as "unknown" (kept)
-            // because most text models stream and the compiled set omits the
-            // capability array for ubiquitous features.
-            if (Array.isArray(model.capabilities) && !model.capabilities.includes("streaming")) continue;
         }
 
         if (priceMax !== Number.POSITIVE_INFINITY) {
@@ -654,6 +645,16 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
         if (q) {
             const haystack = `${model.modelId} ${model.name || ""} ${model.description || ""} ${model.provider}`.toLowerCase();
             if (!haystack.includes(q)) continue;
+        }
+
+        if (modality || operation || streaming === true) {
+            if (!modelMatchesModalityOperation(model, {
+                modality,
+                operation,
+                streamable: streaming === true,
+            })) {
+                continue;
+            }
         }
 
         filtered.push(model);

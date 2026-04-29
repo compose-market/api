@@ -8,8 +8,17 @@ import {
   resolveModel,
   searchModels,
   type ModelSearchInput,
+  type ResolvedModel,
 } from "./models-registry.js";
 import type { ModelCard, ModelProvider } from "./types.js";
+import {
+  getModelCapabilities,
+  getModalityCatalog,
+  getModalityOperations,
+  isCanonicalModality,
+  isCanonicalOperation,
+  isStreamableModality,
+} from "./modality/index.js";
 import {
   buildResolvedAuthorizationInput,
   buildSettlementMeterFromOutput,
@@ -17,6 +26,7 @@ import {
 import {
   prepareInferencePayment,
   settlePreparedInferencePayment,
+  type PreparedInferencePayment,
   type InferenceAuthorizationInput,
   type InferenceSettlementReceipt,
 } from "../x402/index.js";
@@ -35,6 +45,7 @@ import {
   normalizeChatRequest,
   normalizeEmbeddingsRequest,
   normalizeResponsesRequest,
+  toOpenAIChatFinishReason,
   toChatCompletionsResponse,
   toChatStreamEvent,
   toChatUsageStreamEvent,
@@ -220,6 +231,8 @@ export interface EmbeddingResult {
 export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
+  attachments?: unknown[];
+  attachment?: unknown;
   stream?: boolean;
   max_tokens?: number;
   max_completion_tokens?: number;
@@ -234,6 +247,8 @@ export interface ChatCompletionRequest {
 export interface ImageGenerationRequest {
   model?: string;
   prompt: string;
+  attachments?: unknown[];
+  attachment?: unknown;
   n?: number;
   size?: string;
   quality?: string;
@@ -244,6 +259,8 @@ export interface ImageGenerationRequest {
 export interface AudioSpeechRequest {
   model?: string;
   input: string;
+  attachments?: unknown[];
+  attachment?: unknown;
   voice?: string;
   speed?: number;
   response_format?: string;
@@ -252,6 +269,8 @@ export interface AudioSpeechRequest {
 export interface AudioTranscriptionRequest {
   model?: string;
   file: string;
+  attachments?: unknown[];
+  attachment?: unknown;
   language?: string;
   response_format?: "json" | "text" | "srt" | "verbose_json" | "vtt";
 }
@@ -265,6 +284,8 @@ export interface EmbeddingRequest {
 export interface VideoGenerationRequest {
   model: string;
   prompt: string;
+  attachments?: unknown[];
+  attachment?: unknown;
   duration?: number;
   aspect_ratio?: string;
   size?: string;
@@ -319,6 +340,10 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "GET", path: "/v1/models", handler: (req, res) => handleListModels(req, res, false), description: "List models" },
   { method: "GET", path: "/v1/models/all", handler: (req, res) => handleListModels(req, res, true), description: "List all models" },
   { method: "POST", path: "/v1/models/search", handler: handleSearchModels, description: "Search models" },
+  { method: "GET", path: "/v1/modalities", handler: handleListModalities, description: "List modality catalogs" },
+  { method: "GET", path: "/v1/modalities/:modality", handler: handleGetModality, description: "Get modality catalog" },
+  { method: "GET", path: "/v1/modalities/:modality/operations", handler: handleListModalityOperations, description: "List modality operations" },
+  { method: "GET", path: "/v1/modalities/:modality/operations/:operation/models", handler: handleListOperationModels, description: "List models by modality operation" },
   { method: "GET", path: "/v1/models/:model/params", handler: handleModelParams, description: "Model optional params" },
   { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model" },
   { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical unified responses API" },
@@ -461,7 +486,10 @@ function adaptChatResponse(result: ChatResult, model: string, requestId: string)
             }
             : {}),
         },
-        finish_reason: result.finishReason || (result.toolCalls?.length ? "tool_calls" : "stop"),
+        finish_reason: toOpenAIChatFinishReason(
+          result.finishReason,
+          result.toolCalls?.length ? "tool_calls" : "stop",
+        ),
       },
     ],
     usage: {
@@ -494,7 +522,7 @@ function adaptStreamChunk(
       {
         index: 0,
         delta,
-        finish_reason: isLast ? finishReason || "stop" : null,
+        finish_reason: isLast ? toOpenAIChatFinishReason(finishReason) : null,
       },
     ],
   };
@@ -707,6 +735,36 @@ function writeAdaptedError(res: Response, error: unknown, defaultStatus = 500): 
   res.status(status).json(body);
 }
 
+function validateStreamFlag(body: Record<string, unknown>, res: Response): boolean {
+  if (!Object.prototype.hasOwnProperty.call(body, "stream") || body.stream === undefined) {
+    return true;
+  }
+
+  if (typeof body.stream === "boolean") {
+    return true;
+  }
+
+  res.status(400).json(createErrorResponse(
+    "stream must be a boolean when provided",
+    "invalid_request_error",
+    "invalid_stream",
+  ));
+  return false;
+}
+
+function validateStreamingModality(unified: UnifiedRequest, res: Response): boolean {
+  if (!unified.stream || isStreamableModality(unified.modality)) {
+    return true;
+  }
+
+  res.status(400).json(createErrorResponse(
+    "streaming is only supported for text and image modalities",
+    "invalid_request_error",
+    "unsupported_stream_modality",
+  ));
+  return false;
+}
+
 function requireModel(modelId: string): { provider: ModelProvider; card: ModelCard } {
   const card = getModelById(modelId);
   if (!card) {
@@ -892,23 +950,90 @@ function applyReceiptHeader(res: Response, receipt: ComposeReceipt | null): void
   res.setHeader(RECEIPT_HEADER, encodeReceiptHeader(receipt));
 }
 
-function receiptForJsonBody(receipt: ComposeReceipt | null): Record<string, unknown> | undefined {
+interface PaidInferenceContext {
+  resolved: ResolvedModel;
+  payment: PreparedInferencePayment;
+}
+
+async function preparePaidInference(args: {
+  req: Request;
+  res: Response;
+  unified: UnifiedRequest;
+  resolved?: ResolvedModel;
+}): Promise<PaidInferenceContext | null> {
+  const resolved = args.resolved ?? resolveModel(args.unified.model, args.unified.provider);
+  const authorizationInput = buildResolvedAuthorizationInput({
+    request: args.unified,
+    resolved,
+  }) as InferenceAuthorizationInput;
+  const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
+  if (!payment) {
+    return null;
+  }
+
+  return { resolved, payment };
+}
+
+async function settlePaidInference(args: {
+  req: Request;
+  res: Response;
+  payment: PreparedInferencePayment;
+  unified: UnifiedRequest;
+  output: UnifiedOutput;
+  resolved: ResolvedModel;
+}): Promise<ComposeReceipt | null> {
+  const settlementReceipt = await settlePreparedInferencePayment(
+    args.payment,
+    args.res,
+    {
+      meter: buildSettlementMeterFromOutput({
+        request: args.unified,
+        output: args.output,
+        resolved: args.resolved,
+      }).meter as MeteredSettlementInput,
+    },
+  );
+
+  return receiptFromSettlement(settlementReceipt, getChainIdFromInferenceRequest(args.req));
+}
+
+export function receiptForJsonBody(receipt: ComposeReceipt | null): Record<string, unknown> | undefined {
   if (!receipt) return undefined;
-  return {
-    subject: receipt.subject,
-    line_items: receipt.lineItems?.map((item) => ({
+
+  const body: Record<string, unknown> = {
+    final_amount_wei: receipt.finalAmountWei,
+    network: receipt.network,
+    settled_at: receipt.settledAt,
+  };
+
+  if (receipt.subject) body.subject = receipt.subject;
+  if (receipt.lineItems && receipt.lineItems.length > 0) {
+    body.line_items = receipt.lineItems.map((item) => ({
       key: item.key,
       unit: item.unit,
       quantity: item.quantity,
       unit_price_usd: item.unitPriceUsd,
       amount_wei: item.amountWei,
-    })),
-    provider_amount_wei: receipt.providerAmountWei,
-    platform_fee_wei: receipt.platformFeeWei,
-    final_amount_wei: receipt.finalAmountWei,
-    tx_hash: receipt.txHash,
-    network: receipt.network,
-    settled_at: receipt.settledAt,
+    }));
+  }
+  if (receipt.providerAmountWei) body.provider_amount_wei = receipt.providerAmountWei;
+  if (receipt.platformFeeWei) body.platform_fee_wei = receipt.platformFeeWei;
+  if (receipt.txHash) body.tx_hash = receipt.txHash;
+
+  return body;
+}
+
+export function attachReceiptToJsonBody<T extends Record<string, unknown>>(
+  body: T,
+  receipt: ComposeReceipt | null,
+): T & { compose_receipt?: Record<string, unknown> } {
+  const receiptJson = receiptForJsonBody(receipt);
+  if (!receiptJson) {
+    return body;
+  }
+  return {
+    ...body,
+    compose_receipt: receiptJson,
   };
 }
 
@@ -1043,20 +1168,43 @@ async function executeUnifiedRequest(args: {
     return;
   }
 
-  const resolved = resolveModel(modelId, unified.provider);
-  const authorizationInput = buildResolvedAuthorizationInput({
-    request: unified,
-    resolved,
-  }) as InferenceAuthorizationInput;
-  const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
-  if (!payment) {
+  if (!validateStreamingModality(unified, args.res)) {
     return;
   }
+
+  const paid = await preparePaidInference({
+    req: args.req,
+    res: args.res,
+    unified,
+  });
+  if (!paid) {
+    return;
+  }
+  let paymentTerminal = false;
+  const abortPaidInference = async (reason: string) => {
+    if (paymentTerminal) {
+      return;
+    }
+    paymentTerminal = true;
+    await paid.payment.abort(reason);
+  };
+  const settleOutput = async (output: UnifiedOutput) => {
+    const receipt = await settlePaidInference({
+      req: args.req,
+      res: args.res,
+      payment: paid.payment,
+      unified,
+      output,
+      resolved: paid.resolved,
+    });
+    paymentTerminal = true;
+    return receipt;
+  };
 
   const baseRecord: StoredResponseRecord = {
     id: unified.responseId,
     model: modelId,
-    provider: resolved.provider,
+    provider: paid.resolved.provider,
     createdAt: Math.floor(Date.now() / 1000),
     status: "in_progress",
     inputMessages: args.shape === "responses" ? args.unified.messages : undefined,
@@ -1065,7 +1213,7 @@ async function executeUnifiedRequest(args: {
   await saveResponseRecord(baseRecord);
 
   try {
-    if (args.unified.stream && (args.unified.modality === "text" || args.unified.modality === "image")) {
+    if (unified.stream && isStreamableModality(unified.modality)) {
       args.res.setHeader("Content-Type", "text/event-stream");
       args.res.setHeader("Cache-Control", "no-cache");
       args.res.setHeader("Connection", "keep-alive");
@@ -1077,8 +1225,8 @@ async function executeUnifiedRequest(args: {
       const routed = await runWithPolicy({
         context: {
           modelId,
-          provider: resolved.provider,
-          card: resolved.card,
+          provider: paid.resolved.provider,
+          card: paid.resolved.card,
         },
         execute: async (target) => {
           const { streamAdapter } = await loadAdapterRuntime();
@@ -1093,7 +1241,7 @@ async function executeUnifiedRequest(args: {
       });
 
       applyRoutingHeaders(args.res, routed);
-      payment.applyHeaders(args.res);
+      paid.payment.applyHeaders(args.res);
 
       let isFirstToken = true;
       let aggregatedText = "";
@@ -1122,11 +1270,12 @@ async function executeUnifiedRequest(args: {
             continue;
           }
 
-          if (event.type === "tool-call") {
+          if (event.type === "thinking" || event.type === "tool-call" || event.type === "tool-call-delta") {
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(unified.responseId, modelId, event)
+              ? toChatStreamEvent(unified.responseId, modelId, event, isFirstToken)
               : toResponsesStreamEvent(unified.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
+            isFirstToken = false;
             continue;
           }
 
@@ -1174,7 +1323,7 @@ async function executeUnifiedRequest(args: {
         }
 
         if (!lastUsage) {
-          await payment.abort("missing_stream_usage");
+          await abortPaidInference("missing_stream_usage");
           args.res.end();
           return;
         }
@@ -1198,17 +1347,7 @@ async function executeUnifiedRequest(args: {
           finishReason,
         };
 
-        const settlementReceipt = await settlePreparedInferencePayment(
-          payment,
-          args.res,
-          {
-            meter: buildSettlementMeterFromOutput({
-              request: unified,
-              output: finalOutput,
-              resolved,
-            }).meter as MeteredSettlementInput,
-          },
-        );
+        const streamReceipt = await settleOutput(finalOutput);
 
         if (pendingImageCompleteEvent) {
           args.res.write(formatCoreSSE(toResponsesStreamEvent(unified.responseId, modelId, pendingImageCompleteEvent)));
@@ -1223,8 +1362,6 @@ async function executeUnifiedRequest(args: {
           )));
         }
 
-        const streamChainId = getChainIdFromInferenceRequest(args.req);
-        const streamReceipt = receiptFromSettlement(settlementReceipt, streamChainId);
         if (streamReceipt) {
           args.res.write(toComposeReceiptStreamEvent({
             finalAmountWei: streamReceipt.finalAmountWei,
@@ -1247,7 +1384,7 @@ async function executeUnifiedRequest(args: {
         });
       } catch (error) {
         try {
-          await payment.abort(error instanceof Error ? error.message : "stream_failed");
+          await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
         } catch { /* best-effort */ }
         if (!args.res.headersSent) {
           // Let the outer Express error handler send the JSON error response.
@@ -1272,8 +1409,8 @@ async function executeUnifiedRequest(args: {
     const routed = await runWithPolicy({
       context: {
         modelId,
-        provider: resolved.provider,
-        card: resolved.card,
+        provider: paid.resolved.provider,
+        card: paid.resolved.card,
       },
       execute: async (target) =>
         (await loadAdapterRuntime()).invokeAdapter(unified, {
@@ -1285,19 +1422,7 @@ async function executeUnifiedRequest(args: {
     applyRoutingHeaders(args.res, routed);
 
     const output = routed.result.output;
-    const jsonSettlementReceipt = await settlePreparedInferencePayment(
-      payment,
-      args.res,
-      {
-        meter: buildSettlementMeterFromOutput({
-          request: unified,
-          output,
-          resolved,
-        }).meter as MeteredSettlementInput,
-      },
-    );
-    const jsonChainId = getChainIdFromInferenceRequest(args.req);
-    const jsonReceipt = receiptFromSettlement(jsonSettlementReceipt, jsonChainId);
+    const jsonReceipt = await settleOutput(output);
     applyReceiptHeader(args.res, jsonReceipt);
 
     const record: StoredResponseRecord = {
@@ -1308,19 +1433,15 @@ async function executeUnifiedRequest(args: {
     };
     await saveResponseRecord(record);
 
-    const receiptJson = receiptForJsonBody(jsonReceipt);
-
     if (args.shape === "chat") {
       const body = toChatCompletionsResponse(modelId, unified.responseId, output) as unknown as Record<string, unknown>;
-      if (receiptJson) body.compose_receipt = receiptJson;
-      args.res.status(200).json(body);
+      args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
       return;
     }
 
     if (args.shape === "embeddings") {
       const body = toEmbeddingsResponse(modelId, output) as unknown as Record<string, unknown>;
-      if (receiptJson) body.compose_receipt = receiptJson;
-      args.res.status(200).json(body);
+      args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
       return;
     }
 
@@ -1331,12 +1452,9 @@ async function executeUnifiedRequest(args: {
     if (record.jobId) {
       payload.job_id = record.jobId;
     }
-    if (receiptJson) {
-      payload.compose_receipt = receiptJson;
-    }
-    args.res.status(200).json(payload);
+    args.res.status(200).json(attachReceiptToJsonBody(payload, jsonReceipt));
   } catch (error) {
-    await payment.abort(error instanceof Error ? error.message : "unified_inference_failed");
+    await abortPaidInference(error instanceof Error ? error.message : "unified_inference_failed");
     await saveResponseRecord({
       ...baseRecord,
       status: "failed",
@@ -1355,7 +1473,14 @@ async function handleResponses(req: Request, res: Response): Promise<void> {
 
   try {
     const body = (req.body || {}) as Record<string, unknown>;
+    if (!validateStreamFlag(body, res)) {
+      return;
+    }
+
     const unified = normalizeResponsesRequest(body);
+    if (!validateStreamingModality(unified, res)) {
+      return;
+    }
 
     if (!unified.model) {
       res.status(400).json(createCoreErrorResponse("model is required", "invalid_request_error", "missing_model"));
@@ -1499,39 +1624,47 @@ async function runDeferredInference(args: {
   provider: ModelProvider;
   card: ModelCard | null;
   execute: () => Promise<UnifiedOutput>;
-  onSuccess: (result: UnifiedOutput) => void | Promise<void>;
+  onSuccess: (result: UnifiedOutput, receipt: ComposeReceipt | null) => void | Promise<void>;
 }): Promise<void> {
-  const authorizationInput = buildResolvedAuthorizationInput({
-    request: args.unified,
-    resolved: {
-      modelId: args.unified.model,
-      provider: args.provider,
-      known: true,
-      card: args.card,
-    },
-  }) as InferenceAuthorizationInput;
-  const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
-  if (!payment) {
+  const resolved: ResolvedModel = {
+    modelId: args.unified.model,
+    provider: args.provider,
+    known: true,
+    card: args.card,
+  };
+  const paid = await preparePaidInference({
+    req: args.req,
+    res: args.res,
+    unified: args.unified,
+    resolved,
+  });
+  if (!paid) {
     return;
   }
+  let paymentTerminal = false;
+  const abortPaidInference = async (reason: string) => {
+    if (paymentTerminal) {
+      return;
+    }
+    paymentTerminal = true;
+    await paid.payment.abort(reason);
+  };
 
   try {
     const result = await args.execute();
-    await settlePreparedInferencePayment(payment, args.res, {
-      meter: buildSettlementMeterFromOutput({
-        request: args.unified,
-        output: result,
-        resolved: {
-          modelId: args.unified.model,
-          provider: args.provider,
-          known: true,
-          card: args.card,
-        },
-      }).meter as MeteredSettlementInput,
+    const receipt = await settlePaidInference({
+      req: args.req,
+      res: args.res,
+      payment: paid.payment,
+      unified: args.unified,
+      output: result,
+      resolved: paid.resolved,
     });
-    await args.onSuccess(result);
+    paymentTerminal = true;
+    applyReceiptHeader(args.res, receipt);
+    await args.onSuccess(result, receipt);
   } catch (error) {
-    await payment.abort(error instanceof Error ? error.message : "inference_failed");
+    await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
     throw error;
   }
 }
@@ -1592,10 +1725,16 @@ export async function handleSearchModels(req: Request, res: Response): Promise<v
       res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
       return;
     }
+    const operation = pickString("operation");
+    if (operation && !isCanonicalOperation(operation)) {
+      res.status(400).json(createErrorResponse("operation is not supported", "invalid_request_error", "invalid_operation"));
+      return;
+    }
 
     const result = searchModels({
       q: pickString("q"),
       modality: modality as ModelSearchInput["modality"],
+      operation: operation as ModelSearchInput["operation"],
       provider: pickString("provider") as ModelProvider | undefined,
       priceMaxPerMTok: pickNumber("priceMaxPerMTok") ?? pickNumber("price_max_per_mtok"),
       contextWindowMin: pickNumber("contextWindowMin") ?? pickNumber("context_window_min"),
@@ -1607,6 +1746,114 @@ export async function handleSearchModels(req: Request, res: Response): Promise<v
     res.status(200).json({
       object: "list",
       data: result.data,
+      total: result.total,
+      next_cursor: result.next_cursor,
+    });
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleListModalities(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const models = getExtendedModels().models;
+    res.status(200).json({
+      object: "list",
+      data: getModalityCatalog(models),
+    });
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleGetModality(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const rawModality = Array.isArray(req.params.modality) ? req.params.modality[0] : req.params.modality;
+    if (!isCanonicalModality(rawModality)) {
+      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      return;
+    }
+
+    const entry = getModalityCatalog(getExtendedModels().models).find((item) => item.modality === rawModality);
+    res.status(200).json(entry);
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleListModalityOperations(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const rawModality = Array.isArray(req.params.modality) ? req.params.modality[0] : req.params.modality;
+    if (!isCanonicalModality(rawModality)) {
+      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      return;
+    }
+
+    const models = getExtendedModels().models;
+    res.status(200).json({
+      object: "list",
+      data: getModalityOperations(models, rawModality),
+    });
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleListOperationModels(req: Request, res: Response): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const rawModality = Array.isArray(req.params.modality) ? req.params.modality[0] : req.params.modality;
+    const rawOperation = Array.isArray(req.params.operation) ? req.params.operation[0] : req.params.operation;
+    if (!isCanonicalModality(rawModality)) {
+      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      return;
+    }
+    if (!isCanonicalOperation(rawOperation)) {
+      res.status(400).json(createErrorResponse("operation is not supported", "invalid_request_error", "invalid_operation"));
+      return;
+    }
+
+    const query = (req.query || {}) as Record<string, unknown>;
+    const limitRaw = typeof query.limit === "string" ? Number(query.limit) : undefined;
+    const result = searchModels({
+      q: typeof query.q === "string" ? query.q : undefined,
+      modality: rawModality,
+      operation: rawOperation,
+      provider: typeof query.provider === "string" ? query.provider as ModelProvider : undefined,
+      streaming: query.streaming === "true" ? true : query.streaming === "false" ? false : undefined,
+      cursor: typeof query.cursor === "string" ? query.cursor : undefined,
+      limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+    });
+
+    res.status(200).json({
+      object: "list",
+      data: result.data.map((model) => ({
+        ...model,
+        operations: getModelCapabilities(model),
+      })),
       total: result.total,
       next_cursor: result.next_cursor,
     });
@@ -1658,7 +1905,14 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
 
   try {
     const body = (req.body || {}) as Record<string, unknown>;
+    if (!validateStreamFlag(body, res)) {
+      return;
+    }
+
     const unified = normalizeChatRequest(body);
+    if (!validateStreamingModality(unified, res)) {
+      return;
+    }
 
     if (!unified.model) {
       res.status(400).json(createErrorResponse("model is required", "invalid_request_error", "missing_model"));
@@ -1717,6 +1971,8 @@ export async function handleImageGeneration(req: Request, res: Response): Promis
       size: body.size,
       quality: body.quality,
       image_url: body.image_url || body.image,
+      attachments: body.attachments,
+      attachment: body.attachment,
     });
 
     const resolved = resolveModel(model);
@@ -1727,16 +1983,20 @@ export async function handleImageGeneration(req: Request, res: Response): Promis
       provider: resolved.provider,
       card: resolved.card,
       execute: () => invokeDirectAdapter(unified),
-      onSuccess: (output) => {
+      onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
+        const body = adaptImageResponse({
+          images: [
+            media.base64
+              ? { b64_json: media.base64 }
+              : { url: media.url },
+          ],
+        });
         res.status(200).json(
-          adaptImageResponse({
-            images: [
-              media.base64
-                ? { b64_json: media.base64 }
-                : { url: media.url },
-            ],
-          }),
+          attachReceiptToJsonBody(
+            body,
+            receipt,
+          ),
         );
       },
     });
@@ -1776,6 +2036,8 @@ export async function handleImageEdit(req: Request, res: Response): Promise<void
       n: body.n,
       size: body.size,
       image_url: body.image,
+      attachments: (body as Record<string, unknown>).attachments,
+      attachment: (body as Record<string, unknown>).attachment,
     });
 
     const resolved = resolveModel(model);
@@ -1786,17 +2048,16 @@ export async function handleImageEdit(req: Request, res: Response): Promise<void
       provider: resolved.provider,
       card: resolved.card,
       execute: () => invokeDirectAdapter(unified),
-      onSuccess: (output) => {
+      onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
-        res.status(200).json(
-          adaptImageResponse({
-            images: [
-              media.base64
-                ? { b64_json: media.base64 }
-                : { url: media.url },
-            ],
-          }),
-        );
+        const body = adaptImageResponse({
+          images: [
+            media.base64
+              ? { b64_json: media.base64 }
+              : { url: media.url },
+          ],
+        });
+        res.status(200).json(attachReceiptToJsonBody(body, receipt));
       },
     });
   } catch (error) {
@@ -1832,6 +2093,8 @@ export async function handleAudioSpeech(req: Request, res: Response): Promise<vo
       voice: body.voice,
       speed: body.speed,
       response_format: format,
+      attachments: body.attachments,
+      attachment: body.attachment,
     });
 
     const resolved = resolveModel(model);
@@ -1879,6 +2142,8 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
       modalities: ["audio"],
       language: body.language,
       response_format: body.response_format,
+      attachments: body.attachments,
+      attachment: body.attachment,
     });
 
     const resolved = resolveModel(model);
@@ -1889,14 +2154,14 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
       provider: resolved.provider,
       card: resolved.card,
       execute: () => invokeDirectAdapter(unified),
-      onSuccess: (output) => {
+      onSuccess: (output, receipt) => {
         const response = adaptTranscriptionResponse({ text: output.content || "" });
         if (body.response_format === "text") {
           res.setHeader("Content-Type", "text/plain");
           res.send(response.text);
           return;
         }
-        res.status(200).json(response);
+        res.status(200).json(attachReceiptToJsonBody(response, receipt));
       },
     });
   } catch (error) {
@@ -1960,6 +2225,8 @@ export async function handleVideoGeneration(req: Request, res: Response): Promis
       aspect_ratio: body.aspect_ratio,
       size: body.size,
       image_url: body.image_url || body.image,
+      attachments: body.attachments,
+      attachment: body.attachment,
     });
 
     const resolved = resolveModel(body.model);
@@ -1970,33 +2237,32 @@ export async function handleVideoGeneration(req: Request, res: Response): Promis
       provider: resolved.provider,
       card: resolved.card,
       execute: () => invokeDirectAdapter(unified),
-      onSuccess: (output) => {
+      onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
         if (media.jobId && media.status && media.status !== "completed") {
-          res.status(202).json({
+          res.status(202).json(attachReceiptToJsonBody({
             id: media.jobId,
             object: "video.generation",
             status: media.status,
             created: Math.floor(Date.now() / 1000),
             model: body.model,
-          });
+          }, receipt));
           return;
         }
 
-        res.status(200).json(
-          adaptVideoResponse(
-            {
-              videos: [
-                {
-                  base64: media.base64,
-                  url: media.url,
-                  duration: body.duration ?? media.duration,
-                },
-              ],
-            },
-            body.model,
-          ),
+        const responseBody = adaptVideoResponse(
+          {
+            videos: [
+              {
+                base64: media.base64,
+                url: media.url,
+                duration: body.duration ?? media.duration,
+              },
+            ],
+          },
+          body.model,
         );
+        res.status(200).json(attachReceiptToJsonBody(responseBody, receipt));
       },
     });
   } catch (error) {

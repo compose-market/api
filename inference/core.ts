@@ -1,5 +1,5 @@
 import type { ModelProvider } from "./types.js";
-import { resolveOptionalModelParamValues } from "./params-handler.js";
+import { resolveProvidedOptionalModelParamValues } from "./params-handler.js";
 
 export type UnifiedMode = "responses" | "chat" | "embeddings";
 export type UnifiedModality = "text" | "image" | "audio" | "video" | "embedding";
@@ -339,9 +339,162 @@ function pickNumberValue(...values: unknown[]): number | undefined {
     if (typeof value === "number" && Number.isFinite(value)) {
       return value;
     }
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
   }
 
   return undefined;
+}
+
+function normalizeAttachmentList(body: Record<string, unknown>): UnifiedContentPart[] {
+  const raw: unknown[] = [];
+  if (Array.isArray(body.attachments)) {
+    raw.push(...body.attachments);
+  }
+  if (body.attachment !== undefined && body.attachment !== null) {
+    raw.push(body.attachment);
+  }
+
+  return raw
+    .map(attachmentToContentPart)
+    .filter((part): part is UnifiedContentPart => part !== null);
+}
+
+function attachmentToContentPart(value: unknown): UnifiedContentPart | null {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return attachmentRecordToContentPart({ url: value.trim() });
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  return attachmentRecordToContentPart(record);
+}
+
+function attachmentRecordToContentPart(record: Record<string, unknown>): UnifiedContentPart | null {
+  const url = pickStringValue(
+    record.url,
+    record.uri,
+    record.href,
+    record.image_url,
+    record.audio_url,
+    record.video_url,
+    record.dataUrl,
+    record.data_url,
+  );
+  const mimeType = pickStringValue(record.mimeType, record.mime_type, record.contentType, record.content_type);
+  const base64 = pickStringValue(record.base64, record.b64_json);
+  const data = pickStringValue(record.data);
+  const locator = url
+    ?? (base64 ? `data:${mimeType || "application/octet-stream"};base64,${base64}` : undefined)
+    ?? data;
+  const text = pickStringValue(record.text, record.content);
+  const name = pickStringValue(record.name, record.filename);
+  const kind = inferAttachmentKind(record, locator, mimeType, name);
+
+  if (kind === "image" && locator) {
+    return {
+      type: "image_url",
+      image_url: {
+        url: locator,
+        detail: record.detail === "low" || record.detail === "high" ? record.detail : "auto",
+      },
+    };
+  }
+
+  if (kind === "audio" && locator) {
+    return { type: "input_audio", input_audio: { url: locator } };
+  }
+
+  if (kind === "video" && locator) {
+    return { type: "video_url", video_url: { url: locator } };
+  }
+
+  if (text) {
+    return { type: "text", text };
+  }
+
+  if (locator) {
+    const label = name ? `${kind}:${name}` : kind;
+    return { type: "text", text: `Attachment ${label}: ${locator}` };
+  }
+
+  if (Object.keys(record).length > 0) {
+    return { type: "text", text: `Attachment: ${JSON.stringify(record)}` };
+  }
+
+  return null;
+}
+
+function inferAttachmentKind(
+  record: Record<string, unknown>,
+  locator: string | undefined,
+  mimeType: string | undefined,
+  name: string | undefined,
+): "image" | "audio" | "video" | "pdf" | "text" | "json" | "file" | "url" {
+  const explicit = pickStringValue(record.type, record.kind, record.mediaType, record.media_type)?.toLowerCase();
+  const haystack = [explicit, mimeType, name, locator].filter(Boolean).join(" ").toLowerCase();
+
+  if (haystack.includes("image/") || /\.(png|jpe?g|gif|webp|avif|heic|svg)(?:[?#].*)?$/.test(haystack) || explicit === "image") {
+    return "image";
+  }
+  if (haystack.includes("audio/") || /\.(mp3|m4a|wav|ogg|opus|flac|aac|aiff?)(?:[?#].*)?$/.test(haystack) || explicit === "audio") {
+    return "audio";
+  }
+  if (haystack.includes("video/") || /\.(mp4|mov|webm|mkv|avi|mpeg|mpg)(?:[?#].*)?$/.test(haystack) || explicit === "video") {
+    return "video";
+  }
+  if (haystack.includes("application/pdf") || /\.pdf(?:[?#].*)?$/.test(haystack) || explicit === "pdf") {
+    return "pdf";
+  }
+  if (haystack.includes("application/json") || explicit === "json") {
+    return "json";
+  }
+  if (haystack.includes("text/") || explicit === "text") {
+    return "text";
+  }
+  if (locator && /^https?:\/\//i.test(locator)) {
+    return "url";
+  }
+
+  return "file";
+}
+
+function appendAttachmentParts(messages: UnifiedMessage[], attachments: UnifiedContentPart[]): UnifiedMessage[] {
+  if (attachments.length === 0) {
+    return messages;
+  }
+
+  const next = [...messages];
+  let targetIndex = -1;
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    if (next[i]?.role === "user") {
+      targetIndex = i;
+      break;
+    }
+  }
+
+  if (targetIndex < 0) {
+    next.push({ role: "user", content: attachments });
+    return next;
+  }
+
+  const target = next[targetIndex];
+  const parts: UnifiedContentPart[] = [];
+  if (Array.isArray(target.content)) {
+    parts.push(...target.content);
+  } else if (typeof target.content === "string" && target.content.trim().length > 0) {
+    parts.push({ type: "text", text: target.content });
+  }
+  parts.push(...attachments);
+  next[targetIndex] = { ...target, content: parts };
+  return next;
 }
 
 function getPrimaryText(messages: UnifiedMessage[]): string {
@@ -367,7 +520,7 @@ function getPrimaryText(messages: UnifiedMessage[]): string {
   return "";
 }
 
-function parseMegapixels(size: string | undefined): number | undefined {
+function parseDimensions(size: string | undefined): { width: number; height: number; pixels: number; megapixels: number } | undefined {
   if (!size) {
     return undefined;
   }
@@ -383,7 +536,13 @@ function parseMegapixels(size: string | undefined): number | undefined {
     return undefined;
   }
 
-  return (width * height) / 1_000_000;
+  const pixels = width * height;
+  return {
+    width,
+    height,
+    pixels,
+    megapixels: pixels / 1_000_000,
+  };
 }
 
 function buildRequestBillingMetrics(
@@ -411,12 +570,15 @@ function buildRequestBillingMetrics(
       metrics.image = generatedUnits;
     }
 
-    const megapixels = parseMegapixels(pickStringValue(
+    const dimensions = parseDimensions(pickStringValue(
       resolvedParams.size,
       resolvedParams.image_size,
     ));
-    if (typeof megapixels === "number" && typeof generatedUnits === "number" && generatedUnits > 0) {
-      metrics.megapixel = megapixels * generatedUnits;
+    if (dimensions && typeof generatedUnits === "number" && generatedUnits > 0) {
+      metrics.width = dimensions.width;
+      metrics.height = dimensions.height;
+      metrics.pixel = dimensions.pixels * generatedUnits;
+      metrics.megapixel = dimensions.megapixels * generatedUnits;
     }
   }
 
@@ -531,13 +693,16 @@ function pickModality(body: Record<string, unknown>, fallback: UnifiedModality):
 
 export function normalizeChatRequest(body: Record<string, unknown>): UnifiedRequest {
   const model = typeof body.model === "string" ? body.model : "";
-  const messages = normalizeMessages(body.messages);
+  const messages = appendAttachmentParts(
+    normalizeMessages(body.messages),
+    normalizeAttachmentList(body),
+  );
 
   return {
     mode: "chat",
     model,
     provider: typeof body.provider === "string" ? body.provider as ModelProvider : undefined,
-    stream: Boolean(body.stream),
+    stream: body.stream === true,
     modality: "text",
     messages,
     tools: Array.isArray(body.tools) ? body.tools as UnifiedTool[] : undefined,
@@ -568,17 +733,28 @@ export function normalizeEmbeddingsRequest(body: Record<string, unknown>): Unifi
 export function normalizeResponsesRequest(body: Record<string, unknown>): UnifiedRequest {
   const model = typeof body.model === "string" ? body.model : "";
   const modality = pickModality(body, "text");
-  const messages = normalizeResponsesInput(body.input);
+  const messages = appendAttachmentParts(
+    normalizeResponsesInput(body.input),
+    normalizeAttachmentList(body),
+  );
   const promptText = getPrimaryText(messages);
   const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
   const previousResponseId =
     typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
   const rawCustomParams = asRecord(body.custom_params);
   const resolvedModelParams = modality === "image" || modality === "video"
-    ? resolveOptionalModelParamValues(model, modality, body)
+    ? resolveProvidedOptionalModelParamValues(model, modality, body)
     : null;
+  const explicitTopLevelParams: Record<string, unknown> = {};
+  if (typeof body.n === "number") explicitTopLevelParams.n = body.n;
+  if (typeof body.size === "string") explicitTopLevelParams.size = body.size;
+  if (typeof body.quality === "string") explicitTopLevelParams.quality = body.quality;
+  if (typeof body.duration === "number" || typeof body.duration === "string") explicitTopLevelParams.duration = body.duration;
+  if (typeof body.aspect_ratio === "string") explicitTopLevelParams.aspect_ratio = body.aspect_ratio;
+  if (typeof body.resolution === "string") explicitTopLevelParams.resolution = body.resolution;
   const resolvedParams = {
     ...(rawCustomParams || {}),
+    ...explicitTopLevelParams,
     ...(resolvedModelParams?.values ?? {}),
   };
   const customParams = Object.keys(resolvedParams).length > 0 ? resolvedParams : undefined;
@@ -588,7 +764,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
     mode: "responses",
     model,
     provider: typeof body.provider === "string" ? body.provider as ModelProvider : undefined,
-    stream: Boolean(body.stream),
+    stream: body.stream === true,
     modality,
     messages,
     instructions,
@@ -738,7 +914,10 @@ export function toChatCompletionsResponse(model: string, requestId: string, outp
             }
             : {}),
         },
-        finish_reason: output.finishReason || (output.toolCalls?.length ? "tool_calls" : "stop"),
+        finish_reason: toOpenAIChatFinishReason(
+          output.finishReason,
+          output.toolCalls?.length ? "tool_calls" : "stop",
+        ),
       },
     ],
     usage: {
@@ -747,6 +926,28 @@ export function toChatCompletionsResponse(model: string, requestId: string, outp
       total_tokens: usage.totalTokens,
     },
   };
+}
+
+type OpenAIChatFinishReason = "stop" | "length" | "tool_calls" | "content_filter";
+
+export function toOpenAIChatFinishReason(
+  reason?: string | null,
+  fallback: OpenAIChatFinishReason = "stop",
+): OpenAIChatFinishReason {
+  switch (reason || fallback) {
+    case "tool-calls":
+    case "tool_calls":
+      return "tool_calls";
+    case "content-filter":
+    case "content_filter":
+      return "content_filter";
+    case "length":
+      return "length";
+    case "stop":
+      return "stop";
+    default:
+      return fallback;
+  }
 }
 
 export function toEmbeddingsResponse(model: string, output: UnifiedOutput): EmbeddingsResponse {
@@ -1009,6 +1210,7 @@ export function toChatStreamEvent(
         {
           index: 0,
           delta: {
+            ...(isFirstToken ? { role: "assistant" } : {}),
             tool_calls: [
               {
                 index: event.toolCallDelta?.index ?? 0,
@@ -1036,7 +1238,7 @@ export function toChatStreamEvent(
       {
         index: 0,
         delta: {},
-        finish_reason: event.finishReason || "stop",
+        finish_reason: toOpenAIChatFinishReason(event.finishReason),
       },
     ],
   };

@@ -110,6 +110,40 @@ function metricKeyCandidates(key: string): string[] {
   ])];
 }
 
+function normalizedMetricEntries(metrics: Record<string, unknown>): Array<{ key: string; normalized: string; value: unknown }> {
+  return Object.entries(metrics).map(([key, value]) => ({
+    key,
+    normalized: normalizeValueKey(key),
+    value,
+  }));
+}
+
+function metricNameMatches(normalizedMetricKey: string, normalizedCandidate: string): boolean {
+  if (normalizedMetricKey === normalizedCandidate) {
+    return true;
+  }
+
+  const singular = normalizedCandidate.replace(/s$/, "");
+  const plural = singular.endsWith("s") ? singular : `${singular}s`;
+  return normalizedMetricKey.endsWith(`_${singular}`)
+    || normalizedMetricKey.endsWith(`_${plural}`);
+}
+
+function readMetricByNormalizedName(
+  metrics: Record<string, unknown>,
+  keys: string[],
+  predicate: (value: unknown) => value is number,
+): number | undefined {
+  const candidates = keys.flatMap((key) => metricKeyCandidates(key).map(normalizeValueKey));
+  const matches = normalizedMetricEntries(metrics)
+    .filter((entry) => candidates.some((candidate) => metricNameMatches(entry.normalized, candidate)))
+    .map((entry) => entry.value)
+    .filter(predicate);
+
+  const unique = [...new Set(matches)];
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
 function readPositiveMetric(metrics: Record<string, unknown>, keys: string[]): number | undefined {
   for (const key of keys) {
     for (const candidate of metricKeyCandidates(key)) {
@@ -120,7 +154,11 @@ function readPositiveMetric(metrics: Record<string, unknown>, keys: string[]): n
     }
   }
 
-  return undefined;
+  return readMetricByNormalizedName(
+    metrics,
+    keys,
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
+  );
 }
 
 function readNonNegativeMetric(metrics: Record<string, unknown>, keys: string[]): number | undefined {
@@ -133,7 +171,11 @@ function readNonNegativeMetric(metrics: Record<string, unknown>, keys: string[])
     }
   }
 
-  return undefined;
+  return readMetricByNormalizedName(
+    metrics,
+    keys,
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0,
+  );
 }
 
 function readMetricString(metrics: Record<string, unknown>, keys: string[]): string | undefined {
