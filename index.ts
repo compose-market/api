@@ -2,6 +2,7 @@ import "dotenv/config"; // Load .env variables FIRST
 import express, { type Request, type Response, type NextFunction } from "express";
 import type { Server } from "http";
 import { registerInferenceRoutes } from "./inference/gateway.js";
+import { registerFeedbackRoutes } from "./feedback/routes.js";
 import { createServer } from "http";
 import { registerHandlerRoutes } from "./handler.js";
 import { registerSessionEventsRoute } from "./x402/keys/sse.js";
@@ -139,6 +140,7 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   }
 
   registerInferenceRoutes(app);
+  registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
   registerHandlerRoutes(app);
 

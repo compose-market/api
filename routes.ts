@@ -158,6 +158,17 @@ type ParsedSseEvent = {
   data: Record<string, unknown>;
 };
 
+function createTimingLogger(label: string, metadata: Record<string, unknown>, startedAt = Date.now()) {
+  const marks: Record<string, number> = {};
+  return (name: string, at = Date.now()) => {
+    if (marks[name] !== undefined) {
+      return;
+    }
+    marks[name] = at - startedAt;
+    console.log(`[${label}]`, JSON.stringify({ ...metadata, mark: name, elapsedMs: marks[name], marks }));
+  };
+}
+
 function jsonResult(statusCode: number, headers: Record<string, string>, body: unknown): PublicRouteResult {
   return {
     statusCode,
@@ -878,16 +889,25 @@ function payableStreamRoute(config: {
 }) {
   return (req: Request, res: ExpressResponse, next: NextFunction) => {
     void (async () => {
+      const requestReceivedAt = Date.now();
+      const markTiming = createTimingLogger("api-stream-timing", {
+        service: config.service,
+        action: config.action,
+        path: req.originalUrl,
+      }, requestReceivedAt);
+      markTiming("request_received", requestReceivedAt);
       const prepared = await prepareRoutePayment(req, res, config.service, config.action);
       if (!prepared) {
         return;
       }
+      markTiming("payment_prepared");
 
       const runtimeResponse = await callRuntime(
         req,
         config.pathAndQuery ? config.pathAndQuery(req) : req.originalUrl,
         prepared.runtimeHeaders,
       );
+      markTiming("runtime_response_headers");
       if (!runtimeResponse.ok) {
         const { text } = await readRuntimeJson(runtimeResponse);
         await abortPreparedPayment(prepared, `runtime_${runtimeResponse.status}`);
@@ -904,6 +924,11 @@ function payableStreamRoute(config: {
 
       applyRuntimeHeaders(res, runtimeResponse);
       res.status(runtimeResponse.status);
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+      markTiming("gateway_headers_flushed");
+      res.on("close", () => markTiming("close"));
 
       const reader = runtimeResponse.body.getReader();
       let ended = false;
@@ -919,9 +944,11 @@ function payableStreamRoute(config: {
           const { done, value } = await reader.read();
           if (done) {
             ended = true;
+            markTiming("runtime_stream_done");
             break;
           }
 
+          markTiming("first_runtime_chunk");
           buffer += decoder.decode(value, { stream: true });
           while (true) {
             const separatorIndex = buffer.indexOf("\n\n");
@@ -946,6 +973,7 @@ function payableStreamRoute(config: {
             }
           }
 
+          markTiming("first_downstream_write");
           res.write(Buffer.from(value));
         }
 
@@ -977,6 +1005,7 @@ function payableStreamRoute(config: {
           settlement,
           Number.isFinite(chainId) ? chainId : undefined,
         );
+        markTiming("settled");
 
         // Streaming receipts must be emitted in-band. The underlying
         // Node response flushes headers on the first `res.write`, so any
@@ -995,6 +1024,7 @@ function payableStreamRoute(config: {
             network: receipt.network,
             settledAt: receipt.settledAt,
           }));
+          markTiming("receipt_written");
         }
         res.end();
       } catch (error) {
@@ -1051,6 +1081,13 @@ export function registerWorkflowRoutes(app: Application): void {
   app.put("/api/workflow/:walletAddress/triggers/:triggerId", passthroughJsonRoute());
   app.delete("/api/workflow/:walletAddress/triggers/:triggerId", passthroughJsonRoute());
 
+  app.post("/api/workspace/index", passthroughJsonRoute());
+  app.post("/api/workspace/search", passthroughJsonRoute());
+
+  app.post("/api/memory/context/assemble", passthroughJsonRoute());
+  app.post("/api/memory/turns/record", passthroughJsonRoute());
+  app.post("/api/memory/remember", passthroughJsonRoute());
+  app.post("/api/memory/loop", passthroughJsonRoute());
   app.post("/api/memory/add", passthroughJsonRoute());
   app.post("/api/memory/search", passthroughJsonRoute());
   app.get("/api/memory/:agentWallet", passthroughJsonRoute());
