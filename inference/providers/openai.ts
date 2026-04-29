@@ -149,6 +149,7 @@ export async function openaiGenerateImage(
         size?: "1024x1024" | "1792x1024" | "1024x1792" | "256x256" | "512x512";
         quality?: "standard" | "hd";
         n?: number;
+        imageUrl?: string;
     }
 ): Promise<{
     buffer: Buffer;
@@ -158,6 +159,7 @@ export async function openaiGenerateImage(
         completionTokens: number;
         totalTokens: number;
         billingMetrics?: Record<string, unknown>;
+        raw?: Record<string, unknown>;
     };
 }> {
     if (!OPENAI_API_KEY) {
@@ -167,6 +169,74 @@ export async function openaiGenerateImage(
     console.log(`[openai] Generating image with ${modelId}: "${prompt.slice(0, 50)}..."`);
 
     try {
+        if (options?.imageUrl) {
+            const sourceResponse = await fetch(options.imageUrl);
+            if (!sourceResponse.ok) {
+                throw new Error(`Failed to fetch input image: ${sourceResponse.status}`);
+            }
+
+            const sourceContentType = sourceResponse.headers.get("content-type") || "image/png";
+            const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer());
+            const formData = new FormData();
+            formData.append("model", modelId);
+            formData.append("prompt", prompt);
+            formData.append("image", new Blob([new Uint8Array(sourceBuffer)], { type: sourceContentType }), "input-image");
+            if (options.n !== undefined) formData.append("n", String(options.n));
+            if (options.size) formData.append("size", options.size);
+            if (options.quality) formData.append("quality", options.quality);
+
+            const response = await fetch("https://api.openai.com/v1/images/edits", {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${OPENAI_API_KEY}`,
+                },
+                body: formData,
+            });
+
+            if (!response.ok) {
+                const text = await response.text().catch(() => response.statusText);
+                throw new Error(`OpenAI image edit failed: ${response.status} - ${text}`);
+            }
+
+            const data = await response.json() as {
+                data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
+                usage?: Record<string, unknown>;
+            };
+            const first = data.data?.[0];
+            if (!first) {
+                throw new Error("OpenAI image edit returned no image data");
+            }
+
+            let buffer: Buffer;
+            if (first.b64_json) {
+                buffer = Buffer.from(first.b64_json, "base64");
+            } else if (first.url) {
+                const editedImageResponse = await fetch(first.url);
+                if (!editedImageResponse.ok) {
+                    throw new Error(`Failed to download edited image: ${editedImageResponse.status}`);
+                }
+                buffer = Buffer.from(await editedImageResponse.arrayBuffer());
+            } else {
+                throw new Error("OpenAI image edit returned no image payload");
+            }
+
+            const rawUsage = data.usage && typeof data.usage === "object" ? data.usage : null;
+            const usage = rawUsage
+                ? {
+                    promptTokens: typeof rawUsage.input_tokens === "number" ? rawUsage.input_tokens : 0,
+                    completionTokens: typeof rawUsage.output_tokens === "number" ? rawUsage.output_tokens : 0,
+                    totalTokens: typeof rawUsage.total_tokens === "number" ? rawUsage.total_tokens : 0,
+                    raw: rawUsage,
+                }
+                : undefined;
+
+            return {
+                buffer,
+                mimeType: "image/png",
+                ...(usage ? { usage } : {}),
+            };
+        }
+
         const result = await generateImage({
             model: openai.image(modelId),
             prompt,
@@ -233,6 +303,13 @@ export async function openaiGenerateImage(
     }
 }
 
+export function isOpenAIImageStreamingUnsupportedError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /stream/i.test(message)
+        && /Unknown parameter|unknown_parameter|invalid_request_error/i.test(message)
+        && /400|bad request/i.test(message);
+}
+
 /**
  * Stream partial images from OpenAI's native image-generation SSE surface.
  * Uses `partial_images` so the UI can progressively refine the image behind a
@@ -249,7 +326,7 @@ export async function* openaiStreamImage(
     }
 ): AsyncGenerator<
     | { type: "image-partial"; index: number; b64: string }
-    | { type: "image-complete"; b64: string; revisedPrompt?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown> } }
+    | { type: "image-complete"; b64: string; revisedPrompt?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown>; raw?: Record<string, unknown> } }
 > {
     if (!OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY not configured");
@@ -319,11 +396,15 @@ export async function* openaiStreamImage(
             if (parsed.type === "image_generation.completed") {
                 const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
                 if (!b64) continue;
-                const usage = parsed.usage && typeof parsed.usage === "object"
+                const rawUsage = parsed.usage && typeof parsed.usage === "object"
+                    ? parsed.usage as Record<string, unknown>
+                    : null;
+                const usage = rawUsage
                     ? {
-                        promptTokens: typeof (parsed.usage as { input_tokens?: unknown }).input_tokens === "number" ? (parsed.usage as { input_tokens: number }).input_tokens : 0,
-                        completionTokens: typeof (parsed.usage as { output_tokens?: unknown }).output_tokens === "number" ? (parsed.usage as { output_tokens: number }).output_tokens : 0,
-                        totalTokens: typeof (parsed.usage as { total_tokens?: unknown }).total_tokens === "number" ? (parsed.usage as { total_tokens: number }).total_tokens : 0,
+                        promptTokens: typeof rawUsage.input_tokens === "number" ? rawUsage.input_tokens : 0,
+                        completionTokens: typeof rawUsage.output_tokens === "number" ? rawUsage.output_tokens : 0,
+                        totalTokens: typeof rawUsage.total_tokens === "number" ? rawUsage.total_tokens : 0,
+                        raw: rawUsage,
                     }
                     : undefined;
                 yield {
@@ -337,23 +418,13 @@ export async function* openaiStreamImage(
     }
 }
 
-/**
- * Generate video using OpenAI Sora models
- * 
- * API: POST https://api.openai.com/v1/videos
- * Models: sora-2, sora-2-pro
- * 
- * @param modelId - The model ID (sora-2, sora-2-pro)
- * @param prompt - Text prompt for video generation
- * @param options - Optional parameters (duration, resolution, etc.)
- * @returns Object with video buffer and metadata
- */
 export async function openaiGenerateVideo(
     modelId: string,
     prompt: string,
     options?: {
         duration?: number;
         size?: string;
+        imageUrl?: string;
     }
 ): Promise<{ videoBuffer: Buffer; mimeType: string }> {
     if (!OPENAI_API_KEY) {
@@ -364,7 +435,7 @@ export async function openaiGenerateVideo(
 
     try {
         // Step 1: Create video generation job
-        const createResponse = await fetch("https://api.openai.com/v1/videos", {
+        const response = await fetch("https://api.openai.com/v1/videos", {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${OPENAI_API_KEY}`,
@@ -373,17 +444,20 @@ export async function openaiGenerateVideo(
             body: JSON.stringify({
                 model: modelId,
                 prompt,
-                ...(options?.duration ? { seconds: String(options.duration) } : {}),
                 ...(options?.size ? { size: options.size } : {}),
+                ...(options?.duration ? { seconds: String(options.duration) } : {}),
+                ...(options?.imageUrl ? { input_reference: { image_url: options.imageUrl } } : {}),
             }),
         });
 
-        if (!createResponse.ok) {
-            const error = await createResponse.json().catch(() => ({ error: { message: createResponse.statusText } }));
-            throw new Error((error as { error?: { message?: string } }).error?.message || `API error: ${createResponse.status}`);
+        if (!response.ok) {
+            throw new Error(`OpenAI video submission failed: ${response.status} - ${await response.text()}`);
         }
 
-        const job = await createResponse.json() as { id: string; status: string };
+        const job = await response.json() as { id?: string; status?: string };
+        if (!job.id) {
+            throw new Error("OpenAI returned no job id");
+        }
         console.log(`[openai] Video job created: ${job.id}`);
 
         // Step 2: Poll for completion
@@ -407,9 +481,11 @@ export async function openaiGenerateVideo(
                 error?: { message: string };
             };
 
-            if (status.status === "completed" && status.output_url) {
-                // Step 3: Download the video
-                const videoResponse = await fetch(status.output_url);
+            if (status.status === "completed") {
+                const downloadUrl = status.output_url || `https://api.openai.com/v1/videos/${job.id}/content`;
+                const videoResponse = await fetch(downloadUrl, status.output_url ? undefined : {
+                    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}` },
+                });
                 if (!videoResponse.ok) {
                     throw new Error(`Failed to download video: ${videoResponse.status}`);
                 }

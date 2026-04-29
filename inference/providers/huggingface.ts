@@ -624,7 +624,7 @@ export interface HFInferenceInput {
   task: string;
   // Text inputs
   prompt?: string;
-  text?: string;
+  text?: string | string[];
   messages?: Array<{ role: string; content: string }>;
   systemPrompt?: string;
   // Media inputs (base64 encoded)
@@ -649,6 +649,20 @@ async function getInferenceClient() {
     inferenceClient = new InferenceClient(HF_TOKEN);
   }
   return inferenceClient;
+}
+
+function primaryTextInput(input: HFInferenceInput): string {
+  if (typeof input.prompt === "string" && input.prompt.length > 0) {
+    return input.prompt;
+  }
+  if (Array.isArray(input.text)) {
+    return input.text.join("\n");
+  }
+  return input.text || "";
+}
+
+function featureExtractionInputs(input: HFInferenceInput): string | string[] {
+  return Array.isArray(input.text) ? input.text : primaryTextInput(input);
 }
 
 /**
@@ -679,7 +693,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
         const result = await client.textGeneration({
           provider,
           model: modelId,
-          inputs: input.prompt || input.text || "",
+          inputs: primaryTextInput(input),
           parameters: input.parameters as Record<string, unknown>,
         });
         return { type: "text", data: result.generated_text };
@@ -718,7 +732,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
         const imageBuffer = Buffer.from(input.image, "base64");
         const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
 
-        const result = await client.imageToImage({
+        const result = await client.imageTextToImage({
           provider,
           model: modelId,
           inputs: imageBlob,
@@ -751,7 +765,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
         const imageBuffer = Buffer.from(input.image, "base64");
         const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
 
-        const result = await client.imageToVideo({
+        const result = await client.imageTextToVideo({
           provider,
           model: modelId,
           inputs: imageBlob,
@@ -773,7 +787,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
         const result = await client.textToSpeech({
           provider,
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
           parameters: input.parameters as Record<string, unknown>,
         });
         const buffer = await blobToBuffer(result as unknown as Blob);
@@ -809,9 +823,13 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       // Embedding Tasks
       // ===========================================
       case "feature-extraction": {
+        const inputs = Array.isArray(input.text)
+          ? input.text
+          : primaryTextInput(input);
         const result = await client.featureExtraction({
+          provider,
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs,
         });
         return { type: "embedding", data: result as number[] | number[][] };
       }
@@ -820,7 +838,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
         const result = await client.sentenceSimilarity({
           model: modelId,
           inputs: {
-            source_sentence: input.text || input.prompt || "",
+            source_sentence: primaryTextInput(input),
             sentences: (input.parameters?.sentences as string[]) || [],
           },
         });
@@ -833,7 +851,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       case "summarization": {
         const result = await client.summarization({
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
           parameters: input.parameters as Record<string, unknown>,
         });
         return { type: "text", data: result.summary_text };
@@ -842,7 +860,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       case "translation": {
         const result = await client.translation({
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
           parameters: input.parameters as Record<string, unknown>,
         });
         return { type: "text", data: result.translation_text };
@@ -851,7 +869,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       case "text-classification": {
         const result = await client.textClassification({
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
         });
         return { type: "json", data: result };
       }
@@ -859,7 +877,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       case "token-classification": {
         const result = await client.tokenClassification({
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
         });
         return { type: "json", data: result };
       }
@@ -869,7 +887,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
           model: modelId,
           inputs: {
             question: input.prompt || "",
-            context: input.text || (input.parameters?.context as string) || "",
+            context: primaryTextInput(input) || (input.parameters?.context as string) || "",
           },
         });
         return { type: "json", data: result };
@@ -878,7 +896,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       case "fill-mask": {
         const result = await client.fillMask({
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
         });
         return { type: "json", data: result };
       }
@@ -886,7 +904,7 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       case "zero-shot-classification": {
         const result = await client.zeroShotClassification({
           model: modelId,
-          inputs: input.text || input.prompt || "",
+          inputs: primaryTextInput(input),
           parameters: {
             candidate_labels: (input.parameters?.candidate_labels as string[]) || [],
           },
@@ -1013,10 +1031,12 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
       lowerMessage.includes("prepaid credits") ||
       lowerMessage.includes("pre paid credits")
     ) && lowerMessage.includes("fal");
+    const isFalRetryableTransportError = lowerMessage.includes("failed to fetch")
+      && ["text-to-image", "image-to-image", "text-to-video", "image-to-video"].includes(task);
 
     console.log(`[huggingface] FAL_API_KEY available: ${!!FAL_API_KEY}, isFalPrepaidError: ${isFalPrepaidError}`);
 
-    if (isFalPrepaidError && FAL_API_KEY) {
+    if ((isFalPrepaidError || isFalRetryableTransportError) && FAL_API_KEY) {
       console.log(`[huggingface] fal-ai requires prepaid credits, retrying with FAL_API_KEY directly...`);
 
       try {
@@ -1037,6 +1057,22 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
             const buffer = await blobToBuffer(result as unknown as Blob);
             return { type: "image", data: buffer, mimeType: "image/png" };
           }
+          case "image-to-image": {
+            if (!input.image) throw new Error("image is required for image-to-image");
+            const imageBuffer = Buffer.from(input.image, "base64");
+            const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+            const result = await falClient.imageTextToImage({
+              provider,
+              model: modelId,
+              inputs: imageBlob,
+              parameters: {
+                prompt: input.prompt || "",
+                ...(input.parameters as Record<string, unknown>),
+              },
+            });
+            const buffer = await blobToBuffer(result as unknown as Blob);
+            return { type: "image", data: buffer, mimeType: "image/png" };
+          }
           case "text-to-video": {
             const result = await falClient.textToVideo({
               provider,
@@ -1047,12 +1083,28 @@ export async function executeHFInference(input: HFInferenceInput): Promise<HFInf
             const buffer = await blobToBuffer(result as unknown as Blob);
             return { type: "video", data: buffer, mimeType: "video/mp4" };
           }
+          case "image-to-video": {
+            if (!input.image) throw new Error("image is required for image-to-video");
+            const imageBuffer = Buffer.from(input.image, "base64");
+            const imageBlob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+            const result = await falClient.imageTextToVideo({
+              provider,
+              model: modelId,
+              inputs: imageBlob,
+              parameters: {
+                prompt: input.prompt || "",
+                ...(input.parameters as Record<string, unknown>),
+              },
+            });
+            const buffer = await blobToBuffer(result as unknown as Blob);
+            return { type: "video", data: buffer, mimeType: "video/mp4" };
+          }
           case "text-to-speech":
           case "text-to-audio": {
             const result = await falClient.textToSpeech({
               provider,
               model: modelId,
-              inputs: input.text || input.prompt || "",
+              inputs: primaryTextInput(input),
               parameters: input.parameters as Record<string, unknown>,
             });
             const buffer = await blobToBuffer(result as unknown as Blob);
