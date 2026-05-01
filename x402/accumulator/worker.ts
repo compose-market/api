@@ -25,6 +25,7 @@ import {
 import { settleComposeKeyPayment } from "../settlement.js";
 import { syncBudgetAfterSettlement } from "../keys/index.js";
 import type { BatchSettlementResult, BatchRunSummary, BatchConfig, DEFAULT_BATCH_CONFIG } from "./types.js";
+import { captureSettledBillableCalls } from "../../metrics/instrumentation.js";
 
 // =============================================================================
 // Configuration
@@ -174,6 +175,14 @@ export async function settleUserBatch(
 
         // Success - mark all intents as settled
         await markIntentsSettled(intentIds, settlementResult.txHash || "");
+        captureSettledBillableCalls(intents.map((intent) => ({
+            chainId,
+            id: `session-budget-intent:${intent.id}`,
+            amountWei: intent.amountWei,
+            txHash: settlementResult.txHash,
+            source: "batch-settlement",
+            userAddress,
+        })));
 
         // Update session budget: move from locked to used
         await markSettled(userAddress, chainId, totalAmount.toString());

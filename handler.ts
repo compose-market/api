@@ -1273,6 +1273,15 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
     }
 
     await consumeKeyBudget(validation.payload!.keyId, amountWei);
+    const { captureSettledBillableCall } = await import("./metrics/instrumentation.js");
+    captureSettledBillableCall({
+        chainId: keyChainId,
+        id: `keys-settle:${validation.payload!.keyId}:${result.txHash || Date.now()}`,
+        amountWei,
+        txHash: result.txHash,
+        source: "keys-settle",
+        userAddress: validation.payload!.sub,
+    });
     const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
 
     return {

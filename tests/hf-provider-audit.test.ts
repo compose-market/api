@@ -1,0 +1,197 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+    assertProviderCatalogContainer,
+    assertStrictProviderCatalog,
+    findProviderScriptAuditViolations,
+} from "./hf-provider-audit.js";
+
+test("findProviderScriptAuditViolations flags fuzzy model matching heuristics", () => {
+    const source = `
+function matchPricing(modelId, pricingMap) {
+  for (const [key, value] of pricingMap) {
+    if (key.includes(modelId) || modelId.includes(key)) return value;
+    const shortId = modelId.split("/").pop() || "";
+    if (shortId && key.includes(shortId)) return value;
+  }
+  return null;
+}
+
+const description = title || "";
+const totalModels = items.length ?? null;
+const output = { lastUpdated: new Date().toISOString(), modelsWithPricing: 1 };
+`;
+
+    const violations = findProviderScriptAuditViolations(source);
+
+    assert.deepEqual(violations, [
+        "blank-string-fallback",
+        "null-fallback",
+        "fuzzy-includes-match",
+        "short-id-pop-match",
+        "legacy-lastUpdated-root",
+        "legacy-modelsWithPricing-root",
+    ]);
+});
+
+test("assertStrictProviderCatalog rejects missing canonical fields", () => {
+    assert.throws(
+        () => assertStrictProviderCatalog({
+            provider: "ovhcloud",
+            retrievedAtUtc: "2026-03-06T00:00:00.000Z",
+            totalModels: 1,
+            sourceStages: {
+                discovery: { kind: "api", url: "https://example.com/models", coverage: "all_models" },
+                pricing: { kind: "pricing_table", url: "https://example.com/pricing", coverage: "provider_pricing" },
+                modelPages: { kind: "model_pages", url: "https://example.com/models/{id}", coverage: "all_models" },
+            },
+            models: [
+                {
+                    id: "qwen3-coder-30b-a3b-instruct",
+                    modelId: "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+                    name: "Qwen3 Coder 30B",
+                    description: "",
+                    type: "text-generation",
+                    task: "conversational",
+                    modality: "text",
+                    supportedDataTypes: { inputs: ["text"], outputs: [] },
+                    contextWindow: { inputTokens: 131072, outputTokens: 131072 },
+                    pricing: { unit: "per_1M_tokens_usd", values: { input: 0.07, output: 0.26 } },
+                    sources: {
+                        discovery: "https://example.com/models/qwen3",
+                        pricing: "https://example.com/pricing#qwen3",
+                        modelPage: "https://example.com/models/qwen3",
+                        matchType: "exact",
+                    },
+                },
+            ],
+        }, "ovhcloud.json"),
+        /description|supportedDataTypes\.outputs/i,
+    );
+});
+
+test("assertStrictProviderCatalog accepts a complete canonical provider catalog", () => {
+    const catalog = {
+        provider: "wavespeed",
+        retrievedAtUtc: "2026-03-06T00:00:00.000Z",
+        totalModels: 1,
+        sourceStages: {
+            discovery: { kind: "api", url: "https://router.huggingface.co/v1/models", coverage: "all_models" },
+            pricing: { kind: "pricing_table", url: "https://wavespeed.ai/pricing", coverage: "provider_pricing" },
+            modelPages: { kind: "model_pages", url: "https://wavespeed.ai/models/{providerModelId}", coverage: "all_models" },
+        },
+        models: [
+            {
+                id: "wavespeed-ai/qwen-image/edit-plus-lora",
+                modelId: "Qwen/Qwen-Image-Edit-2509",
+                name: "Qwen Image Edit Plus (2509)",
+                description: "Official provider page description.",
+                type: "image-editing",
+                task: "image-to-image",
+                modality: "image",
+                supportedDataTypes: { inputs: ["image", "text"], outputs: ["image"] },
+                contextWindow: { inputTokens: null, outputTokens: null },
+                pricing: { unit: "per_image_usd", values: { input: 0.025 } },
+                sources: {
+                    discovery: "https://router.huggingface.co/v1/models",
+                    pricing: "https://wavespeed.ai/pricing",
+                    modelPage: "https://wavespeed.ai/models/wavespeed-ai/qwen-image/edit-plus-lora",
+                    matchType: "exact",
+                },
+            },
+        ],
+    };
+
+    assert.doesNotThrow(() => assertStrictProviderCatalog(catalog, "wavespeed.json"));
+});
+
+test("assertStrictProviderCatalog compresses repeated missing-field failures", () => {
+    assert.throws(
+        () => assertStrictProviderCatalog({
+            provider: "demo",
+            retrievedAtUtc: "2026-03-06T00:00:00.000Z",
+            totalModels: 2,
+            sourceStages: {
+                discovery: { kind: "api", url: "https://example.com/models", coverage: "all_models" },
+                pricing: { kind: "pricing_table", url: "https://example.com/pricing", coverage: "provider_pricing" },
+                modelPages: { kind: "model_pages", url: "https://example.com/models/{id}", coverage: "all_models" },
+            },
+            models: [
+                {
+                    id: "a",
+                    modelId: "org/a",
+                    name: "A",
+                    description: "desc",
+                    type: "text-generation",
+                    task: "chat-completion",
+                    modality: "text",
+                    supportedDataTypes: { inputs: ["text"], outputs: ["text"] },
+                    contextWindow: { inputTokens: null, outputTokens: null },
+                    pricing: { unit: "per_1M_tokens_usd", values: {} },
+                    sources: {
+                        discovery: "https://example.com/models/a",
+                        pricing: "https://example.com/pricing#a",
+                        modelPage: "https://example.com/models/a",
+                        matchType: "exact",
+                    },
+                },
+                {
+                    id: "b",
+                    modelId: "org/b",
+                    name: "B",
+                    description: "desc",
+                    type: "text-generation",
+                    task: "chat-completion",
+                    modality: "text",
+                    supportedDataTypes: { inputs: ["text"], outputs: ["text"] },
+                    contextWindow: { inputTokens: null, outputTokens: null },
+                    pricing: { unit: "per_1M_tokens_usd", values: {} },
+                    sources: {
+                        discovery: "https://example.com/models/b",
+                        pricing: "https://example.com/pricing#b",
+                        modelPage: "https://example.com/models/b",
+                        matchType: "exact",
+                    },
+                },
+            ],
+        }, "demo.json"),
+        /models\[\*\]\.pricing\.values x2/i,
+    );
+});
+
+test("assertProviderCatalogContainer accepts partial provider shards", () => {
+    const partialCatalog = {
+        provider: "publicai",
+        retrievedAtUtc: "2026-03-07T00:00:00.000Z",
+        totalModels: 2,
+        models: [
+            {
+                id: "allenai/Molmo2-8B",
+                modelId: "allenai/Molmo2-8B",
+                pricing: null,
+            },
+            {
+                id: "utter-project/EuroLLM-22B-Instruct-2512",
+                modelId: "utter-project/EuroLLM-22B-Instruct-2512",
+                pricing: {
+                    unit: "usd_per_1m_tokens",
+                    values: { input: 0.1, output: 0.2 },
+                },
+            },
+        ],
+    };
+
+    assert.doesNotThrow(() => assertProviderCatalogContainer(partialCatalog, "publicai.json"));
+});
+
+test("assertProviderCatalogContainer accepts empty provider shards for fail-closed sync runs", () => {
+    const emptyCatalog = {
+        provider: "nscale",
+        retrievedAtUtc: "2026-04-06T00:00:00.000Z",
+        totalModels: 0,
+        models: [],
+    };
+
+    assert.doesNotThrow(() => assertProviderCatalogContainer(emptyCatalog, "nscale.json"));
+});

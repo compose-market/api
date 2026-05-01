@@ -352,7 +352,13 @@ export async function handlePublicRoute(
   }
 }
 
-export function buildWorkflowRuntimeUrl(pathAndQuery: string): string {
+/**
+ * Build a runtime-internal URL. The runtime mounts ALL gateway-facing routes
+ * (agent + workflow + memory + workspace + triggers) under `/internal/workflow`
+ * for historical reasons; the prefix is the mount path, not a product
+ * namespace. The api/ gateway proxies straight through.
+ */
+export function buildRuntimeInternalUrl(pathAndQuery: string): string {
   return `${requireRuntimeUrl()}/internal/workflow${pathAndQuery}`;
 }
 
@@ -433,7 +439,7 @@ async function callRuntime(
   pathAndQuery = req.originalUrl,
   extraHeaders: Record<string, string> = {},
 ): Promise<globalThis.Response> {
-  return fetch(buildWorkflowRuntimeUrl(pathAndQuery), {
+  return fetch(buildRuntimeInternalUrl(pathAndQuery), {
     method: req.method,
     headers: buildRuntimeHeaders(req, extraHeaders),
     body: buildRuntimeBody(req),
@@ -803,7 +809,24 @@ function parseSseEventBlock(rawEvent: string): ParsedSseEvent | null {
     return null;
   }
 
-  const data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+  const dataStr = dataLines.join("\n").trim();
+  // `[DONE]` is the canonical OpenAI/SSE stream terminator; not JSON. Skip it
+  // here so it passes through to the client unchanged. Without this guard,
+  // JSON.parse throws, the gateway aborts the prepared x402 payment, and on-chain
+  // settlement never lands — the symptom that looks like "agent loops forever"
+  // because the gateway holds the connection until Cloud Run timeout (5 min).
+  if (dataStr === "[DONE]") {
+    return null;
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(dataStr) as Record<string, unknown>;
+  } catch {
+    // Non-JSON data lines (e.g. arbitrary SSE comments routed via `data:`)
+    // never carry settlement metadata. Skip silently so the stream continues.
+    return null;
+  }
   return { eventName, data };
 }
 
@@ -1050,7 +1073,12 @@ export function registerWorkflowRoutes(app: Application): void {
       service: "agent",
       action: "agent-stream",
       resolveSettlement: (_eventName, data) => {
-        if (data.type !== "done") {
+        // Settle on any terminal event that carries usage metering. `done` is the
+        // normal path; `stopped` (user-issued abort via /runs/:id/stop) and
+        // `error` (runtime failure with partial usage already accumulated) MUST
+        // also settle so partial work the model performed is paid for and the
+        // x402 prepared payment is never silently aborted.
+        if (data.type !== "done" && data.type !== "stopped" && data.type !== "error") {
           return null;
         }
         return resolveAgentTextSettlement(data);
@@ -1066,6 +1094,7 @@ export function registerWorkflowRoutes(app: Application): void {
     }),
   );
   app.get("/agent/:walletAddress/runs/:runId/state", passthroughJsonRoute());
+  app.post("/agent/:walletAddress/runs/:runId/stop", passthroughJsonRoute());
 
   app.post(
     "/workflow/execute",

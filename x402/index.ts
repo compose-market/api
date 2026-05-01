@@ -36,6 +36,7 @@ import {
     getKeyBudgetInfo,
     getActiveSessionStatus,
 } from "./keys/index.js";
+import { captureSettledBillableCall } from "../metrics/instrumentation.js";
 
 // Session Budget - Deferred Payment (locked/used tracking for batch settlement)
 import {
@@ -679,6 +680,14 @@ async function prepareRawInferenceX402Payment(
                 };
             }
 
+            captureSettledBillableCall({
+                chainId: paymentChainId,
+                id: `raw-x402:${settled.transaction || `${paymentChainId}:${finalAmountWei}`}`,
+                amountWei: finalAmountWei,
+                txHash: settled.transaction || undefined,
+                source: "raw-x402",
+            });
+
             return {
                 success: true,
                 txHash: settled.transaction || undefined,
@@ -1071,6 +1080,15 @@ export async function prepareDeferredPayment(
 
                 if (result.success) {
                     settlementTxHash = result.txHash;
+                    const requestId = String(req.headers?.["x-request-id"] || `${validation.payload!.keyId}:${Date.now()}`);
+                    captureSettledBillableCall({
+                        chainId,
+                        id: `compose-key:${validation.payload!.keyId}:${requestId}`,
+                        amountWei,
+                        txHash: result.txHash,
+                        source: "compose-key",
+                        userAddress: validation.payload!.sub,
+                    });
                     // Update Redis cache
                     try {
                         await consumeKeyBudget(validation.payload!.keyId, amountWei);
@@ -1143,6 +1161,13 @@ export async function prepareDeferredPayment(
                     const responseBody = result.responseBody as any;
                     const txHash = responseBody?.txHash || responseBody?.receipt?.transaction;
                     settleResult = { success: true, txHash };
+                    captureSettledBillableCall({
+                        chainId: explicitChainId || getActiveChainId(),
+                        id: `legacy-x402:${txHash || `${amountWei}:${Date.now()}`}`,
+                        amountWei,
+                        txHash,
+                        source: "legacy-x402",
+                    });
                     console.log(`[x402] preparePayment: x402 settlement success, tx: ${txHash}`);
                 } else {
                     settleResult = { success: false, error: (result.responseBody as any)?.error || "Settlement failed" };

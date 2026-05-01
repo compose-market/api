@@ -33,6 +33,7 @@ import {
     createComposePaymentRequired,
     encodeComposePaymentRequiredHeader,
 } from "./facilitator.js";
+import { captureSettledBillableCall } from "../metrics/instrumentation.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
@@ -877,6 +878,15 @@ export async function settlePaymentIntent(
                     platformFeeWei: intent.platformFeeWei || "",
                     finalAmountWei: finalAmountStr,
                 }),
+            });
+
+            captureSettledBillableCall({
+                chainId: intent.chainId,
+                id: `payment-intent:${intent.paymentIntentId}`,
+                amountWei: finalAmountStr,
+                txHash: settlement.txHash,
+                source: "payment-intent",
+                userAddress: intent.userAddress,
             });
 
             const headers = appendSettlementAmountHeaders(

@@ -8,6 +8,10 @@ import { registerHandlerRoutes } from "./handler.js";
 import { registerSessionEventsRoute } from "./x402/keys/sse.js";
 import { corsMiddleware, requestIdMiddleware } from "./http/middleware.js";
 import { buildError } from "./http/errors.js";
+import { createMetricsAttemptMiddleware } from "./metrics/middleware.js";
+import { registerMetricsRoutes } from "./metrics/routes.js";
+import { runMetricsBackfill } from "./metrics/onchain.js";
+import { runMetricsWatch, startMetricsWatchService } from "./metrics/service.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
 export { expiryWorker } from "./x402/keys/expiry.js";
@@ -29,6 +33,12 @@ async function runJob() {
       case "expiry-scan":
         await expiryWorker({ source: "scheduled" } as any, {} as any);
         break;
+      case "metrics-backfill":
+        await runMetricsBackfill();
+        break;
+      case "metrics-watch":
+        await runMetricsWatch();
+        return;
       default:
         throw new Error(`Unknown job task: ${task}`);
     }
@@ -59,6 +69,7 @@ app.use(corsMiddleware());
 // Canonical X-Request-Id on every response. Accepts a caller-supplied id when
 // syntactically safe, mints one otherwise.
 app.use(requestIdMiddleware());
+app.use(createMetricsAttemptMiddleware());
 
 app.use(
   express.json({
@@ -142,7 +153,9 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   registerInferenceRoutes(app);
   registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
+  registerMetricsRoutes(app);
   registerHandlerRoutes(app);
+  startMetricsWatchService();
 
     app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
         const error = err as { status?: number; statusCode?: number; message?: string };
@@ -175,5 +188,6 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   console.log(`     GET  /api/models`);
   console.log(`     GET  /api/hf/models`);
   console.log(`     GET  /api/hf/tasks`);
-  console.log(`     GET  /api/agentverse/agents\n`);
+  console.log(`     GET  /api/agentverse/agents`);
+  console.log(`     GET  /api/metrics\n`);
 })();
