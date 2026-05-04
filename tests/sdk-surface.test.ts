@@ -1,6 +1,6 @@
 /**
  * Tests for Phase 0.6 + 0.10 + 0.11:
- *   - GET /api/session returns session metadata WITHOUT the token
+ *   - GET /api/session returns active session metadata with the token
  *   - DELETE /api/keys/:keyId requires Authorization: Bearer compose-<jwt>
  *   - GET /api/keys/:keyId requires Authorization of the same key and returns
  *     record metadata (never the token)
@@ -33,6 +33,7 @@ import {
 } from "../http/request-context.js";
 import { buildCorsHeaders } from "../http/cors.js";
 import { buildError, statusForCode } from "../http/errors.js";
+import { initializeSessionBudget } from "../x402/session-budget.js";
 
 type HandlerEvent = {
     rawPath: string;
@@ -152,20 +153,23 @@ test("buildError + statusForCode produce the canonical envelope", () => {
 // Integration tests against the real handler pipeline.
 // ----------------------------------------------------------------------------
 
-test("GET /api/session never returns the compose-<jwt> token", async () => {
+test("GET /api/session returns the active compose-<jwt> token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
     const chainId = 43113;
     const expiresAt = Date.now() + 10 * 60 * 1000;
+    let seededKeyId: string | null = null;
 
     try {
         const seeded = await createComposeKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
             chainId,
-            purpose: "api", // Use 'api' so no session-budget initialization is required
-            name: "test-api-key",
+            purpose: "session",
+            name: "test-session-key",
         });
+        seededKeyId = seeded.keyId;
+        await initializeSessionBudget(userAddress, chainId, "1000000", expiresAt);
         assert.ok(seeded.token.startsWith("compose-"));
 
         const result = await handler(
@@ -179,20 +183,14 @@ test("GET /api/session never returns the compose-<jwt> token", async () => {
         );
         assert.equal(result.statusCode, 200);
         const body = JSON.parse(result.body) as Record<string, unknown>;
-        // Must be "no session" because api keys are not session keys, but critically
-        // even if there were one, the body must not carry `token`.
-        assert.equal(body.token, undefined, "GET /api/session must NEVER return the Compose Key token");
-
-        // Now, if the record had been a session key, the body would include the
-        // metadata but still no token. Sanity:
-        assert.ok("hasSession" in body);
+        assert.equal(body.hasSession, true);
+        assert.equal(body.keyId, seeded.keyId);
+        assert.equal(body.token, seeded.token);
     } finally {
-        await redisDel(`compose-key:${(await createComposeKey(userAddress, {
-            budgetLimit: 0,
-            expiresAt: Date.now() + 1000,
-            chainId,
-            purpose: "api",
-        })).keyId}`);
+        if (seededKeyId) {
+            await redisDel(`compose-key:${seededKeyId}`);
+            await redisSRem(userKeysIndex(userAddress), seededKeyId);
+        }
         // Clean any leftover state.
         await redisDel(userKeysIndex(userAddress));
         await redisDel(sessionBudgetKey(userAddress, chainId));

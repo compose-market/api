@@ -21,10 +21,10 @@
     "check:inference": "tsx scripts/check.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.72",
-    "@ai-sdk/google": "^3.0.65",
-    "@ai-sdk/openai": "^3.0.54",
-    "@ai-sdk/openai-compatible": "^2.0.42",
+    "@ai-sdk/anthropic": "^3.0.74",
+    "@ai-sdk/google": "^3.0.67",
+    "@ai-sdk/openai": "^3.0.58",
+    "@ai-sdk/openai-compatible": "^2.0.45",
     "@composio/core": "^0.8.1",
     "@filoz/synapse-core": "^0.4.1",
     "@filoz/synapse-sdk": "^0.40.4",
@@ -32,7 +32,7 @@
     "@huggingface/inference": "^4.13.15",
     "@x402/core": "^2.11.0",
     "@x402/evm": "^2.11.0",
-    "ai": "^6.0.170",
+    "ai": "^6.0.174",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -40,8 +40,9 @@
     "filecoin-pin": "^0.20.0",
     "puppeteer": "^24.42.0",
     "redis": "^5.12.1",
-    "viem": "^2.48.4",
-    "zod": "^4.4.1"
+    "viem": "^2.48.8",
+    "ws": "^8.20.0",
+    "zod": "^4.4.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
@@ -51,6 +52,6 @@
     "esbuild": "^0.28.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
-    "yaml": "^2.8.3"
+    "yaml": "^2.8.4"
   }
 }

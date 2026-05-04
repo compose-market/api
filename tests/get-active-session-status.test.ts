@@ -21,6 +21,9 @@ const TEST_BUDGET_WEI = 1_000_000;
 const TEST_LOCK_WEI = 25_000;
 const TEST_MERCHANT = "0x058271e764154c322f3d3ddc18af44f7d91b1c80";
 
+process.env.NODE_ENV = "test";
+process.env.COMPOSE_SESSION_ALLOWANCE_OVERRIDE_WEI = String(TEST_BUDGET_WEI);
+
 function randomWalletAddress(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
 }
