@@ -21,7 +21,6 @@ import {
     treasuryWalletAddress,
 } from "./wallets.js";
 import { getViemChain, getUsdcAddress, getRpcUrl } from "./configs/chains.js";
-import { captureSettlementTransaction } from "../metrics/instrumentation.js";
 
 // =============================================================================
 // Types
@@ -155,15 +154,6 @@ export async function settleComposeKeyPayment(
             // Log warning but return success since tx was submitted
             console.warn(`[settlement] Confirmation timeout for ${txHash}:`, waitError);
         }
-
-        captureSettlementTransaction({
-            chainId,
-            txHash,
-            amountWei: amount.toString(),
-            from: userAddress,
-            to: merchantWalletAddress,
-            source: "compose-key-transfer-from",
-        });
 
         return {
             success: true,

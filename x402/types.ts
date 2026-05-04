@@ -101,7 +101,7 @@ export interface PriceLookupParams {
     /** Request profile for pricing without model-id heuristics */
     requestProfile?: "text" | "image" | "audio" | "video" | "embedding";
     /** Tool source for tool pricing */
-    toolSource?: "goat" | "mcp" | "eliza";
+    toolSource?: "onchain" | "tools" | "eliza";
     /** Tool name */
     toolName?: string;
     /** Whether tool is a transaction */

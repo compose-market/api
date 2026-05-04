@@ -37,7 +37,6 @@ import {
     getViemChain,
 } from "./configs/chains.js";
 import { merchantWalletAddress } from "./wallets.js";
-import { captureSettlementTransaction } from "../metrics/instrumentation.js";
 
 export const COMPOSE_METERING_EXTENSION_KEY = "compose-metering-v1";
 export const COMPOSE_PAYMENT_INTENT_EXTENSION_KEY = "compose-payment-intent-v1";
@@ -341,19 +340,7 @@ export async function settleComposePayment(
     paymentPayload: PaymentPayload,
     paymentRequirements: PaymentRequirements,
 ): Promise<SettleResponse> {
-    const result = await getComposeFacilitator().settle(paymentPayload, paymentRequirements);
-    if (result.success && result.transaction) {
-        const [, chainIdPart] = paymentRequirements.network.split(":");
-        const chainId = Number.parseInt(chainIdPart || "", 10);
-        captureSettlementTransaction({
-            chainId,
-            txHash: result.transaction,
-            amountWei: paymentRequirements.amount,
-            to: paymentRequirements.payTo,
-            source: "x402-facilitator",
-        });
-    }
-    return result;
+    return getComposeFacilitator().settle(paymentPayload, paymentRequirements);
 }
 
 export function parseComposeFacilitatorVerifyRequest(body: unknown): {
