@@ -29,6 +29,7 @@ import {
 } from "./x402/index.js";
 import { type ComposeReceipt } from "./http/request-context.js";
 import { toComposeReceiptStreamEvent } from "./inference/core.js";
+import { normalizeConnectorBinding } from "./connectors.js";
 
 interface PublicRouteEvent {
   rawPath: string;
@@ -223,6 +224,14 @@ function requireRuntimeInternalSecret(): string {
   return value;
 }
 
+function requireConnectorsUrl(): string {
+  const value = process.env.CONNECTORS_URL;
+  if (!value) {
+    throw new Error("CONNECTORS_URL is required");
+  }
+  return normalizeUrl(value);
+}
+
 function isWalletAddress(value: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(value);
 }
@@ -267,10 +276,25 @@ async function listPinsByType(type: "agent-card" | "workflow-metadata"): Promise
   return items.filter((value): value is AgentCard | WorkflowMetadata => value !== null);
 }
 
+function normalizeAgentCard(card: AgentCard): AgentCard {
+  return {
+    ...card,
+    plugins: (card.plugins || []).map((plugin) => {
+      const binding = normalizeConnectorBinding(plugin, { defaultOrigin: "onchain" });
+      return {
+        ...plugin,
+        registryId: binding.registryId,
+        origin: binding.origin,
+      };
+    }),
+  };
+}
+
 export async function findAgentByWallet(walletAddress: string): Promise<AgentCard | null> {
   const agents = await listPinsByType("agent-card");
   const normalizedAddress = walletAddress.toLowerCase();
-  return agents.find((agent) => (agent as AgentCard).walletAddress?.toLowerCase() === normalizedAddress) as AgentCard | null;
+  const agent = agents.find((item) => (item as AgentCard).walletAddress?.toLowerCase() === normalizedAddress) as AgentCard | undefined;
+  return agent ? normalizeAgentCard(agent) : null;
 }
 
 async function findWorkflowByWallet(walletAddress: string): Promise<WorkflowMetadata | null> {
@@ -305,7 +329,7 @@ export async function handlePublicRoute(
     if (method === "GET" && path === "/agents") {
       const agents = await listPinsByType("agent-card") as AgentCard[];
       return jsonResult(200, corsHeaders, {
-        agents,
+        agents: agents.map(normalizeAgentCard),
         total: agents.length,
       });
     }
@@ -841,6 +865,99 @@ function passthroughJsonRoute(pathAndQuery?: (req: Request) => string) {
   };
 }
 
+function pathSegment(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  try {
+    return encodeURIComponent(decodeURIComponent(value));
+  } catch {
+    return encodeURIComponent(value);
+  }
+}
+
+function mapConnectorsProxyTarget(req: Request): { path: string; method?: string; body?: unknown } | null {
+  const url = new URL(req.originalUrl, "http://compose-api.local");
+  const pathname = url.pathname;
+  const search = url.search;
+
+  if (pathname.startsWith("/api/tools")) {
+    return { path: `/tools${pathname.slice("/api/tools".length)}${search}` };
+  }
+  if (pathname.startsWith("/api/onchain")) {
+    return { path: `/onchain${pathname.slice("/api/onchain".length)}${search}` };
+  }
+
+  if (pathname === "/api/mcp/spawn") {
+    const serverId = pathSegment((req.body as { serverId?: unknown } | undefined)?.serverId);
+    return serverId ? { path: `/tools/${serverId}/tools${search}`, method: "GET" } : null;
+  }
+  if (pathname === "/api/mcp/inspect") {
+    const body = req.body as { serverId?: unknown; candidates?: unknown } | undefined;
+    const serverId = pathSegment(body?.serverId);
+    return serverId ? { path: `/tools/${serverId}/inspect${search}`, method: "POST", body: { candidates: body?.candidates || [] } } : null;
+  }
+  {
+    const m = pathname.match(/^\/api\/mcp\/servers\/([^/]+)\/tools(?:\/([^/]+))?$/);
+    if (m) {
+      const serverId = pathSegment(m[1]);
+      const toolName = m[2] ? pathSegment(m[2]) : null;
+      if (!serverId) return null;
+      if (toolName) return { path: `/tools/${serverId}/execute/${toolName}${search}`, method: "POST" };
+      return { path: `/tools/${serverId}/tools${search}`, method: "GET" };
+    }
+  }
+
+  if (pathname === "/api/goat/status" || pathname === "/api/goat/plugins" || pathname === "/api/goat/tools") {
+    return { path: `/onchain${search}`, method: "GET" };
+  }
+  {
+    const m = pathname.match(/^\/api\/goat\/plugins\/([^/]+)(?:\/tools(?:\/([^/]+))?)?$/);
+    if (m) {
+      const pluginId = pathSegment(m[1]);
+      const toolName = m[2] ? pathSegment(m[2]) : null;
+      if (!pluginId) return null;
+      if (toolName) {
+        const method = req.method === "GET" ? "GET" : "POST";
+        return {
+          path: method === "GET" ? `/onchain/${pluginId}/tools/${toolName}${search}` : `/onchain/${pluginId}/execute/${toolName}${search}`,
+          method,
+        };
+      }
+      return { path: `/onchain/${pluginId}${search}`, method: "GET" };
+    }
+  }
+
+  return null;
+}
+
+function connectorsProxyRoute() {
+  return (req: Request, res: ExpressResponse, next: NextFunction) => {
+    void (async () => {
+      const target = mapConnectorsProxyTarget(req);
+      if (!target) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      const headers = buildRuntimeHeaders(req, {
+        Authorization: `Bearer ${requireRuntimeInternalSecret()}`,
+      });
+      const body = target.body === undefined
+        ? (target.method === "GET" || target.method === "HEAD" ? undefined : buildRuntimeBody(req))
+        : JSON.stringify(target.body);
+      if (target.body !== undefined) {
+        headers.set("Content-Type", "application/json");
+      }
+      const response = await fetch(`${requireConnectorsUrl()}${target.path}`, {
+        method: target.method || req.method,
+        headers,
+        body,
+      });
+      const text = await response.text();
+      applyRuntimeHeaders(res, response);
+      res.status(response.status).send(text);
+    })().catch(next);
+  };
+}
+
 function payableJsonRoute(config: {
   service: string;
   action: string;
@@ -1059,6 +1176,11 @@ function payableStreamRoute(config: {
 }
 
 export function registerWorkflowRoutes(app: Application): void {
+  app.use("/api/tools", connectorsProxyRoute());
+  app.use("/api/onchain", connectorsProxyRoute());
+  app.use("/api/mcp", connectorsProxyRoute());
+  app.use("/api/goat", connectorsProxyRoute());
+
   app.post(
     "/agent/:walletAddress/chat",
     payableJsonRoute({
