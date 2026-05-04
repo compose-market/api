@@ -737,21 +737,10 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
     const budgetLocked = BigInt(liveBudget?.lockedWei ?? session.budgetLocked);
     const budgetRemaining = BigInt(liveBudget?.availableWei ?? session.budgetRemaining);
 
-    // NOTE: The Compose Key JWT (`session.token`) is deliberately NOT returned
-    // from this endpoint anymore. It is returned exactly once by POST /api/keys
-    // and the caller MUST persist it client-side (localStorage, keychain,
-    // secret-store). This endpoint now only returns session *metadata* so an
-    // integrator can query status, budget, and expiry at any time without
-    // re-vending the authoritative bearer token.
-    //
-    // Rationale: previous versions leaked live session JWTs to anyone who
-    // knew a funded wallet address. Dropping the token from the read-side
-    // closes that leak cleanly without breaking the signless-only UX — the
-    // integrator keeps the token in their own storage exactly like any API
-    // key issued by Stripe, OpenAI, etc.
     const response: Record<string, any> = {
         hasSession: true,
         keyId: session.keyId,
+        token: session.token,
         budgetLimit: budgetLimit.toString(),
         budgetUsed: budgetUsed.toString(),
         budgetLocked: budgetLocked.toString(),
@@ -1273,15 +1262,6 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
     }
 
     await consumeKeyBudget(validation.payload!.keyId, amountWei);
-    const { captureSettledBillableCall } = await import("./metrics/instrumentation.js");
-    captureSettledBillableCall({
-        chainId: keyChainId,
-        id: `keys-settle:${validation.payload!.keyId}:${result.txHash || Date.now()}`,
-        amountWei,
-        txHash: result.txHash,
-        source: "keys-settle",
-        userAddress: validation.payload!.sub,
-    });
     const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
 
     return {
