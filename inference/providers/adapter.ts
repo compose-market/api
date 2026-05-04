@@ -18,7 +18,7 @@ import {
   streamImage as googleStreamImage,
   generateSpeech as googleGenerateSpeech,
   generateVideo as googleGenerateVideo,
-} from "./genai.js";
+} from "./google.js";
 import {
   openaiGenerateImage,
   isOpenAIImageStreamingUnsupportedError,
@@ -1302,12 +1302,12 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
       status: "completed",
       ...((request.billingMetrics || output.usage?.billingMetrics || promptCharacterCount > 0)
         ? {
-            billingMetrics: {
-              ...(request.billingMetrics || {}),
-              ...(output.usage?.billingMetrics || {}),
-              ...(promptCharacterCount > 0 ? { character: promptCharacterCount } : {}),
-            },
-          }
+          billingMetrics: {
+            ...(request.billingMetrics || {}),
+            ...(output.usage?.billingMetrics || {}),
+            ...(promptCharacterCount > 0 ? { character: promptCharacterCount } : {}),
+          },
+        }
         : {}),
     },
     usage: output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
@@ -1481,11 +1481,11 @@ export async function* streamAdapter(
         }
         lastUsage = event.usage
           ? {
-              promptTokens: event.usage.promptTokens,
-              completionTokens: event.usage.completionTokens,
-              totalTokens: event.usage.totalTokens,
-              ...(event.usage.billingMetrics ? { billingMetrics: event.usage.billingMetrics } : {}),
-            }
+            promptTokens: event.usage.promptTokens,
+            completionTokens: event.usage.completionTokens,
+            totalTokens: event.usage.totalTokens,
+            ...(event.usage.billingMetrics ? { billingMetrics: event.usage.billingMetrics } : {}),
+          }
           : undefined;
         const finalImageBuffer = Buffer.from(event.base64, "base64");
         const generatedUnits = generatedImageCount(request);
