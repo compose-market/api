@@ -81,6 +81,23 @@ export interface UnifiedRequest {
   previousResponseId?: string;
   customParams?: Record<string, unknown>;
   billingMetrics?: Record<string, unknown>;
+  /**
+   * OpenAI-shaped response_format on inbound chat / responses requests.
+   * Translated by the provider adapter into AI-SDK's responseFormat (which
+   * each provider then maps to its native flag — Gemini's `responseMimeType`
+   * + `responseSchema`, OpenAI's `response_format`, etc.).
+   *
+   * Keeping the OpenAI shape here (instead of pre-mapping to AI-SDK shape)
+   * preserves `json_schema.name` / `strict` for providers that honor them.
+   */
+  responseFormat?: {
+    type: "text" | "json_object" | "json_schema";
+    json_schema?: {
+      name: string;
+      schema: Record<string, unknown>;
+      strict?: boolean;
+    };
+  };
 }
 
 export interface UnifiedUsage {
@@ -691,6 +708,44 @@ function pickModality(body: Record<string, unknown>, fallback: UnifiedModality):
   return fallback;
 }
 
+/**
+ * Parse the inbound OpenAI-shape `response_format` field into our typed
+ * UnifiedRequest.responseFormat. Accepts:
+ *   { type: "text" }                                          → text
+ *   { type: "json_object" }                                   → json (no schema)
+ *   { type: "json_schema", json_schema: { name, schema } }    → json (with schema)
+ *
+ * Strings, malformed objects, and unknown types are dropped (returns undefined).
+ * The translation to AI-SDK's `responseFormat` happens in providers/adapter.ts.
+ */
+function parseInboundResponseFormat(value: unknown): UnifiedRequest["responseFormat"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const t = obj.type;
+  if (t !== "text" && t !== "json_object" && t !== "json_schema") return undefined;
+  if (t === "text" || t === "json_object") return { type: t };
+  const schemaContainer = obj.json_schema;
+  if (!schemaContainer || typeof schemaContainer !== "object") {
+    // json_schema requested but payload missing — degrade to json_object so the
+    // downstream provider still receives a JSON-mode signal.
+    return { type: "json_object" };
+  }
+  const sc = schemaContainer as Record<string, unknown>;
+  const name = typeof sc.name === "string" && sc.name.length > 0 ? sc.name : "compose_response";
+  const schema = sc.schema && typeof sc.schema === "object" && !Array.isArray(sc.schema)
+    ? (sc.schema as Record<string, unknown>)
+    : null;
+  if (!schema) return { type: "json_object" };
+  return {
+    type: "json_schema",
+    json_schema: {
+      name,
+      schema,
+      strict: typeof sc.strict === "boolean" ? sc.strict : undefined,
+    },
+  };
+}
+
 export function normalizeChatRequest(body: Record<string, unknown>): UnifiedRequest {
   const model = typeof body.model === "string" ? body.model : "";
   const messages = appendAttachmentParts(
@@ -710,6 +765,7 @@ export function normalizeChatRequest(body: Record<string, unknown>): UnifiedRequ
     maxTokens: typeof body.max_tokens === "number" ? body.max_tokens : typeof body.max_completion_tokens === "number" ? body.max_completion_tokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     responseId: toResponseId(),
+    responseFormat: parseInboundResponseFormat(body.response_format),
   };
 }
 
@@ -819,6 +875,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
     },
     previousResponseId,
     customParams,
+    responseFormat: modality === "text" ? parseInboundResponseFormat(body.response_format) : undefined,
     billingMetrics: (modality === "image" || modality === "video" || modality === "audio")
       ? buildRequestBillingMetrics(modality, resolvedParams, promptText)
       : undefined,

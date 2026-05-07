@@ -284,6 +284,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.get(/^\/agent\/0x[a-fA-F0-9]{40}$/, routeHandler);
     app.get("/workflows", routeHandler);
     app.get(/^\/workflow\/0x[a-fA-F0-9]{40}$/, routeHandler);
+    app.get("/api/agentverse/agents", routeHandler);
 
     app.get("/api/pricing", routeHandler);
 

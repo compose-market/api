@@ -271,7 +271,7 @@ export function createComposePaymentRequirement(input: {
         network: `eip155:${input.chainId}`,
         amount: String(input.amountWei),
         asset: getUsdcAddress(input.chainId),
-        payTo: input.payTo || merchantWalletAddress,
+        payTo: input.payTo || merchantWalletAddress || (process.env.MERCHANT_WALLET_ADDRESS as `0x${string}`),
         maxTimeoutSeconds: input.maxTimeoutSeconds ?? 300,
         extra,
     });

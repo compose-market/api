@@ -389,7 +389,7 @@ async function handleEnsureLocalSynapseSession(
       await runPaymasterWrite({
         accountAddress: clients.account.address,
         chainId: clients.chain.id,
-        task: async () => depositUSDFC(clients.synapse, depositAmount),
+        task: async () => depositUSDFC(clients.synapse as any, depositAmount),
       });
       depositExecuted = true;
     }

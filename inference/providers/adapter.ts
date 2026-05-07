@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { embedMany, generateText, jsonSchema, streamText } from "ai";
+import { embedMany, generateText, jsonSchema, Output, streamText } from "ai";
 import { GenerateVideosOperation, GoogleGenAI } from "@google/genai";
 
 import { getEmbeddingModel, getLanguageModel, getModelById } from "../models-registry.js";
@@ -206,6 +206,74 @@ function normalizeToolOutput(value: unknown): unknown {
   };
 }
 
+// =============================================================================
+// Gemini thought_signature round-trip cache
+// =============================================================================
+//
+// Gemini 3+ (and 2.5 reasoning models) require that every functionCall part
+// returned in a previous turn be sent back with its `thoughtSignature` when
+// the next turn carries the tool result. The signature is an opaque blob the
+// model uses to reconstruct its own reasoning state.
+//
+// The OpenAI-compatible wire format we use between runtime ↔ api ↔ provider
+// has no slot for `thoughtSignature` on a `tool_calls[i]` entry, and
+// LangChain's `convertLangChainToolCallToOpenAI` strips any unknown fields
+// off tool_calls before they hit the wire. So we cannot piggyback on the
+// wire — we cache server-side, keyed by the api-generated `toolCallId`,
+// which DOES survive the round trip unchanged.
+//
+// In-process Map only. A multi-step Gemini tool loop is held inside ONE
+// SSE response on ONE api instance for the entire turn — tool calls
+// within that turn never cross instances. Cross-turn continuity is
+// handled by the persisted message history (Responses API).
+//
+// TTL is 10m: a regular multi-step tool loop completes in seconds.
+
+const THOUGHT_SIGNATURE_TTL_MS = 10 * 60_000;
+const thoughtSignatures = new Map<string, { signature: string; expiresAt: number }>();
+
+function rememberThoughtSignature(toolCallId: string | undefined, signature: string | undefined): void {
+  if (!toolCallId || typeof signature !== "string" || signature.length === 0) return;
+  thoughtSignatures.set(toolCallId, {
+    signature,
+    expiresAt: Date.now() + THOUGHT_SIGNATURE_TTL_MS,
+  });
+  // Cheap GC pass: when the map gets large, prune everything expired.
+  if (thoughtSignatures.size > 2_000) {
+    const now = Date.now();
+    for (const [key, entry] of thoughtSignatures) {
+      if (entry.expiresAt <= now) thoughtSignatures.delete(key);
+    }
+  }
+}
+
+function recallThoughtSignature(toolCallId: string | undefined): string | undefined {
+  if (!toolCallId) return undefined;
+  const entry = thoughtSignatures.get(toolCallId);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    thoughtSignatures.delete(toolCallId);
+    return undefined;
+  }
+  return entry.signature;
+}
+
+function extractThoughtSignatureFromProviderMetadata(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== "object") return undefined;
+  const record = meta as Record<string, unknown>;
+  // The AI SDK key for the Google provider is `google` (and `vertex` for
+  // Vertex AI). Both are surfaced under `providerMetadata` with the same
+  // shape. We accept either so the same cache works across deployments.
+  for (const key of ["google", "vertex"]) {
+    const ns = record[key];
+    if (ns && typeof ns === "object") {
+      const sig = (ns as Record<string, unknown>).thoughtSignature;
+      if (typeof sig === "string" && sig.length > 0) return sig;
+    }
+  }
+  return undefined;
+}
+
 export function mapMessagesForAISDK(messages: UnifiedMessage[]): Array<{ role: string; content: unknown }> {
   return messages.map((message) => {
     if (message.role === "system") {
@@ -241,12 +309,26 @@ export function mapMessagesForAISDK(messages: UnifiedMessage[]): Array<{ role: s
           args = call.function.arguments || {};
         }
 
-        content.push({
+        // Re-attach the Gemini thoughtSignature if we cached one for this
+        // tool call. The AI SDK's @ai-sdk/google provider reads it from
+        // `providerOptions.google.thoughtSignature` and writes it onto the
+        // outbound `functionCall` part. Without this round-trip Gemini 3+
+        // returns 400 on the second turn of a tool loop.
+        const signature = recallThoughtSignature(call.id);
+        const providerOptions = signature
+          ? { google: { thoughtSignature: signature } }
+          : undefined;
+
+        const part: Record<string, unknown> = {
           type: "tool-call",
           toolCallId: call.id,
           toolName: call.function.name,
           input: args,
-        });
+        };
+        if (providerOptions) {
+          part.providerOptions = providerOptions;
+        }
+        content.push(part);
       }
 
       return { role: "assistant", content };
@@ -323,6 +405,50 @@ function convertToolChoice(
   }
 
   return undefined;
+}
+
+/**
+ * Translate Compose's OpenAI-shape `responseFormat` into AI-SDK v5's
+ * structured-output `output` parameter.
+ *
+ * Why `output` and not the lower-level `responseFormat`:
+ *   - `output` is the public AI-SDK API for structured outputs and is
+ *     supported across providers.
+ *   - The Google provider (@ai-sdk/google) translates this into
+ *     `responseMimeType: "application/json"` + `responseSchema` natively.
+ *     OpenAI gets `response_format: {type:"json_object"|"json_schema"}`.
+ *     Anthropic uses tool-mode JSON.
+ *   - Each provider owns its own mapping; we don't duplicate the table.
+ *
+ * Returns undefined for `text` (no-op) or when `format` is missing.
+ *
+ * Caveat: when tools are also provided, the AI-SDK enforces the structured
+ * output via a synthetic tool. Most agents that ship tool catalogs don't
+ * also request json_object; the fact extractor (the path this bug fix
+ * unblocks) calls Gemini with NO tools.
+ */
+function translateUnifiedResponseFormat(
+  format: UnifiedRequest["responseFormat"],
+): { output: ReturnType<typeof Output.json> | ReturnType<typeof Output.object> } | undefined {
+  if (!format) return undefined;
+  if (format.type === "text") return undefined;
+  if (format.type === "json_object") {
+    return { output: Output.json({}) };
+  }
+  // json_schema
+  const schema = format.json_schema?.schema;
+  const name = format.json_schema?.name;
+  const description = format.json_schema?.strict ? "Strict JSON schema output" : undefined;
+  if (!schema) {
+    return { output: Output.json({ ...(name ? { name } : {}) }) };
+  }
+  return {
+    output: Output.object({
+      schema: jsonSchema(schema as Record<string, unknown>),
+      ...(name ? { name } : {}),
+      ...(description ? { description } : {}),
+    }),
+  };
 }
 
 function estimateTokens(text: string): number {
@@ -694,7 +820,28 @@ async function invokeText(request: UnifiedRequest, target: AdapterTarget): Promi
     ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
     ...(request.tools ? { tools: convertToolsForAISDK(request.tools) } : {}),
     ...(request.toolChoice ? { toolChoice: convertToolChoice(request.toolChoice) } : {}),
+    ...(translateUnifiedResponseFormat(request.responseFormat) ?? {}),
   });
+
+  // Capture per-tool-call thoughtSignature (Gemini 3+ requirement). The AI
+  // SDK exposes signatures via `providerMetadata.google.thoughtSignature`
+  // on each `tool-call` part of `result.content`. We index them by
+  // toolCallId so the next turn's mapMessagesForAISDK can re-attach.
+  // NOTE: Vertex is handled in the earlier branch; only "gemini" reaches
+  // this point among the signature-relevant providers.
+  if (target.provider === "gemini") {
+    const parts = (result as unknown as { content?: Array<Record<string, unknown>> }).content;
+    if (Array.isArray(parts)) {
+      for (const part of parts) {
+        if (part?.type === "tool-call") {
+          rememberThoughtSignature(
+            typeof part.toolCallId === "string" ? part.toolCallId : undefined,
+            extractThoughtSignatureFromProviderMetadata(part.providerMetadata),
+          );
+        }
+      }
+    }
+  }
 
   return {
     modality: "text",
@@ -1576,6 +1723,7 @@ export async function* streamAdapter(
     ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
     ...(request.tools ? { tools: convertToolsForAISDK(request.tools) } : {}),
     ...(request.toolChoice ? { toolChoice: convertToolChoice(request.toolChoice) } : {}),
+    ...(translateUnifiedResponseFormat(request.responseFormat) ?? {}),
   });
 
   let sawToolCall = false;
@@ -1592,11 +1740,28 @@ export async function* streamAdapter(
 
     if (part.type === "tool-call") {
       sawToolCall = true;
-      const payload = part as { toolCallId?: string; toolName?: string; input?: unknown; args?: unknown };
+      const payload = part as {
+        toolCallId?: string;
+        toolName?: string;
+        input?: unknown;
+        args?: unknown;
+        providerMetadata?: unknown;
+      };
+      const toolCallId = payload.toolCallId || `call_${Date.now()}`;
+      // Capture Gemini thoughtSignature so the next turn's outbound message
+      // builder can re-attach it via providerOptions.google.thoughtSignature.
+      // NOTE: Vertex chat is routed through a separate earlier branch in
+      // streamAdapter; only "gemini" reaches this code path.
+      if (target.provider === "gemini") {
+        rememberThoughtSignature(
+          toolCallId,
+          extractThoughtSignatureFromProviderMetadata(payload.providerMetadata),
+        );
+      }
       yield {
         type: "tool-call",
         toolCall: {
-          id: payload.toolCallId || `call_${Date.now()}`,
+          id: toolCallId,
           name: payload.toolName || "",
           arguments: JSON.stringify(payload.input ?? payload.args ?? {}),
         },

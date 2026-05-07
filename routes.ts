@@ -30,10 +30,12 @@ import {
 import { type ComposeReceipt } from "./http/request-context.js";
 import { toComposeReceiptStreamEvent } from "./inference/core.js";
 import { normalizeConnectorBinding } from "./connectors.js";
+import { searchAgents as searchAgentverseAgents } from "./external/agentverse.js";
 
 interface PublicRouteEvent {
   rawPath: string;
   requestContext: { http: { method: string } };
+  queryStringParameters?: Record<string, string | undefined>;
 }
 
 interface PublicRouteResult {
@@ -366,6 +368,24 @@ export async function handlePublicRoute(
         return jsonResult(404, corsHeaders, { error: "Workflow not found" });
       }
       return jsonResult(200, corsHeaders, workflow);
+    }
+
+    if (method === "GET" && path === "/api/agentverse/agents") {
+      // Bridge to Fetch.ai's Agentverse directory. Returns Agentverse-shape
+      // agents (NOT ComposeAgentManifest); consumers wanting compose-shape
+      // should map via toAgentManifest. Filter is "compose-compatible"
+      // (active + non-empty name) per external/agentverse.ts.
+      const q = event.queryStringParameters || {};
+      const result = await searchAgentverseAgents({
+        search: q.search ?? q.q ?? undefined,
+        category: q.category ?? undefined,
+        tags: q.tags ? q.tags.split(",").map(s => s.trim()).filter(Boolean) : undefined,
+        limit: q.limit ? Math.max(1, Math.min(100, Number.parseInt(q.limit, 10) || 30)) : undefined,
+        offset: q.offset ? Math.max(0, Number.parseInt(q.offset, 10) || 0) : undefined,
+        sort: q.sort as "relevancy" | "created-at" | "last-modified" | "interactions" | undefined,
+        direction: q.direction === "asc" ? "asc" : "desc",
+      });
+      return jsonResult(200, corsHeaders, result);
     }
 
     return null;
@@ -1217,6 +1237,7 @@ export function registerWorkflowRoutes(app: Application): void {
   );
   app.get("/agent/:walletAddress/runs/:runId/state", passthroughJsonRoute());
   app.post("/agent/:walletAddress/runs/:runId/stop", passthroughJsonRoute());
+  app.get("/agent/:walletAddress/knowledge", passthroughJsonRoute());
 
   app.post(
     "/workflow/execute",

@@ -183,8 +183,6 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   console.log(`  ➜  Endpoints:`);
   console.log(`     POST /api/inference`);
   console.log(`     GET  /api/models`);
-  console.log(`     GET  /api/hf/models`);
-  console.log(`     GET  /api/hf/tasks`);
   console.log(`     GET  /api/agentverse/agents`);
   console.log(`     GET  /api/metrics\n`);
 })();
