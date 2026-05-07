@@ -148,7 +148,7 @@ test("registerInferenceRoutes does not own /health", async () => {
   });
 });
 
-test("registerInferenceRoutes requires an explicit x402 max cap for token-metered requests when no compose key is configured", async () => {
+test("registerInferenceRoutes issues a 402 upto challenge with default envelope for token-metered requests when no compose key or cap is configured", async () => {
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: "POST",
@@ -164,14 +164,14 @@ test("registerInferenceRoutes requires an explicit x402 max cap for token-metere
       }),
     });
 
-    assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), {
-      error: {
-        message: "x-x402-max-amount-wei is required for usage-priced x402 inference requests",
-        type: "invalid_request_error",
-        code: "invalid_request",
-      },
-    });
+    assert.equal(response.status, 402);
+    assert.equal(typeof response.headers.get("payment-required"), "string");
+
+    const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
+    assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:421614");
+    // Default envelope is 1 USDC (1_000_000 atomic units)
+    assert.equal(paymentRequired.accepts[0]?.amount, "1000000");
   });
 });
 

@@ -17,6 +17,10 @@ const ORIGINAL_PINATA_GATEWAY_URL = process.env.PINATA_GATEWAY_URL;
 const ORIGINAL_IPFS_PINATA_GATEWAY = process.env.IPFS_PINATA_GATEWAY;
 const ORIGINAL_PINATA_GATEWAY = process.env.PINATA_GATEWAY;
 const ORIGINAL_PINATA_JWT = process.env.PINATA_JWT;
+const ORIGINAL_DEPLOYER_KEY = process.env.DEPLOYER_KEY;
+const ORIGINAL_MERCHANT_WALLET_ADDRESS = process.env.MERCHANT_WALLET_ADDRESS;
+const ORIGINAL_THIRDWEB_SERVER_WALLET_ADDRESS = process.env.THIRDWEB_SERVER_WALLET_ADDRESS;
+const ORIGINAL_AVALANCHE_MAINNET_RPC = process.env.AVALANCHE_MAINNET_RPC;
 const NATIVE_FETCH = globalThis.fetch;
 
 interface RouteLayer {
@@ -139,6 +143,7 @@ test("handlePublicRoute resolves agent catalog with PINATA_GATEWAY_URL", async (
         walletAddress: "0xba04fa4baacbac0d93bb73a7fd473a41aa7f2815",
         name: "Compose Agent",
         cid: "baf-agent-card",
+        plugins: [],
       }],
       total: 1,
     });
@@ -209,6 +214,16 @@ test("knowledge passthrough uses RUNTIME_URL and shared internal secret", async 
 // response that locked the route to Compose-Key consumers only.
 // ─────────────────────────────────────────────────────────────────────────────
 test("agent + workflow routes emit 402 PAYMENT-REQUIRED with scheme=upto when no Authorization is present", async () => {
+  // The raw x402 upto challenge requires DEPLOYER_KEY (for facilitator address)
+  // and MERCHANT_WALLET_ADDRESS (for payTo). Set them if not already present.
+  process.env.DEPLOYER_KEY = ORIGINAL_DEPLOYER_KEY || `0x${"11".repeat(32)}`;
+  process.env.MERCHANT_WALLET_ADDRESS =
+    ORIGINAL_MERCHANT_WALLET_ADDRESS || "0x2222222222222222222222222222222222222222";
+  process.env.THIRDWEB_SERVER_WALLET_ADDRESS =
+    ORIGINAL_THIRDWEB_SERVER_WALLET_ADDRESS || "0x1111111111111111111111111111111111111111";
+  process.env.AVALANCHE_MAINNET_RPC =
+    ORIGINAL_AVALANCHE_MAINNET_RPC || "https://api.avax.network/ext/bc/C/rpc";
+
   const app = express();
   app.use(express.json({ limit: "1mb" }));
   registerWorkflowRoutes(app);
@@ -252,5 +267,9 @@ test("agent + workflow routes emit 402 PAYMENT-REQUIRED with scheme=upto when no
     }
   } finally {
     server.close();
+    process.env.DEPLOYER_KEY = ORIGINAL_DEPLOYER_KEY;
+    process.env.MERCHANT_WALLET_ADDRESS = ORIGINAL_MERCHANT_WALLET_ADDRESS;
+    process.env.THIRDWEB_SERVER_WALLET_ADDRESS = ORIGINAL_THIRDWEB_SERVER_WALLET_ADDRESS;
+    process.env.AVALANCHE_MAINNET_RPC = ORIGINAL_AVALANCHE_MAINNET_RPC;
   }
 });
