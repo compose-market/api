@@ -752,6 +752,7 @@ export function normalizeChatRequest(body: Record<string, unknown>): UnifiedRequ
     normalizeMessages(body.messages),
     normalizeAttachmentList(body),
   );
+  const rawCustomParams = asRecord(body.custom_params);
 
   return {
     mode: "chat",
@@ -765,6 +766,7 @@ export function normalizeChatRequest(body: Record<string, unknown>): UnifiedRequ
     maxTokens: typeof body.max_tokens === "number" ? body.max_tokens : typeof body.max_completion_tokens === "number" ? body.max_completion_tokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     responseId: toResponseId(),
+    customParams: rawCustomParams || undefined,
     responseFormat: parseInboundResponseFormat(body.response_format),
   };
 }

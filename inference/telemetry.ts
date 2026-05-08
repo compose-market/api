@@ -312,7 +312,7 @@ function normalizeValueKey(rawKey: string): string {
 }
 
 function primaryValueKeyForUnit(unit: string): string | null {
-  if (unit.endsWith("_per_1m_tokens")) {
+  if (/^usd_per_\d+[km](?:_.+)?_tokens$/.test(unit) || unit.endsWith("_per_1m_tokens")) {
     return null;
   }
   if (unit.endsWith("_per_image") || unit.endsWith("_per_video")) {
@@ -382,7 +382,7 @@ function buildBillingSection(
     ...(header ? { header } : {}),
     ...(isDefault === true ? { default: true } : {}),
     unit,
-    values: normalizeBillingValues(unit, source),
+    values: normalizeBillingValuesForUnit(unitValue, source),
   };
 }
 
@@ -574,6 +574,11 @@ function normalizeUnit(unit: string): string {
   return normalized;
 }
 
+function normalizeBillingValuesForUnit(unitValue: string, source: Record<string, unknown>): Record<string, number> {
+  const unit = normalizeUnit(unitValue);
+  return normalizeBillingValues(unit, source);
+}
+
 function inferValueKeyFromUnit(unitLabel: string, unit: string): string {
   const words = new Set(normalizeUnitWords(unitLabel).map((word) => normalizeUnitWord(word)));
 
@@ -739,7 +744,7 @@ export function normalizeCompiledPricing(pricing: ModelPricing | BillingPrice): 
   if (isStructuredPricing(pricing)) {
     return {
       unit: normalizeUnit(pricing.unit),
-      values: normalizeBillingValues(normalizeUnit(pricing.unit), pricing.values),
+      values: normalizeBillingValuesForUnit(pricing.unit, pricing.values),
     };
   }
 
@@ -843,7 +848,7 @@ function extractBillingSections(pricing: ModelPricing | BillingPrice): BillingPr
   if (isStructuredPricing(record)) {
     return [{
       unit: normalizeUnit(record.unit),
-      values: normalizeBillingValues(normalizeUnit(record.unit), record.values),
+      values: normalizeBillingValuesForUnit(record.unit, record.values),
     }];
   }
 

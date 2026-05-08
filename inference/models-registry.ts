@@ -55,12 +55,6 @@ const hfProvider = createOpenAICompatible({
     baseURL: "https://router.huggingface.co/v1",
 });
 
-const aimlProvider = createOpenAICompatible({
-    name: "aiml",
-    apiKey: process.env.AI_ML_API_KEY || "",
-    baseURL: "https://api.aimlapi.com/v1",
-});
-
 const cloudflareProvider = createOpenAICompatible({
     name: "cloudflare",
     apiKey: process.env.CF_API_TOKEN!,
@@ -71,6 +65,18 @@ const fireworksProvider = createOpenAICompatible({
     name: "fireworks",
     apiKey: process.env.FIREWORKS_API_KEY,
     baseURL: "https://api.fireworks.ai/inference/v1",
+});
+
+const azureProvider = createOpenAICompatible({
+    name: "azure",
+    apiKey: process.env.AZURE_FOUNDRY_API_KEY || "",
+    baseURL: process.env.AZURE_MICROSOFT_FOUNDRY_ENDPOINT || "",
+});
+
+const alibabaProvider = createOpenAICompatible({
+    name: "alibaba",
+    apiKey: process.env.ALIBABA_CLOUD_API_KEY || "",
+    baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 });
 
 // =============================================================================
@@ -326,10 +332,12 @@ export function getModelById(modelId: string, provider?: ModelProvider): ModelCa
 function isModelProvider(value: unknown): value is ModelProvider {
     return value === "gemini"
         || value === "openai"
+        || value === "azure"
+        || value === "alibaba"
+        || value === "digitalocean"
         || value === "fireworks"
         || value === "asicloud"
         || value === "hugging face"
-        || value === "aiml"
         || value === "vertex"
         || value === "cloudflare"
         || value === "deepgram"
@@ -488,14 +496,17 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
         case "openai":
             return openai(modelId);
 
+        case "azure":
+            return azureProvider(modelId);
+
+        case "alibaba":
+            return alibabaProvider(modelId);
+
         case "gemini":
             return google(modelId);
 
         case "asicloud":
             return asiCloudProvider(modelId);
-
-        case "aiml":
-            return aimlProvider(modelId);
 
         case "hugging face":
             return hfProvider(modelId);
@@ -509,6 +520,7 @@ export function getLanguageModel(modelId: string, provider?: ModelProvider): Lan
             return fireworksProvider(modelId);
 
         case "vertex":
+        case "digitalocean":
         case "deepgram":
         case "elevenlabs":
         case "cartesia":
@@ -541,14 +553,17 @@ export function getEmbeddingModel(modelId: string, provider?: ModelProvider): an
         case "openai":
             return openai.embeddingModel(modelId);
 
+        case "azure":
+            return azureProvider.embeddingModel(modelId);
+
+        case "alibaba":
+            return alibabaProvider.embeddingModel(modelId);
+
         case "gemini":
             return google.embeddingModel(modelId);
 
         case "asicloud":
             return asiCloudProvider.embeddingModel(modelId);
-
-        case "aiml":
-            return aimlProvider.embeddingModel(modelId);
 
         case "hugging face":
             return hfProvider.embeddingModel(modelId);
@@ -560,6 +575,7 @@ export function getEmbeddingModel(modelId: string, provider?: ModelProvider): an
             return fireworksProvider.embeddingModel(modelId);
 
         case "vertex":
+        case "digitalocean":
         case "deepgram":
         case "elevenlabs":
         case "cartesia":

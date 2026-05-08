@@ -536,8 +536,11 @@ export type ModelProvider =
     | "gemini"
     | "openai"
     | "asicloud"
+    | "alibaba"
+    | "digitalocean"
     | "hugging face"
     | "aiml"
+    | "azure"
     | "vertex"
     | "fireworks"
     | "cloudflare"
@@ -554,6 +557,9 @@ export type ModelProvider =
 export const PROVIDER_PRIORITY: Record<ModelProvider, number> = {
     "gemini": 1,
     "openai": 1,
+    "azure": 1,
+    "alibaba": 1,
+    "digitalocean": 1,
     "vertex": 1,
     "hugging face": 2,
     "fireworks": 2,
@@ -672,8 +678,12 @@ export interface ModelCard {
     ownedBy?: string;
     /** Optional creation timestamp. */
     createdAt?: string | number;
-    /** Optional capability metadata if compiled in later. */
-    capabilities?: ModelCapability[];
+    /** Optional capability metadata carried from provider source catalogs. */
+    capabilities?: unknown;
+    /** Optional raw provider model type when it differs from canonical task type. */
+    modelType?: unknown;
+    /** Optional provider-specific source/evidence metadata. */
+    sourceMetadata?: unknown;
     /** Optional Hugging Face router provider. */
     hfInferenceProvider?: string;
     /** Optional provider-specific model ID for HF Router. */
