@@ -324,7 +324,7 @@ export function buildUsageRecordSettlementMeter(args: {
     const card = requireResolvedCard(resolved, "settlement");
     const pricing = resolveBillingPrice(card.pricing, "text");
 
-    if (!pricing.unit.endsWith("_per_1m_tokens")) {
+    if (!/^usd_per_\d+[km]_tokens$/.test(pricing.unit)) {
       throw new Error(`workflow usage record pricing must be token-based: ${usageRecord.model}`);
     }
 

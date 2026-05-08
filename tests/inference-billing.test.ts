@@ -64,6 +64,62 @@ test("buildResolvedSettlementMeter derives strict token line items from authorit
   assert.equal(metered.finalAmountWei, "1122");
 });
 
+test("buildResolvedSettlementMeter meters Azure token models through x402", () => {
+  const resolved: ResolvedBillingModel = {
+    modelId: "Kimi-K2.5",
+    provider: "azure",
+    known: true,
+    card: {
+      modelId: "Kimi-K2.5",
+      name: "Kimi-K2.5",
+      provider: "azure",
+      type: "text-generation",
+      description: null,
+      input: ["text"],
+      output: ["text"],
+      capabilities: ["streaming"],
+      available: true,
+      pricing: {
+        unit: "1K Tokens",
+        values: {
+          input: 0.00066,
+          output: 0.0033,
+        },
+      },
+      contextWindow: {
+        inputTokens: null,
+        outputTokens: null,
+      },
+    },
+  };
+
+  const metered = buildResolvedSettlementMeter({
+    resolved,
+    modality: "text",
+    usage: {
+      promptTokens: 1000,
+      completionTokens: 1000,
+      totalTokens: 2000,
+    },
+  });
+
+  assert.equal(metered.meter.subject, "azure:Kimi-K2.5");
+  assert.deepEqual(metered.meter.lineItems, [
+    {
+      key: "input_tokens",
+      unit: "usd_per_1k_tokens",
+      quantity: 1000,
+      unitPriceUsd: 0.00066,
+    },
+    {
+      key: "output_tokens",
+      unit: "usd_per_1k_tokens",
+      quantity: 1000,
+      unitPriceUsd: 0.0033,
+    },
+  ]);
+});
+
 test("buildResolvedSettlementMeter accepts raw compiled token pricing sections", () => {
   const resolved: ResolvedBillingModel = {
     modelId: "gpt-4.1-mini",
