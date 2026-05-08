@@ -45,6 +45,28 @@ import {
   transcribeFireworksAudio,
 } from "./fireworks.js";
 import {
+  generateAzureChat,
+  generateAzureEmbeddings,
+  generateAzureImage,
+} from "./azure.js";
+import {
+  generateDOChat,
+  generateDOEmbeddings,
+  generateDOImage,
+  generateDOSpeech,
+  retrieveDOVideoJob,
+  submitDOVideoJob,
+} from "./do.js";
+import {
+  generateAlibabaChat,
+  generateAlibabaEmbeddings,
+  generateAlibabaImage,
+  generateAlibabaSpeech,
+  retrieveAlibabaVideo,
+  submitAlibabaVideo,
+  transcribeAlibabaAudio,
+} from "./alibaba.js";
+import {
   generateCloudflareImage,
   generateCloudflareSpeech,
   transcribeCloudflareAudio,
@@ -64,7 +86,6 @@ import {
   supportsOpenAINativeImageStreaming,
 } from "../modality/image.js";
 import {
-  buildAIMLVideoSubmissionBody,
   buildGoogleVideoGenerationRequest,
   buildOpenAIVideoSubmissionBody,
   buildVertexVideoParameters,
@@ -812,6 +833,73 @@ async function invokeText(request: UnifiedRequest, target: AdapterTarget): Promi
     };
   }
 
+  if (target.provider === "azure") {
+    const result = await generateAzureChat(target.modelId, request.messages, {
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      responseFormat: request.responseFormat,
+      customParams: request.customParams,
+    });
+
+    return {
+      modality: "text",
+      content: result.text,
+      usage: result.usage || {
+        promptTokens: 0,
+        completionTokens: estimateTokens(result.text),
+        totalTokens: estimateTokens(result.text),
+      },
+      finishReason: result.finishReason || "stop",
+    };
+  }
+
+  if (target.provider === "digitalocean") {
+    const result = await generateDOChat(target.modelId, request.messages, {
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      responseFormat: request.responseFormat,
+      customParams: request.customParams,
+    });
+
+    return {
+      modality: "text",
+      content: result.text,
+      usage: result.usage || {
+        promptTokens: 0,
+        completionTokens: estimateTokens(result.text),
+        totalTokens: estimateTokens(result.text),
+      },
+      finishReason: result.finishReason || "stop",
+      ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+    };
+  }
+
+  if (target.provider === "alibaba") {
+    const result = await generateAlibabaChat(target.modelId, request.messages, {
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      responseFormat: request.responseFormat,
+      customParams: request.customParams,
+    });
+
+    return {
+      modality: "text",
+      content: result.text,
+      usage: result.usage || {
+        promptTokens: 0,
+        completionTokens: estimateTokens(result.text),
+        totalTokens: estimateTokens(result.text),
+      },
+      finishReason: result.finishReason || "stop",
+    };
+  }
+
   const model = getLanguageModel(target.modelId, target.provider);
   const result = await generateText({
     model,
@@ -884,6 +972,33 @@ async function invokeEmbedding(request: UnifiedRequest, target: AdapterTarget): 
     };
   }
 
+  if (target.provider === "azure") {
+    const result = await generateAzureEmbeddings(target.modelId, values);
+    return {
+      modality: "embedding",
+      embeddings: result.embeddings,
+      usage: result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    };
+  }
+
+  if (target.provider === "digitalocean") {
+    const result = await generateDOEmbeddings(target.modelId, values);
+    return {
+      modality: "embedding",
+      embeddings: result.embeddings,
+      usage: result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    };
+  }
+
+  if (target.provider === "alibaba") {
+    const result = await generateAlibabaEmbeddings(target.modelId, values);
+    return {
+      modality: "embedding",
+      embeddings: result.embeddings,
+      usage: result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    };
+  }
+
   const model = getEmbeddingModel(target.modelId, target.provider);
   const result = await embedMany({ model, values });
 
@@ -940,6 +1055,48 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
         });
         return { buffer: result.buffer, mimeType: result.mimeType };
       }
+      case "azure": {
+        const result = await generateAzureImage(target.modelId, prompt, {
+          size: request.imageOptions?.size,
+          quality: request.imageOptions?.quality,
+          n: request.imageOptions?.n,
+          imageUrl,
+          customParams,
+        });
+        return {
+          buffer: result.buffer,
+          mimeType: result.mimeType,
+          ...(result.usage ? { usage: result.usage } : {}),
+        };
+      }
+      case "digitalocean": {
+        const result = await generateDOImage(target.modelId, prompt, {
+          size: request.imageOptions?.size,
+          quality: request.imageOptions?.quality,
+          n: request.imageOptions?.n,
+          imageUrl,
+          customParams,
+        });
+        return {
+          buffer: result.buffer,
+          mimeType: result.mimeType,
+          ...(result.usage ? { usage: result.usage } : {}),
+        };
+      }
+      case "alibaba": {
+        const result = await generateAlibabaImage(target.modelId, prompt, {
+          size: request.imageOptions?.size,
+          quality: request.imageOptions?.quality,
+          n: request.imageOptions?.n,
+          imageUrl,
+          customParams,
+        });
+        return {
+          buffer: result.buffer,
+          mimeType: result.mimeType,
+          ...(result.usage ? { usage: result.usage } : {}),
+        };
+      }
       case "hugging face": {
         const imageBuffer = await fetchRemoteBuffer(imageUrl);
         const input: HFInferenceInput = {
@@ -952,53 +1109,6 @@ async function invokeImage(request: UnifiedRequest, target: AdapterTarget): Prom
         };
         const result = await executeHFInference(input);
         return { buffer: result.data as Buffer, mimeType: "image/png" };
-      }
-      case "aiml": {
-        const apiKey = process.env.AI_ML_API_KEY;
-        if (!apiKey) {
-          throw new Error("AI_ML_API_KEY not configured");
-        }
-
-        const response = await fetch("https://api.aimlapi.com/v1/images/generations", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: target.modelId,
-            prompt,
-            ...customParams,
-            ...(request.imageOptions?.n !== undefined ? { n: request.imageOptions.n } : {}),
-            ...(request.imageOptions?.size ? { size: request.imageOptions.size } : {}),
-            ...(imageUrl ? { image_url: imageUrl } : {}),
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`AIML image generation failed: ${response.status} - ${await response.text()}`);
-        }
-
-        const data = (await response.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
-        const first = data.data?.[0];
-        if (!first) {
-          throw new Error("AIML returned no image data");
-        }
-
-        if (first.b64_json) {
-          return { buffer: Buffer.from(first.b64_json, "base64"), mimeType: "image/png" };
-        }
-
-        if (!first.url) {
-          throw new Error("AIML returned no image URL");
-        }
-
-        const imageResponse = await fetch(first.url);
-        if (!imageResponse.ok) {
-          throw new Error(`Failed to download AIML image: ${imageResponse.status}`);
-        }
-
-        return { buffer: Buffer.from(await imageResponse.arrayBuffer()), mimeType: "image/png" };
       }
       case "fireworks": {
         const result = await generateFireworksImage(target.modelId, prompt, {
@@ -1068,40 +1178,8 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
   size?: string;
   imageUrl?: string;
   customParams?: Record<string, unknown>;
-}): Promise<{ jobId: string; status: "queued" | "processing"; duration?: number }> {
+}): Promise<{ jobId: string; status: "queued" | "processing"; duration?: number; usage?: UnifiedUsage }> {
   switch (target.provider) {
-    case "aiml": {
-      const apiKey = process.env.AI_ML_API_KEY;
-      if (!apiKey) {
-        throw new Error("AI_ML_API_KEY not configured");
-      }
-
-      const response = await fetch("https://api.aimlapi.com/v2/video/generations", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(buildAIMLVideoSubmissionBody(target.modelId, prompt, options)),
-      });
-
-      if (!response.ok) {
-        throw new Error(`AIML video submission failed: ${response.status} - ${await response.text()}`);
-      }
-
-      const data = (await response.json()) as { id?: string; status?: string; seconds?: string | number };
-      if (!data.id) {
-        throw new Error("AIML returned no job id");
-      }
-
-      const duration = findProviderDurationSeconds(data);
-      return {
-        jobId: `aiml:${data.id}`,
-        status: data.status === "queued" ? "queued" : "processing",
-        ...(typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? { duration } : {}),
-      };
-    }
-
     case "openai": {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
@@ -1204,6 +1282,27 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
       };
     }
 
+    case "alibaba": {
+      return submitAlibabaVideo(target.modelId, prompt, {
+        duration: options?.duration,
+        aspectRatio: options?.aspectRatio,
+        resolution: options?.resolution,
+        size: options?.size,
+        imageUrl: options?.imageUrl,
+        customParams: options?.customParams,
+      });
+    }
+
+    case "digitalocean": {
+      const result = await submitDOVideoJob(target.modelId, prompt, options);
+      return {
+        jobId: result.jobId,
+        status: result.status,
+        ...(typeof result.duration === "number" && Number.isFinite(result.duration) && result.duration > 0 ? { duration: result.duration } : {}),
+        ...(result.usage ? { usage: result.usage } : {}),
+      };
+    }
+
     default:
       throw new Error(`Async video generation not supported for provider: ${target.provider}`);
   }
@@ -1215,7 +1314,7 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
   const card = getModelById(target.modelId, target.provider);
   const customParams = request.customParams || {};
 
-  if (["aiml", "openai", "gemini", "vertex"].includes(target.provider)) {
+  if (["openai", "gemini", "vertex", "alibaba", "azure", "fireworks", "fal", "huggingface", "digitalocean"].includes(target.provider)) {
     const job = await submitVideoJob(target, prompt, {
       duration: request.videoOptions?.duration,
       aspectRatio: request.videoOptions?.aspectRatio,
@@ -1236,6 +1335,7 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
         generatedUnits: 1,
         billingMetrics: {
           ...(request.billingMetrics || {}),
+          ...(job.usage?.billingMetrics || {}),
           ...(typeof job.duration === "number" && job.duration > 0 ? {
             second: job.duration,
             duration: job.duration,
@@ -1243,7 +1343,7 @@ async function invokeVideo(request: UnifiedRequest, target: AdapterTarget): Prom
           } : {}),
         },
       },
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      usage: job.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     };
   }
 
@@ -1352,6 +1452,12 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
           return transcribeDeepgramAudio(target.modelId, audioBuffer, {
             language: request.audioOptions?.language,
           });
+        case "alibaba":
+          return transcribeAlibabaAudio(target.modelId, audioUrl, audioBuffer || undefined, {
+            language: request.audioOptions?.language,
+            responseFormat: request.audioOptions?.responseFormat,
+            customParams: request.customParams,
+          });
         default:
           throw new Error(`Speech-to-text not supported for provider: ${target.provider}`);
       }
@@ -1424,6 +1530,13 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
           voice: request.audioOptions?.voice,
           responseFormat: request.audioOptions?.responseFormat,
         });
+      case "digitalocean":
+        return generateDOSpeech(target.modelId, prompt, {
+          voice: request.audioOptions?.voice,
+          speed: request.audioOptions?.speed,
+          responseFormat: request.audioOptions?.responseFormat,
+          customParams: request.customParams,
+        });
       case "elevenlabs":
         return generateElevenLabsSpeech(target.modelId, prompt, {
           voiceId: request.audioOptions?.voice,
@@ -1435,6 +1548,13 @@ async function invokeAudio(request: UnifiedRequest, target: AdapterTarget): Prom
           voiceId: request.audioOptions?.voice,
           responseFormat: request.audioOptions?.responseFormat,
           speed: request.audioOptions?.speed,
+        });
+      case "alibaba":
+        return generateAlibabaSpeech(target.modelId, prompt, {
+          voice: request.audioOptions?.voice,
+          responseFormat: request.audioOptions?.responseFormat,
+          speed: request.audioOptions?.speed,
+          customParams: request.customParams,
         });
       default:
         throw new Error(`Text-to-speech not supported for provider: ${target.provider}`);
@@ -1715,6 +1835,78 @@ export async function* streamAdapter(
     return;
   }
 
+  if (target.provider === "azure") {
+    const result = await generateAzureChat(target.modelId, request.messages, {
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      responseFormat: request.responseFormat,
+      customParams: request.customParams,
+    });
+    if (result.text) {
+      yield { type: "text-delta", text: result.text };
+    }
+    yield {
+      type: "done",
+      finishReason: result.finishReason || "stop",
+      usage: result.usage || {
+        promptTokens: 0,
+        completionTokens: estimateTokens(result.text),
+        totalTokens: estimateTokens(result.text),
+      },
+    };
+    return;
+  }
+
+  if (target.provider === "digitalocean") {
+    const result = await generateDOChat(target.modelId, request.messages, {
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      responseFormat: request.responseFormat,
+      customParams: request.customParams,
+    });
+    if (result.text) {
+      yield { type: "text-delta", text: result.text };
+    }
+    yield {
+      type: "done",
+      finishReason: result.finishReason || "stop",
+      usage: result.usage || {
+        promptTokens: 0,
+        completionTokens: estimateTokens(result.text),
+        totalTokens: estimateTokens(result.text),
+      },
+    };
+    return;
+  }
+
+  if (target.provider === "alibaba") {
+    const result = await generateAlibabaChat(target.modelId, request.messages, {
+      temperature: request.temperature,
+      maxTokens: request.maxTokens,
+      tools: request.tools,
+      toolChoice: request.toolChoice,
+      responseFormat: request.responseFormat,
+      customParams: request.customParams,
+    });
+    if (result.text) {
+      yield { type: "text-delta", text: result.text };
+    }
+    yield {
+      type: "done",
+      finishReason: result.finishReason || "stop",
+      usage: result.usage || {
+        promptTokens: 0,
+        completionTokens: estimateTokens(result.text),
+        totalTokens: estimateTokens(result.text),
+      },
+    };
+    return;
+  }
+
   const model = getLanguageModel(target.modelId, target.provider);
   const result = streamText({
     model,
@@ -1788,44 +1980,6 @@ export async function retrieveAdapter(jobId: string): Promise<AdapterStatus> {
   const { provider, providerJobId } = parseAsyncVideoJobId(jobId);
 
   switch (provider) {
-    case "aiml": {
-      const apiKey = process.env.AI_ML_API_KEY;
-      if (!apiKey) {
-        throw new Error("AI_ML_API_KEY not configured");
-      }
-
-      const response = await fetch(`https://api.aimlapi.com/v2/video/generations?generation_id=${encodeURIComponent(providerJobId)}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
-
-      if (!response.ok) {
-        throw new Error(`AIML video status check failed: ${response.status}`);
-      }
-
-      const data = (await response.json()) as {
-        status?: string;
-        url?: string;
-        video_url?: string;
-        video?: { url?: string };
-        error?: string;
-      };
-
-      const status =
-        data.status === "completed" || data.status === "success"
-          ? "completed"
-          : data.status === "failed"
-            ? "failed"
-            : data.status === "queued"
-              ? "queued"
-              : "processing";
-
-      return {
-        status,
-        url: data.url || data.video_url || data.video?.url,
-        error: data.error,
-      };
-    }
-
     case "openai": {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
@@ -1942,6 +2096,12 @@ export async function retrieveAdapter(jobId: string): Promise<AdapterStatus> {
         url: `data:video/mp4;base64,${base64}`,
       };
     }
+
+    case "alibaba":
+      return retrieveAlibabaVideo(providerJobId);
+
+    case "digitalocean":
+      return retrieveDOVideoJob(providerJobId);
 
     default:
       throw new Error(`Unsupported async status provider: ${provider}`);
