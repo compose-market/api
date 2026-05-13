@@ -39,7 +39,7 @@ export type OAuthProvider =
 export interface UserPermission {
     userAddress: string;
     sessionId?: string;  // Optional: session-scoped
-    agentId?: string;    // Optional: agent-scoped
+    agentWallet?: string;    // Optional: agent-scoped
     consentType: ConsentType | string;
     granted: boolean;
     grantedAt: number;
@@ -75,8 +75,8 @@ const oauthTokens = new Map<string, OAuthToken>();
 const apiKeys = new Map<string, UserApiKey>();
 
 // Storage key helpers
-function permissionKey(userAddress: string, consentType: string, sessionId?: string, agentId?: string): string {
-    return `${userAddress}:${consentType}:${sessionId || '*'}:${agentId || '*'}`;
+function permissionKey(userAddress: string, consentType: string, sessionId?: string, agentWallet?: string): string {
+    return `${userAddress}:${consentType}:${sessionId || '*'}:${agentWallet || '*'}`;
 }
 
 function oauthKey(userAddress: string, provider: string): string {
@@ -99,11 +99,11 @@ export function checkPermission(
     userAddress: string,
     consentType: ConsentType | string,
     sessionId?: string,
-    agentId?: string
+    agentWallet?: string
 ): boolean {
     // Check agent-specific first
-    if (agentId && sessionId) {
-        const agentPerm = permissions.get(permissionKey(userAddress, consentType, sessionId, agentId));
+    if (agentWallet && sessionId) {
+        const agentPerm = permissions.get(permissionKey(userAddress, consentType, sessionId, agentWallet));
         if (agentPerm?.granted) return true;
     }
 
@@ -134,14 +134,14 @@ export function grantPermission(params: {
     userAddress: string;
     consentType: ConsentType | string;
     sessionId?: string;
-    agentId?: string;
+    agentWallet?: string;
     expiresAt?: number;
 }): void {
-    const key = permissionKey(params.userAddress, params.consentType, params.sessionId, params.agentId);
+    const key = permissionKey(params.userAddress, params.consentType, params.sessionId, params.agentWallet);
     permissions.set(key, {
         userAddress: params.userAddress,
         sessionId: params.sessionId,
-        agentId: params.agentId,
+        agentWallet: params.agentWallet,
         consentType: params.consentType,
         granted: true,
         grantedAt: Date.now(),
@@ -157,9 +157,9 @@ export function revokePermission(
     userAddress: string,
     consentType: ConsentType | string,
     sessionId?: string,
-    agentId?: string
+    agentWallet?: string
 ): void {
-    const key = permissionKey(userAddress, consentType, sessionId, agentId);
+    const key = permissionKey(userAddress, consentType, sessionId, agentWallet);
     permissions.delete(key);
     console.log(`[Backpack] Permission revoked: ${consentType} for user ${userAddress}`);
 }
@@ -307,14 +307,14 @@ export function checkToolRequirements(
     userAddress: string,
     requirements: ToolRequirement[],
     sessionId?: string,
-    agentId?: string
+    agentWallet?: string
 ): ToolRequirement[] {
     const missing: ToolRequirement[] = [];
 
     for (const req of requirements) {
         switch (req.type) {
             case "permission":
-                if (!checkPermission(userAddress, req.value, sessionId, agentId)) {
+                if (!checkPermission(userAddress, req.value, sessionId, agentWallet)) {
                     missing.push(req);
                 }
                 break;
