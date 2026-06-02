@@ -3,7 +3,7 @@
  *
  * Provides a single source of truth for:
  * - X-Request-Id generation and propagation
- * - X-Compose-Receipt encoding/decoding
+ * - X-Receipt encoding/decoding
  * - Canonical error-envelope shape
  *
  * Every response produced by the api/ server must carry an X-Request-Id header
@@ -14,23 +14,73 @@
 import { randomUUID } from "node:crypto";
 
 export const REQUEST_ID_HEADER = "X-Request-Id";
-export const RECEIPT_HEADER = "X-Compose-Receipt";
+export const RECEIPT_HEADER = "X-Receipt";
 
-export interface ComposeReceipt {
+export interface ReceiptLineItem {
+    key: string;
+    unit: string;
+    quantity: number;
+    unitPriceUsd: number;
+    amountWei: string;
+}
+
+export interface ReceiptBill {
+    kind: "agent" | "workflow" | "model" | "tool" | "search" | "memory" | "connector";
+    source?: string;
+    name?: string;
+    action?: string;
     subject?: string;
-    lineItems?: Array<{
-        key: string;
-        unit: string;
-        quantity: number;
-        unitPriceUsd: number;
-        amountWei: string;
-    }>;
+    amountWei: string;
+    lineItems: ReceiptLineItem[];
+    agent?: string;
+    agentWallet?: string;
+    depth?: number;
+    model?: string;
+    tokens?: Record<string, number>;
+    tools?: string[];
+    total?: string;
+    duration?: string;
+    txId?: string;
+    fees?: {
+        total: {
+            percent: string;
+            amount: string;
+        };
+        distribution: Record<string, string>;
+    };
+    children?: ReceiptBill[];
+}
+
+export interface ReceiptCumulative {
+    totalAmountWei: string;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    receiptCount: number;
+}
+
+export interface Receipt {
+    id?: string;
+    service?: string;
+    action?: string;
+    resource?: string;
+    userAddress?: string;
+    subject?: string;
+    lineItems?: ReceiptLineItem[];
+    bills?: ReceiptBill[];
     providerAmountWei?: string;
     platformFeeWei?: string;
     finalAmountWei: string;
+    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
     txHash?: string;
+    claimTxHash?: string;
+    settleTxHash?: string;
+    paymentIntentId?: string;
+    sessionBudgetIntentId?: string;
+    paymentChannelId?: string;
+    paymentCumulativeAmountWei?: string;
     network: `eip155:${number}`;
     settledAt: number;
+    cumulative?: ReceiptCumulative;
 }
 
 /**
@@ -74,20 +124,20 @@ export function resolveRequestId(
 }
 
 /**
- * Encode a billing receipt for the X-Compose-Receipt response header.
+ * Encode a billing receipt for the X-Receipt response header.
  *
  * Uses url-safe base64 without padding so it can survive redirects and
  * HTTP/2 canonicalization unchanged.
  */
-export function encodeReceiptHeader(receipt: ComposeReceipt): string {
+export function encodeReceiptHeader(receipt: Receipt): string {
     const json = JSON.stringify(receipt);
     const base64 = Buffer.from(json, "utf-8").toString("base64");
     return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export function decodeReceiptHeader(value: string): ComposeReceipt {
+export function decodeReceiptHeader(value: string): Receipt {
     const padded = value.replace(/-/g, "+").replace(/_/g, "/");
     const padding = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
     const json = Buffer.from(padded + padding, "base64").toString("utf-8");
-    return JSON.parse(json) as ComposeReceipt;
+    return JSON.parse(json) as Receipt;
 }
