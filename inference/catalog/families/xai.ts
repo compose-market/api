@@ -28,13 +28,14 @@
  */
 
 import type {
-    UnifiedMessage,
-    UnifiedTool,
-    UnifiedToolCall,
-    UnifiedToolChoice,
-    UnifiedUsage,
+    Message,
+    Tool,
+    Call,
+    Choice,
+    Usage,
 } from "../../core.js";
 import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
 // Path constants — vendors prefix these with their host
@@ -54,7 +55,7 @@ export function deferredPollPath(requestId: string): string {
 // Usage normalizer (xAI per-modality breakdown)
 // ---------------------------------------------------------------------------
 
-export function usageFromXai(rawUsage: unknown): UnifiedUsage | undefined {
+export function usageFromXai(rawUsage: unknown): Usage | undefined {
     const usage = asRecord(rawUsage);
     if (!usage) return undefined;
     const promptTokens = readNonNeg(usage, ["prompt_tokens", "input_tokens"]) ?? 0;
@@ -136,30 +137,30 @@ function searchParametersToWire(params: XaiSearchParameters | undefined): Record
 // Tools (OpenAI tool shape, identical wire)
 // ---------------------------------------------------------------------------
 
-export function toolsToWire(tools: UnifiedTool[] | undefined): Array<Record<string, unknown>> | undefined {
+export function toolsToWire(tools: Tool[] | undefined): Array<Record<string, unknown>> | undefined {
     if (!tools || tools.length === 0) return undefined;
     return tools.map((tool) => ({
         type: "function",
         function: {
             name: tool.function.name,
             ...(tool.function.description ? { description: tool.function.description } : {}),
-            ...(tool.function.parameters ? { parameters: tool.function.parameters } : {}),
+            parameters: lower.object(tool.function.parameters),
         },
     }));
 }
 
-export function toolChoiceToWire(choice: UnifiedToolChoice | undefined): unknown {
+export function toolChoiceToWire(choice: Choice | undefined): unknown {
     if (!choice) return undefined;
     if (typeof choice === "string") return choice;
     return choice;
 }
 
-function toolCallsFromAssistant(message: Record<string, unknown> | null | undefined): UnifiedToolCall[] | undefined {
+function toolCallsFromAssistant(message: Record<string, unknown> | null | undefined): Call[] | undefined {
     if (!message) return undefined;
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
     if (calls.length === 0) return undefined;
     return calls
-        .map((call): UnifiedToolCall | null => {
+        .map((call): Call | null => {
             const r = asRecord(call);
             if (!r) return null;
             const fn = asRecord(r.function);
@@ -170,7 +171,7 @@ function toolCallsFromAssistant(message: Record<string, unknown> | null | undefi
                 arguments: clean(fn.arguments),
             };
         })
-        .filter((call): call is UnifiedToolCall => call !== null);
+        .filter((call): call is Call => call !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,8 +190,8 @@ export interface XaiChatOptions {
     parallelToolCalls?: boolean;
     /** "low" | "high" — NOT supported by grok-4. */
     reasoningEffort?: "low" | "high";
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     responseFormat?: unknown;
     /** xAI live search. */
     searchParameters?: XaiSearchParameters;
@@ -208,9 +209,9 @@ export interface XaiChatOptions {
 export interface XaiChatResult {
     text: string;
     reasoningContent?: string;
-    toolCalls?: UnifiedToolCall[];
+    toolCalls?: Call[];
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     citations?: string[];
     raw: unknown;
 }
@@ -230,7 +231,7 @@ export interface XaiDeferredHandle {
  */
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: XaiChatOptions = {},
     streaming = false,
 ): Record<string, unknown> {
@@ -305,7 +306,7 @@ export type XaiStreamEvent =
     | { type: "text-delta"; text: string }
     | { type: "reasoning-delta"; text: string }
     | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
-    | { type: "finish"; finishReason?: string; usage?: UnifiedUsage; citations?: string[] };
+    | { type: "finish"; finishReason?: string; usage?: Usage; citations?: string[] };
 
 /**
  * Stateful parser for xAI chat-completion SSE streams. The vendor
@@ -317,7 +318,7 @@ export type XaiStreamEvent =
  * accumulated across the stream.
  */
 export function createStreamParser() {
-    let usage: UnifiedUsage | undefined;
+    let usage: Usage | undefined;
     let finishReason: string | undefined;
     let citations: string[] | undefined;
 
@@ -442,8 +443,8 @@ export interface XaiResponsesOptions {
     parallelToolCalls?: boolean;
     /** "low" | "medium" | "high". */
     reasoningEffort?: "low" | "medium" | "high";
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     responseFormat?: unknown;
     searchParameters?: XaiSearchParameters;
     store?: boolean;

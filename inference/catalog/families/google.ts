@@ -25,8 +25,9 @@
  * - https://ai.google.dev/gemini-api/docs/file-search
  * - https://ai.google.dev/gemini-api/docs/url-context
  */
-import type { Request, Response } from "express";
-import { GoogleGenAI, type GenerateContentResponse, type Content, type Part } from "@google/genai";
+import type { Request as Req, Response as Res } from "express";
+import { GoogleGenAI, type GenerateContentResponse, type Content, type Part as GenPart } from "@google/genai";
+import { getModelById } from "../registry.js";
 
 const GOOGLE_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 const BASE_URL = "https://generativelanguage.googleapis.com";
@@ -342,6 +343,14 @@ function detectTaskFromCapabilities(
 // Image Generation (Nano Banana / Nano Banana Pro)
 // =============================================================================
 
+export function imageApi(modelId: string): "content" | "images" {
+    const card = getModelById(modelId, "gemini");
+    const output = Array.isArray(card?.output)
+        ? card.output.map((value) => typeof value === "string" ? value.trim().toLowerCase() : "")
+        : [];
+    return output.includes("image") && !output.includes("text") ? "images" : "content";
+}
+
 /**
  * Generate image using Gemini image models (Nano Banana)
  * 
@@ -378,8 +387,34 @@ export async function generateImage(
     console.log(`[genai] Generating image with model: ${cleanModelId}`);
 
     try {
+        if (imageApi(cleanModelId) === "images" && !options?.referenceImages?.length) {
+            const response = await client.models.generateImages({
+                model: cleanModelId,
+                prompt,
+                config: {
+                    ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
+                    ...(options?.numberOfImages && { numberOfImages: options.numberOfImages }),
+                    ...(options?.outputMimeType && { outputMimeType: options.outputMimeType }),
+                },
+            });
+            const generated = response.generatedImages?.find((image) => image.image?.imageBytes);
+            const image = generated?.image;
+            if (!image?.imageBytes) {
+                throw new Error("No generated image data in response");
+            }
+            return {
+                buffer: Buffer.from(image.imageBytes, "base64"),
+                usage: {
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    totalTokens: 0,
+                    billingMetrics: { image: 1 },
+                },
+            };
+        }
+
         // Build content parts
-        const parts: Part[] = [{ text: prompt }];
+        const parts: GenPart[] = [{ text: prompt }];
 
         // Add reference images if provided (for image editing / multi-image reference)
         if (options?.referenceImages) {
@@ -479,16 +514,35 @@ export async function* streamImage(
         numberOfImages?: number;
         outputMimeType?: string;
         includeThoughts?: boolean;
+        signal?: AbortSignal;
     }
 ): AsyncGenerator<
     | { type: "thinking"; text: string }
     | { type: "image-partial"; base64: string; mimeType?: string; index: number }
     | { type: "image-complete"; base64: string; mimeType?: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown> } }
 > {
+    if (options?.signal?.aborted) {
+        throw (options.signal.reason instanceof Error ? options.signal.reason : new Error("request aborted"));
+    }
+    if (imageApi(modelId) === "images" && !options?.referenceImages?.length) {
+        const result = await generateImage(modelId, prompt, {
+            aspectRatio: options?.aspectRatio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | undefined,
+            numberOfImages: options?.numberOfImages,
+            outputMimeType: options?.outputMimeType as "image/png" | "image/jpeg" | "image/webp" | undefined,
+        });
+        yield {
+            type: "image-complete",
+            base64: result.buffer.toString("base64"),
+            mimeType: options?.outputMimeType || "image/png",
+            ...(result.usage ? { usage: result.usage } : {}),
+        };
+        return;
+    }
+
     const client = getClient();
     const cleanModelId = modelId.replace("models/", "");
 
-    const parts: Part[] = [{ text: prompt }];
+    const parts: GenPart[] = [{ text: prompt }];
     if (options?.referenceImages) {
         for (const imageBuffer of options.referenceImages) {
             parts.push({
@@ -517,6 +571,9 @@ export async function* streamImage(
     let usage = undefined as ReturnType<typeof normalizeUsageMetadata>;
 
     for await (const chunk of stream) {
+        if (options?.signal?.aborted) {
+            throw (options.signal.reason instanceof Error ? options.signal.reason : new Error("request aborted"));
+        }
         usage = normalizeUsageMetadata((chunk as GenerateContentResponse).usageMetadata) ?? usage;
         const candidate = chunk.candidates?.[0];
         const parts2 = candidate?.content?.parts;
@@ -778,6 +835,69 @@ export async function generateSpeech(
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`TTS generation failed: ${message}`);
     }
+}
+
+export async function generateMusic(
+    modelId: string,
+    text: string,
+    options?: {
+        image?: Buffer;
+    }
+): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        billingMetrics?: Record<string, unknown>;
+    };
+}> {
+    const client = getClient();
+    const cleanModelId = modelId.replace("models/", "");
+    const parts: GenPart[] = [];
+
+    if (options?.image) {
+        parts.push({
+            inlineData: {
+                data: options.image.toString("base64"),
+                mimeType: "image/png",
+            },
+        });
+    }
+    parts.push({ text });
+
+    const response = await client.models.generateContent({
+        model: cleanModelId,
+        contents: [{ role: "user", parts }],
+        config: {
+            responseModalities: ["AUDIO", "TEXT"],
+        },
+    }) as GenerateContentResponse;
+
+    const usage = normalizeUsageMetadata(response.usageMetadata);
+    const candidates = response.candidates || [];
+    for (const candidate of candidates) {
+        for (const part of candidate.content?.parts || []) {
+            const inline = ((part as { inlineData?: unknown }).inlineData
+                || (part as { inline_data?: unknown }).inline_data) as Record<string, unknown> | undefined;
+            const data = inline?.data;
+            const mimeType = typeof inline?.mimeType === "string"
+                ? inline.mimeType
+                : typeof inline?.mime_type === "string"
+                    ? inline.mime_type
+                    : "audio/wav";
+            if (typeof data === "string" && mimeType.toLowerCase().includes("audio")) {
+                return {
+                    buffer: Buffer.from(data, "base64"),
+                    mimeType,
+                    ...(usage ? { usage } : {}),
+                };
+            }
+        }
+    }
+
+    throw new Error(`Music generation returned no audio for model ${cleanModelId}`);
 }
 
 // =============================================================================
@@ -1246,7 +1366,7 @@ export async function createEphemeralToken(
  * GET /api/genai/models
  * Returns available Google GenAI models with capabilities
  */
-export async function handleGetGoogleModels(_req: Request, res: Response) {
+export async function handleGetGoogleModels(_req: Req, res: Res) {
     try {
         const models = await fetchGoogleModels();
 
@@ -1268,7 +1388,7 @@ export async function handleGetGoogleModels(_req: Request, res: Response) {
  * POST /api/genai/generate
  * Universal generation endpoint for Google models
  */
-export async function handleGoogleGenerate(req: Request, res: Response) {
+export async function handleGoogleGenerate(req: Req, res: Res) {
     if (!GOOGLE_API_KEY) {
         return res.status(503).json({
             error: "Google GenAI not configured",
@@ -1363,7 +1483,7 @@ export async function handleGoogleGenerate(req: Request, res: Response) {
  * POST /api/genai/research
  * Start a deep research task
  */
-export async function handleDeepResearch(req: Request, res: Response) {
+export async function handleDeepResearch(req: Req, res: Res) {
     if (!GOOGLE_API_KEY) {
         return res.status(503).json({
             error: "Google GenAI not configured",
@@ -1398,7 +1518,7 @@ export async function handleDeepResearch(req: Request, res: Response) {
  * GET /api/genai/research/:id
  * Poll for deep research status
  */
-export async function handlePollResearch(req: Request, res: Response) {
+export async function handlePollResearch(req: Req, res: Res) {
     if (!GOOGLE_API_KEY) {
         return res.status(503).json({
             error: "Google GenAI not configured",
@@ -1427,7 +1547,7 @@ export async function handlePollResearch(req: Request, res: Response) {
  * POST /api/genai/ephemeral-token
  * Create ephemeral token for Live API
  */
-export async function handleCreateEphemeralToken(req: Request, res: Response) {
+export async function handleCreateEphemeralToken(req: Req, res: Res) {
     if (!GOOGLE_API_KEY) {
         return res.status(503).json({
             error: "Google GenAI not configured",
@@ -1472,18 +1592,20 @@ export {
 //
 // Owns: contents/parts shape, functionDeclarations tool serialization,
 // parts[i].functionCall.thoughtSignature WIRE round-trip (Gemini 3+ requirement),
-// usageMetadata → UnifiedUsage with per-modality billing metrics.
+// usageMetadata → Usage with per-modality billing metrics.
 
 import type {
-    UnifiedMessage as _UnifiedMessageGoogleWire,
-    UnifiedOutput as _UnifiedOutputGoogleWire,
-    UnifiedRequest as _UnifiedRequestGoogleWire,
-    UnifiedStreamEvent as _UnifiedStreamEventGoogleWire,
-    UnifiedTool as _UnifiedToolGoogleWire,
-    UnifiedToolCall as _UnifiedToolCallGoogleWire,
-    UnifiedToolChoice as _UnifiedToolChoiceGoogleWire,
-    UnifiedUsage as _UnifiedUsageGoogleWire,
+    Message,
+    Output,
+    Request,
+    Event,
+    Tool,
+    Call,
+    Choice,
+    Usage,
 } from "../../core.js";
+import { bufferFromPayload } from "../shared/media.js";
+import * as lower from "../shared/schema.js";
 
 export interface GoogleWireEndpoint {
     /** Base URL up to but not including `/models/{modelId}:...`. */
@@ -1500,9 +1622,9 @@ export interface GoogleWireChatOptions {
     maxTokens?: number;
     topP?: number;
     topK?: number;
-    tools?: _UnifiedToolGoogleWire[];
-    toolChoice?: _UnifiedToolChoiceGoogleWire;
-    responseFormat?: _UnifiedRequestGoogleWire["responseFormat"];
+    tools?: Tool[];
+    toolChoice?: Choice;
+    responseFormat?: Request["responseFormat"];
     /** systemInstruction (Google's first-class field). */
     systemInstruction?: string;
     /** Cached signature lookup keyed by toolCallId. Caller owns the cache. */
@@ -1517,7 +1639,16 @@ export interface GoogleWireEmbeddingsOptions {
     taskType?: string;
     title?: string;
     outputDimensionality?: number;
+    contents?: GoogleEmbeddingContent[];
     signal?: AbortSignal;
+}
+
+export interface GoogleEmbeddingContent {
+    parts: Array<Record<string, unknown>>;
+}
+
+function hasGoogleUsageBreakdown(usage?: Usage): boolean {
+    return Boolean(usage?.billingMetrics && Object.keys(usage.billingMetrics).some((key) => /^input_.*_tokens$/u.test(key)));
 }
 
 function asGoogleRecord(value: unknown): Record<string, unknown> | null {
@@ -1526,6 +1657,15 @@ function asGoogleRecord(value: unknown): Record<string, unknown> | null {
 
 function cleanGoogle(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
+}
+
+function thoughtSignatureFromMetadata(value: unknown): string {
+    const metadata = asGoogleRecord(value);
+    if (!metadata) return "";
+    const direct = cleanGoogle(metadata.thoughtSignature) || cleanGoogle(metadata.thought_signature);
+    if (direct) return direct;
+    const google = asGoogleRecord(metadata.google);
+    return cleanGoogle(google?.thoughtSignature) || cleanGoogle(google?.thought_signature);
 }
 
 function googleEndpointHeaders(endpoint: GoogleWireEndpoint): Record<string, string> {
@@ -1563,7 +1703,34 @@ async function readGoogleErrorBody(response: globalThis.Response): Promise<strin
 // Message → contents/parts
 // ---------------------------------------------------------------------------
 
-function partsFromGoogleContent(content: unknown): Array<Record<string, unknown>> {
+function mimeFromLocator(locator: string, fallback: string): string {
+    const lower = locator.split(/[?#]/, 1)[0]?.toLowerCase() || "";
+    if (lower.endsWith(".png")) return "image/png";
+    if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+    if (lower.endsWith(".webp")) return "image/webp";
+    if (lower.endsWith(".gif")) return "image/gif";
+    if (lower.endsWith(".wav")) return "audio/wav";
+    if (lower.endsWith(".mp3")) return "audio/mpeg";
+    if (lower.endsWith(".m4a")) return "audio/mp4";
+    if (lower.endsWith(".ogg")) return "audio/ogg";
+    if (lower.endsWith(".flac")) return "audio/flac";
+    if (lower.endsWith(".mp4")) return "video/mp4";
+    if (lower.endsWith(".webm")) return "video/webm";
+    if (lower.endsWith(".mov")) return "video/quicktime";
+    return fallback;
+}
+
+async function inlinePart(locator: string, fallbackMimeType: string): Promise<Record<string, unknown>> {
+    const media = await bufferFromPayload(locator, fallbackMimeType);
+    return {
+        inlineData: {
+            mimeType: media.mimeType || fallbackMimeType,
+            data: media.buffer.toString("base64"),
+        },
+    };
+}
+
+async function partsFromGoogleContent(content: unknown): Promise<Array<Record<string, unknown>>> {
     if (typeof content === "string") {
         return content.length > 0 ? [{ text: content }] : [];
     }
@@ -1588,30 +1755,96 @@ function partsFromGoogleContent(content: unknown): Array<Record<string, unknown>
                         continue;
                     }
                 }
-                parts.push({ fileData: { fileUri: url, mimeType: "image/*" } });
+                parts.push(await inlinePart(url, mimeFromLocator(url, "image/png")));
             }
             continue;
         }
         if (type === "input_audio") {
             const value = part.input_audio;
             const url = typeof value === "string" ? value : cleanGoogle(asGoogleRecord(value)?.url);
-            if (url) parts.push({ fileData: { fileUri: url, mimeType: "audio/*" } });
+            if (url) parts.push(await inlinePart(url, mimeFromLocator(url, "audio/mpeg")));
             continue;
         }
         if (type === "video_url") {
             const value = part.video_url;
             const url = typeof value === "string" ? value : cleanGoogle(asGoogleRecord(value)?.url);
-            if (url) parts.push({ fileData: { fileUri: url, mimeType: "video/*" } });
+            if (url) parts.push(await inlinePart(url, mimeFromLocator(url, "video/mp4")));
             continue;
         }
     }
     return parts;
 }
 
-function mapMessagesForGoogleWire(
-    messages: _UnifiedMessageGoogleWire[],
+async function inlineEmbeddingPart(locator: string, fallbackMimeType: string): Promise<Record<string, unknown>> {
+    const media = await bufferFromPayload(locator, fallbackMimeType);
+    return {
+        inlineData: {
+            mimeType: media.mimeType || fallbackMimeType,
+            data: media.buffer.toString("base64"),
+        },
+    };
+}
+
+async function embeddingPartsFromGoogleContent(content: unknown): Promise<Array<Record<string, unknown>>> {
+    if (typeof content === "string") {
+        return content.length > 0 ? [{ text: content }] : [];
+    }
+    if (!Array.isArray(content)) return [];
+
+    const parts: Array<Record<string, unknown>> = [];
+    for (const raw of content) {
+        const part = asGoogleRecord(raw);
+        if (!part) continue;
+        const type = cleanGoogle(part.type);
+        if (type === "text" && typeof part.text === "string" && part.text.length > 0) {
+            parts.push({ text: part.text });
+            continue;
+        }
+        if (type === "image_url") {
+            const value = part.image_url;
+            const url = typeof value === "string" ? value : cleanGoogle(asGoogleRecord(value)?.url);
+            if (url) parts.push(await inlineEmbeddingPart(url, mimeFromLocator(url, "image/png")));
+            continue;
+        }
+        if (type === "input_audio") {
+            const value = part.input_audio;
+            const url = typeof value === "string" ? value : cleanGoogle(asGoogleRecord(value)?.url);
+            if (url) parts.push(await inlineEmbeddingPart(url, mimeFromLocator(url, "audio/mpeg")));
+            continue;
+        }
+        if (type === "video_url") {
+            const value = part.video_url;
+            const url = typeof value === "string" ? value : cleanGoogle(asGoogleRecord(value)?.url);
+            if (url) parts.push(await inlineEmbeddingPart(url, mimeFromLocator(url, "video/mp4")));
+            continue;
+        }
+    }
+    return parts;
+}
+
+export async function embeddingContentsFromMessages(
+    messages: Message[],
+    fallbackTexts: string[] = [],
+): Promise<GoogleEmbeddingContent[]> {
+    const parts: Array<Record<string, unknown>> = [];
+
+    for (const message of messages) {
+        parts.push(...await embeddingPartsFromGoogleContent(message.content));
+    }
+
+    if (parts.length > 0) {
+        return [{ parts }];
+    }
+
+    return fallbackTexts
+        .filter((text) => text.length > 0)
+        .map((text) => ({ parts: [{ text }] }));
+}
+
+async function mapMessagesForGoogleWire(
+    messages: Message[],
     options: { thoughtSignatureLookup?: (toolCallId: string) => string | undefined } = {},
-): { systemInstruction: string | null; contents: Array<Record<string, unknown>> } {
+): Promise<{ systemInstruction: string | null; contents: Array<Record<string, unknown>> }> {
     let systemInstruction: string | null = null;
     const contents: Array<Record<string, unknown>> = [];
 
@@ -1666,7 +1899,7 @@ function mapMessagesForGoogleWire(
             if (typeof message.content === "string" && message.content.length > 0) {
                 parts.push({ text: message.content });
             } else if (Array.isArray(message.content)) {
-                for (const p of partsFromGoogleContent(message.content)) parts.push(p);
+                for (const p of await partsFromGoogleContent(message.content)) parts.push(p);
             }
             if (Array.isArray(message.tool_calls)) {
                 for (const call of message.tool_calls) {
@@ -1677,23 +1910,23 @@ function mapMessagesForGoogleWire(
                         args = {};
                     }
                     const fn: Record<string, unknown> = { name: call.function.name, args };
-                    const sig = options.thoughtSignatureLookup?.(call.id);
-                    if (sig) fn.thoughtSignature = sig;
-                    parts.push({ functionCall: fn });
+                    const sig = thoughtSignatureFromMetadata(call.providerMetadata)
+                        || options.thoughtSignatureLookup?.(call.id);
+                    parts.push({ functionCall: fn, ...(sig ? { thoughtSignature: sig } : {}) });
                 }
             }
             if (parts.length > 0) contents.push({ role: "model", parts });
             continue;
         }
 
-        const parts = partsFromGoogleContent(message.content);
+        const parts = await partsFromGoogleContent(message.content);
         if (parts.length > 0) contents.push({ role: "user", parts });
     }
 
     return { systemInstruction, contents };
 }
 
-function googleToolsToWire(tools: _UnifiedToolGoogleWire[] | undefined): Array<Record<string, unknown>> | undefined {
+function googleToolsToWire(tools: Tool[] | undefined): Array<Record<string, unknown>> | undefined {
     if (!tools || tools.length === 0) return undefined;
     const declarations: Array<Record<string, unknown>> = [];
     for (const tool of tools) {
@@ -1701,14 +1934,14 @@ function googleToolsToWire(tools: _UnifiedToolGoogleWire[] | undefined): Array<R
         declarations.push({
             name: tool.function.name,
             ...(tool.function.description ? { description: tool.function.description } : {}),
-            ...(tool.function.parameters ? { parameters: tool.function.parameters } : {}),
+            parameters: lower.google(lower.object(tool.function.parameters)),
         });
     }
     if (declarations.length === 0) return undefined;
     return [{ functionDeclarations: declarations }];
 }
 
-function googleToolConfigToWire(toolChoice: _UnifiedToolChoiceGoogleWire | undefined): Record<string, unknown> | undefined {
+function googleToolConfigToWire(toolChoice: Choice | undefined): Record<string, unknown> | undefined {
     if (!toolChoice) return undefined;
     if (typeof toolChoice === "string") {
         if (toolChoice === "required") return { functionCallingConfig: { mode: "ANY" } };
@@ -1720,6 +1953,50 @@ function googleToolConfigToWire(toolChoice: _UnifiedToolChoiceGoogleWire | undef
     }
     return undefined;
 }
+
+const GOOGLE_GENERATION_CONFIG = new Set([
+    "audioTimestamp",
+    "candidateCount",
+    "enableEnhancedCivicAnswers",
+    "frequencyPenalty",
+    "logprobs",
+    "maxOutputTokens",
+    "mediaResolution",
+    "presencePenalty",
+    "responseJsonSchema",
+    "responseLogprobs",
+    "responseMimeType",
+    "responseModalities",
+    "responseSchema",
+    "seed",
+    "speechConfig",
+    "stopSequences",
+    "temperature",
+    "thinkingConfig",
+    "topK",
+    "topP",
+]);
+
+const GOOGLE_GENERATION_ALIASES = new Map([
+    ["audio_timestamp", "audioTimestamp"],
+    ["candidate_count", "candidateCount"],
+    ["enable_enhanced_civic_answers", "enableEnhancedCivicAnswers"],
+    ["frequency_penalty", "frequencyPenalty"],
+    ["max_output_tokens", "maxOutputTokens"],
+    ["media_resolution", "mediaResolution"],
+    ["presence_penalty", "presencePenalty"],
+    ["response_json_schema", "responseJsonSchema"],
+    ["response_logprobs", "responseLogprobs"],
+    ["response_mime_type", "responseMimeType"],
+    ["response_modalities", "responseModalities"],
+    ["response_schema", "responseSchema"],
+    ["speech_config", "speechConfig"],
+    ["stop", "stopSequences"],
+    ["stop_sequences", "stopSequences"],
+    ["thinking_config", "thinkingConfig"],
+    ["top_k", "topK"],
+    ["top_p", "topP"],
+]);
 
 function generationConfigFromGoogleOptions(opts: GoogleWireChatOptions | undefined): Record<string, unknown> | undefined {
     if (!opts) return undefined;
@@ -1738,7 +2015,9 @@ function generationConfigFromGoogleOptions(opts: GoogleWireChatOptions | undefin
     }
     if (opts.customParams) {
         for (const [key, value] of Object.entries(opts.customParams)) {
-            if (value !== undefined && cfg[key] === undefined) cfg[key] = value;
+            const field = GOOGLE_GENERATION_ALIASES.get(key) || key;
+            if (!GOOGLE_GENERATION_CONFIG.has(field)) continue;
+            if (value !== undefined && cfg[field] === undefined) cfg[field] = value;
         }
     }
     return Object.keys(cfg).length > 0 ? cfg : undefined;
@@ -1753,7 +2032,7 @@ function readNonNegGoogle(record: Record<string, unknown> | null | undefined, ke
     return undefined;
 }
 
-export function usageFromGoogleWire(rawUsage: unknown): _UnifiedUsageGoogleWire | undefined {
+export function usageFromGoogleWire(rawUsage: unknown): Usage | undefined {
     const usage = asGoogleRecord(rawUsage);
     if (!usage) return undefined;
     const promptTokens = readNonNegGoogle(usage, ["promptTokenCount"]) ?? 0;
@@ -1791,6 +2070,52 @@ export function usageFromGoogleWire(rawUsage: unknown): _UnifiedUsageGoogleWire 
     };
 }
 
+function usageFromGoogleTokenCount(raw: unknown): Usage | undefined {
+    const data = asGoogleRecord(raw);
+    if (!data) return undefined;
+    const totalTokens = readNonNegGoogle(data, ["totalTokens", "total_tokens"]) ?? 0;
+    const billingMetrics: Record<string, unknown> = {};
+    const details = Array.isArray(data.promptTokensDetails) ? data.promptTokensDetails : [];
+    for (const entry of details) {
+        const record = asGoogleRecord(entry);
+        const tokenCount = readNonNegGoogle(record ?? undefined, ["tokenCount"]);
+        if (typeof tokenCount !== "number" || tokenCount <= 0) continue;
+        const modality = cleanGoogle(record?.modality).toLowerCase();
+        if (!modality) continue;
+        billingMetrics[`input_${modality}_tokens`] = tokenCount;
+    }
+
+    return {
+        promptTokens: totalTokens,
+        completionTokens: 0,
+        totalTokens,
+        ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
+        ...(data ? { raw: data } : {}),
+    };
+}
+
+async function countEmbeddingTokens(
+    endpoint: GoogleWireEndpoint,
+    modelId: string,
+    contents: GoogleEmbeddingContent[],
+    signal?: AbortSignal,
+): Promise<Usage | undefined> {
+    if (contents.length === 0) return undefined;
+    const url = googleEndpointUrl(endpoint, modelId, "countTokens");
+    const response = await fetch(url, {
+        method: "POST",
+        headers: googleEndpointHeaders(endpoint),
+        body: JSON.stringify({
+            contents: contents.map((content) => ({ role: "user", parts: content.parts })),
+        }),
+        signal,
+    });
+    if (!response.ok) {
+        throw new Error(`Google-genai countTokens HTTP ${response.status}: ${await readGoogleErrorBody(response)}`);
+    }
+    return usageFromGoogleTokenCount(await response.json());
+}
+
 function finishReasonFromGoogleWire(value: unknown, hadToolCalls: boolean): string {
     const raw = cleanGoogle(value).toUpperCase();
     if (raw === "MAX_TOKENS") return "length";
@@ -1801,11 +2126,11 @@ function finishReasonFromGoogleWire(value: unknown, hadToolCalls: boolean): stri
     return "stop";
 }
 
-function buildGoogleBody(
-    messages: _UnifiedMessageGoogleWire[],
+async function buildGoogleBody(
+    messages: Message[],
     opts?: GoogleWireChatOptions,
-): Record<string, unknown> {
-    const { systemInstruction, contents } = mapMessagesForGoogleWire(messages, {
+): Promise<Record<string, unknown>> {
+    const { systemInstruction, contents } = await mapMessagesForGoogleWire(messages, {
         thoughtSignatureLookup: opts?.thoughtSignatureLookup,
     });
     const tools = googleToolsToWire(opts?.tools);
@@ -1826,9 +2151,9 @@ function buildGoogleBody(
 function extractToolCallsAndCaptureSignatures(
     candidate: Record<string, unknown> | null,
     onSignature?: (toolCallId: string, signature: string) => void,
-): { text: string; toolCalls: _UnifiedToolCallGoogleWire[] } {
+): { text: string; toolCalls: Call[] } {
     let text = "";
-    const toolCalls: _UnifiedToolCallGoogleWire[] = [];
+    const toolCalls: Call[] = [];
     const content = asGoogleRecord(candidate?.content);
     const parts = Array.isArray(content?.parts) ? content!.parts : [];
     let toolCallIndex = 0;
@@ -1844,12 +2169,16 @@ function extractToolCallsAndCaptureSignatures(
             const id = `gemini_call_${toolCallIndex}_${Date.now().toString(36)}`;
             const name = cleanGoogle(fc.name);
             const args = fc.args !== undefined ? fc.args : {};
-            const sig = cleanGoogle(fc.thoughtSignature);
+            const sig = cleanGoogle(record.thoughtSignature)
+                || cleanGoogle(record.thought_signature)
+                || cleanGoogle(fc.thoughtSignature)
+                || cleanGoogle(fc.thought_signature);
             if (sig && onSignature) onSignature(id, sig);
             toolCalls.push({
                 id,
                 name,
                 arguments: typeof args === "string" ? args : JSON.stringify(args),
+                ...(sig ? { providerMetadata: { google: { thoughtSignature: sig } } } : {}),
             });
             toolCallIndex += 1;
         }
@@ -1864,12 +2193,12 @@ function extractToolCallsAndCaptureSignatures(
 export async function chat(
     endpoint: GoogleWireEndpoint,
     modelId: string,
-    messages: _UnifiedMessageGoogleWire[],
+    messages: Message[],
     opts?: GoogleWireChatOptions,
-): Promise<_UnifiedOutputGoogleWire> {
+): Promise<Output> {
     const url = googleEndpointUrl(endpoint, modelId, "generateContent");
     const headers = googleEndpointHeaders(endpoint);
-    const body = buildGoogleBody(messages, opts);
+    const body = await buildGoogleBody(messages, opts);
 
     const response = await fetch(url, {
         method: "POST",
@@ -1901,13 +2230,13 @@ export async function chat(
 export async function* streamChat(
     endpoint: GoogleWireEndpoint,
     modelId: string,
-    messages: _UnifiedMessageGoogleWire[],
+    messages: Message[],
     opts?: GoogleWireChatOptions,
-): AsyncGenerator<_UnifiedStreamEventGoogleWire> {
+): AsyncGenerator<Event> {
     const baseUrl = googleEndpointUrl(endpoint, modelId, "streamGenerateContent");
     const url = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "alt=sse";
     const headers = googleEndpointHeaders(endpoint);
-    const body = buildGoogleBody(messages, opts);
+    const body = await buildGoogleBody(messages, opts);
 
     const response = await fetch(url, {
         method: "POST",
@@ -1922,76 +2251,102 @@ export async function* streamChat(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let lastUsage: _UnifiedUsageGoogleWire | undefined;
+    let lastUsage: Usage | undefined;
     let lastFinishReason: string | undefined;
     let toolCallIndex = 0;
     let sawToolCall = false;
 
+    const take = (): string | null => {
+        const match = buffer.match(/\r?\n\r?\n/);
+        if (!match || match.index === undefined) return null;
+        const raw = buffer.slice(0, match.index);
+        buffer = buffer.slice(match.index + match[0].length);
+        return raw;
+    };
+
+    const parse = (raw: string): Event[] => {
+        const dataLines = raw
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart());
+        if (dataLines.length === 0) return [];
+        const data = dataLines.join("\n").trim();
+        if (!data) return [];
+
+        let parsed: Record<string, unknown>;
+        try {
+            parsed = JSON.parse(data) as Record<string, unknown>;
+        } catch {
+            return [];
+        }
+
+        if (parsed.usageMetadata) {
+            const u = usageFromGoogleWire(parsed.usageMetadata);
+            if (u) lastUsage = u;
+        }
+
+        const events: Event[] = [];
+        const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
+        const candidate = asGoogleRecord(candidates[0]);
+        if (!candidate) return events;
+        const content = asGoogleRecord(candidate.content);
+        const parts = Array.isArray(content?.parts) ? content!.parts : [];
+        for (const part of parts) {
+            const record = asGoogleRecord(part);
+            if (!record) continue;
+            if (record.thought === true && typeof record.text === "string" && record.text.length > 0) {
+                events.push({ type: "thinking", thinking: record.text });
+                continue;
+            }
+            if (typeof record.text === "string" && record.text.length > 0) {
+                events.push({ type: "text-delta", text: record.text });
+                continue;
+            }
+            const fc = asGoogleRecord(record.functionCall);
+            if (fc) {
+                const id = `gemini_call_${toolCallIndex}_${Date.now().toString(36)}`;
+                const name = cleanGoogle(fc.name);
+                const args = fc.args !== undefined ? fc.args : {};
+                const sig = cleanGoogle(record.thoughtSignature)
+                    || cleanGoogle(record.thought_signature)
+                    || cleanGoogle(fc.thoughtSignature)
+                    || cleanGoogle(fc.thought_signature);
+                if (sig && opts?.onThoughtSignature) opts.onThoughtSignature(id, sig);
+                const argString = typeof args === "string" ? args : JSON.stringify(args);
+                sawToolCall = true;
+                events.push({
+                    type: "tool-call",
+                    toolCall: {
+                        id,
+                        name,
+                        arguments: argString,
+                        ...(sig ? { providerMetadata: { google: { thoughtSignature: sig } } } : {}),
+                    },
+                });
+                toolCallIndex += 1;
+            }
+        }
+        const fr = cleanGoogle(candidate.finishReason);
+        if (fr) lastFinishReason = fr;
+        return events;
+    };
+
     try {
         while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+                buffer += decoder.decode();
+                break;
+            }
             buffer += decoder.decode(value, { stream: true });
             while (true) {
-                const sep = buffer.indexOf("\n\n");
-                if (sep === -1) break;
-                const raw = buffer.slice(0, sep);
-                buffer = buffer.slice(sep + 2);
-                const dataLines = raw
-                    .split("\n")
-                    .filter((line) => line.startsWith("data:"))
-                    .map((line) => line.slice(5).trimStart());
-                if (dataLines.length === 0) continue;
-                const data = dataLines.join("\n").trim();
-                if (!data) continue;
-
-                let parsed: Record<string, unknown>;
-                try {
-                    parsed = JSON.parse(data) as Record<string, unknown>;
-                } catch {
-                    continue;
-                }
-
-                if (parsed.usageMetadata) {
-                    const u = usageFromGoogleWire(parsed.usageMetadata);
-                    if (u) lastUsage = u;
-                }
-
-                const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
-                const candidate = asGoogleRecord(candidates[0]);
-                if (!candidate) continue;
-                const content = asGoogleRecord(candidate.content);
-                const parts = Array.isArray(content?.parts) ? content!.parts : [];
-                for (const part of parts) {
-                    const record = asGoogleRecord(part);
-                    if (!record) continue;
-                    if (record.thought === true && typeof record.text === "string" && record.text.length > 0) {
-                        yield { type: "thinking", thinking: record.text };
-                        continue;
-                    }
-                    if (typeof record.text === "string" && record.text.length > 0) {
-                        yield { type: "text-delta", text: record.text };
-                        continue;
-                    }
-                    const fc = asGoogleRecord(record.functionCall);
-                    if (fc) {
-                        const id = `gemini_call_${toolCallIndex}_${Date.now().toString(36)}`;
-                        const name = cleanGoogle(fc.name);
-                        const args = fc.args !== undefined ? fc.args : {};
-                        const sig = cleanGoogle(fc.thoughtSignature);
-                        if (sig && opts?.onThoughtSignature) opts.onThoughtSignature(id, sig);
-                        const argString = typeof args === "string" ? args : JSON.stringify(args);
-                        sawToolCall = true;
-                        yield {
-                            type: "tool-call",
-                            toolCall: { id, name, arguments: argString },
-                        };
-                        toolCallIndex += 1;
-                    }
-                }
-                const fr = cleanGoogle(candidate.finishReason);
-                if (fr) lastFinishReason = fr;
+                const raw = take();
+                if (raw === null) break;
+                for (const event of parse(raw)) yield event;
             }
+        }
+        if (buffer.trim().length > 0) {
+            for (const event of parse(buffer)) yield event;
         }
     } finally {
         try { reader.releaseLock(); } catch { /* best-effort */ }
@@ -2000,7 +2355,7 @@ export async function* streamChat(
     yield {
         type: "done",
         finishReason: finishReasonFromGoogleWire(lastFinishReason, sawToolCall),
-        usage: lastUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        ...(lastUsage ? { usage: lastUsage } : {}),
     };
 }
 
@@ -2010,7 +2365,7 @@ export async function* streamChat(
 
 export interface GoogleWireEmbeddingsResult {
     embeddings: number[][];
-    usage?: _UnifiedUsageGoogleWire;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -2021,21 +2376,25 @@ export async function embeddings(
     opts?: GoogleWireEmbeddingsOptions,
 ): Promise<GoogleWireEmbeddingsResult> {
     const inputs = Array.isArray(input) ? input : [input];
-    const useBatch = inputs.length > 1;
+    const contents = opts?.contents?.filter((content) => Array.isArray(content.parts) && content.parts.length > 0) ?? [];
+    const useContent = contents.length > 0;
+    const useBatch = useContent ? contents.length > 1 : inputs.length > 1;
     const url = googleEndpointUrl(endpoint, modelId, useBatch ? "batchEmbedContents" : "embedContent");
     const headers = googleEndpointHeaders(endpoint);
 
-    const requestPart = (text: string): Record<string, unknown> => ({
+    const requestPart = (content: GoogleEmbeddingContent): Record<string, unknown> => ({
         model: `models/${modelId.replace(/^models\//, "")}`,
-        content: { parts: [{ text }] },
+        content,
         ...(opts?.taskType ? { taskType: opts.taskType } : {}),
         ...(opts?.title ? { title: opts.title } : {}),
         ...(typeof opts?.outputDimensionality === "number" ? { outputDimensionality: opts.outputDimensionality } : {}),
     });
 
+    const textContents = inputs.map((text) => ({ parts: [{ text }] }));
+    const requestContents = useContent ? contents : textContents;
     const body: Record<string, unknown> = useBatch
-        ? { requests: inputs.map(requestPart) }
-        : requestPart(inputs[0] || "");
+        ? { requests: requestContents.map(requestPart) }
+        : requestPart(requestContents[0] || { parts: [{ text: "" }] });
 
     const response = await fetch(url, {
         method: "POST",
@@ -2064,9 +2423,14 @@ export async function embeddings(
             out.push(values as number[]);
         }
     }
+    let usage = usageFromGoogleWire(data.usageMetadata);
+    if (useContent && !hasGoogleUsageBreakdown(usage)) {
+        usage = await countEmbeddingTokens(endpoint, modelId, requestContents, opts?.signal);
+    }
+
     return {
         embeddings: out,
-        usage: usageFromGoogleWire(data.usageMetadata),
+        usage,
         raw: data,
     };
 }

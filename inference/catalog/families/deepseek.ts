@@ -66,13 +66,14 @@
  */
 
 import type {
-    UnifiedMessage,
-    UnifiedTool,
-    UnifiedToolCall,
-    UnifiedToolChoice,
-    UnifiedUsage,
+    Message,
+    Tool,
+    Call,
+    Choice,
+    Usage,
 } from "../../core.js";
 import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
 // Path constants
@@ -134,19 +135,19 @@ export type DeepSeekToolChoice =
     | "required"
     | { type: "function"; function: { name: string } };
 
-export function toolsToWire(tools: UnifiedTool[] | undefined): DeepSeekFunctionTool[] | undefined {
+export function toolsToWire(tools: Tool[] | undefined): DeepSeekFunctionTool[] | undefined {
     if (!tools || tools.length === 0) return undefined;
     return tools.map((tool) => ({
         type: "function" as const,
         function: {
             name: tool.function.name,
             ...(tool.function.description ? { description: tool.function.description } : {}),
-            ...(tool.function.parameters ? { parameters: tool.function.parameters } : {}),
+            parameters: lower.object(tool.function.parameters),
         },
     }));
 }
 
-export function toolChoiceToWire(choice: UnifiedToolChoice | undefined): DeepSeekToolChoice | undefined {
+export function toolChoiceToWire(choice: Choice | undefined): DeepSeekToolChoice | undefined {
     if (!choice) return undefined;
     if (choice === "auto" || choice === "none" || choice === "required") return choice;
     if (typeof choice === "object" && choice.type === "function") {
@@ -176,7 +177,7 @@ export interface DeepSeekMessage {
     reasoning_content?: string;
 }
 
-export function mapMessagesForDeepSeek(messages: UnifiedMessage[]): DeepSeekMessage[] {
+export function mapMessagesForDeepSeek(messages: Message[]): DeepSeekMessage[] {
     return messages.map((message) => {
         const text = textOf(message.content);
         if (message.role === "tool") {
@@ -202,7 +203,7 @@ export function mapMessagesForDeepSeek(messages: UnifiedMessage[]): DeepSeekMess
     });
 }
 
-function textOf(content: UnifiedMessage["content"]): string {
+function textOf(content: Message["content"]): string {
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return "";
     return content
@@ -215,7 +216,7 @@ function textOf(content: UnifiedMessage["content"]): string {
 // Usage extraction (with KVCache + reasoning breakdown)
 // ---------------------------------------------------------------------------
 
-export function usageFromDeepSeek(rawUsage: unknown): UnifiedUsage | undefined {
+export function usageFromDeepSeek(rawUsage: unknown): Usage | undefined {
     const usage = asRecord(rawUsage);
     if (!usage) return undefined;
     const promptTokens = readNonNeg(usage, ["prompt_tokens", "input_tokens"]) ?? 0;
@@ -272,8 +273,8 @@ export interface DeepSeekChatOptions {
     reasoningEffort?: DeepSeekReasoningEffort;
     /** OpenAI-shape. */
     responseFormat?: DeepSeekResponseFormat;
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     /** Native: per-token logprobs. */
     logprobs?: boolean;
     /** Native: top-K most-likely tokens. */
@@ -290,7 +291,7 @@ export interface DeepSeekChatOptions {
 
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: DeepSeekChatOptions = {},
     streaming = false,
 ): Record<string, unknown> {
@@ -320,9 +321,9 @@ export function buildChatBody(
 export interface DeepSeekChatResult {
     text: string;
     reasoningContent?: string;
-    toolCalls?: UnifiedToolCall[];
+    toolCalls?: Call[];
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     logprobs?: { content?: DeepSeekLogprob[]; reasoning_content?: DeepSeekLogprob[] };
     systemFingerprint?: string;
     raw: unknown;
@@ -336,7 +337,7 @@ export function parseChatResponse(raw: unknown): DeepSeekChatResult {
 
     const text = clean(message.content);
     const reasoningContent = clean(message.reasoning_content);
-    const toolCalls: UnifiedToolCall[] = [];
+    const toolCalls: Call[] = [];
     const callsRaw = Array.isArray(message.tool_calls) ? message.tool_calls : [];
     for (const call of callsRaw) {
         const record = asRecord(call);
@@ -367,10 +368,10 @@ export type DeepSeekStreamEvent =
     | { type: "text-delta"; text: string }
     | { type: "reasoning-delta"; text: string }
     | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
-    | { type: "finish"; finishReason?: string; usage?: UnifiedUsage };
+    | { type: "finish"; finishReason?: string; usage?: Usage };
 
 export function createStreamParser() {
-    let lastUsage: UnifiedUsage | undefined;
+    let lastUsage: Usage | undefined;
     function feed(payload: unknown): DeepSeekStreamEvent[] {
         const data = asRecord(payload);
         if (!data) return [];

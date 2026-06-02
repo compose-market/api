@@ -2,7 +2,7 @@
  * Z.AI (formerly Zhipu / BigModel) GLM family wire.
  *
  * Pure protocol module: builds Z.AI request bodies, translates
- * UnifiedMessage[] into Z.AI shape, and parses Z.AI responses + SSE
+ * Message[] into Z.AI shape, and parses Z.AI responses + SSE
  * frames back into family-native types.
  *
  * NO endpoints, NO API keys, NO network calls. Vendors that route
@@ -45,13 +45,14 @@
  */
 
 import type {
-    UnifiedMessage,
-    UnifiedTool,
-    UnifiedToolCall,
-    UnifiedToolChoice,
-    UnifiedUsage,
+    Message,
+    Tool,
+    Call,
+    Choice,
+    Usage,
 } from "../../core.js";
 import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
 // Path constants — vendors prefix these with their host
@@ -119,10 +120,10 @@ export interface ZaiThinking {
 }
 
 // ---------------------------------------------------------------------------
-// Translation: UnifiedMessage ⇔ ZaiMessage
+// Translation: Message ⇔ ZaiMessage
 // ---------------------------------------------------------------------------
 
-export function mapMessagesForZai(messages: UnifiedMessage[]): ZaiMessage[] {
+export function mapMessagesForZai(messages: Message[]): ZaiMessage[] {
     return messages.map((message) => {
         if (message.role === "system") {
             return { role: "system", content: textOf(message.content) };
@@ -168,14 +169,14 @@ export function mapMessagesForZai(messages: UnifiedMessage[]): ZaiMessage[] {
                     const url = typeof part.video_url === "string" ? part.video_url : part.video_url?.url;
                     if (url) items.push({ type: "video_url", video_url: { url } });
                 }
-                // file_url not present on UnifiedContentPart — not round-trippable today.
+                // file_url not present on Part — not round-trippable today.
             }
         }
         return { role: "user", content: items.length > 0 ? items : "" };
     });
 }
 
-function textOf(content: UnifiedMessage["content"]): string {
+function textOf(content: Message["content"]): string {
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return "";
     return content
@@ -188,20 +189,20 @@ function textOf(content: UnifiedMessage["content"]): string {
 // Tools / tool_choice
 // ---------------------------------------------------------------------------
 
-export function toolsToWire(tools: UnifiedTool[] | undefined): ZaiToolDefinition[] | undefined {
+export function toolsToWire(tools: Tool[] | undefined): ZaiToolDefinition[] | undefined {
     if (!tools || tools.length === 0) return undefined;
     return tools.map((tool) => ({
         type: "function" as const,
         function: {
             name: tool.function.name,
             description: tool.function.description ?? "",
-            parameters: tool.function.parameters ?? { type: "object", properties: {} },
+            parameters: lower.object(tool.function.parameters),
         },
     }));
 }
 
 /** Z.AI only supports `tool_choice: "auto"`. */
-export function toolChoiceToWire(choice: UnifiedToolChoice | undefined): "auto" | undefined {
+export function toolChoiceToWire(choice: Choice | undefined): "auto" | undefined {
     if (!choice) return undefined;
     return "auto";
 }
@@ -210,7 +211,7 @@ export function toolChoiceToWire(choice: UnifiedToolChoice | undefined): "auto" 
 // Usage
 // ---------------------------------------------------------------------------
 
-export function usageFromZai(rawUsage: unknown): UnifiedUsage | undefined {
+export function usageFromZai(rawUsage: unknown): Usage | undefined {
     const usage = asRecord(rawUsage);
     if (!usage) return undefined;
     const promptTokens = readNonNeg(usage, ["prompt_tokens"]) ?? 0;
@@ -265,10 +266,10 @@ export interface ZaiChatOptions {
     stop?: string[];
     thinking?: ZaiThinking;
     toolStream?: boolean;
-    tools?: UnifiedTool[];
+    tools?: Tool[];
     /** Built-in tools added alongside function tools. */
     extraTools?: ZaiToolDefinition[];
-    toolChoice?: UnifiedToolChoice;
+    toolChoice?: Choice;
     responseFormat?: { type: "text" | "json_object" };
     customParams?: Record<string, unknown>;
     /** Override the wire model id. */
@@ -278,16 +279,16 @@ export interface ZaiChatOptions {
 export interface ZaiChatResult {
     text: string;
     reasoningContent?: string;
-    toolCalls?: UnifiedToolCall[];
+    toolCalls?: Call[];
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     webSearch?: Array<Record<string, unknown>>;
     raw: unknown;
 }
 
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: ZaiChatOptions = {},
     streaming = false,
 ): Record<string, unknown> {
@@ -322,7 +323,7 @@ export function parseChatResponse(raw: unknown): ZaiChatResult {
     const text = clean(message.content);
     const reasoningContent = clean(message.reasoning_content);
     const toolCallsRaw = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-    const toolCalls: UnifiedToolCall[] = [];
+    const toolCalls: Call[] = [];
     for (const call of toolCallsRaw) {
         const record = asRecord(call);
         const fn = asRecord(record?.function);
@@ -356,7 +357,7 @@ export type ZaiStreamEvent =
     | { type: "text-delta"; text: string }
     | { type: "reasoning-delta"; text: string }
     | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
-    | { type: "finish"; finishReason?: string; usage?: UnifiedUsage };
+    | { type: "finish"; finishReason?: string; usage?: Usage };
 
 /**
  * Stateful parser for Z.AI chat-completion SSE frames. Vendors hold an
@@ -364,7 +365,7 @@ export type ZaiStreamEvent =
  * frame into `feed(...)`.
  */
 export function createStreamParser() {
-    let lastUsage: UnifiedUsage | undefined;
+    let lastUsage: Usage | undefined;
 
     function feed(payload: unknown): ZaiStreamEvent[] {
         const data = asRecord(payload);

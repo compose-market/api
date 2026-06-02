@@ -40,7 +40,7 @@
  */
 
 import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
 
 // ---------------------------------------------------------------------------
 // Path constants
@@ -224,11 +224,11 @@ export function parseT2AResponse(raw: unknown): MinimaxT2AResult {
 }
 
 /**
- * Build a `UnifiedUsage` shape from MiniMax T2A `extra_info` so the
+ * Build a `Usage` shape from MiniMax T2A `extra_info` so the
  * gateway's billing pipeline can charge by usage_characters /
  * audio_length.
  */
-export function usageFromT2A(extraInfo: MinimaxT2AResult["extraInfo"]): UnifiedUsage | undefined {
+export function usageFromT2A(extraInfo: MinimaxT2AResult["extraInfo"]): Usage | undefined {
     if (!extraInfo) return undefined;
     const billingMetrics: Record<string, unknown> = {};
     assignMetric(billingMetrics, "character", extraInfo.usageCharacters);

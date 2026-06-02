@@ -12,7 +12,7 @@
  */
 
 import { asRecord, bufferFromPayload, clean, sizeToDimensions } from "../shared/index.js";
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
 
 /** Path under the host's MAI surface. */
 export const MAI_PATH_IMAGES = "/mai/v1/images/generations";
@@ -32,7 +32,7 @@ export interface MaiImageOptions {
 export interface MaiImageResult {
     buffer: Buffer;
     mimeType: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 

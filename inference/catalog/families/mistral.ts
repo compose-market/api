@@ -17,13 +17,14 @@
  * Spec: https://docs.mistral.ai/api/
  */
 
-import type { UnifiedMessage, UnifiedTool, UnifiedToolChoice, UnifiedUsage } from "../../core.js";
+import type { Message, Tool, Choice, Usage } from "../../core.js";
 import {
     asRecord,
     clean,
     findAttachmentUrl,
     normalizeOpenAIUsage,
 } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 import type {
     OcrDocument,
     OcrPage,
@@ -68,8 +69,8 @@ export interface MistralChatOptions {
     promptMode?: "reasoning";
     reasoningEffort?: "high" | "none";
     parallelToolCalls?: boolean;
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     responseFormat?: unknown;
     customParams?: Record<string, unknown>;
     wireModelId?: string;
@@ -78,13 +79,25 @@ export interface MistralChatOptions {
 export interface MistralChatResult {
     text: string;
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
+}
+
+function toolsToWire(tools: Tool[] | undefined): Tool[] | undefined {
+    if (!tools || tools.length === 0) return undefined;
+    return tools.map((tool) => ({
+        type: "function",
+        function: {
+            name: tool.function.name,
+            ...(tool.function.description ? { description: tool.function.description } : {}),
+            parameters: lower.object(tool.function.parameters),
+        },
+    }));
 }
 
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: MistralChatOptions = {},
 ): Record<string, unknown> {
     return {
@@ -102,7 +115,7 @@ export function buildChatBody(
         ...(options.promptMode ? { prompt_mode: options.promptMode } : {}),
         ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
         ...(typeof options.parallelToolCalls === "boolean" ? { parallel_tool_calls: options.parallelToolCalls } : {}),
-        ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.tools ? { tools: toolsToWire(options.tools) } : {}),
         ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
         ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
         ...(options.stream ? { stream: true } : {}),
@@ -129,7 +142,7 @@ export function parseChatResponse(raw: unknown): MistralChatResult {
 
 export interface MistralEmbeddingResult {
     embeddings: number[][];
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -166,7 +179,7 @@ export interface MistralFimOptions {
 
 export interface MistralFimResult {
     text: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -337,10 +350,10 @@ export function parseOcrResponse(raw: unknown): OcrResult {
 }
 
 /**
- * Convenience: extract a Mistral OCR document from a `UnifiedMessage[]`
+ * Convenience: extract a Mistral OCR document from a `Message[]`
  * by walking image_url attachments. Used by vendor adapters.
  */
-export function ocrDocumentFromMessages(messages: UnifiedMessage[]): OcrDocument | null {
+export function ocrDocumentFromMessages(messages: Message[]): OcrDocument | null {
     const url = findAttachmentUrl(messages, "image_url");
     if (!url) return null;
     return { type: "image_url", imageUrl: url };

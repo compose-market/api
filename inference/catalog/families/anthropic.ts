@@ -2,7 +2,7 @@
  * Anthropic Claude family wire.
  *
  * Pure protocol module: builds Anthropic Messages-API request bodies,
- * translates UnifiedMessage[] into Anthropic content-block messages,
+ * translates Message[] into Anthropic content-block messages,
  * and parses Anthropic responses + streaming frames back into family-
  * native types.
  *
@@ -15,13 +15,14 @@
  */
 
 import type {
-    UnifiedMessage,
-    UnifiedTool,
-    UnifiedToolCall,
-    UnifiedToolChoice,
-    UnifiedUsage,
+    Message,
+    Tool,
+    Call,
+    Choice,
+    Usage,
 } from "../../core.js";
 import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
 // Content-block model (subset — the parts we round-trip)
@@ -70,17 +71,17 @@ export interface AnthropicMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Translation: UnifiedMessage ⇔ AnthropicMessage
+// Translation: Message ⇔ AnthropicMessage
 // ---------------------------------------------------------------------------
 
 /**
- * Translate Compose `UnifiedMessage[]` into Anthropic `messages` plus
+ * Translate Compose `Message[]` into Anthropic `messages` plus
  * an extracted top-level `system` string. Anthropic does NOT have a
  * `system` role inside `messages`; system-prompt parts must be lifted
  * to the top-level `system` parameter.
  */
 export function mapMessagesForAnthropic(
-    messages: UnifiedMessage[],
+    messages: Message[],
 ): { system: string | undefined; messages: AnthropicMessage[] } {
     const systemTexts: string[] = [];
     const out: AnthropicMessage[] = [];
@@ -147,7 +148,7 @@ export function mapMessagesForAnthropic(
     return { system, messages: out };
 }
 
-function textOf(content: UnifiedMessage["content"]): string {
+function textOf(content: Message["content"]): string {
     if (typeof content === "string") return content;
     if (!Array.isArray(content)) return "";
     return content
@@ -184,16 +185,16 @@ export type AnthropicToolChoice =
     | { type: "tool"; name: string; disable_parallel_tool_use?: boolean }
     | { type: "none" };
 
-export function toolsToWire(tools: UnifiedTool[] | undefined): AnthropicTool[] | undefined {
+export function toolsToWire(tools: Tool[] | undefined): AnthropicTool[] | undefined {
     if (!tools || tools.length === 0) return undefined;
     return tools.map((tool) => ({
         name: tool.function.name,
         ...(tool.function.description ? { description: tool.function.description } : {}),
-        input_schema: tool.function.parameters ?? { type: "object", properties: {} },
+        input_schema: lower.object(tool.function.parameters),
     }));
 }
 
-export function toolChoiceToWire(choice: UnifiedToolChoice | undefined): AnthropicToolChoice | undefined {
+export function toolChoiceToWire(choice: Choice | undefined): AnthropicToolChoice | undefined {
     if (!choice) return undefined;
     if (choice === "auto") return { type: "auto" };
     if (choice === "none") return { type: "none" };
@@ -208,7 +209,7 @@ export function toolChoiceToWire(choice: UnifiedToolChoice | undefined): Anthrop
 // Usage
 // ---------------------------------------------------------------------------
 
-export function usageFromAnthropic(rawUsage: unknown): UnifiedUsage | undefined {
+export function usageFromAnthropic(rawUsage: unknown): Usage | undefined {
     const usage = asRecord(rawUsage);
     if (!usage) return undefined;
     const inputTokens = readNonNeg(usage, ["input_tokens"]) ?? 0;
@@ -245,8 +246,8 @@ export interface AnthropicChatOptions {
     topP?: number;
     topK?: number;
     stopSequences?: string[];
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     /** Free-form passthrough (extended thinking, beta headers, etc). */
     customParams?: Record<string, unknown>;
     /** Override the wire model id (vendor-specific deployment names). */
@@ -255,9 +256,9 @@ export interface AnthropicChatOptions {
 
 export interface AnthropicChatResult {
     text: string;
-    toolCalls?: UnifiedToolCall[];
+    toolCalls?: Call[];
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -270,7 +271,7 @@ const DEFAULT_MAX_TOKENS = 4096;
  */
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: AnthropicChatOptions = {},
     streaming = false,
 ): Record<string, unknown> {
@@ -301,7 +302,7 @@ export function parseChatResponse(raw: unknown): AnthropicChatResult {
     const root = asRecord(raw) || {};
     const blocks = Array.isArray(root.content) ? root.content : [];
     const textParts: string[] = [];
-    const toolCalls: UnifiedToolCall[] = [];
+    const toolCalls: Call[] = [];
     for (const block of blocks) {
         const record = asRecord(block);
         if (!record) continue;
@@ -347,7 +348,7 @@ export type AnthropicStreamEvent =
     | { type: "thinking-delta"; text: string }
     | { type: "tool-call-start"; id: string; name: string; index: number }
     | { type: "tool-call-delta"; index: number; argumentsDelta: string }
-    | { type: "message-stop"; finishReason?: string; usage?: UnifiedUsage };
+    | { type: "message-stop"; finishReason?: string; usage?: Usage };
 
 /**
  * Stateful parser for Anthropic Messages-API SSE frames.
@@ -358,7 +359,7 @@ export type AnthropicStreamEvent =
  */
 export function createStreamParser() {
     let finishReason: string | undefined;
-    let usage: UnifiedUsage | undefined;
+    let usage: Usage | undefined;
     let stopped = false;
 
     function feed(payload: unknown): AnthropicStreamEvent[] {

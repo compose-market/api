@@ -2,7 +2,7 @@
  * Cohere family wire.
  *
  * Pure protocol module: builds Cohere request bodies, translates
- * Compose `UnifiedMessage[]` into Cohere chat-message shape, and
+ * Compose `Message[]` into Cohere chat-message shape, and
  * decodes Cohere responses (chat / embed / rerank / classify) into
  * canonical Compose types. NO endpoints, NO API keys, NO network.
  *
@@ -12,7 +12,7 @@
  *
  *   - Path constants for the four Cohere surfaces.
  *   - `usageFromCohere`: meta-shaped usage normalizer.
- *   - `mapMessagesForCohere`: UnifiedMessage[] → Cohere chat shape.
+ *   - `mapMessagesForCohere`: Message[] → Cohere chat shape.
  *   - `buildChatBody` / `parseChatResponse` (chat v2).
  *   - `buildEmbedBody` / `parseEmbedResponse` (embed v2).
  *   - `buildRerankBody` / `parseRerankResponse` (rerank v2).
@@ -21,8 +21,9 @@
  * Spec: https://docs.cohere.com/reference/about
  */
 
-import type { UnifiedMessage, UnifiedTool, UnifiedToolChoice, UnifiedUsage } from "../../core.js";
+import type { Message, Tool, Choice, Usage } from "../../core.js";
 import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 import type { RerankRequest, RerankResult, RerankResultItem } from "../modalities/rerank.js";
 import { rerankBillingMetrics } from "../modalities/rerank.js";
 import type { ClassificationRequest, ClassificationResult, ClassificationResultEntry, ClassificationLabel } from "../modalities/classification.js";
@@ -42,7 +43,7 @@ export const COHERE_PATH_CLASSIFY = "/v1/classify";
 // Usage normalizer (Cohere `meta.billed_units` + `meta.tokens`)
 // ---------------------------------------------------------------------------
 
-export function usageFromCohere(rawMeta: unknown): UnifiedUsage | undefined {
+export function usageFromCohere(rawMeta: unknown): Usage | undefined {
     const meta = asRecord(rawMeta);
     if (!meta) return undefined;
     const billed = asRecord(meta.billed_units) || {};
@@ -81,7 +82,7 @@ export interface CohereChatMessage {
     tool_call_id?: string;
 }
 
-export function mapMessagesForCohere(messages: UnifiedMessage[]): CohereChatMessage[] {
+export function mapMessagesForCohere(messages: Message[]): CohereChatMessage[] {
     return messages.map((message) => {
         if (typeof message.content === "string") {
             return {
@@ -118,8 +119,8 @@ export interface CohereChatOptions {
     p?: number;
     k?: number;
     stopSequences?: string[];
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     responseFormat?: unknown;
     customParams?: Record<string, unknown>;
     wireModelId?: string;
@@ -128,13 +129,25 @@ export interface CohereChatOptions {
 export interface CohereChatResult {
     text: string;
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
+}
+
+function toolsToWire(tools: Tool[] | undefined): Tool[] | undefined {
+    if (!tools || tools.length === 0) return undefined;
+    return tools.map((tool) => ({
+        type: "function",
+        function: {
+            name: tool.function.name,
+            ...(tool.function.description ? { description: tool.function.description } : {}),
+            parameters: lower.object(tool.function.parameters),
+        },
+    }));
 }
 
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: CohereChatOptions = {},
 ): Record<string, unknown> {
     return {
@@ -145,7 +158,7 @@ export function buildChatBody(
         ...(typeof options.p === "number" ? { p: options.p } : {}),
         ...(typeof options.k === "number" ? { k: options.k } : {}),
         ...(options.stopSequences && options.stopSequences.length > 0 ? { stop_sequences: options.stopSequences } : {}),
-        ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.tools ? { tools: toolsToWire(options.tools) } : {}),
         ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
         ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
         ...(options.customParams ?? {}),
@@ -189,7 +202,7 @@ export interface CohereEmbedResult {
     embeddings: number[][];
     /** When `embeddingTypes` requests multiple flavors, all are kept. */
     embeddingsByType?: Record<CohereEmbeddingType, number[][]>;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 

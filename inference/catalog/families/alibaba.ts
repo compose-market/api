@@ -2,7 +2,7 @@
  * Alibaba family wire (Qwen, Wan, CosyVoice, Paraformer, GTE, etc.).
  *
  * Pure protocol module: builds DashScope native + DashScope OpenAI-
- * compatible request bodies, translates `UnifiedMessage[]` into
+ * compatible request bodies, translates `Message[]` into
  * DashScope multimodal content arrays, and parses responses back into
  * family-native types.
  *
@@ -26,7 +26,7 @@
  * Spec: https://help.aliyun.com/zh/model-studio/
  */
 
-import type { UnifiedMessage, UnifiedTool, UnifiedToolChoice, UnifiedUsage } from "../../core.js";
+import type { Message, Tool, Choice, Usage } from "../../core.js";
 import {
     asRecord,
     assignMetric,
@@ -37,6 +37,7 @@ import {
     primaryText,
     readNonNeg,
 } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
 import type { RerankRequest, RerankResult, RerankResultItem } from "../modalities/rerank.js";
 import { rerankBillingMetrics } from "../modalities/rerank.js";
 
@@ -53,7 +54,7 @@ export const DASHSCOPE_PATH_API = "/api/v1";
 // Usage normalizer (DashScope native: `usage.input_tokens` + per-modality)
 // ---------------------------------------------------------------------------
 
-export function usageFromDashScope(raw: unknown): UnifiedUsage | undefined {
+export function usageFromDashScope(raw: unknown): Usage | undefined {
     const root = asRecord(raw) || {};
     const usage = asRecord(root.usage) ?? asRecord(asRecord(root.output)?.usage);
     if (!usage) return undefined;
@@ -84,7 +85,7 @@ export function usageFromDashScope(raw: unknown): UnifiedUsage | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Translation: UnifiedMessage → DashScope multimodal content
+// Translation: Message → DashScope multimodal content
 // ---------------------------------------------------------------------------
 
 function urlFromPart(value: unknown): string | undefined {
@@ -93,7 +94,7 @@ function urlFromPart(value: unknown): string | undefined {
     return clean(record?.url) || undefined;
 }
 
-function dashscopeContent(message: UnifiedMessage): Array<Record<string, unknown>> {
+function dashscopeContent(message: Message): Array<Record<string, unknown>> {
     if (typeof message.content === "string") {
         return message.content ? [{ text: message.content }] : [];
     }
@@ -115,7 +116,7 @@ function dashscopeContent(message: UnifiedMessage): Array<Record<string, unknown
     return out;
 }
 
-export function dashscopeMessages(messages: UnifiedMessage[]): Array<Record<string, unknown>> {
+export function dashscopeMessages(messages: Message[]): Array<Record<string, unknown>> {
     return messages
         .map((message) => ({
             role: message.role === "tool" ? "assistant" : message.role,
@@ -136,8 +137,8 @@ export interface AlibabaChatOptions {
     topP?: number;
     seed?: number;
     stop?: string | string[];
-    tools?: UnifiedTool[];
-    toolChoice?: UnifiedToolChoice;
+    tools?: Tool[];
+    toolChoice?: Choice;
     responseFormat?: unknown;
     /** Qwen3+ thinking-mode toggle. */
     enableThinking?: boolean;
@@ -152,7 +153,7 @@ export interface AlibabaChatOptions {
 export interface AlibabaChatResult {
     text: string;
     finishReason?: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -167,7 +168,7 @@ export interface AlibabaChatBody {
     wire: AlibabaChatWire;
 }
 
-function hasNonTextContent(messages: UnifiedMessage[]): boolean {
+function hasNonTextContent(messages: Message[]): boolean {
     for (const message of messages) {
         if (!Array.isArray(message.content)) continue;
         for (const part of message.content) {
@@ -177,6 +178,18 @@ function hasNonTextContent(messages: UnifiedMessage[]): boolean {
     return false;
 }
 
+function toolsToWire(tools: Tool[] | undefined): Tool[] | undefined {
+    if (!tools || tools.length === 0) return undefined;
+    return tools.map((tool) => ({
+        type: "function",
+        function: {
+            name: tool.function.name,
+            ...(tool.function.description ? { description: tool.function.description } : {}),
+            parameters: lower.object(tool.function.parameters),
+        },
+    }));
+}
+
 /**
  * Build a DashScope chat request. Returns the path + JSON body the
  * vendor must POST. Use `parseChatResponse(raw, body.wire)` on the
@@ -184,7 +197,7 @@ function hasNonTextContent(messages: UnifiedMessage[]): boolean {
  */
 export function buildChatBody(
     modelId: string,
-    messages: UnifiedMessage[],
+    messages: Message[],
     options: AlibabaChatOptions = {},
 ): AlibabaChatBody {
     const wire = options.wire ?? (hasNonTextContent(messages) ? "multimodal" : "openai_chat");
@@ -201,7 +214,7 @@ export function buildChatBody(
                 ...(typeof options.topP === "number" ? { top_p: options.topP } : {}),
                 ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
                 ...(options.stop ? { stop: options.stop } : {}),
-                ...(options.tools ? { tools: options.tools } : {}),
+                ...(options.tools ? { tools: toolsToWire(options.tools) } : {}),
                 ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
                 ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
                 ...(typeof options.enableThinking === "boolean" ? { enable_thinking: options.enableThinking } : {}),
@@ -228,7 +241,7 @@ export function buildChatBody(
     };
 }
 
-function textFromOpenAI(raw: unknown): { text: string; finishReason?: string; usage?: UnifiedUsage } {
+function textFromOpenAI(raw: unknown): { text: string; finishReason?: string; usage?: Usage } {
     const root = asRecord(raw) || {};
     const choices = Array.isArray(root.choices) ? root.choices : [];
     const first = asRecord(choices[0]) || {};
@@ -288,7 +301,7 @@ export interface AlibabaEmbeddingsBody {
 
 export interface AlibabaEmbeddingResult {
     embeddings: number[][];
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -389,7 +402,7 @@ export interface AlibabaImageBody {
 export interface AlibabaImageResult {
     buffer: Buffer;
     mimeType: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -488,7 +501,7 @@ export interface AlibabaSpeechBody {
 export interface AlibabaSpeechResult {
     buffer: Buffer;
     mimeType: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -537,7 +550,7 @@ export interface AlibabaTranscribeBody {
 
 export interface AlibabaTranscriptionResult {
     text: string;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 
@@ -546,16 +559,21 @@ export function buildTranscribeBody(
     options: {
         audioUrl?: string;
         audioBuffer?: Buffer;
-        messages?: UnifiedMessage[];
+        messages?: Message[];
         language?: string;
         responseFormat?: string;
         customParams?: Record<string, unknown>;
     } = {},
 ): AlibabaTranscribeBody {
-    const audio = options.audioUrl
-        || (options.audioBuffer ? `data:audio/mpeg;base64,${options.audioBuffer.toString("base64")}` : undefined)
+    const candidate = options.audioUrl
         || (options.messages ? findAttachmentUrl(options.messages, "input_audio") : undefined);
-    if (!audio) throw new Error("Alibaba transcribe requires audio input");
+    const audio = candidate && /^https?:\/\//i.test(candidate) ? candidate : undefined;
+    if (!audio) {
+        throw Object.assign(
+            new Error("Alibaba transcribe requires a public http(s) audio URL"),
+            { statusCode: 400 },
+        );
+    }
     return {
         path: `${DASHSCOPE_PATH_API}/services/aigc/multimodal-generation/generation`,
         body: {
@@ -692,10 +710,149 @@ export interface WanVideoOptions {
     resolution?: string;
     size?: string;
     imageUrl?: string;
+    imageUrls?: string[];
     videoUrl?: string;
+    media?: Array<Record<string, unknown>>;
     seed?: number;
     promptExtend?: boolean;
     customParams?: Record<string, unknown>;
+}
+
+function wanResolution(resolution: string | undefined, size: string | undefined): string | undefined {
+    const direct = clean(resolution);
+    if (direct) return direct.replace(/p$/i, "P");
+    const value = clean(size);
+    const match = value.match(/^\d+\s*x\s*(\d+)$/i);
+    if (match) return `${match[1]}P`;
+    return value.replace(/p$/i, "P") || undefined;
+}
+
+function wanParams(params: Record<string, unknown> | undefined): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(params ?? {})) {
+        if ([
+            "size",
+            "image_url",
+            "video_url",
+            "first_frame_url",
+            "last_frame_url",
+            "function",
+            "ref_images_url",
+            "control_condition",
+            "obj_or_bg",
+        ].includes(key)) continue;
+        out[key] = value;
+    }
+    return out;
+}
+
+function isKf2v(modelId: string): boolean {
+    return /\bkf2v\b/i.test(modelId);
+}
+
+function isVace(modelId: string): boolean {
+    return /\bvace\b/i.test(modelId);
+}
+
+function mediaUrls(options: WanVideoOptions): string[] {
+    return [
+        ...(options.imageUrls ?? []),
+        ...(options.imageUrl ? [options.imageUrl] : []),
+    ].map(clean).filter(Boolean).filter((url, index, list) => list.indexOf(url) === index);
+}
+
+function customString(params: Record<string, unknown> | undefined, key: string): string {
+    return clean(params?.[key]);
+}
+
+function vaceFunction(options: WanVideoOptions): string {
+    const custom = options.customParams || {};
+    return customString(custom, "function")
+        || (options.videoUrl ? "video_repainting" : "image_reference");
+}
+
+function vaceRefs(options: WanVideoOptions): string[] {
+    const images = mediaUrls(options).slice(0, 3);
+    const custom = options.customParams || {};
+    return Array.isArray(custom.ref_images_url)
+        ? custom.ref_images_url.map(clean).filter(Boolean).slice(0, 3)
+        : images;
+}
+
+function buildKf2vInput(prompt: string, options: WanVideoOptions): Record<string, unknown> {
+    const images = mediaUrls(options);
+    const first = customString(options.customParams, "first_frame_url") || images[0];
+    const last = customString(options.customParams, "last_frame_url") || images[1];
+    if (!first || !last) {
+        throw Object.assign(
+            new Error("Alibaba KF2V requires first and last frame image URLs"),
+            { statusCode: 400 },
+        );
+    }
+    return {
+        prompt,
+        first_frame_url: first,
+        last_frame_url: last,
+    };
+}
+
+function buildVaceInput(prompt: string, options: WanVideoOptions): Record<string, unknown> {
+    const custom = options.customParams || {};
+    const fn = vaceFunction(options);
+    const input: Record<string, unknown> = { function: fn, prompt };
+
+    if (fn === "video_repainting") {
+        const video = customString(custom, "video_url") || clean(options.videoUrl);
+        if (!video) {
+            throw Object.assign(
+                new Error("Alibaba VACE video_repainting requires a public video URL"),
+                { statusCode: 400 },
+            );
+        }
+        input.video_url = video;
+        return input;
+    }
+
+    if (fn === "image_reference") {
+        const refs = vaceRefs(options);
+        if (refs.length === 0) {
+            throw Object.assign(
+                new Error("Alibaba VACE image_reference requires at least one public image URL"),
+                { statusCode: 400 },
+            );
+        }
+        input.ref_images_url = refs;
+        return input;
+    }
+
+    const video = customString(custom, "video_url") || clean(options.videoUrl);
+    if (video) input.video_url = video;
+    for (const key of ["first_clip_url", "last_clip_url", "first_frame_url", "last_frame_url", "mask_image_url", "mask_video_url"]) {
+        const value = customString(custom, key);
+        if (value) input[key] = value;
+    }
+    return input;
+}
+
+function vaceParameters(options: WanVideoOptions, params: Record<string, unknown>): Record<string, unknown> {
+    const custom = options.customParams || {};
+    const fn = vaceFunction(options);
+    if (fn === "video_repainting") {
+        return {
+            ...params,
+            control_condition: customString(custom, "control_condition") || "depth",
+        };
+    }
+    if (fn === "image_reference") {
+        const refs = vaceRefs(options);
+        return {
+            ...params,
+            obj_or_bg: Array.isArray(custom.obj_or_bg) && custom.obj_or_bg.length === refs.length
+                ? custom.obj_or_bg
+                : refs.map(() => "obj"),
+        };
+    }
+    return params;
 }
 
 export function buildWanVideoSubmission(
@@ -703,6 +860,59 @@ export function buildWanVideoSubmission(
     prompt: string,
     options: WanVideoOptions = {},
 ): DashScopeAsyncSubmission {
+    const customParams = wanParams(options.customParams);
+    const resolution = wanResolution(
+        options.resolution || clean(options.customParams?.resolution),
+        options.size || clean(options.customParams?.size),
+    );
+    const promptExtend = typeof options.promptExtend === "boolean"
+        ? options.promptExtend
+        : typeof options.customParams?.prompt_extend === "boolean"
+            ? options.customParams.prompt_extend
+            : false;
+    const media = (options.media ?? [])
+        .map((item) => asRecord(item))
+        .filter((item): item is Record<string, unknown> => Boolean(item));
+
+    if (isKf2v(modelId)) {
+        return {
+            path: `${DASHSCOPE_PATH_API}/services/aigc/image2video/video-synthesis`,
+            requiresAsyncHeader: true,
+            body: {
+                model: modelId,
+                input: buildKf2vInput(prompt, options),
+                parameters: {
+                    ...(typeof options.duration === "number" ? { duration: options.duration } : {}),
+                    ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
+                    ...(resolution ? { resolution } : {}),
+                    ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
+                    prompt_extend: promptExtend,
+                    ...customParams,
+                },
+            },
+        };
+    }
+
+    if (isVace(modelId)) {
+        const parameters = {
+            ...(typeof options.duration === "number" ? { duration: options.duration } : {}),
+            ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
+            ...(resolution ? { resolution } : {}),
+            ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
+            prompt_extend: promptExtend,
+            ...customParams,
+        };
+        return {
+            path: `${DASHSCOPE_PATH_API}/services/aigc/video-generation/video-synthesis`,
+            requiresAsyncHeader: true,
+            body: {
+                model: modelId,
+                input: buildVaceInput(prompt, options),
+                parameters: vaceParameters(options, parameters),
+            },
+        };
+    }
+
     return {
         path: `${DASHSCOPE_PATH_API}/services/aigc/video-generation/video-synthesis`,
         requiresAsyncHeader: true,
@@ -710,17 +920,20 @@ export function buildWanVideoSubmission(
             model: modelId,
             input: {
                 prompt,
-                ...(options.imageUrl ? { img_url: options.imageUrl, image_url: options.imageUrl } : {}),
-                ...(options.videoUrl ? { video_url: options.videoUrl } : {}),
+                ...(media.length > 0
+                    ? { media }
+                    : {
+                        ...(options.imageUrl ? { img_url: options.imageUrl } : {}),
+                        ...(options.videoUrl ? { video_url: options.videoUrl } : {}),
+                    }),
             },
             parameters: {
                 ...(typeof options.duration === "number" ? { duration: options.duration } : {}),
                 ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
-                ...(options.resolution ? { resolution: options.resolution } : {}),
-                ...(options.size ? { size: options.size } : {}),
+                ...(resolution ? { resolution } : {}),
                 ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
-                ...(typeof options.promptExtend === "boolean" ? { prompt_extend: options.promptExtend } : {}),
-                ...(options.customParams ?? {}),
+                prompt_extend: promptExtend,
+                ...customParams,
             },
         },
     };
