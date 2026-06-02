@@ -1,4 +1,4 @@
-import type { Application, Request, Response } from "express";
+import type { Application } from "express";
 
 import { getRedisClient } from "../x402/keys/redis.js";
 import { refreshDownloadMetrics } from "./downloads.js";
@@ -6,16 +6,6 @@ import { loadMetricsConfig } from "./config.js";
 import { runMetricsBackfill } from "./onchain.js";
 import { getMetricsChannel, readMetricsSnapshot } from "./redis.js";
 import { getMetricsHealth, getMetricsSnapshot } from "./service.js";
-
-function requireInternal(req: Request, res: Response): boolean {
-    const expected = process.env.RUNTIME_INTERNAL_SECRET;
-    const provided = req.header("x-internal-secret");
-    if (!expected || provided !== expected) {
-        res.status(401).json({ error: "Unauthorized" });
-        return false;
-    }
-    return true;
-}
 
 export function registerMetricsRoutes(app: Application): void {
     app.get("/api/metrics", async (req, res, next) => {
@@ -46,7 +36,6 @@ export function registerMetricsRoutes(app: Application): void {
 
     app.post("/api/metrics/reindex", async (req, res, next) => {
         try {
-            if (!requireInternal(req, res)) return;
             const maxRangesRaw = req.query.maxRanges ?? req.body?.maxRanges;
             const maxRanges = maxRangesRaw ? Number.parseInt(String(maxRangesRaw), 10) : undefined;
             const fromDate = typeof req.body?.fromDate === "string" ? req.body.fromDate : undefined;

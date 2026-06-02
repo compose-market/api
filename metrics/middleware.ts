@@ -9,12 +9,12 @@ function firstHeader(value: string | string[] | undefined): string {
 }
 
 export function classifyMetricsClientSource(headers: Request["headers"]): MetricsClientSource {
-    const explicit = firstHeader(headers["x-compose-client-source"]).toLowerCase();
+    const explicit = firstHeader(headers["x-client-source"]).toLowerCase();
     if (explicit === "sdk" || explicit === "web" || explicit === "runtime" || explicit === "internal") {
         return explicit;
     }
 
-    const sdk = firstHeader(headers["x-compose-sdk"]);
+    const sdk = firstHeader(headers["x-sdk"]);
     if (sdk) return "sdk";
 
     const workflowInternal = firstHeader(headers["x-workflow-internal"]);
