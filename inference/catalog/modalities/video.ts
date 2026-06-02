@@ -1,5 +1,5 @@
 import type { ModelCard } from "../../types.js";
-import type { UnifiedRequest, UnifiedUsage } from "../../core.js";
+import type { Request, Usage } from "../../core.js";
 import {
   buildCapability,
   hasInput,
@@ -13,25 +13,51 @@ export function classifyVideoModel(model: ModelCard, source: ModelSourceShape): 
   const capabilities: ModelOperationCapability[] = [];
 
   if (hasSourceType(source, ["text-to-video"])) {
-    capabilities.push(buildCapability(model, source, "video", "text-to-video", false));
+    capabilities.push(buildCapability(model, source, "video", "text-to-video", false, {
+      input: ["text"],
+      output: ["video"],
+    }));
   }
 
   if (hasSourceType(source, ["image-to-video"])) {
-    capabilities.push(buildCapability(model, source, "video", "image-to-video", false));
+    capabilities.push(buildCapability(model, source, "video", "image-to-video", false, {
+      input: hasInput(source, "text") ? ["image", "text"] : ["image"],
+      output: ["video"],
+    }));
   }
 
   if (hasSourceType(source, ["video-to-text", "video-classification"])) {
-    capabilities.push(buildCapability(model, source, "video", "video-to-text", false));
+    capabilities.push(buildCapability(model, source, "video", "video-to-text", false, {
+      input: hasInput(source, "text") ? ["video", "text"] : ["video"],
+      output: ["text"],
+    }));
+  }
+
+  if (hasSourceType(source, ["video-edit", "video-to-video"])) {
+    capabilities.push(buildCapability(model, source, "video", "video-edit", false, {
+      input: source.input.length > 0 ? source.input : ["video"],
+      output: ["video"],
+    }));
   }
 
   // Catalog-friendly umbrella types ("video generation" / "videos") that
   // the curated `models.json` uses. Disambiguate by input shape.
   if (hasSourceType(source, ["videos", "video-generation"]) && hasOutput(source, "video")) {
-    if (hasInput(source, "text")) {
-      capabilities.push(buildCapability(model, source, "video", "text-to-video", false));
-    }
-    if (hasInput(source, "image")) {
-      capabilities.push(buildCapability(model, source, "video", "image-to-video", false));
+    if (hasInput(source, "video")) {
+      capabilities.push(buildCapability(model, source, "video", "video-edit", false, {
+        input: source.input.length > 0 ? source.input : ["video"],
+        output: ["video"],
+      }));
+    } else if (hasInput(source, "image")) {
+      capabilities.push(buildCapability(model, source, "video", "image-to-video", false, {
+        input: hasInput(source, "text") ? ["image", "text"] : ["image"],
+        output: ["video"],
+      }));
+    } else if (hasInput(source, "text")) {
+      capabilities.push(buildCapability(model, source, "video", "text-to-video", false, {
+        input: ["text"],
+        output: ["video"],
+      }));
     }
   }
 
@@ -44,15 +70,19 @@ export interface VideoSubmissionOptions {
   resolution?: string;
   size?: string;
   imageUrl?: string;
+  videoUrl?: string;
   customParams?: Record<string, unknown>;
 }
 
-export function getVideoParameterCatalog(): Record<string, Record<string, unknown>> {
+export function getVideoParameterCatalog(provider?: string): Record<string, Record<string, unknown>> {
+  const family = typeof provider === "string" ? provider.trim().toLowerCase() : "";
+  const googleVideo = family === "gemini" || family === "vertex";
+  const alibabaVideo = family === "alibaba";
   return {
     duration: {
       type: "integer",
       required: false,
-      options: [4, 5, 6, 8, 10, 12],
+      options: googleVideo ? [5, 6, 7, 8] : [4, 5, 6, 8, 10, 12],
       description: "Generated video duration in seconds.",
     },
     fps: {
@@ -76,7 +106,7 @@ export function getVideoParameterCatalog(): Record<string, Record<string, unknow
     resolution: {
       type: "string",
       required: false,
-      options: ["480P", "540P", "720P", "768P", "1080P", "4K"],
+      options: googleVideo ? ["720p", "1080p"] : ["480P", "540P", "720P", "768P", "1080P", "4K"],
       description: "Generated video resolution.",
     },
     output_format: {
@@ -85,6 +115,14 @@ export function getVideoParameterCatalog(): Record<string, Record<string, unknow
       options: ["mp4", "webm", "mov"],
       description: "Generated video output format.",
     },
+    ...(alibabaVideo ? {
+      prompt_extend: {
+        type: "boolean",
+        required: false,
+        default: false,
+        description: "Whether Alibaba Wan rewrites the prompt before video generation.",
+      },
+    } : {}),
   };
 }
 
@@ -128,7 +166,11 @@ export function buildOpenAIVideoSubmissionBody(
     prompt,
     ...(size ? { size } : {}),
     ...(typeof options?.duration === "number" && options.duration > 0 ? { seconds: String(options.duration) } : {}),
-    ...(options?.imageUrl ? { input_reference: { image_url: options.imageUrl } } : {}),
+    ...(options?.imageUrl || options?.videoUrl ? {
+      input_reference: options?.videoUrl
+        ? { video_url: options.videoUrl }
+        : { image_url: options.imageUrl },
+    } : {}),
   };
 }
 
@@ -147,6 +189,7 @@ export function buildAIMLVideoSubmissionBody(
     ...(options?.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
     ...(options?.size ? { size: options.size } : {}),
     ...(options?.imageUrl ? { image_url: options.imageUrl } : {}),
+    ...(options?.videoUrl ? { video_url: options.videoUrl } : {}),
   };
 }
 
@@ -276,7 +319,7 @@ function readMp4VideoMetadata(buffer: Buffer): Mp4VideoMetadata {
 }
 
 export function videoBillingMetricsFromOutput(args: {
-  request: UnifiedRequest;
+  request: Request;
   buffer: Buffer;
   generatedUnits: number;
 }): Record<string, unknown> {
@@ -634,7 +677,7 @@ export interface VideoResponse {
   progress?: number;
   /** File id for download (MiniMax, OpenAI Sora, Z.AI). */
   fileId?: string;
-  usage?: UnifiedUsage;
+  usage?: Usage;
   raw: unknown;
 }
 
@@ -647,4 +690,4 @@ export type VideoStreamEvent =
   | { type: "video-complete"; video: GeneratedVideo }
   | { type: "warning"; warning: { code: string; message: string } }
   | { type: "error"; error: { code: string; message: string; details?: Record<string, unknown> } }
-  | { type: "done"; usage?: UnifiedUsage };
+  | { type: "done"; usage?: Usage };

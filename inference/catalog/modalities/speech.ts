@@ -1,65 +1,112 @@
 import type { ModelCard } from "../../types.js";
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
 import {
   buildCapability,
+  getModelSourceShape,
   hasInput,
   hasOutput,
   hasSourceType,
   uniqueCapabilities,
 } from "../source.js";
+import { extractPricingUnits } from "../pricing.js";
+import { isRealtimeOnlyModel } from "./realtime.js";
 import type { ModelOperationCapability, ModelSourceShape } from "./types.js";
+
+function hasVoiceUnit(model: ModelCard): boolean {
+  return extractPricingUnits(model.pricing).some((unit) =>
+    unit.unitKey === "per_voice_usd" || unit.valueKeys.includes("voice")
+  );
+}
 
 export function classifyAudioModel(model: ModelCard, source: ModelSourceShape): ModelOperationCapability[] {
   const capabilities: ModelOperationCapability[] = [];
+  if (isRealtimeOnlyModel(model, source)) {
+    return capabilities;
+  }
 
+  if (hasInput(source, "text") && hasOutput(source, "audio") && hasVoiceUnit(model)) {
+    capabilities.push(buildCapability(model, source, "audio", "voice-design", false, {
+      input: ["text"],
+      output: ["audio"],
+    }));
+  }
   if (hasSourceType(source, ["text-to-speech", "speech-generation"])) {
-    capabilities.push(buildCapability(model, source, "audio", "text-to-speech", false));
-  }
-  if (hasSourceType(source, ["speech-to-text", "transcription", "automatic-speech-recognition"])) {
-    capabilities.push(buildCapability(model, source, "audio", "speech-to-text", false));
-  }
-  if (hasSourceType(source, ["realtime-transcription", "realtime-translation"])) {
-    capabilities.push(buildCapability(model, source, "audio", "realtime-transcription", true));
+    if (!hasVoiceUnit(model)) {
+      capabilities.push(buildCapability(model, source, "audio", "text-to-speech", false, {
+        input: ["text"],
+        output: ["audio"],
+      }));
+    }
   }
   if (hasSourceType(source, ["speech-to-speech"])) {
-    capabilities.push(buildCapability(model, source, "audio", "speech-to-speech", false));
+    capabilities.push(buildCapability(model, source, "audio", "speech-to-speech", false, {
+      input: hasInput(source, "text") ? ["audio", "text"] : ["audio"],
+      output: ["audio"],
+    }));
   }
   if (hasSourceType(source, ["voice-conversion", "voice-changer"])) {
-    capabilities.push(buildCapability(model, source, "audio", "speech-to-speech", false));
+    capabilities.push(buildCapability(model, source, "audio", "speech-to-speech", false, {
+      input: ["audio"],
+      output: ["audio"],
+    }));
   }
   if (hasSourceType(source, ["text-to-audio", "music-generation", "sound-effects", "text-to-sound-effects"])) {
-    capabilities.push(buildCapability(model, source, "audio", "text-to-audio", false));
+    capabilities.push(buildCapability(model, source, "audio", "text-to-audio", false, {
+      input: ["text"],
+      output: ["audio"],
+    }));
   }
   if (hasSourceType(source, ["audio-isolation", "voice-isolation"])) {
-    capabilities.push(buildCapability(model, source, "audio", "audio-isolation", false));
+    capabilities.push(buildCapability(model, source, "audio", "audio-isolation", false, {
+      input: ["audio"],
+      output: ["audio"],
+    }));
   }
   if (hasSourceType(source, ["audio-infill", "speech-infill"])) {
-    capabilities.push(buildCapability(model, source, "audio", "audio-infill", false));
+    capabilities.push(buildCapability(model, source, "audio", "audio-infill", false, {
+      input: hasInput(source, "text") ? ["audio", "text"] : ["audio"],
+      output: ["audio"],
+    }));
   }
   if (hasSourceType(source, ["audio-classification"])) {
-    capabilities.push(buildCapability(model, source, "audio", "audio-classification", false));
+    capabilities.push(buildCapability(model, source, "audio", "audio-classification", false, {
+      input: ["audio"],
+      output: source.output,
+    }));
   }
   if (hasSourceType(source, ["voice-activity-detection"])) {
-    capabilities.push(buildCapability(model, source, "audio", "voice-activity-detection", true));
+    capabilities.push(buildCapability(model, source, "audio", "voice-activity-detection", true, {
+      input: ["audio"],
+      output: source.output,
+    }));
   }
   if (hasSourceType(source, ["voice-cloning", "voice-clone"])) {
-    capabilities.push(buildCapability(model, source, "audio", "voice-cloning", false));
+    capabilities.push(buildCapability(model, source, "audio", "voice-cloning", false, {
+      input: ["audio"],
+      output: source.output,
+    }));
   }
   if (hasSourceType(source, ["voice-design"])) {
-    capabilities.push(buildCapability(model, source, "audio", "voice-design", false));
+    capabilities.push(buildCapability(model, source, "audio", "voice-design", false, {
+      input: ["text"],
+      output: source.output,
+    }));
   }
   // Catalog-friendly umbrella type "Speech" (normalized: "speech") used by
   // the curated `models.json`. Disambiguate by input/output shape so a
   // single source type yields the right canonical operation.
   if (hasSourceType(source, ["speech"])) {
-    if (hasInput(source, "text") && hasOutput(source, "audio")) {
-      capabilities.push(buildCapability(model, source, "audio", "text-to-speech", false));
-    }
-    if (hasInput(source, "audio") && hasOutput(source, "text")) {
-      capabilities.push(buildCapability(model, source, "audio", "speech-to-text", false));
+    if (hasInput(source, "text") && hasOutput(source, "audio") && !hasOutput(source, "text")) {
+      capabilities.push(buildCapability(model, source, "audio", "text-to-speech", false, {
+        input: ["text"],
+        output: ["audio"],
+      }));
     }
     if (hasInput(source, "audio") && hasOutput(source, "audio") && !hasInput(source, "text")) {
-      capabilities.push(buildCapability(model, source, "audio", "speech-to-speech", false));
+      capabilities.push(buildCapability(model, source, "audio", "speech-to-speech", false, {
+        input: ["audio"],
+        output: ["audio"],
+      }));
     }
   }
   if (hasSourceType(source, ["dumb-pipe"]) && (hasInput(source, "audio") || hasOutput(source, "audio"))) {
@@ -69,8 +116,42 @@ export function classifyAudioModel(model: ModelCard, source: ModelSourceShape): 
   return uniqueCapabilities(capabilities);
 }
 
-export function getSpeechParameterCatalog(): Record<string, Record<string, unknown>> {
-  return {
+export function audioDurationSeconds(buffer: Buffer, mimeType?: string): number | undefined {
+  const type = typeof mimeType === "string" ? mimeType.toLowerCase() : "";
+  const looksWav = type.includes("wav")
+    || (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WAVE");
+  if (!looksWav || buffer.length < 44) {
+    return undefined;
+  }
+
+  let byteRate = 0;
+  let dataSize = 0;
+  let offset = 12;
+  while (offset + 8 <= buffer.length) {
+    const id = buffer.toString("ascii", offset, offset + 4);
+    const size = buffer.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    if (id === "fmt " && start + 16 <= buffer.length) {
+      byteRate = buffer.readUInt32LE(start + 8);
+    } else if (id === "data") {
+      dataSize = size;
+    }
+    offset = start + size + (size % 2);
+  }
+
+  if (!Number.isFinite(byteRate) || byteRate <= 0 || !Number.isFinite(dataSize) || dataSize <= 0) {
+    return undefined;
+  }
+
+  return dataSize / byteRate;
+}
+
+function hasMusicGenerationParams(model?: ModelCard | null): boolean {
+  return Boolean(model && hasSourceType(getModelSourceShape(model), ["music-generation"]));
+}
+
+export function getSpeechParameterCatalog(model?: ModelCard | null): Record<string, Record<string, unknown>> {
+  const params: Record<string, Record<string, unknown>> = {
     format: {
       type: "string",
       required: false,
@@ -102,7 +183,40 @@ export function getSpeechParameterCatalog(): Record<string, Record<string, unkno
       options: [1, 2],
       description: "Output audio channel count.",
     },
+    duration_seconds: {
+      type: "number",
+      required: false,
+      options: [1, 5, 10, 15, 30, 60],
+      description: "Generated audio duration in seconds.",
+    },
+    prompt_influence: {
+      type: "number",
+      required: false,
+      options: [0, 0.3, 0.5, 0.7, 1],
+      description: "Prompt influence for sound or audio generation.",
+    },
+    loop: {
+      type: "boolean",
+      required: false,
+      description: "Whether generated audio should loop cleanly.",
+    },
+    composition_plan: {
+      type: "object",
+      required: false,
+      description: "Structured music composition plan.",
+    },
   };
+
+  if (hasMusicGenerationParams(model)) {
+    params.music_length_ms = {
+      type: "integer",
+      required: false,
+      options: [3000, 10000, 15000, 30000, 60000, 120000],
+      description: "Generated music length in milliseconds.",
+    };
+  }
+
+  return params;
 }
 
 // ===========================================================================
@@ -557,7 +671,7 @@ export interface SpeechResponse {
   status?: "queued" | "processing" | "completed" | "failed";
   /** Voice cloning artifact. */
   voiceId?: string;
-  usage?: UnifiedUsage;
+  usage?: Usage;
   raw: unknown;
 }
 
@@ -566,7 +680,7 @@ export type SpeechStreamEvent =
   | { type: "subtitle"; subtitle: { start: number; end: number; text: string } }
   | { type: "warning"; warning: { code: string; message: string } }
   | { type: "error"; error: { code: string; message: string } }
-  | { type: "done"; usage?: UnifiedUsage };
+  | { type: "done"; usage?: Usage };
 
 // ===========================================================================
 // Speech-to-text (transcription)
@@ -660,7 +774,7 @@ export interface TranscriptionResponse {
   topics?: Array<{ topic: string; confidence: number }>;
   sentiment?: { overall?: "positive" | "negative" | "neutral"; segments?: Array<{ start: number; end: number; sentiment: string; confidence: number }> };
   intents?: Array<{ intent: string; confidence: number }>;
-  usage?: UnifiedUsage;
+  usage?: Usage;
   raw: unknown;
 }
 

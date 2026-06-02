@@ -1,10 +1,13 @@
 import type { ModelCard } from "../../types.js";
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
 import {
   buildCapability,
+  hasInput,
+  hasOutput,
   hasSourceType,
   uniqueCapabilities,
 } from "../source.js";
+import { isRealtimeOnlyModel } from "./realtime.js";
 import type { ModelOperationCapability, ModelSourceShape } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -31,38 +34,61 @@ const TEXT_TYPE_OPERATIONS = new Map<string, string>([
   ["summarization", "summarization"],
   ["translation", "translation"],
   ["moderation", "moderation"],
-  // Reranking, classification, and zero-shot classification all live in
-  // `text` modality with their own canonical operation. The sync script
-  // preserves these labels verbatim (no aggregation).
   ["text-classification", "classification"],
   ["token-classification", "classification"],
   ["zero-shot-classification", "classification"],
   ["classification", "classification"],
+  ["speech", "chat"],
 ]);
+
+const STT_TYPES = [
+  "speech-to-text",
+  "transcription",
+  "automatic-speech-recognition",
+] as const;
+
+function textInputs(source: ModelSourceShape): string[] {
+  const input = source.input.filter((value) => ["text", "image", "audio", "video"].includes(value));
+  return input.length > 0 ? input : ["text"];
+}
 
 export function classifyTextModel(model: ModelCard, source: ModelSourceShape): ModelOperationCapability[] {
   const capabilities: ModelOperationCapability[] = [];
+  if (isRealtimeOnlyModel(model, source)) {
+    return capabilities;
+  }
 
-  for (const sourceType of source.sourceTypes) {
-    const operation = TEXT_TYPE_OPERATIONS.get(sourceType);
-    if (operation) {
-      // Rerank disambiguation: upstream providers ship reranker models
-      // labelled `text-classification` (Cohere on Azure, BAAI on
-      // Cloudflare). Their canonical name carries the truth — route to
-      // the `rerank` operation declared in `modalities/rerank.ts` when
-      // the model name says so. Otherwise the canonical
-      // `text-classification` → `classification` mapping stands.
-      const isClassificationSource = operation === "classification";
-      const looksLikeRerank = isClassificationSource
-        && /rerank/i.test(model.name || model.modelId || "");
-      capabilities.push(
-        buildCapability(model, source, "text", looksLikeRerank ? "rerank" : operation, true),
-      );
+  const acceptsText = hasInput(source, "text") || source.input.length === 0;
+  const emitsText = hasOutput(source, "text") || source.output.length === 0;
+
+  if (acceptsText && emitsText) {
+    for (const sourceType of source.sourceTypes) {
+      const operation = TEXT_TYPE_OPERATIONS.get(sourceType);
+      if (operation) {
+        capabilities.push(
+          buildCapability(model, source, "text", operation, true, {
+            input: textInputs(source),
+            output: ["text"],
+          }),
+        );
+      }
+    }
+  }
+
+  if (hasInput(source, "audio") && hasOutput(source, "text")) {
+    if (hasSourceType(source, STT_TYPES) || !hasInput(source, "text")) {
+      capabilities.push(buildCapability(model, source, "text", "speech-to-text", false, {
+        input: hasInput(source, "text") ? ["audio", "text"] : ["audio"],
+        output: ["text"],
+      }));
     }
   }
 
   if (hasSourceType(source, ["image-text-to-text"])) {
-    capabilities.push(buildCapability(model, source, "text", "vision-chat", true));
+    capabilities.push(buildCapability(model, source, "text", "vision-chat", true, {
+      input: ["image", "text"],
+      output: ["text"],
+    }));
   }
 
   return uniqueCapabilities(capabilities);
@@ -670,7 +696,7 @@ export interface TextResponse {
   /** Logprobs (DeepSeek / OpenAI). */
   logprobs?: { content?: TextLogprob[]; reasoning_content?: TextLogprob[] };
   /** Token usage and per-modality breakdown. */
-  usage?: UnifiedUsage;
+  usage?: Usage;
   /** Model id the wire reported (may differ from request when routing). */
   model?: string;
   /** Server fingerprint (OpenAI). */
@@ -712,4 +738,4 @@ export type TextStreamEvent =
   | { type: "citation"; citation: TextCitation }
   | { type: "warning"; warning: { code: string; message: string } }
   | { type: "error"; error: { code: string; message: string; details?: Record<string, unknown> } }
-  | { type: "done"; finishReason?: TextResponse["finishReason"]; usage?: UnifiedUsage };
+  | { type: "done"; finishReason?: TextResponse["finishReason"]; usage?: Usage };

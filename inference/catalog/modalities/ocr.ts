@@ -6,7 +6,7 @@
  * with bounding boxes, embedded images, and document-level annotation.
  */
 
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
 
 /**
  * Document source — accepts URL, file id, or base64 image data.
@@ -198,7 +198,7 @@ export interface OcrResult {
     pagesProcessed: number;
     /** Document size in bytes (when known). */
     docSizeBytes?: number;
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 

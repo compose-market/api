@@ -20,7 +20,10 @@ export function classifyVisionModel(model: ModelCard, source: ModelSourceShape):
   const capabilities: ModelOperationCapability[] = [];
 
   if (hasSourceType(source, ["object-detection"])) {
-    capabilities.push(buildCapability(model, source, "image", "object-detection", false));
+    capabilities.push(buildCapability(model, source, "image", "object-detection", false, {
+      input: ["image"],
+      output: source.output,
+    }));
   }
 
   if (hasSourceType(source, [
@@ -29,37 +32,58 @@ export function classifyVisionModel(model: ModelCard, source: ModelSourceShape):
     "semantic-segmentation",
     "unsupervised-segmentation",
   ])) {
-    capabilities.push(buildCapability(model, source, "image", "image-segmentation", false));
+    capabilities.push(buildCapability(model, source, "image", "image-segmentation", false, {
+      input: ["image"],
+      output: source.output,
+    }));
   }
 
   if (hasSourceType(source, ["keypoints-detection", "keypoint-detection", "pose-detection"])) {
-    capabilities.push(buildCapability(model, source, "image", "keypoint-detection", false));
+    capabilities.push(buildCapability(model, source, "image", "keypoint-detection", false, {
+      input: ["image"],
+      output: source.output,
+    }));
   }
 
   if (
     hasSourceType(source, ["image-classification"])
     || (hasSourceType(source, ["classification"]) && hasInput(source, "image"))
   ) {
-    capabilities.push(buildCapability(model, source, "image", "image-classification", false));
+    capabilities.push(buildCapability(model, source, "image", "image-classification", false, {
+      input: ["image"],
+      output: source.output,
+    }));
   }
 
   if (hasSourceType(source, ["ocr"])) {
-    capabilities.push(buildCapability(model, source, "text", "ocr", false));
+    capabilities.push(buildCapability(model, source, "text", "ocr", false, {
+      input: ["image"],
+      output: ["text"],
+    }));
   }
 
   if (hasSourceType(source, ["gaze-detection"])) {
-    capabilities.push(buildCapability(model, source, "image", "gaze-detection", false));
+    capabilities.push(buildCapability(model, source, "image", "gaze-detection", false, {
+      input: ["image"],
+      output: source.output,
+    }));
   }
 
   if (hasSourceType(source, ["zero-shot-classification"]) && hasInput(source, "image")) {
-    capabilities.push(buildCapability(model, source, "image", "zero-shot-classification", false));
+    capabilities.push(buildCapability(model, source, "image", "zero-shot-classification", false, {
+      input: ["image", "text"],
+      output: source.output,
+    }));
   }
 
   if (
     hasSourceType(source, ["image-text-to-text", "vision-language"])
     || (hasInput(source, "image") && hasOutput(source, "text") && hasSourceType(source, ["text-generation"]))
   ) {
-    capabilities.push(buildCapability(model, source, "text", "vision-chat", true));
+    capabilities.push(buildCapability(model, source, "text", "vision-chat", true, {
+      input: ["image", "text"],
+      output: ["text"],
+    }));
   }
 
   return uniqueCapabilities(capabilities);

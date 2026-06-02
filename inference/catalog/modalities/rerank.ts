@@ -6,7 +6,57 @@
  * family but the canonical input/output is uniform.
  */
 
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
+import type { ModelCard } from "../../types.js";
+import {
+    buildCapability,
+    hasInput,
+    hasOutput,
+    hasSourceType,
+    uniqueCapabilities,
+} from "../source.js";
+import type { ModelOperationCapability, ModelSourceShape } from "./types.js";
+
+function metadataRecord(model: ModelCard, key: string): Record<string, unknown> | null {
+    const metadata = model.sourceMetadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+    const value = (metadata as Record<string, unknown>)[key];
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+export function isRerankModel(model: ModelCard, source: ModelSourceShape): boolean {
+    if (hasOutput(source, "embedding-vector") || hasOutput(source, "embedding")) {
+        return false;
+    }
+
+    const name = `${model.modelId} ${model.name || ""}`.toLowerCase();
+    if (/\brerank(?:er|ing)?\b/.test(name)) {
+        return hasInput(source, "text") && hasOutput(source, "text");
+    }
+
+    const alibaba = metadataRecord(model, "alibaba");
+    return model.provider === "alibaba"
+        && Array.isArray(alibaba?.capabilities)
+        && alibaba.capabilities.includes("TR")
+        && hasInput(source, "text")
+        && hasOutput(source, "text");
+}
+
+export function classifyRerankModel(model: ModelCard, source: ModelSourceShape): ModelOperationCapability[] {
+    if (
+        hasSourceType(source, ["rerank", "reranking", "reranker", "text-ranking"])
+        || isRerankModel(model, source)
+    ) {
+        return [buildCapability(model, source, "text", "rerank", false, {
+            input: ["text"],
+            output: ["text"],
+        })];
+    }
+
+    return uniqueCapabilities([]);
+}
 
 /**
  * Canonical rerank request — universal flat params; family-specific
@@ -138,7 +188,7 @@ export interface RerankResultItem {
 
 export interface RerankResult {
     results: RerankResultItem[];
-    usage?: UnifiedUsage;
+    usage?: Usage;
     /** Cohere `meta.api_version`, `meta.warnings`, `meta.billed_units`. */
     providerMetadata?: Record<string, unknown>;
     /** Raw provider response — preserved for telemetry. */

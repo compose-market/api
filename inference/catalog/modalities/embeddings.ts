@@ -1,5 +1,5 @@
 import type { ModelCard } from "../../types.js";
-import type { UnifiedRequest, UnifiedUsage } from "../../core.js";
+import type { Request, Usage } from "../../core.js";
 import {
   buildCapability,
   hasInput,
@@ -7,22 +7,42 @@ import {
   uniqueCapabilities,
 } from "../source.js";
 import type { ModelOperationCapability, ModelSourceShape } from "./types.js";
+import { isRerankModel } from "./rerank.js";
 
 export function classifyEmbeddingModel(model: ModelCard, source: ModelSourceShape): ModelOperationCapability[] {
   const capabilities: ModelOperationCapability[] = [];
+
+  if (isRerankModel(model, source)) {
+    return capabilities;
+  }
 
   if (!hasSourceType(source, ["embeddings", "text-embeddings", "text-to-embedding", "feature-extraction"])) {
     return capabilities;
   }
 
-  if (hasInput(source, "image") && hasInput(source, "text")) {
-    capabilities.push(buildCapability(model, source, "embedding", "multimodal-embedding", false));
+  const input = source.input.filter((value) => ["text", "image", "audio", "video"].includes(value));
+  const mediaInput = input.some((value) => value !== "text");
+
+  if (hasInput(source, "text") && mediaInput) {
+    capabilities.push(buildCapability(model, source, "embedding", "multimodal-embedding", false, {
+      input,
+      output: ["embedding"],
+    }));
   } else if (hasInput(source, "image")) {
-    capabilities.push(buildCapability(model, source, "embedding", "image-to-embedding", false));
+    capabilities.push(buildCapability(model, source, "embedding", "image-to-embedding", false, {
+      input: ["image"],
+      output: ["embedding"],
+    }));
   } else if (hasInput(source, "audio")) {
-    capabilities.push(buildCapability(model, source, "embedding", "audio-to-embedding", false));
+    capabilities.push(buildCapability(model, source, "embedding", "audio-to-embedding", false, {
+      input: ["audio"],
+      output: ["embedding"],
+    }));
   } else {
-    capabilities.push(buildCapability(model, source, "embedding", "text-to-embedding", false));
+    capabilities.push(buildCapability(model, source, "embedding", "text-to-embedding", false, {
+      input: ["text"],
+      output: ["embedding"],
+    }));
   }
 
   return uniqueCapabilities(capabilities);
@@ -49,13 +69,13 @@ function readEmbeddingTokenCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-export function embeddingInputValues(request: Pick<UnifiedRequest, "embeddingInput">): string[] {
+export function embeddingInputValues(request: Pick<Request, "embeddingInput">): string[] {
   return Array.isArray(request.embeddingInput)
     ? request.embeddingInput
     : [request.embeddingInput || ""];
 }
 
-export function embeddingUsageFromTokenCount(tokens: unknown): UnifiedUsage {
+export function embeddingUsageFromTokenCount(tokens: unknown): Usage {
   const promptTokens = readEmbeddingTokenCount(tokens) ?? 0;
   return {
     promptTokens,
@@ -276,6 +296,6 @@ export interface EmbeddingsResponse {
   colbertVectors?: number[][][];
   /** Per-input mode (when binary / int8 etc.). */
   encoding?: "float" | "base64" | "int8" | "uint8" | "binary" | "ubinary";
-  usage?: UnifiedUsage;
+  usage?: Usage;
   raw: unknown;
 }

@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import type { ModelCard } from "../../types.js";
-import type { UnifiedRequest, UnifiedUsage } from "../../core.js";
+import type { Request, Usage } from "../../core.js";
 import {
   buildCapability,
   hasInput,
@@ -20,27 +20,45 @@ export function classifyImageModel(model: ModelCard, source: ModelSourceShape): 
   const outputsImage = hasOutput(source, "image") || hasOutput(source, "binary-stream");
 
   if (hasSourceType(source, ["text-to-image"])) {
-    capabilities.push(buildCapability(model, source, "image", "text-to-image", true));
+    capabilities.push(buildCapability(model, source, "image", "text-to-image", true, {
+      input: ["text"],
+      output: outputsImage ? ["image"] : source.output,
+    }));
   }
 
   if (hasSourceType(source, ["image-to-image", "image-edit", "inpainting", "outpainting"])) {
-    capabilities.push(buildCapability(model, source, "image", "image-to-image", true));
+    capabilities.push(buildCapability(model, source, "image", "image-to-image", true, {
+      input: hasInput(source, "text") ? ["image", "text"] : ["image"],
+      output: outputsImage ? ["image"] : source.output,
+    }));
   }
 
   if (hasSourceType(source, ["image-to-text", "image-text-to-text"])) {
-    capabilities.push(buildCapability(model, source, "image", "image-to-text", true));
+    capabilities.push(buildCapability(model, source, "image", "image-to-text", true, {
+      input: hasInput(source, "text") ? ["image", "text"] : ["image"],
+      output: ["text"],
+    }));
   }
 
   if (hasSourceType(source, ["image-classification", "image-segmentation", "object-detection", "depth-estimation"])) {
-    capabilities.push(buildCapability(model, source, "image", "classify", false));
+    capabilities.push(buildCapability(model, source, "image", "classify", false, {
+      input: ["image"],
+      output: source.output,
+    }));
   }
 
   if (hasSourceType(source, ["image-generation", "unconditional-image-generation"]) && outputsImage) {
     if (hasInput(source, "text")) {
-      capabilities.push(buildCapability(model, source, "image", "text-to-image", true));
+      capabilities.push(buildCapability(model, source, "image", "text-to-image", true, {
+        input: ["text"],
+        output: ["image"],
+      }));
     }
     if (hasInput(source, "image")) {
-      capabilities.push(buildCapability(model, source, "image", "image-to-image", true));
+      capabilities.push(buildCapability(model, source, "image", "image-to-image", true, {
+        input: hasInput(source, "text") ? ["image", "text"] : ["image"],
+        output: ["image"],
+      }));
     }
   }
 
@@ -100,6 +118,28 @@ function readImageDimensions(buffer: Buffer): { width: number; height: number } 
   if (buffer.length >= 10 && buffer.toString("ascii", 0, 3) === "GIF") {
     return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
   }
+  if (buffer.length >= 30 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+    const chunk = buffer.toString("ascii", 12, 16);
+    if (chunk === "VP8X" && buffer.length >= 30) {
+      return {
+        width: buffer.readUIntLE(24, 3) + 1,
+        height: buffer.readUIntLE(27, 3) + 1,
+      };
+    }
+    if (chunk === "VP8 " && buffer.length >= 30) {
+      return {
+        width: buffer.readUInt16LE(26) & 0x3fff,
+        height: buffer.readUInt16LE(28) & 0x3fff,
+      };
+    }
+    if (chunk === "VP8L" && buffer.length >= 25) {
+      const bits = buffer.readUInt32LE(21);
+      return {
+        width: (bits & 0x3fff) + 1,
+        height: ((bits >> 14) & 0x3fff) + 1,
+      };
+    }
+  }
   if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
     let offset = 2;
     while (offset + 9 < buffer.length) {
@@ -116,7 +156,7 @@ function readImageDimensions(buffer: Buffer): { width: number; height: number } 
   return null;
 }
 
-export function generatedImageCount(request: Pick<UnifiedRequest, "imageOptions">): number {
+export function generatedImageCount(request: Pick<Request, "imageOptions">): number {
   return typeof request.imageOptions?.n === "number" && request.imageOptions.n > 0
     ? request.imageOptions.n : 1;
 }
@@ -127,9 +167,9 @@ export function elapsedSecondsSince(startedAt: number): number {
 }
 
 export function imageBillingMetricsFromOutput(args: {
-  request: UnifiedRequest;
+  request: Request;
   buffer: Buffer;
-  usage?: UnifiedUsage;
+  usage?: Usage;
   generatedUnits: number;
   elapsedSeconds?: number;
 }): Record<string, unknown> {
@@ -628,7 +668,7 @@ export interface ImageResponse {
   status?: "queued" | "processing" | "completed" | "failed";
   progress?: number;
   /** Token usage (gpt-image-1 reports input/output tokens). */
-  usage?: UnifiedUsage;
+  usage?: Usage;
   raw: unknown;
 }
 
@@ -642,7 +682,7 @@ export type ImageStreamEvent =
   | { type: "image-complete"; image: GeneratedImage }
   | { type: "warning"; warning: { code: string; message: string } }
   | { type: "error"; error: { code: string; message: string; details?: Record<string, unknown> } }
-  | { type: "done"; usage?: UnifiedUsage };
+  | { type: "done"; usage?: Usage };
 
 // ===========================================================================
 // Legacy image-edit types (preserved — used by adapter; superseded by
@@ -679,6 +719,6 @@ export interface EditedImage {
 /** @deprecated Use `ImageResponse`. */
 export interface ImageEditResult {
   images: EditedImage[];
-  usage?: UnifiedUsage;
+  usage?: Usage;
   raw: unknown;
 }

@@ -8,7 +8,7 @@
  * NemoGuard / GLiNER).
  */
 
-import type { UnifiedUsage } from "../../core.js";
+import type { Usage } from "../../core.js";
 
 export type ClassificationInput =
     | string
@@ -170,7 +170,7 @@ export interface ClassificationResultEntry {
 
 export interface ClassificationResult {
     results: ClassificationResultEntry[];
-    usage?: UnifiedUsage;
+    usage?: Usage;
     raw: unknown;
 }
 

@@ -4,6 +4,8 @@ import { classifyEmbeddingModel } from "./embeddings.js";
 import { classifyImageModel } from "./image.js";
 import { mergePricingUnits } from "../pricing.js";
 import { getModelSourceShape } from "../source.js";
+import { classifyRealtimeModel } from "./realtime.js";
+import { classifyRerankModel } from "./rerank.js";
 import { classifyTextModel } from "./text.js";
 import { classifyVisionModel } from "./vision.js";
 import type {
@@ -236,13 +238,24 @@ export type {
   VisionResult,
 } from "./vision.js";
 
+export type {
+  RealtimeRequest,
+  RealtimeSession,
+} from "./realtime.js";
+export {
+  isRealtimeModel,
+  isRealtimeOnlyModel,
+} from "./realtime.js";
+
 const CLASSIFIERS: readonly ModalityClassifier[] = [
+  classifyRerankModel,
   classifyTextModel,
   classifyEmbeddingModel,
   classifyVisionModel,
   classifyImageModel,
   classifyVideoModel,
   classifyAudioModel,
+  classifyRealtimeModel,
 ];
 
 const modelCapabilityCache = new WeakMap<ModelCard, ModelOperationCapability[]>();
@@ -277,7 +290,7 @@ export function isCanonicalOperation(value: unknown): value is CanonicalOperatio
 }
 
 export function isStreamableModality(modality: CanonicalModality | string): boolean {
-  return modality === "text" || modality === "image";
+  return modality === "text" || modality === "image" || modality === "realtime";
 }
 
 export function getModelCapabilities(model: ModelCard): ModelOperationCapability[] {

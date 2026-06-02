@@ -6,6 +6,7 @@ export const CANONICAL_MODALITIES = [
   "audio",
   "video",
   "embedding",
+  "realtime",
 ] as const;
 
 export type CanonicalModality = typeof CANONICAL_MODALITIES[number];
