@@ -20,7 +20,7 @@
     },
     "include": [
         "**/*.ts",
-        "external/agentverse.ts"
+        "agentverse.ts"
     ],
     "exclude": [
         "node_modules",

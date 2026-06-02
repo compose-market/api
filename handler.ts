@@ -57,7 +57,7 @@ import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
-import type { UnifiedModality, UnifiedUsage } from "./inference/core.js";
+import type { Modality, Usage } from "./inference/core.js";
 import type { BillingMediaEvidence } from "./inference/telemetry.js";
 import {
     authorizePaymentIntent,
@@ -79,7 +79,7 @@ const loadBackpack = () => import("./backpack/composio.js");
 const loadBackpackPermissions = () => import("./backpack/backpack.js");
 
 // Model Registry
-const loadRegistry = () => import("./inference/models-registry.js");
+const loadRegistry = () => import("./inference/catalog/registry.js");
 
 // Dispenser
 const loadDispenser = () => import("./dispenser/index.js");
@@ -91,9 +91,9 @@ const loadDispenser = () => import("./dispenser/index.js");
 // CORS is applied by the top-level middleware in api/index.ts (http/cors.ts).
 // The duplicate header set used to live here; per the single-layer CORS
 // policy it is now removed so browsers don't see conflicting values. Handlers
-// continue to merge extra response headers (x-compose-key-*, x-session-*,
+// continue to merge extra response headers (x-key-*, x-session-*,
 // x-payment-intent-id, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Transaction-Hash,
-// X-Compose-Receipt) freely on top of the middleware-set CORS + X-Request-Id.
+// X-Receipt) freely on top of the middleware-set CORS + X-Request-Id.
 const corsHeaders: Record<string, string> = {};
 
 function buildInactiveSessionPayload(reason: SessionInactiveReason): {
@@ -157,10 +157,10 @@ function requireChainIdHeader(event: APIGatewayProxyEventV2): number {
 
 async function generateDecorativeImage(prompt: string, size: string): Promise<string> {
     const modelId = "black-forest-labs/FLUX.1-schnell";
-    const [{ normalizeResponsesRequest }, { invokeAdapter }, { getModelById }] = await Promise.all([
+    const [{ normalizeResponsesRequest }, { generateWithTools }, { getModelById }] = await Promise.all([
         import("./inference/core.js"),
-        import("./inference/providers/adapter.js"),
-        import("./inference/models-registry.js"),
+        import("./inference/catalog/adapter.js"),
+        import("./inference/catalog/registry.js"),
     ]);
 
     const card = getModelById(modelId);
@@ -168,7 +168,7 @@ async function generateDecorativeImage(prompt: string, size: string): Promise<st
         throw new Error(`Model not found: ${modelId}`);
     }
 
-    const unified = normalizeResponsesRequest({
+    const request = normalizeResponsesRequest({
         model: modelId,
         input: [{ type: "input_text", text: prompt }],
         modalities: ["image"],
@@ -176,7 +176,7 @@ async function generateDecorativeImage(prompt: string, size: string): Promise<st
         n: 1,
     });
 
-    const output = (await invokeAdapter(unified, { modelId, provider: card.provider })).output;
+    const output = (await generateWithTools(request, { modelId, provider: card.provider })).output;
     if (!output.media) {
         throw new Error("Image generation returned no media");
     }
@@ -281,6 +281,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.get("/health", routeHandler);
     app.get("/api/models", routeHandler);
     app.get("/agents", routeHandler);
+    app.get("/agents/search", routeHandler);
     app.get(/^\/agent\/0x[a-fA-F0-9]{40}$/, routeHandler);
     app.get("/workflows", routeHandler);
     app.get(/^\/workflow\/0x[a-fA-F0-9]{40}$/, routeHandler);
@@ -311,8 +312,6 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/local/deployments/register", routeHandler);
     app.post("/api/local/synapse/session", routeHandler);
     app.post("/api/local/filecoin-pin/session", routeHandler);
-    app.get("/api/local/updates/config", routeHandler);
-    app.get(/^\/api\/local\/updates\/[^/]+\/[^/]+\/[^/]+$/, routeHandler);
     app.post("/api/local/network/peers/upsert", routeHandler);
     app.get("/api/local/network/peers", routeHandler);
 
@@ -496,26 +495,15 @@ export async function handler(
         // Batch Settlement Routes (Deferred Payment System)
         // ==========================================================================
 
-        // POST /api/settlement/batch - Trigger batch settlement (scheduled or manual)
-        // Protected endpoint - only for internal use or admin
         if (method === "POST" && path === "/api/settlement/batch") {
-            const internalSecret = event.headers["x-internal-secret"] || event.headers["X-Internal-Secret"];
-            const expectedSecret = process.env.RUNTIME_INTERNAL_SECRET;
-
-            // Security: Only allow internal calls
-            if (internalSecret !== expectedSecret) {
-                return {
-                    statusCode: 401,
-                    headers: corsHeaders,
-                    body: JSON.stringify({ error: "Unauthorized" }),
-                };
-            }
-
             try {
-                const { runBatchSettlement } = await import("./x402/accumulator/index.js");
+                const { runBatchSettlementCycle } = await import("./x402/index.js");
 
                 console.log("[batch-settlement] Triggered manually via API");
-                const result = await runBatchSettlement();
+                const result = await runBatchSettlementCycle("manual-api");
+                if (result.native) {
+                    assertNativeBatchSettlement(result.native);
+                }
 
                 return {
                     statusCode: 200,
@@ -595,7 +583,7 @@ export async function handler(
             }
 
             try {
-                const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). High-tech futuristic feel with glass panels, circuit patterns, and subtle glow effects.`;
+                const brandStyle = `Cyberpunk aesthetic with neon cyan (#22d3ee) and hot fuchsia (#d946ef) accents on dark obsidian background (#020617). Glass panels, and subtle glow effects.`;
                 const prompt = `Agent Name: ${title}
 Agent Description: ${description}
 Brand Style: ${brandStyle}
@@ -694,23 +682,41 @@ export async function batchSettlementHandler(
     console.log("[batch-settlement] Scheduled handler invoked", JSON.stringify(event));
 
     try {
-        const { runBatchSettlement } = await import("./x402/accumulator/index.js");
+        const { runBatchSettlementCycle } = await import("./x402/index.js");
 
-        const result = await runBatchSettlement();
+        const result = await runBatchSettlementCycle("scheduled");
+        if (result.native) {
+            assertNativeBatchSettlement(result.native);
+        }
 
         console.log("[batch-settlement] Completed:", {
-            runId: result.runId,
-            totalUsers: result.totalUsers,
-            totalIntents: result.totalIntents,
-            successCount: result.successCount,
-            failCount: result.failCount,
-            duration: `${result.endTime - result.startTime}ms`,
+            skipped: result.skipped,
+            runId: result.intents?.runId,
+            nativeRunId: result.native?.runId,
+            nativeChains: result.native?.chains,
+            totalUsers: result.intents?.totalUsers,
+            totalIntents: result.intents?.totalIntents,
+            successCount: result.intents?.successCount,
+            failCount: result.intents?.failCount,
+            duration: result.intents ? `${result.intents.endTime - result.intents.startTime}ms` : "0ms",
         });
     } catch (error) {
         console.error("[batch-settlement] Fatal error:", error);
-        // Don't throw - let CloudWatch know the API succeeded (error is logged)
-        // Throwing would trigger retries which could cause duplicate settlements
+        // Cloud Run Jobs are configured with max-retries=0; fail loudly so
+        // batch settlement misconfiguration is visible instead of green.
+        throw error;
     }
+}
+
+function assertNativeBatchSettlement(native: {
+    chains?: Array<{ chainId: number; error?: string }>;
+}): void {
+    const failed = native.chains?.filter((chain) => chain.error) || [];
+    if (failed.length === 0) {
+        return;
+    }
+    const detail = failed.map((chain) => `${chain.chainId}: ${chain.error}`).join("; ");
+    throw new Error(`Native batch settlement failed: ${detail}`);
 }
 
 
@@ -926,9 +932,8 @@ async function handleAbortPaymentIntent(event: APIGatewayProxyEventV2): Promise<
 
 type PaymentModelMeterBody = {
     modelId?: string;
-    provider?: string;
-    modality?: UnifiedModality;
-    usage?: UnifiedUsage;
+    modality?: Modality;
+    usage?: Usage;
     media?: BillingMediaEvidence;
 };
 
@@ -953,7 +958,7 @@ async function handleMeterModelPayment(event: APIGatewayProxyEventV2): Promise<A
 
     try {
         const metered = buildResolvedSettlementMeter({
-            resolved: resolveBillingModel(body.modelId, body.provider),
+            resolved: resolveBillingModel(body.modelId),
             modality: body.modality,
             usage: body.usage,
             media: body.media,
@@ -1488,7 +1493,7 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
                 userAddress: body.userAddress,
                 consentType: body.consentType,
                 sessionId: body.sessionId,
-                agentId: body.agentId,
+                agentWallet: body.agentWallet,
                 expiresAt: body.expiresAt,
             });
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
@@ -1501,7 +1506,7 @@ async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIG
                 return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and consentType required" }) };
             }
             const permissions = await loadBackpackPermissions();
-            permissions.revokePermission(body.userAddress, body.consentType, body.sessionId, body.agentId);
+            permissions.revokePermission(body.userAddress, body.consentType, body.sessionId, body.agentWallet);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
         }
 
@@ -1709,7 +1714,7 @@ async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIG
     }
 
     // GET /api/registry/models/:source
-    const sourceMatch = path.match(/^\/api\/registry\/models\/(hugging%20face|vertex|fireworks|openai|gemini|cloudflare|aiml|asicloud)$/);
+    const sourceMatch = path.match(/^\/api\/registry\/models\/(hugging%20face|vertex|fireworks|openai|gemini|cloudflare|asicloud)$/);
     if (sourceMatch && method === "GET") {
         const source = decodeURIComponent(sourceMatch[1]) as any;
         const sourceModels = await registry.getModelsBySource(source);

@@ -1,5 +1,4 @@
-export type CanonicalConnectorOrigin = "tools" | "onchain";
-type ConnectorOriginInput = CanonicalConnectorOrigin | "mcp" | "goat";
+export type CanonicalConnectorOrigin = "mcp" | "onchain";
 
 export interface ConnectorBindingInput {
   registryId?: string;
@@ -15,38 +14,36 @@ export interface NormalizedConnectorBinding {
   original: string;
 }
 
-const ORIGIN_ALIASES: Record<ConnectorOriginInput, CanonicalConnectorOrigin> = {
-  tools: "tools",
-  mcp: "tools",
-  onchain: "onchain",
-  goat: "onchain",
-};
-
 function canonicalOrigin(value: string | undefined, defaultOrigin: CanonicalConnectorOrigin): CanonicalConnectorOrigin {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === "tools" || normalized === "onchain" || normalized === "mcp" || normalized === "goat") {
-    return ORIGIN_ALIASES[normalized];
+  if (!normalized) {
+    return defaultOrigin;
   }
-  return defaultOrigin;
+  if (normalized === "mcp" || normalized === "onchain") {
+    return normalized;
+  }
+  throw new Error(`Unsupported connector origin "${value}". Use "mcp" or "onchain".`);
 }
 
-function splitPrefixed(value: string): { prefix?: ConnectorOriginInput; slug: string } {
+function splitPrefixed(value: string): { prefix?: CanonicalConnectorOrigin; slug: string } {
   let slug = value.trim();
-  let prefix: ConnectorOriginInput | undefined;
-  while (true) {
-    const match = slug.match(/^(tools|onchain|mcp|goat)([:\-])(.+)$/i);
-    if (!match) break;
-    prefix = match[1].toLowerCase() as ConnectorOriginInput;
-    slug = match[3].trim();
+  const forbidden = slug.match(/^(tools|goat)([:\-])(.+)$/i);
+  if (forbidden) {
+    throw new Error(`Unsupported connector registry prefix "${forbidden[1]}". Use "mcp" or "onchain".`);
   }
-  return { prefix, slug };
+  const match = slug.match(/^(mcp|onchain)([:\-])(.+)$/i);
+  if (!match) return { slug };
+  return {
+    prefix: match[1].toLowerCase() as CanonicalConnectorOrigin,
+    slug: match[3].trim(),
+  };
 }
 
 export function normalizeConnectorBinding(
   input: string | ConnectorBindingInput,
   options: { defaultOrigin?: CanonicalConnectorOrigin } = {},
 ): NormalizedConnectorBinding {
-  const defaultOrigin = options.defaultOrigin ?? "tools";
+  const defaultOrigin = options.defaultOrigin ?? "mcp";
   const original = typeof input === "string" ? input : input.registryId || input.slug || input.id || "";
   const explicitOrigin = typeof input === "string" ? undefined : input.origin;
   const { prefix, slug } = splitPrefixed(original);

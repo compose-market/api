@@ -1,6 +1,7 @@
 import "dotenv/config"; // Load .env variables FIRST
 import express, { type Request, type Response, type NextFunction } from "express";
 import type { Server } from "http";
+import { register as registerExternalRoutes } from "./inference/external.js";
 import { registerInferenceRoutes } from "./inference/gateway.js";
 import { registerFeedbackRoutes } from "./feedback/routes.js";
 import { createServer } from "http";
@@ -8,6 +9,7 @@ import { registerHandlerRoutes } from "./handler.js";
 import { registerSessionEventsRoute } from "./x402/keys/sse.js";
 import { corsMiddleware, requestIdMiddleware } from "./http/middleware.js";
 import { buildError } from "./http/errors.js";
+import { errors as bodyErrors, form, json } from "./http/body.js";
 import { registerMetricsRoutes } from "./metrics/routes.js";
 import { runMetricsBackfill } from "./metrics/onchain.js";
 import { runMetricsWatch } from "./metrics/service.js";
@@ -54,12 +56,6 @@ const API_PORT = 3000;
 const app = express();
 const httpServer = createServer(app);
 
-declare module "http" {
-  interface IncomingMessage {
-    rawBody: unknown;
-  }
-}
-
 // Canonical CORS policy — single source of truth, allow-list based, explicit
 // Expose-Headers, preflight-aware. Must run BEFORE request-id so OPTIONS fast
 // path still emits a CORS response.
@@ -69,15 +65,9 @@ app.use(corsMiddleware());
 // syntactically safe, mints one otherwise.
 app.use(requestIdMiddleware());
 
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-
-app.use(express.urlencoded({ extended: false }));
+app.use(json());
+app.use(form());
+app.use(bodyErrors());
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -148,33 +138,34 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
     return;
   }
 
+  registerExternalRoutes(app);
   registerInferenceRoutes(app);
   registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
   registerMetricsRoutes(app);
   registerHandlerRoutes(app);
 
-    app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-        const error = err as { status?: number; statusCode?: number; message?: string };
-        const status = error.status || error.statusCode || 500;
-        const message = error.message || "Internal Server Error";
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const error = err as { status?: number; statusCode?: number; message?: string };
+    const status = error.status || error.statusCode || 500;
+    const message = error.message || "Internal Server Error";
 
-        console.error("[express] Unhandled error", err);
+    console.error("[express] Unhandled error", err);
 
-        if (res.headersSent) {
-            return;
-        }
+    if (res.headersSent) {
+      return;
+    }
 
-        const code = status === 400 ? "validation_error"
-            : status === 401 ? "authentication_failed"
-            : status === 403 ? "forbidden"
-            : status === 404 ? "not_found"
+    const code = status === 400 ? "validation_error"
+      : status === 401 ? "authentication_failed"
+        : status === 403 ? "forbidden"
+          : status === 404 ? "not_found"
             : status === 409 ? "conflict"
-            : status === 429 ? "rate_limited"
-            : "internal_error";
+              : status === 429 ? "rate_limited"
+                : "internal_error";
 
-        res.status(status).json(buildError(code, message));
-    });
+    res.status(status).json(buildError(code, message));
+  });
 
   const preferredPort = parseInt(process.env.PORT || String(API_PORT), 10);
   const actualPort = await tryListen(preferredPort);
