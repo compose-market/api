@@ -24,6 +24,8 @@ import {
 } from "../session-budget.js";
 import { settleComposeKeyPayment } from "../settlement.js";
 import { syncBudgetAfterSettlement } from "../keys/index.js";
+import { markIntentEvidenceSettled } from "../evidence.js";
+import { markIntentReceiptsSettled } from "../receipts.js";
 import type { BatchSettlementResult, BatchRunSummary, BatchConfig, DEFAULT_BATCH_CONFIG } from "./types.js";
 
 // =============================================================================
@@ -174,6 +176,19 @@ export async function settleUserBatch(
 
         // Success - mark all intents as settled
         await markIntentsSettled(intentIds, settlementResult.txHash || "");
+        if (settlementResult.txHash) {
+            await Promise.all(intentIds.map((sessionBudgetIntentId) => Promise.all([
+                markIntentEvidenceSettled({
+                    sessionBudgetIntentId,
+                    txHash: settlementResult.txHash!,
+                    chainId,
+                }),
+                markIntentReceiptsSettled({
+                    sessionBudgetIntentId,
+                    txHash: settlementResult.txHash!,
+                }),
+            ])));
+        }
 
         // Update session budget: move from locked to used
         await markSettled(userAddress, chainId, totalAmount.toString());
@@ -245,8 +260,7 @@ async function handleSettlementFailure(
 
     console.log(`[batch-settlement] Unlocked ${totalAmount.toString()} wei for ${userAddress} after failure`);
 
-    // TODO: In production, add to dead letter queue for manual review
-    // TODO: Send alert to monitoring system
+    console.error("[settlement-worker] batch failed after retries", errorMessage);
 }
 
 /**
