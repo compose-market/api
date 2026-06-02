@@ -16,7 +16,6 @@ import {
 import {
     getActiveChainId,
 } from "./configs/chains.js";
-import type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
 import {
     createComposePaymentRequired,
     createComposePaymentRequirement,
@@ -32,18 +31,12 @@ import {
 import {
     extractComposeKeyFromHeader,
     validateComposeKey,
-    consumeKeyBudget,
-    getKeyBudgetInfo,
     getActiveSessionStatus,
 } from "./keys/index.js";
 
-// Session Budget - Deferred Payment (locked/used tracking for batch settlement)
+// Compose Session Budget (locked/used tracking for settlement)
 import {
-    getSessionBudget,
     lockBudget,
-    cancelBudgetIntent,
-    getSessionStatus,
-    shouldTriggerImmediateSettlement,
 } from "./session-budget.js";
 import {
     quoteMeteredAuthorization,
@@ -52,24 +45,199 @@ import {
     type MeteredSettlementInput,
 } from "./metering.js";
 import {
-    authorizePaymentIntent,
+    readRawEnvelope,
+    releaseRawEnvelope,
+    reserveRawEnvelope,
+    saveRawEnvelope,
+} from "./envelope.js";
+import {
+    commitBatchCharge,
+    getBatchPayload,
+    isBatchSettlementScheme,
+    queuedBatchSettlement,
+    rememberBatchChannel,
+} from "./batch.js";
+import {
     abortPaymentIntent,
+    authorizePaymentIntent,
     settlePaymentIntent,
 } from "./intents.js";
+import {
+    redisDel,
+    redisGet,
+    redisSetNXEX,
+} from "./keys/redis.js";
 
 // Re-export types
 export type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
+
+type SettlementCycleResult = {
+    reason: string;
+    skipped?: boolean;
+    native: Awaited<ReturnType<typeof import("./channels.js").runNativeBatchSettlement>> | null;
+    intents: Awaited<ReturnType<typeof import("./accumulator/index.js").runBatchSettlement>> | null;
+};
+
+const SETTLEMENT_RUN_LOCK_KEY = "x402:settlement:run-lock";
+const SETTLEMENT_KICK_LOCK_KEY = "x402:settlement:kick-lock";
+
+let activeSettlementCycle: Promise<SettlementCycleResult> | null = null;
+
+function positiveAmount(value: string | undefined): boolean {
+    return Boolean(value && /^\d+$/u.test(value) && BigInt(value) > 0n);
+}
+
+function intEnv(name: string, fallback: number): number {
+    const parsed = Number.parseInt(process.env[name] || "", 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldKickSettlement(settlement: {
+    finalAmountWei?: string;
+    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    txHash?: string;
+    paymentIntentId?: string;
+    sessionBudgetIntentId?: string;
+    paymentChannelId?: string;
+    paymentCumulativeAmountWei?: string;
+} | null | undefined): boolean {
+    if (!settlement || !positiveAmount(settlement.finalAmountWei)) return false;
+    if (settlement.settlementStatus !== "queued" && settlement.settlementStatus !== "claimed") return false;
+    return Boolean(
+        settlement.txHash
+        || settlement.paymentIntentId
+        || settlement.sessionBudgetIntentId
+        || (settlement.paymentChannelId && settlement.paymentCumulativeAmountWei)
+    );
+}
+
+export async function runBatchSettlementCycle(reason = "manual"): Promise<SettlementCycleResult> {
+    if (activeSettlementCycle) return activeSettlementCycle;
+
+    activeSettlementCycle = (async () => {
+        const owner = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+        const locked = await redisSetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 600));
+        if (!locked) {
+            console.log("[batch-settlement] skipped; another settlement cycle is active", { reason });
+            return {
+                reason,
+                skipped: true,
+                native: null,
+                intents: null,
+            };
+        }
+
+        try {
+            console.log("[batch-settlement] cycle started", { reason });
+            const [{ runNativeBatchSettlement }, { runBatchSettlement }] = await Promise.all([
+                import("./channels.js"),
+                import("./accumulator/index.js"),
+            ]);
+            const native = await runNativeBatchSettlement();
+            const intents = await runBatchSettlement();
+            console.log("[batch-settlement] cycle completed", {
+                reason,
+                nativeRunId: native.runId,
+                intentRunId: intents.runId,
+            });
+            return { reason, native, intents };
+        } finally {
+            const current = await redisGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
+            if (current === owner) {
+                await redisDel(SETTLEMENT_RUN_LOCK_KEY).catch(() => false);
+            }
+            activeSettlementCycle = null;
+        }
+    })();
+
+    return activeSettlementCycle;
+}
+
+export async function kickBatchSettlement(
+    settlement: {
+        finalAmountWei?: string;
+        settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+        txHash?: string;
+        paymentIntentId?: string;
+        sessionBudgetIntentId?: string;
+        paymentChannelId?: string;
+        paymentCumulativeAmountWei?: string;
+    } | null | undefined,
+    reason = "terminal",
+): Promise<void> {
+    if (!shouldKickSettlement(settlement)) return;
+
+    try {
+        const run = async (attemptReason: string): Promise<void> => {
+            const attempts = intEnv("SETTLEMENT_KICK_RETRY_ATTEMPTS", 6);
+            const delayMs = intEnv("SETTLEMENT_KICK_RETRY_MS", 2500);
+            let followUp = true;
+
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
+                const joined = Boolean(activeSettlementCycle);
+                const nextReason = attempt === 0 ? attemptReason : `${attemptReason}:retry:${attempt}`;
+                const result = await runBatchSettlementCycle(nextReason);
+                if (!result.skipped && !joined && !followUp) {
+                    return;
+                }
+                followUp = false;
+                await delay(delayMs);
+            }
+
+            console.warn("[batch-settlement] terminal kick exhausted retries", {
+                reason: attemptReason,
+                attempts,
+            });
+        };
+
+        const locked = await redisSetNXEX(
+            SETTLEMENT_KICK_LOCK_KEY,
+            `${reason}:${Date.now()}`,
+            intEnv("SETTLEMENT_KICK_DEDUPE_SECONDS", 2),
+        );
+        if (!locked) {
+            void (async () => {
+                await delay(intEnv("SETTLEMENT_KICK_RETRY_MS", 2500));
+                await run(`${reason}:deduped`);
+            })().catch((error) => {
+                console.error("[batch-settlement] deduped terminal kick failed", {
+                    reason,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            });
+            return;
+        }
+
+        void (async () => {
+            await run(reason);
+        })().catch((error) => {
+            console.error("[batch-settlement] local terminal kick failed", {
+                reason,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        });
+    } catch (error) {
+        console.error("[batch-settlement] terminal kick failed", {
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
 
 function setComposeSessionInvalidHeader(
     target: Pick<Response, "setHeader"> | Record<string, string>,
     reason: string,
 ): void {
     if (typeof (target as { setHeader?: unknown }).setHeader === "function") {
-        (target as Pick<Response, "setHeader">).setHeader("x-compose-session-invalid", reason);
+        (target as Pick<Response, "setHeader">).setHeader("x-session-invalid", reason);
         return;
     }
 
-    (target as Record<string, string>)["x-compose-session-invalid"] = reason;
+    (target as Record<string, string>)["x-session-invalid"] = reason;
 }
 
 function getComposeSessionInvalidReason(error: string | undefined): string {
@@ -108,330 +276,33 @@ export function createPaymentRequired402Response(params: {
     });
 }
 
-// =============================================================================
-// Payment Info Extraction
-// =============================================================================
-
-/**
- * Extract payment-related info from request headers.
- */
-export function extractPaymentInfo(headers: Record<string, string | string[] | undefined>): PaymentInfo {
-    let paymentData = typeof headers["payment-signature"] === "string" ? headers["payment-signature"] :
-        (typeof headers["PAYMENT-SIGNATURE"] === "string" ? headers["PAYMENT-SIGNATURE"] : null);
-
-    const sessionActive = headers["x-session-active"] === "true";
-    const sessionBudgetRemaining = parseInt(
-        typeof headers["x-session-budget-remaining"] === "string"
-            ? headers["x-session-budget-remaining"]
-            : "0",
-        10
-    );
-
-    // Extract user wallet for session bypass
-    const sessionUserAddress = typeof headers["x-session-user-address"] === "string"
-        ? headers["x-session-user-address"]
-        : null;
-
-    return {
-        paymentData,
-        sessionActive,
-        sessionBudgetRemaining,
-        sessionUserAddress,
-    };
-}
-
-async function resolveComposeSessionContext(
-    headers: Record<string, string | string[] | undefined>,
-    explicitChainId: number,
-): Promise<{
-    paymentData: string | null;
-    composeKeyToken: string | null;
-    composeKeyValidation: Awaited<ReturnType<typeof validateComposeKey>> | null;
-    sessionActive: boolean;
-    sessionBudgetRemaining: number;
-    sessionUserAddress: string | null;
-    sessionInvalidReason: string | null;
-}> {
-    const { paymentData } = extractPaymentInfo(headers);
-    const authHeader = typeof headers["authorization"] === "string" ? headers["authorization"] : undefined;
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
-
-    if (!composeKeyToken) {
-        return {
-            paymentData,
-            composeKeyToken: null,
-            composeKeyValidation: null,
-            sessionActive: false,
-            sessionBudgetRemaining: 0,
-            sessionUserAddress: null,
-            sessionInvalidReason: null,
-        };
-    }
-
-    const composeKeyValidation = await validateComposeKey(composeKeyToken, 0);
-    if (!composeKeyValidation.valid || !composeKeyValidation.payload || !composeKeyValidation.record) {
-        return {
-            paymentData,
-            composeKeyToken,
-            composeKeyValidation,
-            sessionActive: false,
-            sessionBudgetRemaining: 0,
-            sessionUserAddress: null,
-            sessionInvalidReason: getComposeSessionInvalidReason(composeKeyValidation.error),
-        };
-    }
-
-    const sessionUserAddress = composeKeyValidation.payload.sub;
-    if (composeKeyValidation.record.chainId && composeKeyValidation.record.chainId !== explicitChainId) {
-        return {
-            paymentData,
-            composeKeyToken,
-            composeKeyValidation,
-            sessionActive: false,
-            sessionBudgetRemaining: 0,
-            sessionUserAddress,
-            sessionInvalidReason: "invalid_key",
-        };
-    }
-
-    if (composeKeyValidation.record.purpose !== "session") {
-        return {
-            paymentData,
-            composeKeyToken,
-            composeKeyValidation,
-            sessionActive: false,
-            sessionBudgetRemaining: 0,
-            sessionUserAddress,
-            sessionInvalidReason: null,
-        };
-    }
-
-    const sessionStatus = await getActiveSessionStatus(sessionUserAddress, explicitChainId);
-    const activeSession = sessionStatus.session;
-    if (!activeSession || activeSession.keyId !== composeKeyValidation.record.keyId) {
-        return {
-            paymentData,
-            composeKeyToken,
-            composeKeyValidation,
-            sessionActive: false,
-            sessionBudgetRemaining: 0,
-            sessionUserAddress,
-            sessionInvalidReason: activeSession ? "invalid_key" : sessionStatus.reason,
-        };
-    }
-
-    return {
-        paymentData,
-        composeKeyToken,
-        composeKeyValidation,
-        sessionActive: true,
-        sessionBudgetRemaining: activeSession.budgetRemaining,
-        sessionUserAddress,
-        sessionInvalidReason: null,
-    };
-}
-
-/**
- * Validate payment data header format
- */
-export function validatePaymentDataHeader(header: string | undefined | null): {
-    valid: boolean;
-    error?: string;
-} {
-    if (!header) {
-        return { valid: false, error: "Missing PAYMENT-SIGNATURE header" };
-    }
-
-    try {
-        if (typeof header !== "string" || header.length < 10) {
-            return { valid: false, error: "Invalid payment data format" };
-        }
-        decodeComposePaymentSignatureHeader(header);
-        return { valid: true };
-    } catch (error) {
-        return { valid: false, error: "Invalid payment data encoding" };
-    }
-}
-
-// =============================================================================
-// x402 Payment Settlement
-// =============================================================================
-
-/**
- * Handle x402 payment verification and settlement.
- * @param paymentData - Signed payment data from the PAYMENT-SIGNATURE header
- * @param resourceUrl - URL of the resource being accessed
- * @param method - HTTP method
- * @param amountWei - Price in USDC wei (6 decimals)
- * @param chainId - Optional explicit chain ID (defaults to detecting from paymentData or env)
- * @returns Settlement result with status, body, and headers
- */
-export async function handleX402Payment(
-    paymentData: string | null,
-    resourceUrl: string,
-    method: string,
-    amountWei: string,
-    chainId?: number,
-): Promise<X402SettlementResult> {
-    console.log(`[x402] handleX402Payment for ${resourceUrl}`);
-    console.log(`[x402] paymentData present: ${!!paymentData}`);
-    console.log(`[x402] amount: ${amountWei}`);
-    console.log(`[x402] payTo: ${merchantWalletAddress}`);
-
-    let resolvedChainId = chainId ?? getActiveChainId();
-    if (!paymentData) {
-        const paymentRequired = createPaymentRequired402Response({
-            amountWei: Number.parseInt(amountWei, 10),
-            resourceUrl,
-            chainId: resolvedChainId,
-        });
-
-        return {
-            status: 402,
-            responseBody: paymentRequired,
-            responseHeaders: {
-                "PAYMENT-REQUIRED": encodeComposePaymentRequiredHeader(paymentRequired),
-            },
-        };
-    }
-
-    let paymentPayload;
-    try {
-        paymentPayload = decodeComposePaymentSignatureHeader(paymentData);
-        resolvedChainId = getChainIdFromPaymentPayload(paymentPayload);
-    } catch (error) {
-        const paymentRequired = createPaymentRequired402Response({
-            amountWei: Number.parseInt(amountWei, 10),
-            resourceUrl,
-            chainId: resolvedChainId,
-            errorMessage: error instanceof Error ? error.message : "Invalid payment payload",
-        });
-
-        return {
-            status: 402,
-            responseBody: paymentRequired,
-            responseHeaders: {
-                "PAYMENT-REQUIRED": encodeComposePaymentRequiredHeader(paymentRequired),
-            },
-        };
-    }
-
-    const paymentRequirements = createComposePaymentRequirement({
-        amountWei,
-        chainId: resolvedChainId,
-    });
-
-    try {
-        const verifyResult = await verifyComposePayment(paymentPayload, paymentRequirements);
-        if (!verifyResult.isValid) {
-            const paymentRequired = createPaymentRequired402Response({
-                amountWei: Number.parseInt(amountWei, 10),
-                resourceUrl,
-                chainId: resolvedChainId,
-                errorMessage: verifyResult.invalidMessage || verifyResult.invalidReason || "Payment verification failed",
-            });
-
-            return {
-                status: 402,
-                responseBody: paymentRequired,
-                responseHeaders: {
-                    "PAYMENT-REQUIRED": encodeComposePaymentRequiredHeader(paymentRequired),
-                },
-            };
-        }
-
-        const settleResult = await settleComposePayment(paymentPayload, paymentRequirements);
-        const settlementHeaders: Record<string, string> = {
-            "PAYMENT-RESPONSE": encodeComposePaymentResponseHeader(settleResult),
-        };
-        if (settleResult.transaction) {
-            settlementHeaders["X-Transaction-Hash"] = settleResult.transaction;
-        }
-
-        if (!settleResult.success) {
-            const paymentRequired = createPaymentRequired402Response({
-                amountWei: Number.parseInt(amountWei, 10),
-                resourceUrl,
-                chainId: resolvedChainId,
-                errorMessage: settleResult.errorMessage || settleResult.errorReason || "Payment settlement failed",
-            });
-
-            return {
-                status: 402,
-                responseBody: paymentRequired,
-                responseHeaders: {
-                    ...settlementHeaders,
-                    "PAYMENT-REQUIRED": encodeComposePaymentRequiredHeader(paymentRequired),
-                },
-            };
-        }
-
-        return {
-            status: 200,
-            responseBody: {
-                success: true,
-                receipt: settleResult,
-            },
-            responseHeaders: settlementHeaders,
-        };
-    } catch (error) {
-        return {
-            status: 500,
-            responseBody: {
-                error: error instanceof Error ? error.message : "Compose facilitator settlement failed",
-            },
-            responseHeaders: {},
-        };
-    }
-}
-
-// Universal Payment Wrapper
-// =============================================================================
-
-function getRuntimeInternalMarker(): string | null {
-    const value = process.env.RUNTIME_INTERNAL_SECRET;
-    return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-// Internal marker for Workflow nested calls - the secret IS the proof of payment
-// =============================================================================
-// Deferred Payment Settlement (charge after response starts)
-// =============================================================================
-
-/**
- * Result of deferred payment preparation.
- */
-export interface PreparedPayment {
-    valid: boolean;
-    error?: string;
-    method?: "internal" | "session" | "compose-key" | "x402";
-    metadata?: {
-        amountWei: number;
-        chainId: number;
-        intentId?: string;
-        userAddress?: string;
-        keyId?: string;
-    };
-    /** Call this AFTER first response token to actually charge. Only call once! */
-    settle: () => Promise<{ success: boolean; txHash?: string; error?: string }>;
-    /** Abort deferred payment and rollback any locked budget */
-    abort: (reason?: string) => Promise<void>;
-    /** For setting response headers */
-    getHeaders: () => Record<string, string>;
-}
+type ComposePaymentScheme = "exact" | "upto" | "batch-settlement";
 
 export type InferenceAuthorizationInput =
-    | { useBudgetCap: true }
+    | { useBudgetCap: true; scheme?: ComposePaymentScheme }
     | { maxAmountWei: string }
     | { meter: MeteredAuthorizationInput };
 
 export type InferenceSettlementInput =
-    | { finalAmountWei: string }
+    | {
+        finalAmountWei: string;
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+        meterSubject?: string;
+        lineItems?: InferencePaymentSettlementResult["lineItems"];
+    }
     | { meter: MeteredSettlementInput };
 
 interface InferencePaymentSettlementResult {
     success: boolean;
     txHash?: string;
+    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    claimTxHash?: string;
+    settleTxHash?: string;
+    paymentIntentId?: string;
+    sessionBudgetIntentId?: string;
+    paymentChannelId?: string;
+    paymentCumulativeAmountWei?: string;
     finalAmountWei?: string;
     providerAmountWei?: string;
     platformFeeWei?: string;
@@ -445,6 +316,7 @@ interface InferencePaymentSettlementResult {
     }>;
     chainId?: number;
     settledAt?: number;
+    evidenceOnly?: boolean;
     error?: string;
     statusCode?: number;
     paymentRequired?: PaymentRequired;
@@ -453,6 +325,7 @@ interface InferencePaymentSettlementResult {
 
 export interface PreparedInferencePayment {
     maxAmountWei: string;
+    runtimeHeaders: Record<string, string>;
     settle: (settlement: InferenceSettlementInput) => Promise<InferencePaymentSettlementResult>;
     abort: (reason?: string) => Promise<void>;
     applyHeaders: (res: Response, settlement?: InferencePaymentSettlementResult) => void;
@@ -509,6 +382,85 @@ export function getRawInferenceMaxAmount(req: Request): string | null {
     return parsePositiveIntegerHeader(bodyValue);
 }
 
+function getComposeRunIdFromRequest(req: Request): string | null {
+    const value = req.get?.("x-run-id")
+        || req.get?.("X-Run-Id")
+        || req.headers["x-run-id"]
+        || req.headers["X-Run-Id"];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function getIdempotencyKeyFromRequest(req: Request): string | undefined {
+    const value = req.get?.("x-idempotency-key")
+        || req.get?.("X-Idempotency-Key")
+        || req.headers["x-idempotency-key"]
+        || req.headers["X-Idempotency-Key"];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function rawRuntimeHeaders(chainId: number, maxAmountWei: string): Record<string, string> {
+    return {
+        "x-session-active": "false",
+        "x-session-budget-remaining": maxAmountWei,
+        "x-chain-id": String(chainId),
+        "x-x402-max-amount-wei": maxAmountWei,
+    };
+}
+
+function composeRuntimeHeaders(input: {
+    authorization: string;
+    chainId: number;
+    userAddress: string;
+    maxAmountWei: string;
+    sessionActive: boolean;
+    paymentIntentId?: string | null;
+    idempotencyKey?: string;
+}): Record<string, string> {
+    return {
+        Authorization: input.authorization,
+        "x-session-active": input.sessionActive ? "true" : "false",
+        "x-session-user-address": input.userAddress.toLowerCase(),
+        "x-session-budget-remaining": input.maxAmountWei,
+        "x-chain-id": String(input.chainId),
+        "x-x402-max-amount-wei": input.maxAmountWei,
+        ...(input.paymentIntentId ? { "x-payment-intent-id": input.paymentIntentId } : {}),
+        ...(input.idempotencyKey ? { "x-idempotency-key": input.idempotencyKey } : {}),
+    };
+}
+
+function publicResourceUrl(req: Request): string {
+    return `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+}
+
+function resolveInferenceSettlement(
+    settlementInput: InferenceSettlementInput,
+): {
+    finalAmountWei: string;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    meterSubject?: string;
+    lineItems?: InferencePaymentSettlementResult["lineItems"];
+} {
+    if ("meter" in settlementInput) {
+        const metering = quoteMeteredSettlement(settlementInput.meter);
+        return {
+            finalAmountWei: metering.finalAmountWei,
+            providerAmountWei: metering.providerAmountWei,
+            platformFeeWei: metering.platformFeeWei,
+            meterSubject: metering.subject,
+            lineItems: metering.lineItems,
+        };
+    }
+
+    return {
+        finalAmountWei: settlementInput.finalAmountWei,
+        providerAmountWei: settlementInput.providerAmountWei,
+        platformFeeWei: settlementInput.platformFeeWei,
+        meterSubject: settlementInput.meterSubject,
+        lineItems: settlementInput.lineItems,
+    };
+}
+
 /**
  * Default per-request envelope (atomic units) when a client dials a usage-priced
  * x402 inference endpoint without sending an explicit `x-x402-max-amount-wei`.
@@ -537,7 +489,7 @@ function getDefaultUptoEnvelopeWei(): string {
 function resolveInferenceAuthorizationRequirement(
     req: Request,
     authorizationInput: InferenceAuthorizationInput,
-): { scheme: "exact" | "upto"; maxAmountWei: string } {
+): { scheme: ComposePaymentScheme; maxAmountWei: string } {
     if ("maxAmountWei" in authorizationInput) {
         return {
             scheme: "exact",
@@ -562,22 +514,11 @@ function resolveInferenceAuthorizationRequirement(
     // upfront cap.
     const explicitMaxAmountWei = getRawInferenceMaxAmount(req);
     return {
-        scheme: "upto",
+        scheme: "scheme" in authorizationInput && authorizationInput.scheme
+            ? authorizationInput.scheme
+            : "upto",
         maxAmountWei: explicitMaxAmountWei || getDefaultUptoEnvelopeWei(),
     };
-}
-
-function isInternalInferenceRequest(authorization: string): boolean {
-    if (!authorization) {
-        return false;
-    }
-
-    const internalToken = process.env.RUNTIME_INTERNAL_SECRET;
-    if (!internalToken) {
-        return false;
-    }
-
-    return authorization === `Bearer ${internalToken}`;
 }
 
 async function prepareRawInferenceX402Payment(
@@ -588,6 +529,7 @@ async function prepareRawInferenceX402Payment(
     const requirement = resolveInferenceAuthorizationRequirement(req, authorizationInput);
     const fallbackChainId = getChainIdFromRequest(req) ?? getActiveChainId();
     const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+    const composeRunId = getComposeRunIdFromRequest(req);
 
     const buildPaymentRequired = (chainId: number, error?: string) => createComposePaymentRequired({
         amountWei: requirement.maxAmountWei,
@@ -601,6 +543,106 @@ async function prepareRawInferenceX402Payment(
 
     const paymentSignature = getPaymentSignatureFromRequest(req);
     if (!paymentSignature) {
+        const inheritedExecutionId = req.get?.("x-execution-run-id")
+            || req.headers["x-execution-run-id"]
+            || req.get?.("x-parent-run-id")
+            || req.headers["x-parent-run-id"];
+        if (composeRunId && inheritedExecutionId) {
+            const inherited = await readRawEnvelope(composeRunId);
+            if (inherited) {
+                return {
+                    maxAmountWei: inherited.maxAmountWei,
+                    runtimeHeaders: rawRuntimeHeaders(inherited.chainId, inherited.maxAmountWei),
+                    settle: async (settlementInput) => {
+                        let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
+                        let finalAmountWei: string;
+                        let providerAmountWei: string | undefined;
+                        let platformFeeWei: string | undefined;
+                        let meterSubject: string | undefined;
+                        let lineItems: InferencePaymentSettlementResult["lineItems"] | undefined;
+                        if ("meter" in settlementInput) {
+                            metering = quoteMeteredSettlement(settlementInput.meter);
+                            finalAmountWei = metering.finalAmountWei;
+                            providerAmountWei = metering.providerAmountWei;
+                            platformFeeWei = metering.platformFeeWei;
+                            meterSubject = metering.subject;
+                            lineItems = metering.lineItems;
+                        } else {
+                            finalAmountWei = settlementInput.finalAmountWei;
+                            providerAmountWei = settlementInput.providerAmountWei;
+                            platformFeeWei = settlementInput.platformFeeWei;
+                            meterSubject = settlementInput.meterSubject;
+                            lineItems = settlementInput.lineItems;
+                        }
+
+                        if (BigInt(finalAmountWei) > BigInt(inherited.maxAmountWei)) {
+                            return {
+                                success: false,
+                                error: "finalAmountWei cannot exceed the inherited x402 authorized maximum",
+                                statusCode: 402,
+                            };
+                        }
+
+                        await reserveRawEnvelope(composeRunId, finalAmountWei);
+                        if (isBatchSettlementScheme(inherited.paymentPayload.accepted.scheme)) {
+                            try {
+                                const batch = await commitBatchCharge(inherited.paymentPayload, finalAmountWei);
+                                return {
+                                    success: true,
+                                    finalAmountWei,
+                                    providerAmountWei,
+                                    platformFeeWei,
+                                    meterSubject,
+                                    lineItems,
+                                    chainId: inherited.chainId,
+                                    settledAt: Date.now(),
+                                    settlementStatus: "queued",
+                                    paymentChannelId: batch.channelId,
+                                    paymentCumulativeAmountWei: batch.cumulativeAmountWei,
+                                };
+                            } catch (error) {
+                                await releaseRawEnvelope(composeRunId, finalAmountWei);
+                                return {
+                                    success: false,
+                                    error: error instanceof Error ? error.message : "Batch settlement commit failed",
+                                    statusCode: 402,
+                                };
+                            }
+                        }
+                        const settled = await settleComposePayment(
+                            inherited.paymentPayload,
+                            createComposePaymentRequirement({
+                                amountWei: finalAmountWei,
+                                chainId: inherited.chainId,
+                                scheme: inherited.paymentPayload.accepted.scheme === "upto" ? "upto" : "exact",
+                            }),
+                        );
+                        if (!settled.success) {
+                            await releaseRawEnvelope(composeRunId, finalAmountWei);
+                            return {
+                                success: false,
+                                error: settled.errorMessage || settled.errorReason || "Payment settlement failed",
+                                statusCode: 402,
+                            };
+                        }
+                        return {
+                            success: true,
+                            txHash: settled.transaction || undefined,
+                            finalAmountWei,
+                            providerAmountWei,
+                            platformFeeWei,
+                            meterSubject,
+                            lineItems,
+                            chainId: inherited.chainId,
+                            settledAt: Date.now(),
+                            settlementStatus: settled.transaction ? "settled" : "queued",
+                        };
+                    },
+                    abort: async () => undefined,
+                    applyHeaders: () => undefined,
+                };
+            }
+        }
         const paymentRequired = buildPaymentRequired(fallbackChainId);
         res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
@@ -637,17 +679,54 @@ async function prepareRawInferenceX402Payment(
         res.status(402).json(paymentRequired);
         return null;
     }
+    if (isBatchSettlementScheme(paymentPayload.accepted.scheme)) {
+        await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
+    }
+
+    if (composeRunId) {
+        await saveRawEnvelope({
+            rootRunId: composeRunId,
+            maxAmountWei: requirement.maxAmountWei,
+            chainId: paymentChainId,
+            paymentPayload,
+        });
+    }
 
     let currentHeaders: Record<string, string> = {};
 
     return {
         maxAmountWei: requirement.maxAmountWei,
+        runtimeHeaders: rawRuntimeHeaders(paymentChainId, requirement.maxAmountWei),
         settle: async (settlementInput) => {
-            const finalAmountWei = requirement.scheme === "exact"
-                ? requirement.maxAmountWei
-                : ("finalAmountWei" in settlementInput
-                    ? settlementInput.finalAmountWei
-                    : quoteMeteredSettlement(settlementInput.meter).finalAmountWei);
+            let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
+            let finalAmountWei: string;
+            let providerAmountWei: string | undefined;
+            let platformFeeWei: string | undefined;
+            let meterSubject: string | undefined;
+            let lineItems: InferencePaymentSettlementResult["lineItems"] | undefined;
+            if ("meter" in settlementInput) {
+                metering = quoteMeteredSettlement(settlementInput.meter);
+                providerAmountWei = metering.providerAmountWei;
+                platformFeeWei = metering.platformFeeWei;
+                meterSubject = metering.subject;
+                lineItems = metering.lineItems;
+            }
+            if (requirement.scheme === "exact") {
+                finalAmountWei = requirement.maxAmountWei;
+            } else if ("finalAmountWei" in settlementInput) {
+                finalAmountWei = settlementInput.finalAmountWei;
+                providerAmountWei = settlementInput.providerAmountWei;
+                platformFeeWei = settlementInput.platformFeeWei;
+                meterSubject = settlementInput.meterSubject;
+                lineItems = settlementInput.lineItems;
+            } else {
+                metering ??= quoteMeteredSettlement(settlementInput.meter);
+                finalAmountWei = metering.finalAmountWei;
+                providerAmountWei = metering.providerAmountWei;
+                platformFeeWei = metering.platformFeeWei;
+                meterSubject = metering.subject;
+                lineItems = metering.lineItems;
+            }
 
             if (requirement.scheme === "upto" && BigInt(finalAmountWei) > BigInt(requirement.maxAmountWei)) {
                 return {
@@ -656,14 +735,60 @@ async function prepareRawInferenceX402Payment(
                 };
             }
 
-            const settled = await settleComposePayment(
-                paymentPayload,
-                createComposePaymentRequirement({
-                    amountWei: finalAmountWei,
+            if (BigInt(finalAmountWei) === 0n) {
+                return {
+                    success: true,
+                    finalAmountWei,
+                    providerAmountWei,
+                    platformFeeWei,
+                    meterSubject,
+                    lineItems,
                     chainId: paymentChainId,
-                    scheme: requirement.scheme,
-                }),
-            );
+                    settledAt: Date.now(),
+                };
+            }
+
+            if (composeRunId) {
+                try {
+                    await reserveRawEnvelope(composeRunId, finalAmountWei);
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error instanceof Error ? error.message : "Payment envelope budget exhausted",
+                        statusCode: 402,
+                    };
+                }
+            }
+
+            const settlementRequirement = createComposePaymentRequirement({
+                amountWei: finalAmountWei,
+                chainId: paymentChainId,
+                scheme: requirement.scheme,
+            });
+            let settled;
+            let batch;
+            if (isBatchSettlementScheme(paymentPayload.accepted.scheme) && getBatchPayload(paymentPayload)?.type === "voucher") {
+                try {
+                    batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
+                    settled = queuedBatchSettlement(finalAmountWei, settlementRequirement.network);
+                } catch (error) {
+                    if (composeRunId) {
+                        await releaseRawEnvelope(composeRunId, finalAmountWei);
+                    }
+                    return {
+                        success: false,
+                        error: error instanceof Error ? error.message : "Batch settlement commit failed",
+                    };
+                }
+            } else {
+                settled = await settleComposePayment(
+                    paymentPayload,
+                    settlementRequirement,
+                );
+                if (isBatchSettlementScheme(paymentPayload.accepted.scheme) && settled.success) {
+                    batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
+                }
+            }
 
             currentHeaders = {
                 "PAYMENT-RESPONSE": encodeComposePaymentResponseHeader(settled),
@@ -673,6 +798,9 @@ async function prepareRawInferenceX402Payment(
             }
 
             if (!settled.success) {
+                if (composeRunId) {
+                    await releaseRawEnvelope(composeRunId, finalAmountWei);
+                }
                 return {
                     success: false,
                     error: settled.errorMessage || settled.errorReason || "Payment settlement failed",
@@ -683,7 +811,17 @@ async function prepareRawInferenceX402Payment(
                 success: true,
                 txHash: settled.transaction || undefined,
                 finalAmountWei,
+                providerAmountWei,
+                platformFeeWei,
+                meterSubject,
+                lineItems,
                 chainId: paymentChainId,
+                settledAt: Date.now(),
+                settlementStatus: isBatchSettlementScheme(paymentPayload.accepted.scheme)
+                    ? "queued"
+                    : (settled.transaction ? "settled" : "queued"),
+                paymentChannelId: batch?.channelId,
+                paymentCumulativeAmountWei: batch?.cumulativeAmountWei,
             };
         },
         abort: async () => undefined,
@@ -704,88 +842,235 @@ export async function prepareInferencePayment(
     authorizationInput: InferenceAuthorizationInput,
 ): Promise<PreparedInferencePayment | null> {
     const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-    if (isInternalInferenceRequest(authorization)) {
-        return {
-            maxAmountWei: "0",
-            settle: async () => ({ success: true, finalAmountWei: "0" }),
-            abort: async () => { },
-            applyHeaders: () => { },
-        };
-    }
-
     const composeKeyToken = extractComposeKeyFromHeader(authorization);
     if (!composeKeyToken) {
         return prepareRawInferenceX402Payment(req, res, authorizationInput);
     }
 
-    const chainId = getChainIdFromRequest(req);
-    const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
-    const prepared = await authorizePaymentIntent({
-        authorization,
-        chainId: chainId ?? Number.NaN,
-        service: "api",
-        action: "inference",
-        resource: resourceUrl,
-        method: req.method || "POST",
-        ...authorizationInput,
-        composeRunId: typeof req.headers["x-compose-run-id"] === "string" ? req.headers["x-compose-run-id"] : undefined,
-        idempotencyKey: typeof req.headers["x-idempotency-key"] === "string" ? req.headers["x-idempotency-key"] : undefined,
-    });
-
-    if (!prepared.ok) {
-        for (const [key, value] of Object.entries(prepared.headers)) {
-            res.setHeader(key, value);
-        }
-        res.status(prepared.status).json(prepared.body);
+    const validation = await validateComposeKey(composeKeyToken, 0);
+    if (!validation.valid || !validation.payload || !validation.record) {
+        setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation.error));
+        res.status(401).json({ error: validation.error || "Invalid Compose key" });
         return null;
     }
 
-    let currentHeaders = { ...prepared.headers };
+    const chainId = getChainIdFromRequest(req) ?? validation.record.chainId ?? getActiveChainId();
+    if (validation.record.chainId && validation.record.chainId !== chainId) {
+        setComposeSessionInvalidHeader(res, "invalid_key");
+        res.status(409).json({ error: "Compose key chainId does not match request chainId" });
+        return null;
+    }
+
+    const userAddress = validation.payload.sub;
+    const keyId = validation.payload.keyId;
+    const purpose = validation.record.purpose;
+    let sessionMaxAmountWei: string | null = null;
+
+    if (purpose === "session") {
+        const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
+        const session = sessionStatus.session;
+        if (!session || session.keyId !== keyId) {
+            setComposeSessionInvalidHeader(res, session ? "invalid_key" : sessionStatus.reason);
+            res.status(401).json({ error: "The compose-key session is inactive or expired." });
+            return null;
+        }
+        sessionMaxAmountWei = String(Math.max(0, session.budgetRemaining));
+    }
+
+    let currentHeaders: Record<string, string> = {};
+    let paymentIntentId: string | null = null;
+    let maxAmountWei = sessionMaxAmountWei || "0";
+    const idempotencyKey = getIdempotencyKeyFromRequest(req);
+    let paymentSettled = false;
+
+    if (purpose !== "session") {
+        const authorizationResult = await authorizePaymentIntent({
+            authorization,
+            chainId,
+            service: "api",
+            action: "inference",
+            resource: publicResourceUrl(req),
+            method: req.method || "POST",
+            useBudgetCap: true,
+            composeRunId: getComposeRunIdFromRequest(req) || undefined,
+            idempotencyKey,
+        });
+
+        currentHeaders = {
+            ...authorizationResult.headers,
+        };
+
+        if (!authorizationResult.ok) {
+            for (const [key, value] of Object.entries(authorizationResult.headers)) {
+                res.setHeader(key, value);
+            }
+            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
+            res.status(authorizationResult.status).json(authorizationResult.body);
+            return null;
+        }
+
+        paymentIntentId = authorizationResult.body.paymentIntentId;
+        maxAmountWei = authorizationResult.body.maxAmountWei;
+    }
+
+    const runtimeHeaders = composeRuntimeHeaders({
+        authorization,
+        chainId,
+        userAddress,
+        maxAmountWei,
+        sessionActive: purpose === "session",
+        paymentIntentId,
+        idempotencyKey,
+    });
 
     return {
-        maxAmountWei: prepared.body.maxAmountWei,
+        maxAmountWei,
+        runtimeHeaders,
         settle: async (settlementInput) => {
-            const settled = await settlePaymentIntent({
-                paymentIntentId: prepared.body.paymentIntentId,
-                ...settlementInput,
-            });
+            const {
+                finalAmountWei,
+                providerAmountWei,
+                platformFeeWei,
+                meterSubject,
+                lineItems,
+            } = resolveInferenceSettlement(settlementInput);
 
-            if (!settled.ok) {
-                const paymentRequiredHeader = settled.headers["PAYMENT-REQUIRED"]
-                    || settled.headers["payment-required"]
-                    || null;
-                const paymentRequired = settled.body && typeof settled.body === "object"
-                    && "x402Version" in settled.body
-                    && Array.isArray((settled.body as PaymentRequired).accepts)
-                    ? settled.body as PaymentRequired
-                    : undefined;
+            if (!/^\d+$/u.test(finalAmountWei)) {
                 return {
                     success: false,
-                    error: typeof settled.body.error === "string" ? settled.body.error : "Payment settlement failed",
-                    statusCode: settled.status,
-                    paymentRequired,
-                    paymentRequiredHeader,
+                    error: "Invalid settlement amount",
+                    statusCode: 400,
+                };
+            }
+            const finalAmount = BigInt(finalAmountWei);
+
+            if (finalAmount === 0n) {
+                if (paymentIntentId && !paymentSettled) {
+                    await abortPaymentIntent({
+                        paymentIntentId,
+                        reason: "zero_amount_settlement",
+                    });
+                }
+                return {
+                    success: true,
+                    finalAmountWei,
+                    providerAmountWei,
+                    platformFeeWei,
+                    meterSubject,
+                    lineItems,
+                    chainId,
+                    settledAt: Date.now(),
+                    settlementStatus: "queued",
+                    ...(paymentIntentId ? { paymentIntentId } : {}),
                 };
             }
 
-            currentHeaders = { ...settled.headers };
+            if (purpose === "session") {
+                const requestId = typeof req.headers["x-run-id"] === "string"
+                    ? req.headers["x-run-id"]
+                    : `inference-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+                const lock = await lockBudget(
+                    userAddress,
+                    chainId,
+                    finalAmountWei,
+                    merchantWalletAddress,
+                    requestId,
+                    meterSubject || (typeof req.body?.model === "string" ? req.body.model : undefined),
+                );
+
+                if (!lock.success || !lock.intentId) {
+                    setComposeSessionInvalidHeader(currentHeaders, "budget_exhausted");
+                    return {
+                        success: false,
+                        error: lock.error || "Session budget exhausted",
+                        statusCode: 402,
+                    };
+                }
+
+                currentHeaders = {
+                    "x-payment-method": "session",
+                    "x-settlement": "queued",
+                    "x-payment-intent-id": lock.intentId,
+                    "x-session-budget-intent-id": lock.intentId,
+                    "x-key-final-amount-wei": finalAmountWei,
+                    "x-budget-remaining": lock.availableWei,
+                };
+                return {
+                    success: true,
+                    finalAmountWei,
+                    providerAmountWei,
+                    platformFeeWei,
+                    meterSubject,
+                    lineItems,
+                    chainId,
+                    settledAt: Date.now(),
+                    settlementStatus: "queued",
+                    sessionBudgetIntentId: lock.intentId,
+                };
+            }
+
+            if (!paymentIntentId) {
+                return {
+                    success: false,
+                    error: "Payment intent is required for non-session Compose key settlement",
+                    statusCode: 402,
+                };
+            }
+
+            const intentSettlement = await settlePaymentIntent({
+                paymentIntentId,
+                finalAmountWei,
+                providerAmountWei,
+                platformFeeWei,
+                meterSubject,
+                lineItems,
+            });
+
+            currentHeaders = {
+                ...currentHeaders,
+                ...intentSettlement.headers,
+                "x-payment-intent-id": paymentIntentId,
+            };
+
+            if (!intentSettlement.ok) {
+                return {
+                    success: false,
+                    error: typeof intentSettlement.body.error === "string"
+                        ? intentSettlement.body.error
+                        : "Payment settlement failed",
+                    statusCode: intentSettlement.status,
+                    paymentRequired: intentSettlement.status === 402
+                        ? intentSettlement.body as unknown as PaymentRequired
+                        : undefined,
+                    paymentRequiredHeader: intentSettlement.headers["PAYMENT-REQUIRED"]
+                        || intentSettlement.headers["payment-required"]
+                        || null,
+                };
+            }
+
+            paymentSettled = true;
+            const txHash = intentSettlement.body.txHash;
             return {
                 success: true,
-                txHash: settled.body.txHash,
-                finalAmountWei: settled.body.finalAmountWei,
-                providerAmountWei: settled.body.providerAmountWei,
-                platformFeeWei: settled.body.platformFeeWei,
-                meterSubject: settled.body.meterSubject,
-                lineItems: settled.body.lineItems,
+                txHash,
+                finalAmountWei,
+                providerAmountWei,
+                platformFeeWei,
+                meterSubject,
+                lineItems,
                 chainId,
                 settledAt: Date.now(),
+                settlementStatus: txHash ? "settled" : "queued",
+                paymentIntentId,
             };
         },
         abort: async (reason?: string) => {
-            await abortPaymentIntent({
-                paymentIntentId: prepared.body.paymentIntentId,
-                reason: reason || "inference_failed",
-            });
+            if (paymentIntentId && !paymentSettled) {
+                await abortPaymentIntent({
+                    paymentIntentId,
+                    reason: reason || "Inference failed before settlement",
+                });
+            }
         },
         applyHeaders: (response, settlement) => {
             if (response.headersSent) {
@@ -797,12 +1082,15 @@ export async function prepareInferencePayment(
             }
 
             if (settlement?.finalAmountWei) {
-                response.setHeader("x-compose-key-final-amount-wei", settlement.finalAmountWei);
+                response.setHeader("x-key-final-amount-wei", settlement.finalAmountWei);
             }
 
             if (settlement?.txHash) {
                 response.setHeader("X-Transaction-Hash", settlement.txHash);
-                response.setHeader("x-compose-key-tx-hash", settlement.txHash);
+                response.setHeader("x-key-tx-hash", settlement.txHash);
+            }
+            if (settlement?.settlementStatus) {
+                response.setHeader("x-settlement", settlement.settlementStatus);
             }
         },
     };
@@ -821,8 +1109,16 @@ export interface InferenceSettlementReceipt {
         amountWei: string;
     }>;
     txHash?: string;
+    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    claimTxHash?: string;
+    settleTxHash?: string;
+    paymentIntentId?: string;
+    sessionBudgetIntentId?: string;
+    paymentChannelId?: string;
+    paymentCumulativeAmountWei?: string;
     chainId?: number;
     settledAt: number;
+    evidenceOnly?: boolean;
 }
 
 export async function settlePreparedInferencePayment(
@@ -864,650 +1160,17 @@ export async function settlePreparedInferencePayment(
         meterSubject: settlement.meterSubject,
         lineItems: settlement.lineItems,
         txHash: settlement.txHash,
+        settlementStatus: settlement.settlementStatus || (settlement.txHash ? "settled" : "queued"),
+        claimTxHash: settlement.claimTxHash,
+        settleTxHash: settlement.settleTxHash,
+        paymentIntentId: settlement.paymentIntentId,
+        sessionBudgetIntentId: settlement.sessionBudgetIntentId,
+        paymentChannelId: settlement.paymentChannelId,
+        paymentCumulativeAmountWei: settlement.paymentCumulativeAmountWei,
         chainId: settlement.chainId,
         settledAt: settlement.settledAt ?? Date.now(),
+        evidenceOnly: settlement.evidenceOnly,
     };
-}
-
-/**
- * Prepare payment without charging immediately.
- * Use settle() when first output is emitted, and abort() on failures before settlement.
- */
-export async function prepareDeferredPayment(
-    req: Request,
-    amountWei: number,
-): Promise<PreparedPayment> {
-    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
-    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader), 10) : getActiveChainId();
-    const {
-        paymentData,
-        composeKeyToken,
-        composeKeyValidation,
-        sessionActive,
-        sessionUserAddress,
-        sessionInvalidReason,
-    } = await resolveComposeSessionContext(
-        req.headers as Record<string, string | string[] | undefined>,
-        explicitChainId,
-    );
-
-    // Check for internal Workflow bypass first
-    const internalMarker = req.headers["x-workflow-internal"] as string | undefined;
-    const runtimeInternalMarker = getRuntimeInternalMarker();
-    if (internalMarker && runtimeInternalMarker && internalMarker === runtimeInternalMarker) {
-        console.log(`[x402] preparePayment: Internal bypass - Workflow verified payment upstream`);
-        return {
-            valid: true,
-            method: "internal",
-            metadata: { amountWei, chainId: explicitChainId },
-            settle: async () => ({ success: true }),
-            abort: async () => { },
-            getHeaders: () => ({}),
-        };
-    }
-
-    // ==========================================================================
-    // Session bypass flow (deferred settlement with lock/abort lifecycle)
-    // ==========================================================================
-    if (sessionActive && sessionUserAddress) {
-        const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
-        if (!sessionBudget) {
-            return {
-                valid: false,
-                error: "Active session budget not found. Recreate the session.",
-                method: "session",
-                metadata: { amountWei, chainId: explicitChainId, userAddress: sessionUserAddress },
-                settle: async () => ({ success: false, error: "Session budget missing" }),
-                abort: async () => { },
-                getHeaders: () => ({ "x-compose-session-invalid": "missing_budget_state" }),
-            };
-        }
-
-        const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const lockResult = await lockBudget(
-            sessionUserAddress,
-            explicitChainId,
-            String(amountWei),
-            merchantWalletAddress,
-            requestId,
-            req.body?.model,
-        );
-
-        if (lockResult.success) {
-            let committed = false;
-            let aborted = false;
-
-            return {
-                valid: true,
-                method: "session",
-                metadata: {
-                    amountWei,
-                    chainId: explicitChainId,
-                    intentId: lockResult.intentId,
-                    userAddress: sessionUserAddress,
-                },
-                // Commit means "keep intent locked for batch settlement".
-                settle: async () => {
-                    if (aborted) {
-                        return { success: false, error: "payment_aborted" };
-                    }
-                    if (committed) {
-                        return { success: true };
-                    }
-                    committed = true;
-                    return { success: true };
-                },
-                abort: async (reason?: string) => {
-                    if (aborted || committed) {
-                        return;
-                    }
-                    aborted = true;
-                    if (lockResult.intentId) {
-                        await cancelBudgetIntent(lockResult.intentId, reason || "Inference failed before settlement");
-                    }
-                },
-                getHeaders: () => ({
-                    "x-payment-method": "session-bypass",
-                    "x-budget-remaining": lockResult.availableWei,
-                    "x-settlement": "deferred",
-                    ...(lockResult.intentId ? { "x-payment-intent-id": lockResult.intentId } : {}),
-                }),
-            };
-        }
-
-        return {
-            valid: false,
-            error: lockResult.error || "Session budget exhausted",
-            method: "session",
-            metadata: { amountWei, chainId: explicitChainId, userAddress: sessionUserAddress },
-            settle: async () => ({
-                success: false,
-                error: lockResult.error || "Session budget exhausted",
-            }),
-            abort: async () => { },
-            getHeaders: () => ({ "x-compose-session-invalid": "budget_exhausted" }),
-        };
-    }
-
-    if (composeKeyValidation?.record?.purpose === "session") {
-        const reason = sessionInvalidReason || "invalid_key";
-        return {
-            valid: false,
-            error: "The compose-key session is inactive or expired.",
-            method: "session",
-            metadata: { amountWei, chainId: explicitChainId, userAddress: sessionUserAddress || undefined },
-            settle: async () => ({ success: false, error: "Inactive session" }),
-            abort: async () => { },
-            getHeaders: () => ({ "x-compose-session-invalid": reason }),
-        };
-    }
-
-    // ==========================================================================
-    // Compose Key flow
-    // ==========================================================================
-    if (composeKeyToken) {
-        console.log(`[x402] preparePayment: Compose Key detected, validating...`);
-
-        const validation = composeKeyValidation;
-
-        if (!validation || !validation.valid || !validation.payload || !validation.record) {
-            console.log(`[x402] preparePayment: Compose Key invalid: ${validation?.error}`);
-            const reason = getComposeSessionInvalidReason(validation?.error);
-            return {
-                valid: false,
-                error: validation?.error,
-                method: "compose-key",
-                metadata: { amountWei, chainId: explicitChainId },
-                settle: async () => ({ success: false, error: "Invalid key" }),
-                abort: async () => { },
-                getHeaders: () => ({ "x-compose-session-invalid": reason }),
-            };
-        }
-
-        // Pre-flight budget check only
-        const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
-        if (budgetRemaining < amountWei) {
-            console.log(`[x402] preparePayment: Budget exhausted: ${budgetRemaining} < ${amountWei}`);
-            return {
-                valid: false,
-                error: "Budget exhausted",
-                method: "compose-key",
-                metadata: { amountWei, chainId: explicitChainId, keyId: validation.payload?.keyId },
-                settle: async () => ({ success: false, error: "Budget exhausted" }),
-                abort: async () => { },
-                getHeaders: () => ({ "x-compose-session-invalid": "budget_exhausted" }),
-            };
-        }
-
-        // Return valid with deferred settlement
-        let settled = false;
-        let aborted = false;
-        let settlementTxHash: string | undefined;
-
-        return {
-            valid: true,
-            method: "compose-key",
-            metadata: {
-                amountWei,
-                chainId: explicitChainId,
-                keyId: validation.payload?.keyId,
-                userAddress: validation.payload?.sub,
-            },
-            settle: async () => {
-                if (aborted) {
-                    return { success: false, error: "payment_aborted" };
-                }
-                if (settled) {
-                    console.log(`[x402] preparePayment: Already settled, skipping`);
-                    return { success: true, txHash: settlementTxHash };
-                }
-                settled = true;
-
-                console.log(`[x402] preparePayment: Executing deferred settlement for ${validation.payload!.sub}`);
-                const { settleComposeKeyPayment } = await import("./settlement.js");
-                const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
-                const chainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
-                const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, chainId);
-
-                if (result.success) {
-                    settlementTxHash = result.txHash;
-                    // Update Redis cache
-                    try {
-                        await consumeKeyBudget(validation.payload!.keyId, amountWei);
-                    } catch (e) {
-                        console.warn(`[x402] preparePayment: Redis update failed but on-chain succeeded`);
-                    }
-                }
-
-                return result;
-            },
-            abort: async () => {
-                aborted = true;
-            },
-            getHeaders: () => {
-                const headers: Record<string, string> = {
-                    "x-compose-key-budget-limit": String(validation.record!.budgetLimit),
-                    "x-compose-key-budget-used": String(validation.record!.budgetUsed),
-                    "x-compose-key-budget-remaining": String(budgetRemaining),
-                };
-                if (settlementTxHash) {
-                    headers["x-compose-key-tx-hash"] = settlementTxHash;
-                }
-                return headers;
-            },
-        };
-    }
-
-    // ==========================================================================
-    // x402 PAYMENT-SIGNATURE Flow (standard x402 v2 per-request settlement)
-    // ==========================================================================
-    if (paymentData) {
-        console.log(`[x402] preparePayment: PAYMENT-SIGNATURE detected, using x402 flow`);
-
-        // x402 flow: deferred settlement
-        let settled = false;
-        let aborted = false;
-        let settleResult: { success: boolean; txHash?: string; error?: string } | null = null;
-
-        return {
-            valid: true,
-            method: "x402",
-            metadata: { amountWei, chainId: explicitChainId },
-            settle: async () => {
-                if (aborted) {
-                    return { success: false, error: "payment_aborted" };
-                }
-                if (settled && settleResult) {
-                    console.log(`[x402] preparePayment: Already settled, returning cached result`);
-                    return settleResult;
-                }
-                settled = true;
-
-                const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
-
-                // Read X-CHAIN-ID header for consistent chain routing
-                const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
-                const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : undefined;
-
-                const result = await handleX402Payment(
-                    paymentData,
-                    resourceUrl,
-                    req.method || "POST",
-                    amountWei.toString(),
-                    explicitChainId,
-                );
-
-                if (result.status === 200) {
-                    // The facilitator returns the settled transaction on the receipt.
-                    // Keep a shallow fallback in case callers flatten it upstream.
-                    const responseBody = result.responseBody as any;
-                    const txHash = responseBody?.txHash || responseBody?.receipt?.transaction;
-                    settleResult = { success: true, txHash };
-                    console.log(`[x402] preparePayment: x402 settlement success, tx: ${txHash}`);
-                } else {
-                    settleResult = { success: false, error: (result.responseBody as any)?.error || "Settlement failed" };
-                    console.log(`[x402] preparePayment: x402 settlement failed: ${settleResult.error}`);
-                }
-
-                return settleResult;
-            },
-            abort: async () => {
-                aborted = true;
-            },
-            getHeaders: () => ({}),
-        };
-    }
-
-    // No valid payment method - return helpful error with payment requirements
-    return {
-        valid: false,
-        error: "No valid payment method - use Compose Key or PAYMENT-SIGNATURE header",
-        metadata: { amountWei, chainId: explicitChainId },
-        settle: async () => ({ success: false, error: "No payment" }),
-        abort: async () => { },
-        getHeaders: () => ({}),
-    };
-}
-
-/**
- * Require x402 payment for any endpoint.
- * 
- * This is the single function all endpoints should use for payment verification.
- * 
- * Payment can be verified in two ways:
- * 1. PAYMENT-SIGNATURE header (standard x402 v2 per-request settlement)
- * 2. x-workflow-internal + active session (for nested agent/workflow calls)
- * 
- * The session-based bypass ensures:
- * - Users still pay at the agent/workflow endpoint level
- * - Nested LLM/tool calls don't require individual x402 settlements
- * - Session validity comes from the compose key plus Redis-backed session state
- * - Can't be abused: no active server-side session = no bypass
- * 
- * @param req - Express request
- * @param res - Express response
- * @param amountWei - Price in USDC wei (6 decimals)
- * @returns true if payment verified, false if 402 response sent
- */
-export async function requirePayment(
-    req: Request,
-    res: Response,
-    amountWei: number,
-): Promise<boolean> {
-    const chainIdHeader = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
-    const explicitChainId = chainIdHeader ? parseInt(String(chainIdHeader)) : getActiveChainId();
-    const {
-        paymentData,
-        composeKeyToken,
-        composeKeyValidation,
-        sessionActive,
-        sessionBudgetRemaining,
-        sessionUserAddress,
-        sessionInvalidReason,
-    } = await resolveComposeSessionContext(
-        req.headers as Record<string, string | string[] | undefined>,
-        explicitChainId,
-    );
-
-    // DEBUG: Log incoming headers for bypass check
-    const internalMarker = req.headers["x-workflow-internal"] as string | undefined;
-    const runtimeInternalMarker = getRuntimeInternalMarker();
-    const userAgent = req.headers["user-agent"] as string || "";
-    console.log(`[x402-debug] Internal marker: ${internalMarker ? 'PRESENT' : 'MISSING'}, value: ${internalMarker?.substring(0, 20) || 'N/A'}`);
-    console.log(`[x402-debug] Expected marker: ${runtimeInternalMarker?.substring(0, 20) || 'UNSET'}`);
-    console.log(`[x402-debug] User-Agent: ${userAgent.substring(0, 50)}`);
-    console.log(`[x402-debug] sec-fetch-mode: ${req.headers["sec-fetch-mode"] || 'N/A'}`);
-    console.log(`[x402-debug] Session: active=${sessionActive}, budget=${sessionBudgetRemaining}`);
-
-    // @dev: Security Note:
-    // If internal marker matches, allow the request
-    // The marker is the proof of payment because:
-    // 1. Workflow only adds x-workflow-internal AFTER verifying x402 payment at /agent/{wallet}/chat|image|video|audio|...
-    // 2. The secret is stored in RUNTIME_INTERNAL_SECRET .env
-    // 3. If someone knows the secret, they're either Workflow or have access to our infrastructure
-
-    if (internalMarker && runtimeInternalMarker && internalMarker === runtimeInternalMarker) {
-        console.log(`[x402] Internal bypass - Workflow verified payment upstream, session=${sessionActive}`);
-        return true;
-    }
-
-    // ==========================================================================
-    // TIER 1: Session Budget Bypass - Deferred Settlement
-    // Lock budget in Redis, skip on-chain settlement (batch settles every 2 min)
-    // ==========================================================================
-    if (sessionActive && sessionUserAddress && composeKeyValidation?.record?.purpose === "session") {
-        console.log(`[x402] Session bypass attempt: ${sessionUserAddress}, chain=${explicitChainId}, amount=${amountWei}`);
-
-        const sessionBudget = await getSessionBudget(sessionUserAddress, explicitChainId);
-        if (!sessionBudget) {
-            res.setHeader("x-compose-session-invalid", "missing_budget_state");
-            res.status(401).json({
-                error: "Active session budget not found",
-                hint: "Recreate the session and try again",
-            });
-            return false;
-        }
-
-        // Generate unique request ID
-        const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
-
-        // Attempt to lock budget atomically in session-budget.ts (deferred payment ledger)
-        const lockResult = await lockBudget(
-            sessionUserAddress,
-            explicitChainId,
-            String(amountWei),
-            merchantWalletAddress,
-            requestId,
-            req.body?.model,
-        );
-
-        if (lockResult.success) {
-            console.log(`[x402] Session bypass SUCCESS: locked ${amountWei} wei, available: ${lockResult.availableWei}`);
-
-            // Check if we need to trigger immediate settlement ($1 threshold)
-            const shouldSettle = await shouldTriggerImmediateSettlement(sessionUserAddress, explicitChainId);
-            if (shouldSettle) {
-                console.log(`[x402] Threshold reached - triggering immediate settlement for ${sessionUserAddress}`);
-            }
-
-            // Get session status for notifications
-            const sessionStatus = await getSessionStatus(sessionUserAddress, explicitChainId);
-
-            // Set response headers for client tracking
-            res.setHeader("x-payment-method", "session-bypass");
-            res.setHeader("x-budget-remaining", lockResult.availableWei);
-            res.setHeader("x-session-budget-remaining", lockResult.availableWei);
-            res.setHeader("x-settlement", "deferred");
-
-            // Add session notification headers for frontend
-            if (sessionStatus) {
-                res.setHeader("x-session-budget-limit", sessionStatus.totalBudget);
-                res.setHeader("x-session-budget-used", sessionStatus.usedBudget);
-                res.setHeader("x-session-budget-locked", sessionStatus.lockedBudget);
-                // Budget warnings
-                if (sessionStatus.warnings.budgetDepleted) {
-                    res.setHeader("x-session-status", "budget-depleted");
-                } else if (sessionStatus.warnings.budgetLow) {
-                    res.setHeader("x-session-status", "budget-low");
-                } else if (sessionStatus.warnings.expiringSoon) {
-                    res.setHeader("x-session-status", "expiring-soon");
-                }
-
-                // Additional metadata
-                res.setHeader("x-session-expires-in", String(sessionStatus.expiresInSeconds));
-                res.setHeader("x-session-budget-percent", String(Math.floor(sessionStatus.budgetPercentRemaining)));
-            }
-
-            return true;
-        }
-
-        console.log(`[x402] Session bypass FAILED: ${lockResult.error}`);
-        setComposeSessionInvalidHeader(res, "budget_exhausted");
-        res.status(402).json({
-            error: "Compose session budget exhausted",
-            details: lockResult.error || "Insufficient available session budget",
-        });
-        return false;
-    }
-
-    if (composeKeyValidation?.record?.purpose === "session") {
-        const reason = sessionInvalidReason || "invalid_key";
-        setComposeSessionInvalidHeader(res, reason);
-        res.status(401).json({
-            error: "Inactive Compose session",
-            details: "The compose-key session is inactive or expired.",
-        });
-        return false;
-    }
-
-    // ==========================================================================
-    // Compose Key Flow (external clients like Cursor, OpenClaw, OpenCode, ...)
-    // Performs ACTUAL on-chain USDC settlement using session key authority
-    // ==========================================================================
-    if (composeKeyToken) {
-        console.log(`[x402] Compose Key detected, validating...`);
-
-        const validation = composeKeyValidation;
-
-        if (!validation || !validation.valid || !validation.payload || !validation.record) {
-            console.log(`[x402] Compose Key invalid: ${validation?.error}`);
-            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation?.error));
-            res.status(401).json({
-                error: "Invalid Compose Key",
-                details: validation?.error,
-            });
-            return false;
-        }
-
-        // Step 1: Pre-flight budget check (no deduction yet - just validation)
-        // Redis is a CACHE, blockchain is source of truth
-        const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
-        if (budgetRemaining < amountWei) {
-            console.log(`[x402] Compose Key budget exhausted for ${validation.payload!.keyId}: ${budgetRemaining} < ${amountWei}`);
-            setComposeSessionInvalidHeader(res, "budget_exhausted");
-            res.status(402).json({
-                error: "Compose Key budget exhausted",
-                budgetLimit: validation.record!.budgetLimit,
-                budgetUsed: validation.record!.budgetUsed,
-                budgetRemaining,
-            });
-            return false;
-        }
-
-        // Step 2: On-chain USDC settlement FIRST (blockchain is source of truth)
-        // The server uses TREASURY_WALLET's session key authority to transfer USDC
-        const { settleComposeKeyPayment } = await import("./settlement.js");
-        const userAddress = validation.payload!.sub;
-
-        console.log(`[x402] Initiating on-chain settlement for ${userAddress}, amount: ${amountWei} wei`);
-
-        const settlementResult = await settleComposeKeyPayment(userAddress, amountWei, explicitChainId);
-
-        if (!settlementResult.success) {
-            // On-chain payment failed - no money transferred, no Redis update needed
-            console.log(`[x402] On-chain settlement failed: ${settlementResult.error}`);
-            res.status(402).json({
-                error: "Payment settlement failed",
-                details: settlementResult.error,
-                hint: "Ensure your session is active and has sufficient USDC balance",
-            });
-            return false;
-        }
-
-        console.log(`[x402] On-chain settlement successful: ${settlementResult.txHash}`);
-
-        // Step 3: On-chain succeeded! Now update Redis cache (best-effort)
-        // Even if Redis fails, payment was collected on-chain
-        try {
-            const newUsed = await consumeKeyBudget(validation.payload!.keyId, amountWei);
-            if (newUsed < 0) {
-                // Race condition: another request consumed budget concurrently
-                // On-chain payment already collected, log for reconciliation
-                console.warn(`[x402] Redis budget sync issue for ${validation.payload!.keyId} - on-chain payment collected, Redis shows exhausted`);
-            }
-        } catch (redisError) {
-            // Redis failed but on-chain payment succeeded - log for reconciliation
-            console.error(`[x402] Redis update failed for ${validation.payload!.keyId}:`, redisError);
-            console.warn(`[x402] Payment collected on-chain (tx: ${settlementResult.txHash}) but Redis not updated`);
-        }
-
-        // Add budget info to response headers
-        const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
-        if (budgetInfo) {
-            res.setHeader("x-compose-key-budget-limit", String(budgetInfo.budgetLimit));
-            res.setHeader("x-compose-key-budget-used", String(budgetInfo.budgetUsed));
-            res.setHeader("x-compose-key-budget-remaining", String(budgetInfo.budgetRemaining));
-        }
-        // Add settlement tx hash for transparency
-        if (settlementResult.txHash) {
-            res.setHeader("x-compose-key-tx-hash", settlementResult.txHash);
-        }
-
-        console.log(`[x402] Compose Key payment verified: ${validation.payload!.keyId}, user: ${userAddress}, cost: ${amountWei} wei, tx: ${settlementResult.txHash}`);
-        return true;
-    }
-
-    // Standard x402 flow: require payment data header
-    const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
-
-    // Note: explicitChainId already extracted above for session bypass
-    const result = await handleX402Payment(
-        paymentData,
-        resourceUrl,
-        req.method || "POST",
-        amountWei.toString(),
-        explicitChainId, // Pass client-specified chain ID
-    );
-
-    if (result.status !== 200) {
-        Object.entries(result.responseHeaders).forEach(([key, value]) => {
-            res.setHeader(key, value);
-        });
-        res.status(result.status).json(result.responseBody);
-        return false;
-    }
-
-    console.log(`[x402] Payment verified for ${resourceUrl}`);
-    return true;
-}
-
-// =============================================================================
-// Payment Header Builders
-// =============================================================================
-
-/**
- * Build x402 response headers for payment required (402)
- */
-export function buildPaymentRequiredHeaders(
-    paymentMethod: X402PaymentMethod,
-    skill: { pricing?: SkillPricing }
-): Record<string, string> {
-    return {
-        "Payment-Required": "true",
-        "Payment-Network": paymentMethod.network,
-        "Payment-Asset": paymentMethod.assetAddress,
-        "Payment-Amount": skill.pricing?.amount || "0",
-        "Payment-Scheme": paymentMethod.x402?.scheme || "exact",
-        "Payment-Payee": paymentMethod.payee,
-    };
-}
-
-/**
- * Get chain config for a payment method
- */
-export function getPaymentChainConfig(paymentMethod: X402PaymentMethod): {
-    chainId: number;
-    name: string;
-    isTestnet: boolean;
-} {
-    const chainId = parseInt(paymentMethod.network, 10);
-
-    switch (chainId) {
-        case 43113:
-            return { chainId, name: "Avalanche Fuji", isTestnet: true };
-        case 43114:
-            return { chainId, name: "Avalanche", isTestnet: false };
-        case 42161:
-            return { chainId, name: "Arbitrum One", isTestnet: false };
-        case 421614:
-            return { chainId, name: "Arbitrum Sepolia", isTestnet: true };
-        case 137:
-            return { chainId, name: "Polygon", isTestnet: false };
-        case 80002:
-            return { chainId, name: "Polygon Amoy", isTestnet: true };
-        case 1:
-            return { chainId, name: "Ethereum", isTestnet: false };
-        case 11155111:
-            return { chainId, name: "Sepolia", isTestnet: true };
-        case 8453:
-            return { chainId, name: "Base", isTestnet: false };
-        case 84532:
-            return { chainId, name: "Base Sepolia", isTestnet: true };
-        default:
-            return { chainId, name: `Chain ${chainId}`, isTestnet: false };
-    }
-}
-
-// =============================================================================
-// USDC Amount Helpers
-// =============================================================================
-
-/**
- * Format USDC amount from wei to human-readable
- */
-export function formatUsdcAmount(weiAmount: string | bigint): string {
-    const wei = typeof weiAmount === "string" ? BigInt(weiAmount) : weiAmount;
-    const usdc = Number(wei) / 1e6;
-    return usdc.toFixed(6);
-}
-
-/**
- * Parse USDC amount from human-readable to wei
- */
-export function parseUsdcAmount(usdcAmount: string | number): string {
-    const usdc = typeof usdcAmount === "string" ? parseFloat(usdcAmount) : usdcAmount;
-    const wei = Math.floor(usdc * 1e6);
-    return wei.toString();
 }
 
 // Re-export config for convenience

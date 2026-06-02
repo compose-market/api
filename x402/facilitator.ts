@@ -23,6 +23,7 @@ import type {
 } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme as UptoEvmFacilitatorScheme } from "@x402/evm/upto/facilitator";
+import { BatchSettlementEvmScheme as BatchSettlementFacilitatorScheme } from "@x402/evm/batch-settlement/facilitator";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { createPublicClient, createWalletClient, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -36,6 +37,7 @@ import {
     getUsdcAddress,
     getViemChain,
 } from "./configs/chains.js";
+import { createBatchPaymentExtra, isBatchSettlementScheme } from "./batch.js";
 import { merchantWalletAddress } from "./wallets.js";
 
 export const COMPOSE_METERING_EXTENSION_KEY = "compose-metering-v1";
@@ -55,6 +57,7 @@ const composeFacilitatorExtensions: FacilitatorExtension[] = [
 ];
 
 const signerCache = new Map<ChainId, ReturnType<typeof toFacilitatorEvmSigner>>();
+const batchSchemeCache = new Map<ChainId, BatchSettlementFacilitatorScheme>();
 let facilitatorSingleton: x402Facilitator | null = null;
 
 function assertCaip2Network(network: string): `${string}:${string}` {
@@ -118,6 +121,19 @@ function getFacilitatorAccount() {
     }
 
     return privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
+}
+
+function getReceiverAuthorizer() {
+    const account = getFacilitatorAccount();
+    return {
+        address: account.address,
+        signTypedData: (params: {
+            domain: Record<string, unknown>;
+            types: Record<string, unknown>;
+            primaryType: string;
+            message: Record<string, unknown>;
+        }) => account.signTypedData(params as never),
+    };
 }
 
 function getConfiguredFacilitatorChainIds(): ChainId[] {
@@ -192,6 +208,23 @@ function createUptoSchemeForChain(chainId: ChainId) {
     return new UptoEvmFacilitatorScheme(signer);
 }
 
+function createBatchSchemeForChain(chainId: ChainId) {
+    const cached = batchSchemeCache.get(chainId);
+    if (cached) {
+        return cached;
+    }
+
+    createExactSchemeForChain(chainId);
+    const signer = signerCache.get(chainId);
+    if (!signer) {
+        throw new Error(`Compose facilitator signer missing for chain ${chainId}`);
+    }
+
+    const scheme = new BatchSettlementFacilitatorScheme(signer, getReceiverAuthorizer());
+    batchSchemeCache.set(chainId, scheme);
+    return scheme;
+}
+
 function createComposeFacilitator(): x402Facilitator {
     const chainIds = getConfiguredFacilitatorChainIds();
     if (chainIds.length === 0) {
@@ -206,6 +239,7 @@ function createComposeFacilitator(): x402Facilitator {
     for (const chainId of chainIds) {
         facilitator.register(`eip155:${chainId}`, createExactSchemeForChain(chainId));
         facilitator.register(`eip155:${chainId}`, createUptoSchemeForChain(chainId));
+        facilitator.register(`eip155:${chainId}`, createBatchSchemeForChain(chainId));
     }
 
     return facilitator;
@@ -249,11 +283,11 @@ export function createComposePaymentExtensions(): Record<string, unknown> {
 export function createComposePaymentRequirement(input: {
     amountWei: number | string;
     chainId: number;
-    scheme?: "exact" | "upto";
+    scheme?: "exact" | "upto" | "batch-settlement";
     payTo?: `0x${string}`;
     maxTimeoutSeconds?: number;
 }): PaymentRequirements {
-    const scheme = input.scheme === "upto" ? "upto" : "exact";
+    const scheme = input.scheme === "upto" || input.scheme === "batch-settlement" ? input.scheme : "exact";
     const extra: Record<string, unknown> = {
         compose: {
             metering: "authoritative_usage",
@@ -264,6 +298,9 @@ export function createComposePaymentRequirement(input: {
     if (scheme === "upto") {
         extra.assetTransferMethod = "permit2";
         extra.facilitatorAddress = getFacilitatorAccount().address;
+    }
+    if (isBatchSettlementScheme(scheme)) {
+        Object.assign(extra, createBatchPaymentExtra(input.chainId, getReceiverAuthorizer().address));
     }
 
     return parseV2PaymentRequirements({
@@ -280,7 +317,7 @@ export function createComposePaymentRequirement(input: {
 export function createComposePaymentRequired(input: {
     amountWei: number | string;
     chainId: number;
-    scheme?: "exact" | "upto";
+    scheme?: "exact" | "upto" | "batch-settlement";
     resourceUrl: string;
     description: string;
     mimeType: string;

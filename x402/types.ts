@@ -2,13 +2,13 @@
  * x402 Payment Types
  * 
  * Type definitions for x402 payment operations.
- * Compatible with ThirdWeb x402 SDK.
+ * Compatible with x402 payment payloads and Compose extensions.
  * 
  * @module shared/x402/types
  */
 
 // =============================================================================
-// ThirdWeb PaymentArgs (mirrors thirdweb/x402)
+// PaymentArgs
 // =============================================================================
 
 /**
@@ -19,7 +19,7 @@ export interface PaymentArgs {
     facilitator: unknown;
     /** HTTP method */
     method: "GET" | "POST" | "PUT" | "DELETE";
-    /** ThirdWeb chain object or config */
+    /** Chain object or config */
     network: unknown;
     /** Payment scheme */
     scheme: "exact" | "upto";
@@ -62,7 +62,7 @@ export interface PaymentInfo {
     sessionActive: boolean;
     /** Remaining session budget in wei */
     sessionBudgetRemaining: number;
-    /** User wallet address from session (for session bypass) */
+    /** User wallet address from the Compose session extension */
     sessionUserAddress: string | null;
 }
 
@@ -82,8 +82,6 @@ export interface PriceResult {
     totalCost: number;
     /** Total cost in USDC wei (6 decimals) */
     costUsdcWei: bigint;
-    /** Provider name (for routing) */
-    provider?: string;
 }
 
 /**
@@ -92,8 +90,6 @@ export interface PriceResult {
 export interface PriceLookupParams {
     /** Model ID */
     modelId?: string;
-    /** Explicit provider for unknown-model routing */
-    provider?: string;
     /** Task type for multimodal pricing */
     taskType?: string;
     /** Output modality requested by canonical /v1/responses */
@@ -101,7 +97,7 @@ export interface PriceLookupParams {
     /** Request profile for pricing without model-id heuristics */
     requestProfile?: "text" | "image" | "audio" | "video" | "embedding";
     /** Tool source for tool pricing */
-    toolSource?: "onchain" | "tools" | "eliza";
+    toolSource?: "onchain" | "mcp";
     /** Tool name */
     toolName?: string;
     /** Whether tool is a transaction */
@@ -128,9 +124,9 @@ export interface SessionState {
     budgetRemaining: number;
     /** Expiration timestamp */
     expiresAt: number | null;
-    /** Session key address (ERC4337) or session ID (x402 V2) */
+    /** Session key address or Compose session ID */
     sessionKeyAddress: string | null;
-    /** x402 V2 session token (for future migration) */
+    /** Compose session token */
     x402SessionToken?: string;
 }
 

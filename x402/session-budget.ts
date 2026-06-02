@@ -1,9 +1,9 @@
 /**
  * Session Budget Management
  * 
- * Atomic Redis operations for session-based payment bypass.
+ * Atomic Redis operations for the Compose session-budget extension.
  * Enables instant inference by tracking and locking budget off-chain,
- * with deferred on-chain settlement via batch worker.
+ * with Compose-managed on-chain settlement after usage is known.
  * 
  * ARCHITECTURE:
  * - User creates session with on-chain approval (USDC.approve to TREASURY_WALLET)
@@ -355,13 +355,7 @@ export async function lockBudget(
     const currentLocked = BigInt(budget.lockedBudgetWei);
     const used = BigInt(budget.usedBudgetWei);
     const requestAmount = BigInt(amountWei);
-    const { allowanceWei, availableWei } = await getLiveBudgetAvailability({
-        userAddress,
-        chainId,
-        totalWei: total,
-        lockedWei: currentLocked,
-        usedWei: used,
-    });
+    const availableWei = total > used + currentLocked ? total - used - currentLocked : 0n;
 
     // Check if sufficient budget available
     if (availableWei < requestAmount) {
@@ -379,7 +373,7 @@ export async function lockBudget(
     const newLocked = BigInt(newLockedStr);
 
     // Double-check we didn't over-allocate (race condition protection)
-    if (newLocked + used > total || newLocked > allowanceWei) {
+    if (newLocked + used > total) {
         // Rollback the increment
         await redisHIncrByAmount(key, "lockedBudgetWei", -requestAmount);
         return {
@@ -411,7 +405,7 @@ export async function lockBudget(
         budgetLimitWei: total,
         usedWei: used,
         lockedWei: newLocked,
-        allowanceWei,
+        allowanceWei: total,
     });
 
     console.log(`[sessionBudget] Locked ${amountWei} wei for ${userAddress} chain ${chainId}, available: ${newAvailable.toString()}`);

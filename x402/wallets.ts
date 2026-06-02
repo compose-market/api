@@ -1,7 +1,7 @@
 /**
  * Wallet addresses and payment chain configuration.
  *
- * Extracted from the former thirdweb.ts — now SDK-agnostic.
+ * SDK-agnostic wallet configuration.
  * Only reads environment variables and exposes typed constants.
  *
  * @module shared/x402/wallets

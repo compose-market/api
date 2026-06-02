@@ -40,6 +40,8 @@ const KEY_LOCK_PREFIX = "compose-key-lock:";
 const IDEMPOTENCY_PREFIX = "payment-intent-idem:";
 const INTENT_TTL_SECONDS = 15 * 60;
 const LOCK_TTL_SECONDS = 15;
+const LOCK_ATTEMPTS = 20;
+const LOCK_DELAY_MS = 25;
 
 export type PaymentIntentStatus = "authorized" | "settling" | "settled" | "aborted" | "failed";
 
@@ -60,6 +62,10 @@ export interface AuthorizePaymentIntentInput {
 export interface SettlePaymentIntentInput {
     paymentIntentId: string;
     finalAmountWei?: string;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    meterSubject?: string;
+    lineItems?: MeteredQuotedLineItem[];
     meter?: MeteredSettlementInput;
 }
 
@@ -88,6 +94,8 @@ export interface PaymentIntentRecord {
     providerAmountWei?: string;
     platformFeeWei?: string;
     sessionBudgetIntentId?: string;
+    useBudgetCap?: boolean;
+    reservedAmountWei?: string;
     txHash?: string;
     error?: string;
     createdAt: number;
@@ -297,6 +305,12 @@ function resolveAuthorizationAmount(input: AuthorizePaymentIntentInput): {
 function resolveSettlementAmount(input: SettlePaymentIntentInput): {
     finalAmountWei: string;
     metering?: MeteredAmountBreakdown;
+    explicit?: {
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+        meterSubject?: string;
+        lineItems?: MeteredQuotedLineItem[];
+    };
 } {
     const hasExplicitAmount = typeof input.finalAmountWei === "string";
     const hasMeter = Boolean(input.meter);
@@ -315,6 +329,12 @@ function resolveSettlementAmount(input: SettlePaymentIntentInput): {
 
     return {
         finalAmountWei: input.finalAmountWei!,
+        explicit: {
+            providerAmountWei: input.providerAmountWei,
+            platformFeeWei: input.platformFeeWei,
+            meterSubject: input.meterSubject,
+            lineItems: input.lineItems,
+        },
     };
 }
 
@@ -354,6 +374,12 @@ function validateSettleInput(input: SettlePaymentIntentInput): void {
     }
     if (typeof input.finalAmountWei === "string") {
         parsePositiveIntegerString(input.finalAmountWei, "finalAmountWei");
+        if (typeof input.providerAmountWei === "string") {
+            parsePositiveIntegerString(input.providerAmountWei, "providerAmountWei");
+        }
+        if (typeof input.platformFeeWei === "string") {
+            parsePositiveIntegerString(input.platformFeeWei, "platformFeeWei");
+        }
     }
 }
 
@@ -368,9 +394,17 @@ function validateAbortInput(input: AbortPaymentIntentInput): void {
 
 async function withRedisLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const owner = randomUUID();
-    const acquired = await redisSetNXEX(key, owner, LOCK_TTL_SECONDS);
+    let acquired = false;
+    for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+        acquired = await redisSetNXEX(key, owner, LOCK_TTL_SECONDS);
+        if (acquired) {
+            break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, LOCK_DELAY_MS));
+    }
+
     if (!acquired) {
-        throw new Error(`Lock busy: ${key}`);
+        throw Object.assign(new Error(`Lock busy: ${key}`), { statusCode: 429 });
     }
 
     try {
@@ -409,6 +443,8 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         providerAmountWei: data.providerAmountWei || undefined,
         platformFeeWei: data.platformFeeWei || undefined,
         sessionBudgetIntentId: data.sessionBudgetIntentId || undefined,
+        useBudgetCap: data.useBudgetCap === "true",
+        reservedAmountWei: data.reservedAmountWei || undefined,
         txHash: data.txHash || undefined,
         error: data.error || undefined,
         createdAt: parseInt(data.createdAt, 10),
@@ -429,10 +465,10 @@ async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>
     const budgetRemaining = Math.max(0, budgetInfo.budgetLimit - budgetInfo.budgetUsed - reserved);
 
     return {
-        "x-compose-key-budget-limit": String(budgetInfo.budgetLimit),
-        "x-compose-key-budget-used": String(budgetInfo.budgetUsed),
-        "x-compose-key-budget-reserved": String(reserved),
-        "x-compose-key-budget-remaining": String(budgetRemaining),
+        "x-key-budget-limit": String(budgetInfo.budgetLimit),
+        "x-key-budget-used": String(budgetInfo.budgetUsed),
+        "x-key-budget-reserved": String(reserved),
+        "x-key-budget-remaining": String(budgetRemaining),
     };
 }
 
@@ -474,10 +510,10 @@ function appendSettlementAmountHeaders(
     },
 ): Record<string, string> {
     if (input.finalAmountWei) {
-        headers["x-compose-key-final-amount-wei"] = input.finalAmountWei;
+        headers["x-key-final-amount-wei"] = input.finalAmountWei;
     }
     if (input.txHash) {
-        headers["x-compose-key-tx-hash"] = input.txHash;
+        headers["x-key-tx-hash"] = input.txHash;
         headers["X-Transaction-Hash"] = input.txHash;
     }
     return headers;
@@ -610,6 +646,8 @@ export async function authorizePaymentIntent(
                     composeRunId: toOptionalString(normalizedInput.composeRunId || ""),
                     idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
                     sessionBudgetIntentId: toOptionalString(resolvedSessionBudgetIntentId || ""),
+                    useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
+                    reservedAmountWei: authorizationAmount.useBudgetCap ? "0" : requestedAmountWei,
                     ...meteringRedisFields(authorizationAmount.metering),
                     createdAt: String(now),
                     updatedAt: String(now),
@@ -631,19 +669,22 @@ export async function authorizePaymentIntent(
                 };
             }
 
-            const reservedAmountWei = authorizationAmount.useBudgetCap
+            const maxAmountWei = authorizationAmount.useBudgetCap
                 ? available.toString()
                 : authorizationAmount.maxAmountWei!;
-            const reservedAmount = parsePositiveIntegerString(reservedAmountWei, "maxAmountWei");
+            const reservedAmountWei = authorizationAmount.useBudgetCap ? "0" : maxAmountWei;
+            const reservedAmount = BigInt(reservedAmountWei);
 
-            if (reservedAmount > available) {
+            if (!authorizationAmount.useBudgetCap && reservedAmount > available) {
                 return {
                     ok: false as const,
                     available,
                 };
             }
 
-            await redisHIncrByAmount(recordKey, "budgetReserved", reservedAmount);
+            if (reservedAmount > 0n) {
+                await redisHIncrByAmount(recordKey, "budgetReserved", reservedAmount);
+            }
 
             const now = Date.now();
             await redisHSet(paymentIntentKey(paymentIntentId), {
@@ -656,10 +697,12 @@ export async function authorizePaymentIntent(
                 action: normalizedInput.action,
                 resource: normalizedInput.resource,
                 method: normalizedInput.method,
-                maxAmountWei: reservedAmountWei,
+                maxAmountWei,
                 status: "authorized",
                 composeRunId: toOptionalString(normalizedInput.composeRunId || ""),
                 idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
+                useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
+                reservedAmountWei,
                 ...meteringRedisFields(authorizationAmount.metering),
                 createdAt: String(now),
                 updatedAt: String(now),
@@ -668,7 +711,7 @@ export async function authorizePaymentIntent(
 
             return {
                 ok: true as const,
-                reservedAmountWei,
+                reservedAmountWei: maxAmountWei,
             };
         });
 
@@ -716,7 +759,9 @@ export async function authorizePaymentIntent(
             headers,
         };
     } catch (error) {
-        return failure(400, error instanceof Error ? error.message : "Invalid payment authorization request");
+        const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+        const status = typeof record?.statusCode === "number" ? record.statusCode : 400;
+        return failure(status, error instanceof Error ? error.message : "Invalid payment authorization request");
     }
 }
 
@@ -765,13 +810,13 @@ export async function settlePaymentIntent(
                 return failure(409, `Payment intent cannot be settled from status ${intent.status}`);
             }
 
-            const reservedAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
-            if (finalAmount > reservedAmount) {
+            const maxAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
+            if (finalAmount > maxAmount) {
                 return failure(409, "finalAmountWei cannot exceed the reserved amount");
             }
 
             let sessionBudgetIntentId = intent.sessionBudgetIntentId;
-            let reservedSessionAmount = reservedAmount;
+            let reservedSessionAmount = maxAmount;
             if (intent.purpose === "session" && !sessionBudgetIntentId) {
                 const exactReservation = await lockBudget(
                     intent.userAddress,
@@ -799,15 +844,53 @@ export async function settlePaymentIntent(
                 });
             }
 
+            let apiReservedAmount = intent.reservedAmountWei
+                ? BigInt(intent.reservedAmountWei)
+                : intent.useBudgetCap
+                    ? 0n
+                    : maxAmount;
+            if (intent.purpose === "api" && intent.useBudgetCap && apiReservedAmount <= 0n) {
+                const reserved = await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
+                    const record = await getKeyRecord(intent.keyId);
+                    if (!record) {
+                        throw new Error("Compose key record not found");
+                    }
+
+                    const currentReserved = BigInt(await getKeyReservedBudget(intent.keyId));
+                    const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - currentReserved;
+                    if (finalAmount > available) {
+                        return false;
+                    }
+
+                    await redisHIncrByAmount(composeKeyRecordKey(intent.keyId), "budgetReserved", finalAmount);
+                    await redisHSet(paymentIntentKey(intent.paymentIntentId), {
+                        reservedAmountWei: finalAmountStr,
+                    });
+                    return true;
+                });
+
+                if (!reserved) {
+                    const headers = await buildPaymentBudgetHeaders(intent);
+                    return {
+                        ok: false,
+                        status: 402,
+                        body: { error: "Compose key budget exhausted" },
+                        headers,
+                    };
+                }
+
+                apiReservedAmount = finalAmount;
+            }
+
             await redisHSet(paymentIntentKey(intent.paymentIntentId), {
                 status: "settling",
                 updatedAt: String(Date.now()),
                 finalAmountWei: finalAmountStr,
                 ...meteringRedisFields(settlementResolved.metering ?? {
-                    subject: intent.meterSubject || "",
-                    lineItems: intent.meterLineItems || [],
-                    providerAmountWei: intent.providerAmountWei || "",
-                    platformFeeWei: intent.platformFeeWei || "",
+                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
+                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
+                    providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
+                    platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
                     finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
                 }),
             });
@@ -821,11 +904,13 @@ export async function settlePaymentIntent(
                     }
                 } else {
                     await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                        await redisHIncrByAmount(
-                            composeKeyRecordKey(intent.keyId),
-                            "budgetReserved",
-                            -reservedAmount,
-                        );
+                        if (apiReservedAmount > 0n) {
+                            await redisHIncrByAmount(
+                                composeKeyRecordKey(intent.keyId),
+                                "budgetReserved",
+                                -apiReservedAmount,
+                            );
+                        }
                     });
                 }
 
@@ -856,7 +941,9 @@ export async function settlePaymentIntent(
             } else {
                 await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
                     const recordKey = composeKeyRecordKey(intent.keyId);
-                    await redisHIncrByAmount(recordKey, "budgetReserved", -reservedAmount);
+                    if (apiReservedAmount > 0n) {
+                        await redisHIncrByAmount(recordKey, "budgetReserved", -apiReservedAmount);
+                    }
                     await redisHIncrByAmount(recordKey, "budgetUsed", finalAmount);
                     await redisHSet(recordKey, "lastUsedAt", String(Date.now()));
                 });
@@ -871,10 +958,10 @@ export async function settlePaymentIntent(
                 txHash: settlement.txHash || "",
                 error: "",
                 ...meteringRedisFields(settlementResolved.metering ?? {
-                    subject: intent.meterSubject || "",
-                    lineItems: intent.meterLineItems || [],
-                    providerAmountWei: intent.providerAmountWei || "",
-                    platformFeeWei: intent.platformFeeWei || "",
+                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
+                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
+                    providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
+                    platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
                     finalAmountWei: finalAmountStr,
                 }),
             });
@@ -895,10 +982,10 @@ export async function settlePaymentIntent(
                     maxAmountWei: intent.maxAmountWei,
                     finalAmountWei: finalAmountStr,
                     status: "settled",
-                    meterSubject: settlementResolved.metering?.subject || intent.meterSubject,
-                    lineItems: settlementResolved.metering?.lineItems || intent.meterLineItems,
-                    providerAmountWei: settlementResolved.metering?.providerAmountWei || intent.providerAmountWei,
-                    platformFeeWei: settlementResolved.metering?.platformFeeWei || intent.platformFeeWei,
+                    meterSubject: settlementResolved.metering?.subject || settlementResolved.explicit?.meterSubject || intent.meterSubject,
+                    lineItems: settlementResolved.metering?.lineItems || settlementResolved.explicit?.lineItems || intent.meterLineItems,
+                    providerAmountWei: settlementResolved.metering?.providerAmountWei || settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei,
+                    platformFeeWei: settlementResolved.metering?.platformFeeWei || settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei,
                     txHash: settlement.txHash,
                 },
                 headers,
@@ -943,7 +1030,11 @@ export async function abortPaymentIntent(
                 return failure(409, "Settling payment intents cannot be aborted");
             }
 
-            const reservedAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
+            const reservedAmount = intent.reservedAmountWei
+                ? BigInt(intent.reservedAmountWei)
+                : intent.useBudgetCap
+                    ? 0n
+                    : parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
 
             if (intent.purpose === "session") {
                 if (intent.sessionBudgetIntentId) {
@@ -951,11 +1042,13 @@ export async function abortPaymentIntent(
                 }
             } else {
                 await withRedisLock(composeKeyLockKey(intent.keyId), async () => {
-                    await redisHIncrByAmount(
-                        composeKeyRecordKey(intent.keyId),
-                        "budgetReserved",
-                        -reservedAmount,
-                    );
+                    if (reservedAmount > 0n) {
+                        await redisHIncrByAmount(
+                            composeKeyRecordKey(intent.keyId),
+                            "budgetReserved",
+                            -reservedAmount,
+                        );
+                    }
                 });
             }
 

@@ -1,13 +1,12 @@
 import type {
-  UnifiedModality,
-  UnifiedOutput,
-  UnifiedRequest,
+  Modality,
+  Output,
+  Request,
 } from "../inference/core.js";
-import { resolveModel } from "../inference/models-registry.js";
+import { resolveModel } from "../inference/catalog/registry.js";
 import {
   buildAuthoritativeBilling,
   buildRequestBilling,
-  resolveBillingPrice,
 } from "../inference/telemetry.js";
 import type { ModelCard, ModelProvider } from "../inference/types.js";
 
@@ -58,7 +57,7 @@ export interface ResolvedBillingModel {
 
 export interface SettlementMeterArgs {
   resolved: ResolvedBillingModel;
-  modality: UnifiedModality;
+  modality: Modality;
   usage?: unknown;
   media?: unknown;
 }
@@ -71,9 +70,8 @@ export interface MeteredModelQuote extends MeteredAmountBreakdown {
 }
 
 export interface UsageRecord {
-  agentId: string;
+  agentWallet: string;
   model: string;
-  provider?: ModelProvider | string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -213,8 +211,8 @@ export function quoteMeteredSettlement(input: MeteredSettlementInput): MeteredAm
   return quoteMeteredAmount(input.subject, input.lineItems);
 }
 
-export function resolveBillingModel(modelId: string, provider?: ModelProvider | string): ResolvedBillingModel {
-  return resolveModel(modelId, provider);
+export function resolveBillingModel(modelId: string): ResolvedBillingModel {
+  return resolveModel(modelId);
 }
 
 export function meterSubject(provider: ModelProvider, modelId: string): string {
@@ -222,11 +220,11 @@ export function meterSubject(provider: ModelProvider, modelId: string): string {
 }
 
 export function buildResolvedAuthorizationMeter(args: {
-  request: UnifiedRequest;
+  request: Request;
   resolved: ResolvedBillingModel;
 }): MeteredModelQuote {
   const card = requireResolvedCard(args.resolved, "authorization");
-  const subject = meterSubject(args.resolved.provider, args.request.model);
+  const subject = meterSubject(args.resolved.provider, args.resolved.modelId);
 
   const billing = buildRequestBilling({
     subject,
@@ -249,16 +247,10 @@ export function buildResolvedAuthorizationMeter(args: {
 }
 
 export function buildResolvedAuthorizationInput(args: {
-  request: UnifiedRequest;
+  request: Request;
   resolved: ResolvedBillingModel;
 }): ResolvedAuthorizationInput {
   requireResolvedCard(args.resolved, "authorization");
-  if (args.request.modality === "audio") {
-    return {
-      meter: buildResolvedAuthorizationMeter(args).meter,
-    };
-  }
-
   return { useBudgetCap: true };
 }
 
@@ -288,8 +280,8 @@ export function buildResolvedSettlementMeter(args: SettlementMeterArgs): Metered
 }
 
 export function buildSettlementMeterFromOutput(args: {
-  request: UnifiedRequest;
-  output: UnifiedOutput;
+  request: Request;
+  output: Output;
   resolved: ResolvedBillingModel;
 }): MeteredModelQuote {
   return buildResolvedSettlementMeter({
@@ -303,6 +295,7 @@ export function buildSettlementMeterFromOutput(args: {
       requests: 1,
       billingMetrics: {
         ...(args.request.billingMetrics || {}),
+        ...(args.output.usage?.billingMetrics || {}),
         ...(args.output.media?.billingMetrics || {}),
         request: 1,
       },
@@ -320,40 +313,37 @@ export function buildUsageRecordSettlementMeter(args: {
   let resolvedProvider: ModelProvider = "openai";
 
   for (const usageRecord of usageRecords) {
-    const resolved = resolveBillingModel(usageRecord.model, usageRecord.provider);
+    const resolved = resolveBillingModel(usageRecord.model);
     const card = requireResolvedCard(resolved, "settlement");
-    const pricing = resolveBillingPrice(card.pricing, "text");
+    const billing = buildAuthoritativeBilling({
+      subject: meterSubject(resolved.provider, resolved.modelId),
+      modality: "text",
+      pricing: card.pricing!,
+      usage: {
+        promptTokens: usageRecord.inputTokens,
+        completionTokens: usageRecord.outputTokens,
+        totalTokens: usageRecord.totalTokens,
+        reasoningTokens: usageRecord.reasoningTokens,
+        billingMetrics: {
+          input_text_tokens: usageRecord.inputTokens,
+          output_text_tokens: usageRecord.outputTokens,
+          ...(typeof usageRecord.reasoningTokens === "number" ? { reasoning_tokens: usageRecord.reasoningTokens } : {}),
+        },
+      },
+    });
 
-    if (!/^usd_per_\d+[km]_tokens$/.test(pricing.unit)) {
+    const tokenLineItems = billing.lineItems
+      .filter((item) => /^usd_per_\d+[km]_tokens$/.test(item.unit))
+      .map(({ source: _source, ...lineItem }) => ({
+        ...lineItem,
+        key: `${resolved.provider}:${resolved.modelId}:${lineItem.key.replace(/^text_/, "")}`,
+      }));
+
+    if (tokenLineItems.length === 0) {
       throw new Error(`workflow usage record pricing must be token-based: ${usageRecord.model}`);
     }
 
-    if (typeof pricing.values.input === "number" && usageRecord.inputTokens > 0) {
-      lineItems.push({
-        key: `${resolved.provider}:${resolved.modelId}:input_tokens`,
-        unit: pricing.unit,
-        quantity: usageRecord.inputTokens,
-        unitPriceUsd: pricing.values.input,
-      });
-    }
-
-    if (typeof pricing.values.output === "number" && usageRecord.outputTokens > 0) {
-      lineItems.push({
-        key: `${resolved.provider}:${resolved.modelId}:output_tokens`,
-        unit: pricing.unit,
-        quantity: usageRecord.outputTokens,
-        unitPriceUsd: pricing.values.output,
-      });
-    }
-
-    if (typeof pricing.values.reasoning === "number" && typeof usageRecord.reasoningTokens === "number" && usageRecord.reasoningTokens > 0) {
-      lineItems.push({
-        key: `${resolved.provider}:${resolved.modelId}:reasoning_tokens`,
-        unit: pricing.unit,
-        quantity: usageRecord.reasoningTokens,
-        unitPriceUsd: pricing.values.reasoning,
-      });
-    }
+    lineItems.push(...tokenLineItems);
 
     resolvedModelId = resolved.modelId;
     resolvedProvider = resolved.provider;

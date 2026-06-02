@@ -20,6 +20,7 @@ import {
     redisSet,
     redisGet,
     redisSRem,
+    redisTTL,
 } from "./redis.js";
 import { signComposeKey } from "./jwt.js";
 import { getSessionBudget } from "../session-budget.js";
@@ -334,6 +335,10 @@ export async function createComposeKey(
 
     // Add to user's key set
     await redisSAdd(userKeysKey(normalizedAddress), keyId);
+    const indexTtlSeconds = await redisTTL(userKeysKey(normalizedAddress));
+    if (ttlSeconds > 0 && (indexTtlSeconds < 0 || indexTtlSeconds < ttlSeconds)) {
+        await redisExpire(userKeysKey(normalizedAddress), ttlSeconds);
+    }
 
     return {
         keyId,
