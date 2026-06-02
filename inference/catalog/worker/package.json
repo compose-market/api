@@ -1,0 +1,23 @@
+{
+  "name": "models",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "set -a && . ../../../.env && set +a && : ${MODELS_D1_ID:?MODELS_D1_ID missing} && envsubst '${CF_ACCOUNT_ID} ${MODELS_D1_ID}' < wrangler.toml.template > wrangler.toml",
+    "dev": "npm run render && set -a && . ../../../.env && set +a && env -u CF_ACCOUNT_ID -u CF_API_TOKEN -u CF_API_KEY -u CLOUDFLARE_EMAIL -u CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT_ID CLOUDFLARE_API_TOKEN=$CF_GLOBAL_TOKEN wrangler dev",
+    "deploy": "npm run render && set -a && . ../../../.env && set +a && env -u CF_ACCOUNT_ID -u CF_API_TOKEN -u CF_API_KEY -u CLOUDFLARE_EMAIL -u CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT_ID CLOUDFLARE_API_TOKEN=$CF_GLOBAL_TOKEN wrangler deploy",
+    "domain": "npm run render && set -a && . ../../../.env && set +a && curl -fsS -X PUT https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/domains -H \"Authorization: Bearer $CF_GLOBAL_TOKEN\" -H \"Content-Type: application/json\" -d '{\"environment\":\"production\",\"hostname\":\"models.compose.market\",\"service\":\"models\",\"zone_id\":\"1e15c817645029697921095d54be2cec\"}'",
+    "schema": "npm run render && set -a && . ../../../.env && set +a && env -u CF_ACCOUNT_ID -u CF_API_TOKEN -u CF_API_KEY -u CLOUDFLARE_EMAIL -u CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT_ID CLOUDFLARE_API_TOKEN=$CF_GLOBAL_TOKEN wrangler d1 execute models --file=schema.sql --remote",
+    "schema:local": "npm run render && wrangler d1 execute models --file=schema.sql --local",
+    "secrets": "npm run render && set -a && . ../../../.env && set +a && env -u CF_ACCOUNT_ID -u CF_API_TOKEN -u CF_API_KEY -u CLOUDFLARE_EMAIL -u CLOUDFLARE_API_KEY CLOUDFLARE_ACCOUNT_ID=$CF_ACCOUNT_ID CLOUDFLARE_API_TOKEN=$CF_GLOBAL_TOKEN bash -c 'for k in MONGO_DB_API_KEY; do test -n \"${!k}\" || { echo \"$k missing\" >&2; exit 1; }; echo \"setting $k\"; printf %s \"${!k}\" | wrangler secret put \"$k\"; done'",
+    "test": "cd ../../.. && npx tsx --test tests/worker.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260501.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.87.0"
+  }
+}

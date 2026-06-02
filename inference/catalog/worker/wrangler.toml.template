@@ -1,0 +1,41 @@
+name = "models"
+main = "main.ts"
+compatibility_date = "2026-05-12"
+account_id = "${CF_ACCOUNT_ID}"
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+# Custom Domain `models.compose.market` is bound out-of-band with:
+#   npm run domain
+# It uses the account-scoped Workers Domains API, matching the working
+# connectors.compose.market deployment pattern.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "models"
+database_id = "${MODELS_D1_ID}"
+
+[[r2_buckets]]
+binding = "RAW"
+bucket_name = "source"
+
+[[r2_buckets]]
+binding = "SNAP"
+bucket_name = "snap"
+
+[[vectorize]]
+binding = "VEC"
+index_name = "models"
+
+[[vectorize]]
+binding = "ROUTES"
+index_name = "routes"
+
+[vars]
+EMBEDDING_MODEL = "voyage-4-large"
+EMBEDDING_API_BASE = "https://ai.mongodb.com/v1"
+
+# Secrets:
+#   - MONGO_DB_API_KEY
