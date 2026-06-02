@@ -29,7 +29,6 @@ export interface FeedbackContext {
     chainId?: number;
     modelId?: string;
     provider?: string;
-    agentId?: string;
     agentWallet?: string;
     workflowId?: string;
     endpoint?: {

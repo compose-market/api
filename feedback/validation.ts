@@ -138,10 +138,7 @@ function readContext(value: unknown): FeedbackContext {
     const provider = sanitizeString(value.provider, 128);
     if (provider) context.provider = provider;
 
-    const agentId = sanitizeString(value.agentId, 256);
-    if (agentId) context.agentId = agentId;
-
-    const agentWallet = sanitizeString(value.agentWallet, 64);
+    const agentWallet = sanitizeString(value.agentWallet, 256);
     if (agentWallet) {
         if (!EVM_ADDRESS.test(agentWallet)) throw new Error("context.agentWallet must be an EVM address");
         context.agentWallet = agentWallet.toLowerCase();
