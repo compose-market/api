@@ -21,6 +21,33 @@ const GCLOUD_ENV = {
     CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK: "1",
 };
 
+export interface ServiceConfig {
+    port: string;
+    cpu: string;
+    memory: string;
+    minInstances: string;
+    maxInstances: string;
+    concurrency: string;
+    timeout: string;
+}
+
+function env(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
+    const value = env[key]?.trim();
+    return value && value.length > 0 ? value : fallback;
+}
+
+export function resolveServiceConfig(source: NodeJS.ProcessEnv = process.env): ServiceConfig {
+    return {
+        port: env(source, "API_CLOUD_RUN_PORT", "3000"),
+        cpu: env(source, "API_CLOUD_RUN_CPU", "2"),
+        memory: env(source, "API_CLOUD_RUN_MEMORY", "4Gi"),
+        minInstances: env(source, "API_CLOUD_RUN_MIN_INSTANCES", "1"),
+        maxInstances: env(source, "API_CLOUD_RUN_MAX_INSTANCES", "30"),
+        concurrency: env(source, "API_CLOUD_RUN_CONCURRENCY", "80"),
+        timeout: env(source, "API_CLOUD_RUN_TIMEOUT", "1800"),
+    };
+}
+
 function requireProjectId(): string {
     if (!PROJECT_ID) {
         throw new Error("GOOGLE_CLOUD_PROJECT_ID not set in .env");
@@ -34,6 +61,17 @@ function getServiceAccount(): string {
 
 function getImageRepository(): string {
     return `${REGION}-docker.pkg.dev/${requireProjectId()}/${REPOSITORY_NAME}/${SERVICE_NAME}`;
+}
+
+function getProjectNumber(): string {
+    const projectId = requireProjectId();
+    const projectNumber = getOutput(
+        `gcloud projects describe ${projectId} --format="value(projectNumber)"`,
+    );
+    if (!projectNumber) {
+        throw new Error(`Could not resolve project number for ${projectId}`);
+    }
+    return projectNumber;
 }
 
 type RunOptions = {
@@ -123,7 +161,7 @@ function parseEnvSecrets(): Array<{ key: string; value: string }> {
 }
 
 async function syncAllSecrets(): Promise<{ secretNames: string[]; changed: boolean }> {
-    console.log("🛡️  Syncing ALL .env variables to GCP Secret Manager...");
+    console.log("🛡️  Syncing deployable .env variables to GCP Secret Manager...");
 
     const entries = parseEnvSecrets();
     const secretNames: string[] = [];
@@ -286,6 +324,7 @@ async function deployService(image: string, secrets: string[], includeSecrets: b
     console.log("\n🚀 Deploying Cloud Run service from image...");
     const projectId = requireProjectId();
     const serviceAccount = getServiceAccount();
+    const config = resolveServiceConfig();
 
     const commandParts = [
         `gcloud run deploy ${SERVICE_NAME}`,
@@ -294,13 +333,15 @@ async function deployService(image: string, secrets: string[], includeSecrets: b
         `--project ${projectId}`,
         `--service-account ${serviceAccount}`,
         `--allow-unauthenticated`,
-        `--port 3000`,
-        `--cpu 2`,
-        `--memory 4Gi`,
-        `--min-instances 1`,
-        `--max-instances 10`,
-        `--timeout 300`,
-        `--set-env-vars "NODE_ENV=production"`,
+        `--port ${config.port}`,
+        `--cpu ${config.cpu}`,
+        `--no-cpu-throttling`,
+        `--memory ${config.memory}`,
+        `--min-instances ${config.minInstances}`,
+        `--max-instances ${config.maxInstances}`,
+        `--concurrency ${config.concurrency}`,
+        `--timeout ${config.timeout}`,
+        `--set-env-vars "NODE_ENV=production,BATCH_SETTLEMENT_IDLE_SECONDS=0"`,
     ];
 
     if (includeSecrets) {
@@ -333,6 +374,17 @@ function jobExists(jobName: string): boolean {
     return output === jobName;
 }
 
+function schedulerJobExists(jobName: string): boolean {
+    const projectId = requireProjectId();
+    const output = getOutput(
+        `gcloud scheduler jobs describe ${jobName} \
+      --location ${REGION} \
+      --project ${projectId} \
+      --format="value(name)" 2>/dev/null`,
+    );
+    return output.endsWith(`/jobs/${jobName}`) || output === jobName;
+}
+
 function buildJobDeployCommand(
     mode: "create" | "update",
     job: JobConfig,
@@ -349,7 +401,7 @@ function buildJobDeployCommand(
         `--region ${REGION}`,
         `--project ${projectId}`,
         `--service-account ${serviceAccount}`,
-        `--set-env-vars "JOB_TASK=${job.task},NODE_ENV=production"`,
+        `--set-env-vars "JOB_TASK=${job.task},NODE_ENV=production${job.task === "batch-settlement" ? ",BATCH_SETTLEMENT_IDLE_SECONDS=0" : ""}"`,
     ];
 
     if (job.secretNames.length > 0) {
@@ -372,6 +424,9 @@ async function deployJobs(image: string) {
                 "GOOGLE_CLOUD_PROJECT_ID",
                 "VERTEX_PROJECT_ID",
                 "DISPENSER_CONTRACT",
+                "AVALANCHE_FUJI_RPC",
+                "AVALANCHE_FUJI_CHAIN_ID",
+                "MERCHANT_WALLET_ADDRESS",
                 "REDIS_TLS",
                 "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT",
                 "SERVER_WALLET_KEY",
@@ -396,6 +451,42 @@ async function deployJobs(image: string) {
         const mode = jobExists(job.name) ? "update" : "create";
         run(buildJobDeployCommand(mode, job, image));
     }
+}
+
+function buildSettlementSchedulerCommand(mode: "create" | "update"): string {
+    const projectId = requireProjectId();
+    const projectNumber = getProjectNumber();
+    const serviceAccount = getServiceAccount();
+    const uri = `https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${projectNumber}/jobs/compose-market-settlement:run`;
+    return [
+        `gcloud scheduler jobs ${mode} http compose-market-settlement-every-2-min`,
+        `--location ${REGION}`,
+        `--project ${projectId}`,
+        `--schedule "*/2 * * * *"`,
+        `--time-zone "Etc/UTC"`,
+        `--uri "${uri}"`,
+        `--http-method POST`,
+        `--oauth-service-account-email ${serviceAccount}`,
+        `--oauth-token-scope "https://www.googleapis.com/auth/cloud-platform"`,
+        `--attempt-deadline 180s`,
+        "--quiet",
+    ].join(" \\\n      ");
+}
+
+async function deploySettlementScheduler() {
+    const projectId = requireProjectId();
+    const serviceAccount = getServiceAccount();
+
+    console.log("\n⏱️  Ensuring batch settlement scheduler...");
+    run(`gcloud services enable cloudscheduler.googleapis.com --project ${projectId} --quiet`);
+    run(
+        `gcloud projects add-iam-policy-binding ${projectId} \
+      --member="serviceAccount:${serviceAccount}" \
+      --role="roles/run.invoker" 2>/dev/null || true`,
+        { silent: true },
+    );
+    const mode = schedulerJobExists("compose-market-settlement-every-2-min") ? "update" : "create";
+    run(buildSettlementSchedulerCommand(mode));
 }
 
 async function deploy() {
@@ -439,6 +530,7 @@ async function deploy() {
 
     if (!skipJobs) {
         await deployJobs(image);
+        await deploySettlementScheduler();
     }
 
     const url = getOutput(

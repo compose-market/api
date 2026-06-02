@@ -44,11 +44,12 @@ steps:
           --allow-unauthenticated \
           --port 3000 \
           --cpu 2 \
+          --no-cpu-throttling \
           --memory 4Gi \
           --min-instances 1 \
           --max-instances 10 \
           --timeout 300 \
-          --set-env-vars "NODE_ENV=production" \
+          --set-env-vars "NODE_ENV=production,BATCH_SETTLEMENT_IDLE_SECONDS=0" \
           --set-secrets "
           GOOGLE_CLOUD_PROJECT_ID=GOOGLE_CLOUD_PROJECT_ID:latest,
           VERTEX_PROJECT_ID=VERTEX_PROJECT_ID:latest,
@@ -102,7 +103,6 @@ steps:
           COMPOSE_BOT_HTTP_API=COMPOSE_BOT_HTTP_API:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
-          RUNTIME_INTERNAL_SECRET=RUNTIME_INTERNAL_SECRET:latest,
           REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
           COMPOSE_SESSION_SECRET=COMPOSE_SESSION_SECRET:latest,
           CF_API_TOKEN=CF_API_TOKEN:latest,
@@ -124,15 +124,17 @@ steps:
           --max-retries 0 \
           --task-timeout 600s \
           --service-account ${_SERVICE_ACCOUNT} \
-          --set-env-vars "JOB_TASK=batch-settlement,NODE_ENV=production" \
+          --set-env-vars "JOB_TASK=batch-settlement,NODE_ENV=production,BATCH_SETTLEMENT_IDLE_SECONDS=0" \
           --set-secrets "GOOGLE_CLOUD_PROJECT_ID=GOOGLE_CLOUD_PROJECT_ID:latest,
           VERTEX_PROJECT_ID=VERTEX_PROJECT_ID:latest,
           DISPENSER_CONTRACT=DISPENSER_CONTRACT:latest,
+          AVALANCHE_FUJI_RPC=AVALANCHE_FUJI_RPC:latest,
+          AVALANCHE_FUJI_CHAIN_ID=AVALANCHE_FUJI_CHAIN_ID:latest,
+          MERCHANT_WALLET_ADDRESS=MERCHANT_WALLET_ADDRESS:latest,
           REDIS_TLS=REDIS_TLS:latest,
           REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
-          RUNTIME_INTERNAL_SECRET=RUNTIME_INTERNAL_SECRET:latest,
           REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest" 2>/dev/null || \
         gcloud run jobs create compose-market-settlement \
           --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA \
@@ -141,15 +143,17 @@ steps:
           --max-retries 0 \
           --task-timeout 600s \
           --service-account ${_SERVICE_ACCOUNT} \
-          --set-env-vars "JOB_TASK=batch-settlement,NODE_ENV=production" \
+          --set-env-vars "JOB_TASK=batch-settlement,NODE_ENV=production,BATCH_SETTLEMENT_IDLE_SECONDS=0" \
           --set-secrets "GOOGLE_CLOUD_PROJECT_ID=GOOGLE_CLOUD_PROJECT_ID:latest,
           VERTEX_PROJECT_ID=VERTEX_PROJECT_ID:latest,
           DISPENSER_CONTRACT=DISPENSER_CONTRACT:latest,
+          AVALANCHE_FUJI_RPC=AVALANCHE_FUJI_RPC:latest,
+          AVALANCHE_FUJI_CHAIN_ID=AVALANCHE_FUJI_CHAIN_ID:latest,
+          MERCHANT_WALLET_ADDRESS=MERCHANT_WALLET_ADDRESS:latest,
           REDIS_TLS=REDIS_TLS:latest,
           REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
-          RUNTIME_INTERNAL_SECRET=RUNTIME_INTERNAL_SECRET:latest,
           REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest"
 
         # Expiry Scan Job
@@ -175,6 +179,41 @@ steps:
           --set-secrets "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
           REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
           REDIS_TLS=REDIS_TLS:latest"
+
+        # Batch settlement scheduler: every 2 minutes, triggers the existing Cloud Run Job.
+        gcloud services enable cloudscheduler.googleapis.com --project $PROJECT_ID --quiet
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member="serviceAccount:${_SERVICE_ACCOUNT}" \
+          --role="roles/run.invoker" >/dev/null 2>&1 || true
+        PROJECT_NUMBER="$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
+        SETTLEMENT_URI="https://${_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_NUMBER}/jobs/compose-market-settlement:run"
+        if gcloud scheduler jobs describe compose-market-settlement-every-2-min \
+          --location ${_REGION} \
+          --project $PROJECT_ID >/dev/null 2>&1; then
+          gcloud scheduler jobs update http compose-market-settlement-every-2-min \
+            --location ${_REGION} \
+            --project $PROJECT_ID \
+            --schedule "*/2 * * * *" \
+            --time-zone "Etc/UTC" \
+            --uri "${SETTLEMENT_URI}" \
+            --http-method POST \
+            --oauth-service-account-email ${_SERVICE_ACCOUNT} \
+            --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
+            --attempt-deadline 180s \
+            --quiet
+        else
+          gcloud scheduler jobs create http compose-market-settlement-every-2-min \
+            --location ${_REGION} \
+            --project $PROJECT_ID \
+            --schedule "*/2 * * * *" \
+            --time-zone "Etc/UTC" \
+            --uri "${SETTLEMENT_URI}" \
+            --http-method POST \
+            --oauth-service-account-email ${_SERVICE_ACCOUNT} \
+            --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" \
+            --attempt-deadline 180s \
+            --quiet
+        fi
     waitFor: ['deploy-service']
 
 # Output the service URL

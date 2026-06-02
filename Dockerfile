@@ -6,6 +6,8 @@ FROM node:22-slim AS builder
 
 WORKDIR /app
 
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -32,6 +34,8 @@ RUN npm run build
 FROM node:22-slim
 
 WORKDIR /app
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Install runtime dependencies (e.g., for Puppeteer or other libs)
 RUN apt-get update && apt-get install -y \
