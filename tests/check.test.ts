@@ -4,7 +4,12 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { registerInferenceRoutes } from "../inference/gateway.js";
-import { resolveModel } from "../inference/models-registry.js";
+import { resolveModel } from "../inference/catalog/registry.js";
+
+if (process.env.RUN_RUNTIME_CHECKS !== "1") {
+  console.log("[check] SKIP: set RUN_RUNTIME_CHECKS=1 to run live inference runtime checks.");
+  process.exit(0);
+}
 
 type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
 interface JsonObject { [key: string]: JsonValue }
@@ -204,11 +209,6 @@ function paymentHeaders(): Record<string, string> {
     "x-chain-id": CHECK_CHAIN_ID,
   };
 
-  if (process.env.RUNTIME_INTERNAL_SECRET) {
-    headers["x-workflow-internal"] = process.env.RUNTIME_INTERNAL_SECRET;
-    return headers;
-  }
-
   if (process.env.CHECK_COMPOSE_KEY) {
     headers.authorization = `Bearer ${process.env.CHECK_COMPOSE_KEY}`;
     return headers;
@@ -219,7 +219,7 @@ function paymentHeaders(): Record<string, string> {
     return headers;
   }
 
-  fail("No test payment path configured. Set RUNTIME_INTERNAL_SECRET or CHECK_COMPOSE_KEY or CHECK_PAYMENT_SIGNATURE.");
+  fail("No test payment path configured. Set CHECK_COMPOSE_KEY or CHECK_PAYMENT_SIGNATURE.");
 }
 
 function assertStatus(result: InvokeResult, accepted: number[], context: string): void {
@@ -255,12 +255,8 @@ async function main(): Promise<void> {
     logStep(`Selected text model: ${textModel.modelId} (${textModel.provider})`);
     logStep(`Selected embedding model: ${embedModel.modelId} (${embedModel.provider || "unknown"})`);
 
-    logStep("Validating resolveModel unknown explicit-provider path");
+    logStep("Validating resolveModel requires catalog model identity");
     const unknownModelId = `unknown-model-check-${Date.now()}`;
-    const resolvedUnknown = resolveModel(unknownModelId, textModel.provider as any);
-    if (resolvedUnknown.known) {
-      fail("resolveModel unknown explicit-provider unexpectedly marked known=true");
-    }
     let threwWithoutProvider = false;
     try {
       resolveModel(unknownModelId);
@@ -268,7 +264,7 @@ async function main(): Promise<void> {
       threwWithoutProvider = true;
     }
     if (!threwWithoutProvider) {
-      fail("resolveModel unknown without provider did not throw");
+      fail("resolveModel unknown model did not throw");
     }
 
     logStep("Testing POST /v1/responses (non-stream)");
@@ -360,22 +356,21 @@ async function main(): Promise<void> {
       fail("/v1/embeddings returned no embedding vectors");
     }
 
-    logStep("Testing unknown model with explicit provider (no registry hard-fail)");
+    logStep("Testing unknown model returns a client error");
     const unknownCall = await invoke("POST", "/v1/responses", {
       headers: authHeaders,
       body: {
         model: unknownModelId,
-        provider: textModel.provider,
         input: [{ role: "user", content: "Reply with OK" }],
         modalities: ["text"],
         stream: false,
       },
     });
     if (unknownCall.statusCode === 500) {
-      fail(`Unknown explicit-provider call returned 500: ${unknownCall.bodyText.slice(0, 500)}`);
+      fail(`Unknown model call returned 500: ${unknownCall.bodyText.slice(0, 500)}`);
     }
-    if (unknownCall.bodyText.includes("Provide an explicit provider for unknown models")) {
-      fail("Unknown explicit-provider call was blocked by registry pre-validation");
+    if (unknownCall.statusCode < 400 || unknownCall.statusCode >= 500) {
+      fail(`Unknown model call returned unexpected status ${unknownCall.statusCode}: ${unknownCall.bodyText.slice(0, 500)}`);
     }
 
     console.log("\n[check] SUCCESS: Inference runtime passes local production validation.");

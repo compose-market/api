@@ -64,6 +64,208 @@ test("buildResolvedSettlementMeter derives strict token line items from authorit
   assert.equal(metered.finalAmountWei, "1122");
 });
 
+test("buildResolvedSettlementMeter does not reuse text metrics for other token modalities", () => {
+  const resolved: ResolvedBillingModel = {
+    modelId: "gemini-3.1-flash-lite",
+    provider: "gemini",
+    known: true,
+    card: {
+      modelId: "gemini-3.1-flash-lite",
+      name: "Gemini 3.1 Flash Lite",
+      provider: "gemini",
+      type: "chat-completions",
+      description: null,
+      input: ["text", "image", "video", "audio"],
+      output: ["text"],
+      capabilities: ["streaming"],
+      available: true,
+      pricing: {
+        sections: [
+          {
+            header: "Text tokens",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { input: 0.25, output: 1.5 },
+          },
+          {
+            header: "Image tokens",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { input: 0.25, output: 1.5 },
+          },
+          {
+            header: "Video tokens",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { input: 0.25, output: 1.5 },
+          },
+          {
+            header: "Audio tokens",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { input: 0.5, output: 1.5 },
+          },
+        ],
+      },
+      contextWindow: 1000000,
+    },
+  };
+
+  const metered = buildResolvedSettlementMeter({
+    resolved,
+    modality: "text",
+    usage: {
+      promptTokens: 29,
+      completionTokens: 9,
+      totalTokens: 38,
+      billingMetrics: { input_text_tokens: 29 },
+    },
+  });
+
+  assert.deepEqual(metered.meter.lineItems, [
+    {
+      key: "text_input_tokens",
+      unit: "usd_per_1m_tokens",
+      quantity: 29,
+      unitPriceUsd: 0.25,
+    },
+    {
+      key: "text_output_tokens",
+      unit: "usd_per_1m_tokens",
+      quantity: 9,
+      unitPriceUsd: 1.5,
+    },
+  ]);
+  assert.equal(metered.providerAmountWei, "22");
+  assert.equal(metered.platformFeeWei, "1");
+  assert.equal(metered.finalAmountWei, "23");
+});
+
+test("buildResolvedSettlementMeter treats total-only input-priced token usage as billable input", () => {
+  const resolved: ResolvedBillingModel = {
+    modelId: "qwen3-rerank",
+    provider: "alibaba",
+    known: true,
+    card: {
+      modelId: "qwen3-rerank",
+      name: "Qwen3 Rerank",
+      provider: "alibaba",
+      type: "embeddings",
+      description: null,
+      input: ["text"],
+      output: ["text"],
+      capabilities: [],
+      available: true,
+      pricing: {
+        sections: [
+          {
+            header: "Text tokens",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { input: 0.1 },
+            default: true,
+          },
+        ],
+      },
+      contextWindow: null,
+    },
+  };
+
+  const metered = buildResolvedSettlementMeter({
+    resolved,
+    modality: "text",
+    usage: {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 82,
+    },
+  });
+
+  assert.deepEqual(metered.meter.lineItems, [
+    {
+      key: "input_tokens",
+      unit: "usd_per_1m_tokens",
+      quantity: 82,
+      unitPriceUsd: 0.1,
+    },
+  ]);
+});
+
+test("buildResolvedSettlementMeter recovers directional token prices from compiled source rows", () => {
+  const resolved: ResolvedBillingModel = {
+    modelId: "gpt-5.4-mini",
+    provider: "openai",
+    known: true,
+    card: {
+      modelId: "gpt-5.4-mini",
+      name: "GPT 5.4 Mini",
+      provider: "openai",
+      type: "text generation",
+      description: null,
+      input: ["text", "image"],
+      output: ["text"],
+      capabilities: [],
+      available: true,
+      pricing: {
+        sections: [
+          {
+            header: "Pricing",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { cost: 0.75 },
+            source: {
+              url: "https://platform.openai.com/docs/pricing",
+              section: "",
+              row: "gpt-5.4-mini",
+              raw: "gpt-5.4-mini | $0.75 | $0.075 | $4.50 | - | - | -",
+            },
+            default: true,
+          },
+          {
+            header: "Pricing",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: { cost: 0.375 },
+            source: {
+              url: "https://platform.openai.com/docs/pricing",
+              section: "",
+              row: "gpt-5.4-mini",
+              raw: "gpt-5.4-mini | $0.375 | $0.0375 | $2.25 | - | - | -",
+            },
+            default: true,
+          },
+        ],
+      },
+      contextWindow: null,
+    },
+  };
+
+  const metered = buildResolvedSettlementMeter({
+    resolved,
+    modality: "text",
+    usage: {
+      promptTokens: 100,
+      completionTokens: 20,
+      totalTokens: 120,
+    },
+  });
+
+  assert.deepEqual(metered.meter.lineItems, [
+    {
+      key: "input_tokens",
+      unit: "usd_per_1m_tokens",
+      quantity: 100,
+      unitPriceUsd: 0.75,
+    },
+    {
+      key: "output_tokens",
+      unit: "usd_per_1m_tokens",
+      quantity: 20,
+      unitPriceUsd: 4.5,
+    },
+  ]);
+});
+
 test("buildResolvedSettlementMeter meters Azure token models through x402", () => {
   const resolved: ResolvedBillingModel = {
     modelId: "Kimi-K2.5",
@@ -214,7 +416,6 @@ test("buildResolvedAuthorizationMeter accepts top-level per-image compiled prici
     request: {
       mode: "responses",
       model: "imagen-4.0-generate-001",
-      provider: "gemini",
       stream: false,
       modality: "image",
       messages: [{ role: "user", content: "Generate a sunset" }],
@@ -279,7 +480,6 @@ test("buildResolvedAuthorizationInput defers token-priced text authorization to 
     request: {
       mode: "responses",
       model: "gpt-4.1-mini",
-      provider: "openai",
       stream: true,
       modality: "text",
       messages: [{ role: "user", content: "hello" }],
@@ -330,7 +530,6 @@ test("buildResolvedAuthorizationInput defers embeddings to budget cap", () => {
     request: {
       mode: "embeddings",
       model: "text-embedding-3-small",
-      provider: "openai",
       stream: false,
       modality: "embedding",
       messages: [],
@@ -382,7 +581,6 @@ test("buildResolvedAuthorizationInput defers per-image authorization to budget c
     request: {
       mode: "responses",
       model: "chatgpt-image-latest",
-      provider: "openai",
       stream: false,
       modality: "image",
       messages: [{ role: "user", content: "Generate a skyline" }],
@@ -432,7 +630,6 @@ test("buildResolvedAuthorizationInput defers per-step media authorization to bud
     request: {
       mode: "responses",
       model: "accounts/fireworks/models/flux-1-schnell-fp8",
-      provider: "fireworks",
       stream: false,
       modality: "image",
       messages: [{ role: "user", content: "Generate a skyline" }],
@@ -490,12 +687,107 @@ test("buildResolvedAuthorizationInput defers duration billing when video duratio
     request: {
       mode: "responses",
       model: "sora-2",
-      provider: "openai",
       stream: false,
       modality: "video",
       messages: [{ role: "user", content: "Generate a short clip" }],
       responseId: "resp_video_auth",
       videoOptions: {},
+    },
+    resolved,
+  });
+
+  assert.deepEqual(authorization, { useBudgetCap: true });
+});
+
+test("buildResolvedAuthorizationInput defers request-priced audio to budget cap", () => {
+  const resolved: ResolvedBillingModel = {
+    modelId: "@cf/deepgram/aura-1",
+    provider: "cloudflare",
+    known: true,
+    card: {
+      modelId: "@cf/deepgram/aura-1",
+      name: "Aura",
+      provider: "cloudflare",
+      type: "text-to-speech",
+      description: null,
+      input: ["text"],
+      output: ["audio"],
+      capabilities: ["audio"],
+      available: true,
+      pricing: {
+        sections: [
+          {
+            header: "Speech",
+            unit: "Per character",
+            unitKey: "usd_per_character",
+            entries: {
+              cost: 0.00003,
+            },
+            default: true,
+          },
+        ],
+      },
+      contextWindow: null,
+    },
+  };
+
+  const authorization = buildResolvedAuthorizationInput({
+    request: {
+      mode: "responses",
+      model: "@cf/deepgram/aura-1",
+      stream: false,
+      modality: "audio",
+      messages: [{ role: "user", content: "Hello" }],
+      responseId: "resp_audio_auth",
+      billingMetrics: { request: 1, character: 5 },
+    },
+    resolved,
+  });
+
+  assert.deepEqual(authorization, { useBudgetCap: true });
+});
+
+test("buildResolvedAuthorizationInput defers token-priced audio to budget cap", () => {
+  const resolved: ResolvedBillingModel = {
+    modelId: "qwen-audio",
+    provider: "alibaba",
+    known: true,
+    card: {
+      modelId: "qwen-audio",
+      name: "Qwen Audio",
+      provider: "alibaba",
+      type: "speech-to-text",
+      description: null,
+      input: ["audio"],
+      output: ["text"],
+      capabilities: ["audio"],
+      available: true,
+      pricing: {
+        sections: [
+          {
+            header: "Audio tokens",
+            unit: "Per 1M tokens",
+            unitKey: "per_1m_tokens_usd",
+            entries: {
+              input: 0.6,
+              output: 1.2,
+            },
+            default: true,
+          },
+        ],
+      },
+      contextWindow: null,
+    },
+  };
+
+  const authorization = buildResolvedAuthorizationInput({
+    request: {
+      mode: "responses",
+      model: "qwen-audio",
+      stream: false,
+      modality: "audio",
+      messages: [{ role: "user", content: [{ type: "input_audio", input_audio: { url: "https://cdn.example.com/a.wav" } }] }],
+      responseId: "resp_audio_token_auth",
     },
     resolved,
   });

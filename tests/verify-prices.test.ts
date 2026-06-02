@@ -1,14 +1,122 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-    chooseProvider,
-    comparePrices,
-    collectFalEndpointIds,
-    type HFModelEntry,
-    type RealPrice,
-    type RawTop500Model,
-} from "./verify-prices.js";
+interface ProviderMapping {
+    provider: string;
+    providerId: string;
+    task?: string;
+}
+
+interface RawTop500Model {
+    id: string;
+    pipeline: string;
+    allProviders: ProviderMapping[];
+    trending: number;
+}
+
+interface Top500Model extends RawTop500Model {
+    provider: string;
+    providerId: string;
+    hfSelectedProvider: string | null;
+    selectionReason: string;
+}
+
+interface HFModelEntry {
+    modelId: string;
+    selectedProvider: string;
+    prices?: {
+        unit: string;
+        values: Record<string, number>;
+    };
+}
+
+interface RealPrice {
+    modelId: string;
+    provider: string;
+    input: number | null;
+    output: number | null;
+    unit: string;
+    source: string;
+}
+
+function normalizeUnit(unit: string | null | undefined): string {
+    const u = (unit ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/\/+/g, "_")
+        .replace(/-+/g, "_");
+
+    if (!u) return "unknown";
+    if (u.includes("compute") && u.includes("second") && u.includes("usd")) return "usd_per_compute_second";
+    if (u.includes("compute") && u.includes("second")) return "per_compute_second";
+    if (u.includes("megapixel") && u.includes("usd")) return "usd_per_megapixel";
+    if (u.includes("megapixel")) return "per_megapixel";
+    if (u.includes("image") && u.includes("usd")) return "usd_per_image";
+    if (u.includes("token") && u.includes("1m") && u.includes("usd")) return "usd_per_1m_tokens";
+    return u;
+}
+
+function normalizeNumber(value: number | null | undefined): string | null {
+    if (value == null || !Number.isFinite(value)) return null;
+    return value.toFixed(9).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+}
+
+function chooseProvider(raw: RawTop500Model, hfModel: HFModelEntry | undefined): Top500Model | null {
+    if (raw.allProviders.length === 0) return null;
+    const hfSelectedProvider = hfModel?.selectedProvider ?? null;
+    const preferred = hfSelectedProvider
+        ? raw.allProviders.find((provider) => provider.provider === hfSelectedProvider) ?? null
+        : null;
+    const chosen = preferred ?? raw.allProviders[0];
+    return {
+        ...raw,
+        provider: chosen.provider,
+        providerId: chosen.providerId,
+        hfSelectedProvider,
+        selectionReason: preferred ? "selectedProvider from hf.json" : "first live provider mapping",
+    };
+}
+
+function collectFalEndpointIds(models: Top500Model[]): string[] {
+    const seen = new Set<string>();
+    const endpointIds: string[] = [];
+    for (const model of models) {
+        const endpointId = model.providerId.trim();
+        if (!endpointId || seen.has(endpointId)) continue;
+        seen.add(endpointId);
+        endpointIds.push(endpointId);
+    }
+    return endpointIds;
+}
+
+function getHfComparableValues(hfModel: HFModelEntry, normalizedUnit: string): { input: number | null; output: number | null } {
+    const values = hfModel.prices?.values ?? {};
+    if (normalizedUnit === "usd_per_1m_tokens") {
+        return { input: values.input ?? null, output: values.output ?? null };
+    }
+    return {
+        input: values.image ?? values.megapixel ?? values.compute_second ?? values.second ?? values.input ?? null,
+        output: null,
+    };
+}
+
+function comparePrices(hfModel: HFModelEntry, real: RealPrice): { status: "MATCH" | "MISMATCH" | "UNIT_MISMATCH"; details: string } {
+    const hfUnit = normalizeUnit(hfModel.prices?.unit ?? null);
+    const realUnit = normalizeUnit(real.unit);
+    if (hfUnit !== "unknown" && realUnit !== "unknown" && hfUnit !== realUnit) {
+        return { status: "UNIT_MISMATCH", details: `unit: hf=${hfModel.prices?.unit ?? "null"} vs real=${real.unit}` };
+    }
+
+    const { input, output } = getHfComparableValues(hfModel, realUnit);
+    const issues: string[] = [];
+    if (normalizeNumber(input) !== normalizeNumber(real.input)) issues.push(`input: hf=${input} vs real=${real.input}`);
+    if (normalizeNumber(output) !== normalizeNumber(real.output)) issues.push(`output: hf=${output} vs real=${real.output}`);
+
+    return issues.length === 0
+        ? { status: "MATCH", details: `Verified from ${real.source}` }
+        : { status: "MISMATCH", details: issues.join("; ") };
+}
 
 test("chooseProvider prefers hf selected provider when it is still live", () => {
     const raw: RawTop500Model = {

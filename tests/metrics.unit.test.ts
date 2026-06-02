@@ -13,14 +13,14 @@ test("formatUsdcAtomic renders USDC 6-decimal atomic amounts without floating po
 });
 
 test("classifyMetricsClientSource honors explicit source headers", () => {
-  assert.equal(classifyMetricsClientSource({ "x-compose-client-source": "sdk" }), "sdk");
-  assert.equal(classifyMetricsClientSource({ "x-compose-client-source": "web" }), "web");
-  assert.equal(classifyMetricsClientSource({ "x-compose-client-source": "runtime" }), "runtime");
-  assert.equal(classifyMetricsClientSource({ "x-compose-client-source": "internal" }), "internal");
+  assert.equal(classifyMetricsClientSource({ "x-client-source": "sdk" }), "sdk");
+  assert.equal(classifyMetricsClientSource({ "x-client-source": "web" }), "web");
+  assert.equal(classifyMetricsClientSource({ "x-client-source": "runtime" }), "runtime");
+  assert.equal(classifyMetricsClientSource({ "x-client-source": "internal" }), "internal");
 });
 
 test("classifyMetricsClientSource infers SDK, web, and internal callers", () => {
-  assert.equal(classifyMetricsClientSource({ "x-compose-sdk": "typescript/0.6.8" }), "sdk");
+  assert.equal(classifyMetricsClientSource({ "x-sdk": "typescript/0.6.8" }), "sdk");
   assert.equal(classifyMetricsClientSource({ origin: "https://compose.market" }), "web");
   assert.equal(classifyMetricsClientSource({ "x-workflow-internal": "present" }), "internal");
   assert.equal(classifyMetricsClientSource({ "user-agent": "undici" }), "runtime");

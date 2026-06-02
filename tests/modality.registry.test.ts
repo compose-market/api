@@ -7,17 +7,17 @@ import {
   getModelCapabilities,
   getModalityOperations,
   isStreamableModality,
-} from "../inference/modality/index.js";
-import { selectImageTaskForInput } from "../inference/modality/image.js";
+} from "../inference/catalog/modalities/index.js";
+import { selectImageTaskForInput } from "../inference/catalog/modalities/image.js";
 import {
   buildAIMLVideoSubmissionBody,
   buildGoogleVideoGenerationRequest,
   buildOpenAIVideoSubmissionBody,
   selectVideoTaskForInput,
   videoBillingMetricsFromOutput,
-} from "../inference/modality/video.js";
-import { normalizeFeatureExtractionEmbeddings } from "../inference/modality/embeddings.js";
-import { getExtendedModels } from "../inference/models-registry.js";
+} from "../inference/catalog/modalities/video.js";
+import { normalizeFeatureExtractionEmbeddings } from "../inference/catalog/modalities/embeddings.js";
+import { getCompiledModels } from "../inference/catalog/registry.js";
 
 function modelCard(overrides: Partial<ModelCard>): ModelCard {
   return {
@@ -55,6 +55,15 @@ test("modality classifier normalizes provider-specific task names to canonical o
     output: ["text"],
   })).operation, "text-to-embedding");
 
+  const multimodalEmbedding = classifyModelCard(modelCard({
+    modelId: "gemini-embedding-2",
+    type: "embeddings",
+    input: ["text", "image", "video", "audio", "pdf"],
+    output: ["text"],
+  }));
+  assert.equal(multimodalEmbedding.operation, "multimodal-embedding");
+  assert.deepEqual(multimodalEmbedding.input, ["text", "image", "video", "audio"]);
+
   assert.equal(classifyModelCard(modelCard({
     modelId: "@cf/deepgram/aura-1",
     type: "text-to-speech",
@@ -63,15 +72,92 @@ test("modality classifier normalizes provider-specific task names to canonical o
   })).operation, "text-to-speech");
 
   assert.equal(classifyModelCard(modelCard({
+    modelId: "voice-designer",
+    type: "text-to-speech",
+    input: ["text"],
+    output: ["audio"],
+    pricing: {
+      sections: [{
+        unitKey: "per_voice_usd",
+        unit: "Per voice",
+        entries: { voice: 0.2 },
+      }],
+    },
+  })).operation, "voice-design");
+
+  assert.equal(classifyModelCard(modelCard({
     modelId: "image-edit-model",
     type: "image-to-image",
     input: ["text", "image"],
     output: ["image"],
   })).operation, "image-to-image");
+
+  const videoEdit = classifyModelCard(modelCard({
+    modelId: "video-edit-model",
+    type: "video generation",
+    input: ["image", "video"],
+    output: ["video"],
+  }));
+  assert.equal(videoEdit.operation, "video-edit");
+  assert.deepEqual(videoEdit.input, ["image", "video"]);
+  assert.deepEqual(videoEdit.output, ["video"]);
+});
+
+function operations(modelId: string): Array<{ modality: string; operation: string }> {
+  const model = getCompiledModels().models.find((entry) => entry.modelId === modelId);
+  assert.ok(model, `${modelId} should be in the compiled catalog`);
+  return getModelCapabilities(model).map((capability) => ({
+    modality: capability.modality,
+    operation: capability.operation,
+  }));
+}
+
+test("realtime modality is catalog-native without stealing dual-mode REST operations", () => {
+  assert.deepEqual(operations("gpt-realtime-1.5"), [
+    { modality: "realtime", operation: "realtime-omni" },
+  ]);
+
+  assert.deepEqual(operations("qwen3-asr-flash-realtime"), [
+    { modality: "realtime", operation: "realtime-transcription" },
+  ]);
+
+  assert.deepEqual(operations("scribe_v2_realtime"), [
+    { modality: "realtime", operation: "realtime-transcription" },
+  ]);
+
+  const cloudflareTts = operations("@cf/deepgram/aura-1");
+  assert.ok(cloudflareTts.some((entry) =>
+    entry.modality === "audio" && entry.operation === "text-to-speech"
+  ));
+  assert.ok(cloudflareTts.some((entry) =>
+    entry.modality === "realtime" && entry.operation === "realtime-speech"
+  ));
+
+  const cloudflareStt = operations("@cf/deepgram/nova-3");
+  assert.ok(cloudflareStt.some((entry) =>
+    entry.modality === "text" && entry.operation === "speech-to-text"
+  ));
+  assert.ok(cloudflareStt.some((entry) =>
+    entry.modality === "realtime" && entry.operation === "realtime-transcription"
+  ));
+
+  assert.deepEqual(operations("@cf/deepgram/flux"), [
+    { modality: "realtime", operation: "realtime-transcription" },
+  ]);
+});
+
+test("speech umbrella models with text output stay text/omni instead of fake TTS", () => {
+  const qwenOmni = operations("qwen-omni-turbo");
+  assert.ok(qwenOmni.some((entry) =>
+    entry.modality === "text" && entry.operation === "chat"
+  ));
+  assert.equal(qwenOmni.some((entry) =>
+    entry.modality === "audio" && entry.operation === "text-to-speech"
+  ), false);
 });
 
 test("modality catalog exposes canonical operation groups for integrators and agents", () => {
-  const models = getExtendedModels().models;
+  const models = getCompiledModels().models;
   const operations = getModalityOperations(models);
 
   assert.ok(operations.some((entry) => entry.operation === "chat"));
@@ -82,11 +168,16 @@ test("modality catalog exposes canonical operation groups for integrators and ag
 });
 
 test("model capabilities expose source pricing units without flattening them", () => {
-  const models = getExtendedModels().models;
-  const imageModel = models.find((model) => model.modelId === "chatgpt-image-latest");
-  assert.ok(imageModel);
+  const models = getCompiledModels().models;
+  const tokenPricedImage = models.find((model) => model.modelId === "chatgpt-image-latest");
+  const imagePricedImage = models.find((model) => model.modelId === "qwen-image");
+  assert.ok(tokenPricedImage);
+  assert.ok(imagePricedImage);
 
-  const capabilities = getModelCapabilities(imageModel);
+  const capabilities = [
+    ...getModelCapabilities(tokenPricedImage),
+    ...getModelCapabilities(imagePricedImage),
+  ];
   const units = capabilities.flatMap((capability) => capability.pricingUnits.map((unit) => unit.unitKey));
 
   assert.ok(units.includes("usd_per_1m_tokens"));
@@ -100,6 +191,7 @@ test("streamable modality policy is explicit", () => {
   assert.equal(isStreamableModality("audio"), false);
   assert.equal(isStreamableModality("video"), false);
   assert.equal(isStreamableModality("embedding"), false);
+  assert.equal(isStreamableModality("realtime"), true);
 });
 
 test("video modality shapes provider payloads without leaking shared params", () => {
@@ -204,4 +296,32 @@ test("video modality derives billable quantities from generated media metadata",
   assert.equal(metrics.minute, 4.5 / 60);
   assert.equal(metrics.pixel, 1280 * 720);
   assert.equal(metrics.megapixel, (1280 * 720) / 1_000_000);
+});
+
+test("image modality derives billable quantities from generated WebP media metadata", async () => {
+  const { imageBillingMetricsFromOutput } = await import("../inference/catalog/modalities/image.js");
+  const webp = Buffer.alloc(30);
+  webp.write("RIFF", 0, "ascii");
+  webp.writeUInt32LE(22, 4);
+  webp.write("WEBP", 8, "ascii");
+  webp.write("VP8X", 12, "ascii");
+  webp.writeUInt32LE(10, 16);
+  webp.writeUIntLE(639, 24, 3);
+  webp.writeUIntLE(359, 27, 3);
+
+  const metrics = imageBillingMetricsFromOutput({
+    request: {
+      mode: "responses",
+      model: "image-model",
+      stream: false,
+      modality: "image",
+      messages: [],
+      responseId: "resp_webp_media",
+    },
+    buffer: webp,
+    generatedUnits: 2,
+  });
+
+  assert.equal(metrics.pixel, 640 * 360 * 2);
+  assert.equal(metrics.megapixel, (640 * 360 * 2) / 1_000_000);
 });

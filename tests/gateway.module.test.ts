@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ComposeReceipt } from "../http/request-context.js";
+import type { Receipt } from "../http/request-context.js";
 
 const ORIGINAL_ENV = {
   THIRDWEB_SECRET_KEY: process.env.THIRDWEB_SECRET_KEY,
   THIRDWEB_SERVER_WALLET_ADDRESS: process.env.THIRDWEB_SERVER_WALLET_ADDRESS,
   MERCHANT_WALLET_ADDRESS: process.env.MERCHANT_WALLET_ADDRESS,
-  RUNTIME_INTERNAL_SECRET: process.env.RUNTIME_INTERNAL_SECRET,
 };
 
 async function importGatewayModule(): Promise<Record<string, unknown>> {
   delete process.env.THIRDWEB_SECRET_KEY;
   delete process.env.THIRDWEB_SERVER_WALLET_ADDRESS;
   delete process.env.MERCHANT_WALLET_ADDRESS;
-  delete process.env.RUNTIME_INTERNAL_SECRET;
 
   try {
     return await import("../inference/gateway.js") as Record<string, unknown>;
@@ -21,7 +19,6 @@ async function importGatewayModule(): Promise<Record<string, unknown>> {
     process.env.THIRDWEB_SECRET_KEY = ORIGINAL_ENV.THIRDWEB_SECRET_KEY;
     process.env.THIRDWEB_SERVER_WALLET_ADDRESS = ORIGINAL_ENV.THIRDWEB_SERVER_WALLET_ADDRESS;
     process.env.MERCHANT_WALLET_ADDRESS = ORIGINAL_ENV.MERCHANT_WALLET_ADDRESS;
-    process.env.RUNTIME_INTERNAL_SECRET = ORIGINAL_ENV.RUNTIME_INTERNAL_SECRET;
   }
 }
 
@@ -41,14 +38,14 @@ test("gateway module does not export duplicate modality execution helpers", asyn
 test("gateway receipt JSON helpers preserve canonical settlement data without unit flattening", async () => {
   const gateway = await importGatewayModule();
   const receiptForJsonBody = gateway.receiptForJsonBody as (
-    receipt: ComposeReceipt | null,
+    receipt: Receipt | null,
   ) => Record<string, unknown> | undefined;
   const attachReceiptToJsonBody = gateway.attachReceiptToJsonBody as <T extends Record<string, unknown>>(
     body: T,
-    receipt: ComposeReceipt | null,
-  ) => T & { compose_receipt?: Record<string, unknown> };
+    receipt: Receipt | null,
+  ) => T & { receipt?: Record<string, unknown> };
 
-  const receipt: ComposeReceipt = {
+  const receipt: Receipt = {
     subject: "model:video-special",
     lineItems: [
       {
@@ -104,7 +101,7 @@ test("gateway receipt JSON helpers preserve canonical settlement data without un
   assert.deepEqual(attachReceiptToJsonBody(responseBody, receipt), {
     created: 1,
     data: [{ url: "https://example.com/video.mp4" }],
-    compose_receipt: receiptForJsonBody(receipt),
+    receipt: receiptForJsonBody(receipt),
   });
   assert.deepEqual(responseBody, { created: 1, data: [{ url: "https://example.com/video.mp4" }] });
 });

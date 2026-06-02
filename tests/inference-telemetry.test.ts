@@ -29,7 +29,6 @@ test("normalizeBillingPrice accepts raw compiled token sections", () => {
     unit: "usd_per_1m_tokens",
     values: {
       input: 0.4,
-      cached_input: 0.1,
       output: 1.6,
     },
   });
@@ -669,6 +668,57 @@ test("buildAuthoritativeBilling hard-fails when authoritative media units are mi
   );
 });
 
+test("buildRequestBilling authorizes generated audio minute units", () => {
+  const billing = buildRequestBilling({
+    subject: "elevenlabs:music_v1",
+    modality: "audio",
+    pricing: {
+      unit: "usd_per_generated_audio_minute",
+      values: { generated_audio_minute: 0.3 },
+    },
+    metrics: {
+      request: 1,
+      generated_audio_minute: 0.05,
+    },
+  });
+
+  assert.deepEqual(billing.lineItems, [
+    {
+      key: "generated_audio_minute",
+      unit: "usd_per_generated_audio_minute",
+      quantity: 0.05,
+      unitPriceUsd: 0.3,
+      source: "request",
+    },
+  ]);
+});
+
+test("buildAuthoritativeBilling settles generated audio minute units", () => {
+  const billing = buildAuthoritativeBilling({
+    subject: "elevenlabs:music_v1",
+    modality: "audio",
+    pricing: {
+      unit: "usd_per_generated_audio_minute",
+      values: { generated_audio_minute: 0.3 },
+    },
+    media: {
+      billingMetrics: {
+        generated_audio_minute: 0.25,
+      },
+    },
+  });
+
+  assert.deepEqual(billing.lineItems, [
+    {
+      key: "generated_audio_minute",
+      unit: "usd_per_generated_audio_minute",
+      quantity: 0.25,
+      unitPriceUsd: 0.3,
+      source: "provider_response",
+    },
+  ]);
+});
+
 test("buildRequestBilling selects an unambiguous media pricing tier from custom params", () => {
   const billing = buildRequestBilling({
     subject: "openai:dall-e-3",
@@ -840,7 +890,7 @@ test("extractAuthoritativeUsage normalizes response_metadata tokenUsage in camel
   });
 });
 
-test("extractAuthoritativeUsage normalizes LangChain usage_metadata reasoning details", () => {
+test("extractAuthoritativeUsage normalizes usage_metadata reasoning details", () => {
   const usage = extractAuthoritativeUsage({
     usage_metadata: {
       input_tokens: 120,
@@ -880,7 +930,7 @@ test("extractAuthoritativeUsage normalizes Google usageMetadata thoughts tokens"
   });
 });
 
-test("extractAuthoritativeUsage unwraps LangSmith outputs payloads", () => {
+test("extractAuthoritativeUsage unwraps nested outputs payloads", () => {
   const usage = extractAuthoritativeUsage({
     outputs: {
       prompt_tokens: 120,

@@ -18,8 +18,8 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
     byType: {},
     models: [
       {
-        modelId: "gpt-4.1-mini",
-        name: "GPT-4.1 mini",
+        modelId: "o4-mini-deep-research",
+        name: "O4 Mini Deep Research",
         provider: "openai",
         type: "chat-completions",
         description: null,
@@ -62,15 +62,15 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
 
   const usageRecords: UsageRecord[] = [
     {
-      agentId: "coordinator",
-      model: "gpt-4.1-mini",
+      agentWallet: "coordinator",
+      model: "o4-mini-deep-research",
       inputTokens: 2_000,
       outputTokens: 500,
       totalTokens: 2_500,
       timestamp: Date.now(),
     },
     {
-      agentId: "researcher",
+      agentWallet: "researcher",
       model: "gemini-2.5-flash",
       inputTokens: 1_000,
       outputTokens: 200,
@@ -87,16 +87,16 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
   assert.equal(metered.subject, "workflow:0xabc");
   assert.deepEqual(metered.meter.lineItems, [
     {
-      key: "openai:gpt-4.1-mini:input_tokens",
+      key: "openai:o4-mini-deep-research:input_tokens",
       unit: "usd_per_1m_tokens",
       quantity: 2_000,
-      unitPriceUsd: 0.4,
+      unitPriceUsd: 1,
     },
     {
-      key: "openai:gpt-4.1-mini:output_tokens",
+      key: "openai:o4-mini-deep-research:output_tokens",
       unit: "usd_per_1m_tokens",
       quantity: 500,
-      unitPriceUsd: 1.6,
+      unitPriceUsd: 4,
     },
     {
       key: "gemini:gemini-2.5-flash:input_tokens",
@@ -111,9 +111,9 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
       unitPriceUsd: 2.5,
     },
   ]);
-  assert.equal(metered.providerAmountWei, "2400");
-  assert.equal(metered.platformFeeWei, "24");
-  assert.equal(metered.finalAmountWei, "2424");
+  assert.equal(metered.providerAmountWei, "4800");
+  assert.equal(metered.platformFeeWei, "48");
+  assert.equal(metered.finalAmountWei, "4848");
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

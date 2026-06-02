@@ -6,7 +6,7 @@
  *     record metadata (never the token)
  *   - GET /api/x402/facilitator/chains enumerates facilitator chain metadata
  *   - X-Request-Id is set on every response
- *   - X-Compose-Receipt decode round-trip
+ *   - X-Receipt decode round-trip
  *   - The idempotency helper keys are stable
  *
  * Every test is self-contained; no mocks. Redis is hit through the real client
@@ -29,7 +29,7 @@ import {
     generateRequestId,
     resolveRequestId,
     REQUEST_ID_HEADER,
-    type ComposeReceipt,
+    type Receipt,
 } from "../http/request-context.js";
 import { buildCorsHeaders } from "../http/cors.js";
 import { buildError, statusForCode } from "../http/errors.js";
@@ -91,7 +91,7 @@ test("resolveRequestId accepts a caller-supplied safe id and mints when absent o
 });
 
 test("encode/decodeReceiptHeader is url-safe and lossless", () => {
-    const receipt: ComposeReceipt = {
+    const receipt: Receipt = {
         subject: "gpt-4.1-mini",
         lineItems: [
             { key: "input_tokens", unit: "usd_per_1m_tokens", quantity: 123, unitPriceUsd: 0.3, amountWei: "36900" },
@@ -119,7 +119,7 @@ test("buildCorsHeaders echoes credentialed first-party origins and sends '*' for
     assert.equal(first["Access-Control-Allow-Origin"], "https://app.compose.market");
     assert.equal(first["Access-Control-Allow-Credentials"], "true");
     assert.equal(first["Vary"], "Origin");
-    assert.ok(first["Access-Control-Allow-Headers"].includes("x-compose-sdk"));
+    assert.ok(first["Access-Control-Allow-Headers"].includes("x-sdk"));
 
     const localhost = buildCorsHeaders("http://localhost:3000");
     assert.equal(localhost["Access-Control-Allow-Origin"], "http://localhost:3000");
