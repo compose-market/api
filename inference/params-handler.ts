@@ -1,580 +1,442 @@
 /**
- * Model Parameters Handler
- * 
- * Fetches model-specific optional parameters from video.json and image.json.
- * Used by the Playground UI to render dynamic parameter controls.
+ * Universal parameter aggregator.
+ *
+ * Single responsibility: every inference call must succeed. When a third-
+ * party request omits a required-by-the-vendor parameter (count, duration,
+ * quality, resolution, …), this module fills the lowest-cost default
+ * taken from the modality/family catalog already used by the router. No
+ * network calls happen here.
  */
-
 import type { Request, Response } from "express";
-import * as fs from "fs";
-import * as path from "path";
 
-// Parameter schema types
+import { getModelById } from "./catalog/registry.js";
+import { getEmbeddingParameterCatalog } from "./catalog/modalities/embeddings.js";
+import { getImageParameterCatalog } from "./catalog/modalities/image.js";
+import { getModelCapabilities, type CanonicalModality } from "./catalog/modalities/index.js";
+import { getRealtimeParameterCatalog } from "./catalog/modalities/realtime.js";
+import { getSpeechParameterCatalog } from "./catalog/modalities/speech.js";
+import { getVideoParameterCatalog } from "./catalog/modalities/video.js";
+import type { ModelCard } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Schema types — unchanged public surface.
+// ---------------------------------------------------------------------------
+
 export interface ParamDefinition {
-    type: "string" | "integer" | "number" | "boolean" | "array";
-    required: boolean;
-    default?: string | number | boolean;
-    options?: (string | number)[];
-    description?: string;
+  type: "string" | "integer" | "number" | "boolean" | "array" | "object";
+  required: boolean;
+  default?: string | number | boolean;
+  options?: (string | number)[];
+  minimum?: number;
+  maximum?: number;
+  description?: string;
 }
 
 export interface ModelParams {
-    modelId: string;
-    provider: string;
-    params: Record<string, ParamDefinition>;
+  modelId: string;
+  provider: string;
+  params: Record<string, ParamDefinition>;
 }
 
 export interface ResolvedModelParams {
-    modelId: string;
-    type: "video" | "image";
-    provider: string;
-    params: Record<string, ParamDefinition>;
-    defaults: Record<string, unknown>;
+  modelId: string;
+  type: CanonicalModality;
+  provider: string;
+  params: Record<string, ParamDefinition>;
+  defaults: Record<string, unknown>;
 }
 
-// Cache for loaded param files
-let videoParamsCache: Record<string, ModelParams> | null = null;
-let videoParamAliasesCache: Record<string, string | Record<string, string>> | null = null;
-let imageParamsCache: Record<string, ModelParams> | null = null;
-let dataBasePath: string | null = null;
+// ---------------------------------------------------------------------------
+// Public helpers
+// ---------------------------------------------------------------------------
 
 /**
- * Get base path for data files (same logic as registry.ts)
- * Note: CJS bundle means __dirname and import.meta.url won't reliably work
- * We use Api-specific paths and process.cwd() instead
+ * Rank a single option value for cost-ordering. Numeric → as-is; tier
+ * names → ordinal; "1280x720" → pixels; "720p" → 720. Used by
+ * `telemetry.ts` to detect monotonic option ladders for tier selection.
  */
-function getDataBasePath(): string {
-    // Return cached path if already found
-    if (dataBasePath !== null) return dataBasePath;
-
-    const candidatePaths: string[] = [
-        "/var/task/dist/data",
-        "/var/task/data",
-        path.join(process.cwd(), "inference", "data", "params"),
-        path.join(process.cwd(), "dist", "data"),
-        path.join(process.cwd(), "data", "params"),
-    ];
-
-    // Try each candidate path
-    for (const p of candidatePaths) {
-        try {
-            // Check for either video.json or image.json
-            if (fs.existsSync(path.join(p, "video.json")) || fs.existsSync(path.join(p, "image.json"))) {
-                console.log(`[paramsHandler] Found params data at: ${p}`);
-                dataBasePath = p;
-                return p;
-            }
-        } catch {
-            // Skip paths that can't be accessed
-        }
-    }
-
-    console.error("[paramsHandler] ❌ Could not locate params JSON files!");
-    console.error(`[paramsHandler] process.cwd(): ${process.cwd()}`);
-    console.error(`[paramsHandler] Checked paths:`, candidatePaths);
-
-    // List what's in dist/data for debugging
-    try {
-        const distDataPath = path.join(process.cwd(), "dist", "data");
-        if (fs.existsSync(distDataPath)) {
-            const contents = fs.readdirSync(distDataPath);
-            console.error(`[paramsHandler] Contents of dist/data:`, contents);
-        }
-    } catch (e) {
-        console.error("[paramsHandler] Could not list dist/data:", e);
-    }
-
-    // Return best guess
-    dataBasePath = path.join(process.cwd(), "inference", "data", "params");
-    return dataBasePath;
-}
-
-/**
- * Load and cache video.json
- */
-function getVideoParams(): Record<string, ModelParams> {
-    if (videoParamsCache !== null) return videoParamsCache;
-
-    try {
-        const basePath = getDataBasePath();
-        const filePath = path.join(basePath, "video.json");
-
-        if (!fs.existsSync(filePath)) {
-            console.warn(`[paramsHandler] video.json not found at ${filePath}`);
-            return {};
-        }
-
-        const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        const params: Record<string, ModelParams> = data.parameters || {};
-        videoParamAliasesCache = data.aliases || {};
-        videoParamsCache = params;
-        console.log(`[paramsHandler] Loaded ${Object.keys(params).length} video model params`);
-        return params;
-    } catch (err) {
-        console.error("[paramsHandler] Failed to load video.json:", err);
-        return {};
-    }
-}
-
-function getVideoParamAliases(): Record<string, string | Record<string, string>> {
-    if (videoParamAliasesCache !== null) return videoParamAliasesCache;
-    getVideoParams();
-    return videoParamAliasesCache || {};
-}
-
-/**
- * Load and cache image.json
- */
-function getImageParams(): Record<string, ModelParams> {
-    if (imageParamsCache !== null) return imageParamsCache;
-
-    try {
-        const basePath = getDataBasePath();
-        const filePath = path.join(basePath, "image.json");
-
-        if (!fs.existsSync(filePath)) {
-            console.warn(`[paramsHandler] image.json not found at ${filePath}`);
-            return {};
-        }
-
-        const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        const params: Record<string, ModelParams> = data.parameters || {};
-        imageParamsCache = params;
-        console.log(`[paramsHandler] Loaded ${Object.keys(params).length} image model params`);
-        return params;
-    } catch (err) {
-        console.error("[paramsHandler] Failed to load image.json:", err);
-        return {};
-    }
-}
-
-/**
- * Find matching model params with flexible matching
- * Tries: exact match, suffix match (e.g., flux/schnell matches fal-ai/flux/schnell),
- * and normalized matching (case-insensitive, strip dots)
- */
-function findMatchingParams(
-    modelId: string,
-    paramsMap: Record<string, ModelParams>
-): { key: string; params: ModelParams } | null {
-    // Skip comment keys
-    if (modelId.startsWith("_comment")) return null;
-
-    // 1. Try exact match first
-    if (paramsMap[modelId]) {
-        return { key: modelId, params: paramsMap[modelId] };
-    }
-
-    // 2. Try suffix match - if modelId is "flux/schnell", match "fal-ai/flux/schnell"
-    for (const key of Object.keys(paramsMap)) {
-        if (key.startsWith("_comment")) continue;
-        if (key.endsWith(`/${modelId}`) || key.endsWith(`/${modelId.toLowerCase()}`)) {
-            return { key, params: paramsMap[key] };
-        }
-    }
-
-    // 3. Try normalized matching (case-insensitive, strip dots and dashes)
-    const normalize = (s: string) => s.toLowerCase().replace(/[.\-]/g, "");
-    const normalizedModelId = normalize(modelId);
-
-    for (const key of Object.keys(paramsMap)) {
-        if (key.startsWith("_comment")) continue;
-        if (normalize(key) === normalizedModelId) {
-            return { key, params: paramsMap[key] };
-        }
-        // Also check if the model name portion matches
-        const keyParts = key.split("/");
-        const modelParts = modelId.split("/");
-        if (keyParts.length > 0 && modelParts.length > 0) {
-            // Match last part (model name)
-            if (normalize(keyParts[keyParts.length - 1]) === normalize(modelParts[modelParts.length - 1])) {
-                return { key, params: paramsMap[key] };
-            }
-        }
-    }
-
-    return null;
-}
-
-function filterOptionalParams(params: Record<string, ParamDefinition>): Record<string, ParamDefinition> {
-    return Object.fromEntries(
-        Object.entries(params).filter(([, definition]) => definition.required !== true),
-    );
-}
-
 export function rankOptionValue(value: string | number): number | null {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return value;
-    }
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
 
-    if (typeof value !== "string") {
-        return null;
-    }
+  const trimmed = value.trim().toLowerCase();
+  switch (trimmed) {
+    case "low": case "standard": case "draft": return 1;
+    case "medium": case "auto": return 2;
+    case "high": case "hd": return 3;
+    case "max": case "ultra": return 4;
+  }
 
-    const trimmed = value.trim().toLowerCase();
-    const ordinalRank = (() => {
-        switch (trimmed) {
-            case "low":
-            case "standard":
-                return 1;
-            case "medium":
-                return 2;
-            case "high":
-            case "hd":
-                return 3;
-            default:
-                return null;
-        }
-    })();
-    if (ordinalRank !== null) {
-        return ordinalRank;
-    }
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) return numeric;
 
-    const numeric = Number(trimmed);
-    if (Number.isFinite(numeric)) {
-        return numeric;
-    }
+  const dim = trimmed.match(/^(\d+)\s*x\s*(\d+)$/);
+  if (dim) return Number(dim[1]) * Number(dim[2]);
 
-    const dimensions = trimmed.match(/^(\d+)\s*x\s*(\d+)$/);
-    if (dimensions) {
-        const width = Number.parseInt(dimensions[1], 10);
-        const height = Number.parseInt(dimensions[2], 10);
-        if (Number.isFinite(width) && Number.isFinite(height)) {
-            return width * height;
-        }
-    }
+  const res = trimmed.match(/^(\d+)\s*p$/);
+  if (res) return Number(res[1]);
 
-    const resolution = trimmed.match(/^(\d+)\s*p$/);
-    if (resolution) {
-        return Number.parseInt(resolution[1], 10);
-    }
+  const sec = trimmed.match(/^(\d+(?:\.\d+)?)\s*s$/);
+  if (sec) return Number(sec[1]);
 
-    const duration = trimmed.match(/^(\d+(?:\.\d+)?)\s*s$/);
-    if (duration) {
-        return Number.parseFloat(duration[1]);
-    }
-
-    return null;
+  return null;
 }
 
-function getLowestOptionValue(definition: ParamDefinition): unknown {
-    if (!Array.isArray(definition.options) || definition.options.length === 0) {
-        return undefined;
-    }
+const PARAM_ALIASES: Record<string, string[]> = {
+  duration: ["seconds", "duration_seconds", "durationSeconds"],
+  n: ["num_images", "sample_count", "sampleCount"],
+  aspect_ratio: ["aspectRatio", "size_ratio", "sizeRatio", "ratio"],
+  output_format: ["format", "response_format", "responseFormat"],
+};
 
-    const ranked = definition.options
-        .map((option, index) => ({
-            option,
-            index,
-            rank: rankOptionValue(option),
-        }));
+const LOWEST_DEFAULT_KEYS = new Set([
+  "duration",
+  "aspect_ratio",
+  "output_format",
+  "n",
+  "music_length_ms",
+  "prompt_extend",
+]);
 
-    const comparable = ranked.filter((entry) => entry.rank !== null) as Array<{
-        option: string | number;
-        index: number;
-        rank: number;
-    }>;
-    if (comparable.length === definition.options.length) {
-        comparable.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
-        return comparable[0].option;
-    }
+const ALIAS_TO_CANONICAL = Object.fromEntries(
+  Object.entries(PARAM_ALIASES).flatMap(([canonical, aliases]) => aliases.map((alias) => [alias, canonical])),
+) as Record<string, string>;
 
-    return definition.options[0];
+function isAllowedOption(value: unknown): value is string | number {
+  return typeof value === "string" || typeof value === "number";
 }
 
-function getParamDefaultValue(definition: ParamDefinition): unknown {
-    const lowestOption = getLowestOptionValue(definition);
-    if (lowestOption !== undefined) {
-        return lowestOption;
-    }
+function isDefaultValue(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
 
-    if (Object.prototype.hasOwnProperty.call(definition, "default")) {
-        return definition.default;
-    }
+function inferParamType(value: unknown): ParamDefinition["type"] {
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+  if (Array.isArray(value)) return "array";
+  if (value && typeof value === "object") return "object";
+  return "string";
+}
 
-    return undefined;
+function normalizeParamDefinition(raw: unknown): ParamDefinition | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+
+  const rawType = typeof record.type === "string" ? record.type : "";
+  const options = Array.isArray(record.options) ? record.options.filter(isAllowedOption) : undefined;
+  const defaultValue = isDefaultValue(record.default) ? record.default : undefined;
+  const sample = options?.[0] ?? defaultValue;
+  const type = ["string", "integer", "number", "boolean", "array", "object"].includes(rawType)
+    ? rawType as ParamDefinition["type"]
+    : inferParamType(sample);
+
+  return {
+    type,
+    required: record.required === true,
+    ...(defaultValue !== undefined ? { default: defaultValue } : {}),
+    ...(options && options.length > 0 ? { options } : {}),
+    ...(typeof record.minimum === "number" ? { minimum: record.minimum } : {}),
+    ...(typeof record.maximum === "number" ? { maximum: record.maximum } : {}),
+    ...(typeof record.description === "string" ? { description: record.description } : {}),
+  };
+}
+
+function normalizeDefinitions(raw: unknown): Record<string, ParamDefinition> {
+  const record = asRecord(raw);
+  if (!record) return {};
+
+  const out: Record<string, ParamDefinition> = {};
+  for (const [key, value] of Object.entries(record)) {
+    const definition = normalizeParamDefinition(value);
+    if (definition) out[key] = definition;
+  }
+  return out;
+}
+
+function modalityParamCatalog(modality: CanonicalModality, card?: ModelCard | null): Record<string, ParamDefinition> {
+  switch (modality) {
+    case "image":
+      return normalizeDefinitions(getImageParameterCatalog());
+    case "video":
+      return normalizeDefinitions(getVideoParameterCatalog(card?.provider));
+    case "audio":
+      return normalizeDefinitions(getSpeechParameterCatalog(card));
+    case "embedding":
+      return normalizeDefinitions(getEmbeddingParameterCatalog());
+    case "realtime":
+      return normalizeDefinitions(getRealtimeParameterCatalog());
+    case "text":
+      return {};
+  }
+}
+
+function canonicalDefinition(definition: ParamDefinition, canonicalKey: string): ParamDefinition {
+  if (canonicalKey === "duration" || canonicalKey === "n") {
+    const options = definition.options
+      ?.map((value) => typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN)
+      .filter((value) => Number.isFinite(value));
+    const defaultValue = typeof definition.default === "number"
+      ? definition.default
+      : typeof definition.default === "string"
+        ? Number(definition.default)
+        : undefined;
+    return {
+      ...definition,
+      type: Number.isInteger(options?.[0] ?? defaultValue) ? "integer" : "number",
+      ...(options && options.length > 0 ? { options } : {}),
+      ...(typeof defaultValue === "number" && Number.isFinite(defaultValue) ? { default: defaultValue } : {}),
+    };
+  }
+
+  return { ...definition };
+}
+
+function addCanonicalAliases(params: Record<string, ParamDefinition>): Record<string, ParamDefinition> {
+  const out = { ...params };
+  for (const [canonicalKey, aliases] of Object.entries(PARAM_ALIASES)) {
+    if (canonicalKey === "duration") continue;
+    if (out[canonicalKey]) continue;
+    const alias = aliases.find((candidate) => out[candidate]);
+    if (alias) {
+      out[canonicalKey] = canonicalDefinition(out[alias], canonicalKey);
+    }
+  }
+  return out;
+}
+
+function mergeDefinitions(...sources: Array<Record<string, ParamDefinition>>): Record<string, ParamDefinition> {
+  const out: Record<string, ParamDefinition> = {};
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(addCanonicalAliases(source))) {
+      if (!out[key]) out[key] = { ...value, ...(value.options ? { options: [...value.options] } : {}) };
+    }
+  }
+  return addCanonicalAliases(out);
+}
+
+function definitionsForModel(card: ModelCard | null, modality: CanonicalModality): Record<string, ParamDefinition> {
+  return mergeDefinitions(modalityParamCatalog(modality, card));
+}
+
+function optionRankForParam(key: string, value: string | number): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+
+  const normalizedKey = key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`).toLowerCase();
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.toLowerCase() === "auto") return null;
+
+  if (normalizedKey === "size") {
+    const dim = trimmed.toLowerCase().match(/^(\d+)\s*x\s*(\d+)$/);
+    return dim ? Number(dim[1]) * Number(dim[2]) : null;
+  }
+
+  if (normalizedKey === "resolution") {
+    const res = trimmed.toLowerCase().match(/^(\d+)\s*p$/);
+    return res ? Number(res[1]) : null;
+  }
+
+  return rankOptionValue(trimmed);
+}
+
+function lowestOptionForParam(key: string, options: Array<string | number>): string | number | undefined {
+  const ranked = options
+    .map((option, index) => ({ option, index, rank: optionRankForParam(key, option) }))
+    .filter((entry): entry is { option: string | number; index: number; rank: number } => entry.rank !== null);
+  if (ranked.length === 0) return options[0];
+  ranked.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
+  return ranked[0].option;
+}
+
+function lowestDefaultForParam(key: string, def: ParamDefinition): unknown {
+  if (LOWEST_DEFAULT_KEYS.has(key) && Array.isArray(def.options) && def.options.length > 0) {
+    return lowestOptionForParam(key, def.options);
+  }
+  if ((LOWEST_DEFAULT_KEYS.has(key) || key === "resolution" || key === "size") && def.default !== undefined) {
+    if (typeof def.default === "string" && def.default.trim().toLowerCase() === "auto") {
+      return undefined;
+    }
+    return def.default;
+  }
+  return undefined;
 }
 
 export function buildModelParamDefaults(params: Record<string, ParamDefinition>): Record<string, unknown> {
-    const defaults: Record<string, unknown> = {};
+  const defaults: Record<string, unknown> = {};
+  for (const [key, def] of Object.entries(params)) {
+    const canonical = ALIAS_TO_CANONICAL[key];
+    if (canonical && params[canonical]) continue;
+    const value = lowestDefaultForParam(key, def);
+    if (value !== undefined) defaults[key] = value;
+  }
+  return defaults;
+}
 
-    for (const [key, definition] of Object.entries(params)) {
-        const value = getParamDefaultValue(definition);
-        if (value !== undefined) {
-            defaults[key] = value;
-        }
+// ---------------------------------------------------------------------------
+// Modality detection & extraction
+// ---------------------------------------------------------------------------
+
+function pickModalityFromCard(modelId: string, preferred?: CanonicalModality): {
+  modality: CanonicalModality | null;
+  provider: string;
+} {
+  const card = getModelById(modelId);
+  // When the caller declares the modality at the route level
+  // (`POST /v1/images/...`, `POST /v1/videos/...`), trust it. The card's
+  // classified capabilities are advisory; route intent is authoritative.
+  if (preferred) return { modality: preferred, provider: card?.provider ?? "" };
+  if (!card) return { modality: null, provider: "" };
+  const caps = getModelCapabilities(card);
+  const order: CanonicalModality[] = ["video", "image", "audio", "text", "embedding", "realtime"];
+  for (const m of order) {
+    if (caps.some((c) => c.modality === m)) {
+      return { modality: m, provider: card.provider };
     }
-
-    return defaults;
+  }
+  return { modality: null, provider: card.provider };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return null;
-    }
-
-    return value as Record<string, unknown>;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
-function requestBodyHasImageInput(requestBody?: Record<string, unknown>): boolean {
-    if (!requestBody) {
-        return false;
+function coerce(def: ParamDefinition, value: unknown): unknown {
+  if (value === undefined || value === null) return undefined;
+  if (def.type === "integer") {
+    if (typeof value === "number" && Number.isInteger(value)) return value;
+    if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return parseInt(value.trim(), 10);
+  }
+  if (def.type === "number") {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const n = Number(value.trim());
+      if (Number.isFinite(n)) return n;
     }
-
-    if (typeof requestBody.image_url === "string" || typeof requestBody.image === "string") {
-        return true;
+  }
+  if (def.type === "boolean") {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const t = value.trim().toLowerCase();
+      if (t === "true") return true;
+      if (t === "false") return false;
     }
-
-    const attachmentCandidates = [
-        requestBody.attachment,
-        ...(Array.isArray(requestBody.attachments) ? requestBody.attachments : []),
-    ];
-    if (attachmentCandidates.some((attachment) => {
-        const record = asRecord(attachment);
-        if (!record) {
-            return false;
-        }
-        const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
-        const mimeType = typeof record.mimeType === "string"
-            ? record.mimeType.toLowerCase()
-            : typeof record.mime_type === "string"
-                ? record.mime_type.toLowerCase()
-                : typeof record.contentType === "string"
-                    ? record.contentType.toLowerCase()
-                    : typeof record.content_type === "string"
-                        ? record.content_type.toLowerCase()
-                        : "";
-        return type.includes("image")
-            || mimeType.startsWith("image/")
-            || typeof record.image_url === "string";
-    })) {
-        return true;
-    }
-
-    const customParams = asRecord(requestBody.custom_params);
-    if (typeof customParams?.image_url === "string" || typeof customParams?.image === "string") {
-        return true;
-    }
-
-    const input = requestBody.input;
-    const inputs = Array.isArray(input) ? input : [];
-    for (const item of inputs) {
-        const record = asRecord(item);
-        if (!record) {
-            continue;
-        }
-        if (record.type === "input_image" && typeof record.image_url === "string") {
-            return true;
-        }
-        const content = Array.isArray(record.content) ? record.content : [];
-        if (content.some((part) => {
-            const contentPart = asRecord(part);
-            return contentPart?.type === "image_url" || contentPart?.type === "input_image";
-        })) {
-            return true;
-        }
-    }
-
-    return false;
+  }
+  return value;
 }
 
-function resolveVideoParamAlias(
-    modelId: string,
-    requestBody?: Record<string, unknown>,
-): string | null {
-    const alias = getVideoParamAliases()[modelId];
-    if (typeof alias === "string" && alias.length > 0) {
-        return alias;
-    }
-    const aliasRecord = asRecord(alias);
-    if (!aliasRecord) {
-        return null;
-    }
-
-    const operation = requestBodyHasImageInput(requestBody) ? "image-to-video" : "text-to-video";
-    const target = aliasRecord[operation];
-    return typeof target === "string" && target.length > 0 ? target : null;
-}
-
-function coerceParamValue(definition: ParamDefinition, value: unknown): unknown {
-    if (value === undefined || value === null) {
-        return undefined;
-    }
-
-    if (definition.type === "integer") {
-        if (typeof value === "number" && Number.isInteger(value)) {
-            return value;
-        }
-        if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
-            return Number.parseInt(value.trim(), 10);
-        }
-        return value;
-    }
-
-    if (definition.type === "number") {
-        if (typeof value === "number" && Number.isFinite(value)) {
-            return value;
-        }
-        if (typeof value === "string" && value.trim().length > 0) {
-            const parsed = Number(value.trim());
-            if (Number.isFinite(parsed)) {
-                return parsed;
-            }
-        }
-        return value;
-    }
-
-    if (definition.type === "boolean") {
-        if (typeof value === "boolean") {
-            return value;
-        }
-        if (typeof value === "string") {
-            const normalized = value.trim().toLowerCase();
-            if (normalized === "true") return true;
-            if (normalized === "false") return false;
-        }
-    }
-
-    return value;
-}
-
-function extractProvidedParamValues(
-    params: Record<string, ParamDefinition>,
-    requestBody?: Record<string, unknown>,
+function extractProvided(
+  params: Record<string, ParamDefinition>,
+  body?: Record<string, unknown>,
 ): Record<string, unknown> {
-    if (!requestBody) {
-        return {};
-    }
-
-    const customParams = asRecord(requestBody.custom_params);
-    const provided: Record<string, unknown> = {};
-
-    for (const key of Object.keys(params)) {
-        const definition = params[key];
-        if (customParams && customParams[key] !== undefined) {
-            provided[key] = coerceParamValue(definition, customParams[key]);
-            continue;
-        }
-
-        if (requestBody[key] !== undefined) {
-            provided[key] = coerceParamValue(definition, requestBody[key]);
-        }
-    }
-
-    return provided;
+  if (!body) return {};
+  const custom = asRecord(body.custom_params);
+  const out: Record<string, unknown> = {};
+  for (const [key, def] of Object.entries(params)) {
+    const aliases = PARAM_ALIASES[key] ?? [];
+    const raw = [key, ...aliases]
+      .map((candidate) => custom?.[candidate] ?? body[candidate])
+      .find((value) => value !== undefined);
+    const coerced = coerce(def, raw);
+    if (coerced !== undefined) out[key] = coerced;
+  }
+  return out;
 }
 
+// ---------------------------------------------------------------------------
+// Public API — same shape callers already consume.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the optional-param schema for a model.
+ *
+ * Given a model id (and optionally a preferred modality hint), returns the
+ * universal ladder-derived schema for that modality, with lowest-cost
+ * defaults pre-computed.
+ */
 export function resolveModelParams(
-    modelId: string,
-    preferredType?: "video" | "image",
-    requestBody?: Record<string, unknown>,
+  modelId: string,
+  preferredType?: CanonicalModality | "video" | "image",
+  _requestBody?: Record<string, unknown>,
 ): ResolvedModelParams | null {
-    const decodedModelId = decodeURIComponent(modelId);
-    const lookups: Array<{
-        type: "video" | "image";
-        map: Record<string, ModelParams>;
-    }> = preferredType === "video"
-        ? [
-            { type: "video", map: getVideoParams() },
-            { type: "image", map: getImageParams() },
-        ]
-        : preferredType === "image"
-            ? [
-                { type: "image", map: getImageParams() },
-                { type: "video", map: getVideoParams() },
-            ]
-            : [
-                { type: "video", map: getVideoParams() },
-                { type: "image", map: getImageParams() },
-            ];
+  void _requestBody;
+  const decoded = decodeURIComponent(modelId);
+  const card = getModelById(decoded);
+  const { modality, provider } = pickModalityFromCard(
+    decoded,
+    preferredType as CanonicalModality | undefined,
+  );
+  if (!modality) return null;
 
-    for (const lookup of lookups) {
-        const aliasTarget = lookup.type === "video" ? resolveVideoParamAlias(decodedModelId, requestBody) : null;
-        const match = findMatchingParams(aliasTarget || decodedModelId, lookup.map);
-        if (!match) {
-            continue;
-        }
-
-        const params = filterOptionalParams(match.params.params);
-        return {
-            modelId: decodedModelId,
-            type: lookup.type,
-            provider: match.params.provider,
-            params,
-            defaults: buildModelParamDefaults(params),
-        };
-    }
-
-    return null;
-}
-
-export function resolveOptionalModelParamValues(
-    modelId: string,
-    preferredType?: "video" | "image",
-    requestBody?: Record<string, unknown>,
-): ResolvedModelParams & { values: Record<string, unknown> } | null {
-    const resolved = resolveModelParams(modelId, preferredType, requestBody);
-    if (!resolved) {
-        return null;
-    }
-
-    const provided = extractProvidedParamValues(resolved.params, requestBody);
-    return {
-        ...resolved,
-        values: {
-            ...resolved.defaults,
-            ...provided,
-        },
-    };
-}
-
-export function resolveProvidedOptionalModelParamValues(
-    modelId: string,
-    preferredType?: "video" | "image",
-    requestBody?: Record<string, unknown>,
-): ResolvedModelParams & { values: Record<string, unknown> } | null {
-    const resolved = resolveModelParams(modelId, preferredType, requestBody);
-    if (!resolved) {
-        return null;
-    }
-
-    return {
-        ...resolved,
-        values: extractProvidedParamValues(resolved.params, requestBody),
-    };
+  const params = definitionsForModel(card, modality);
+  return {
+    modelId: decoded,
+    type: modality,
+    provider,
+    params,
+    defaults: buildModelParamDefaults(params),
+  };
 }
 
 /**
- * GET /v1/models/:model/params
- * 
- * Returns optional parameter schema for a given model.
- * Searches video.json first, then image.json.
- * Uses flexible matching to handle different model ID formats.
+ * Resolve schema + values, where every key in the schema is filled.
+ * - Provided keys (in `body` or `body.custom_params`) override defaults.
+ * - Missing keys fall back to the lowest-cost default.
  */
-export async function handleGetModelParams(
-    req: Request,
-    res: Response
-): Promise<void> {
-    const modelIdParam = req.params.model;
-    const modelId = Array.isArray(modelIdParam) ? modelIdParam[0] : modelIdParam;
+export function resolveOptionalModelParamValues(
+  modelId: string,
+  preferredType?: CanonicalModality | "video" | "image",
+  requestBody?: Record<string, unknown>,
+): ResolvedModelParams & { values: Record<string, unknown> } | null {
+  const resolved = resolveModelParams(modelId, preferredType, requestBody);
+  if (!resolved) return null;
+  return {
+    ...resolved,
+    values: { ...resolved.defaults, ...extractProvided(resolved.params, requestBody) },
+  };
+}
 
-    if (!modelId) {
-        res.status(400).json({ error: "Model ID is required" });
-        return;
-    }
+/**
+ * Resolve schema + values, but return only the keys the caller actually
+ * provided (no defaults). Kept for callers that need inspection without
+ * router/metering defaults.
+ */
+export function resolveProvidedOptionalModelParamValues(
+  modelId: string,
+  preferredType?: CanonicalModality | "video" | "image",
+  requestBody?: Record<string, unknown>,
+): ResolvedModelParams & { values: Record<string, unknown> } | null {
+  const resolved = resolveModelParams(modelId, preferredType, requestBody);
+  if (!resolved) return null;
+  return {
+    ...resolved,
+    values: extractProvided(resolved.params, requestBody),
+  };
+}
 
-    const resolved = resolveModelParams(modelId);
-    if (resolved) {
-        res.json(resolved);
-        return;
-    }
+// ---------------------------------------------------------------------------
+// HTTP — `GET /v1/models/:model/params`
+// ---------------------------------------------------------------------------
 
-    // No params found - return empty (not an error, just no optional params)
-    res.json({
-        modelId: decodeURIComponent(modelId),
-        type: null,
-        params: {},
-        defaults: {},
-        provider: null,
-    });
+export async function handleGetModelParams(req: Request, res: Response): Promise<void> {
+  const param = req.params.model;
+  const modelId = Array.isArray(param) ? param[0] : param;
+  if (!modelId) {
+    res.status(400).json({ error: "Model ID is required" });
+    return;
+  }
+
+  const resolved = resolveModelParams(modelId);
+  if (resolved) {
+    res.json(resolved);
+    return;
+  }
+
+  res.json({
+    modelId: decodeURIComponent(modelId),
+    type: null,
+    params: {},
+    defaults: {},
+    provider: null,
+  });
 }

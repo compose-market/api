@@ -1,4 +1,4 @@
-import type { UnifiedModality, UnifiedUsage } from "./core.js";
+import type { Modality, Usage } from "./core.js";
 import { rankOptionValue, resolveModelParams } from "./params-handler.js";
 import type { ModelPricing } from "./types.js";
 import type { MeterLineItem } from "../x402/metering.js";
@@ -26,17 +26,17 @@ export interface BillingMediaEvidence {
   billingMetrics?: Record<string, unknown>;
 }
 
-export interface AuthoritativeUsage extends UnifiedUsage {
+export interface AuthoritativeUsage extends Usage {
   reasoningTokens?: number;
   cachedInputTokens?: number;
   billingMetrics?: Record<string, unknown>;
   source:
-    | "usage_metadata"
-    | "response_metadata"
-    | "llmOutput"
-    | "usage"
-    | "google_usage_metadata"
-    | "direct_fields";
+  | "usage_metadata"
+  | "response_metadata"
+  | "llmOutput"
+  | "usage"
+  | "google_usage_metadata"
+  | "direct_fields";
 }
 
 export interface AuthoritativeBillingRecord {
@@ -91,6 +91,7 @@ function metricKeyCandidates(key: string): string[] {
   const normalized = normalizeValueKey(key);
   const singular = normalized.replace(/s$/, "");
   const plural = singular.endsWith("s") ? singular : `${singular}s`;
+  const strict = isStrictMetricKey(normalized);
   const fragments = normalized
     .split("_")
     .filter((fragment) => /[a-z]/.test(fragment));
@@ -100,7 +101,7 @@ function metricKeyCandidates(key: string): string[] {
     normalized,
     singular,
     plural,
-    tail,
+    ...(strict ? [] : [tail]),
     `num_${singular}`,
     `num_${plural}`,
     `number_of_${singular}`,
@@ -108,6 +109,15 @@ function metricKeyCandidates(key: string): string[] {
     `total_${singular}`,
     `total_${plural}`,
   ])];
+}
+
+function isStrictMetricKey(normalized: string): boolean {
+  return /^(cached_)?input_.+_tokens?$/.test(normalized)
+    || /^output_.+_tokens?$/.test(normalized)
+    || normalized === "cached_input_tokens"
+    || normalized === "cached_input_token"
+    || normalized === "reasoning_tokens"
+    || normalized === "reasoning_token";
 }
 
 function normalizedMetricEntries(metrics: Record<string, unknown>): Array<{ key: string; normalized: string; value: unknown }> {
@@ -134,9 +144,21 @@ function readMetricByNormalizedName(
   keys: string[],
   predicate: (value: unknown) => value is number,
 ): number | undefined {
-  const candidates = keys.flatMap((key) => metricKeyCandidates(key).map(normalizeValueKey));
+  const candidates = keys.flatMap((key) => {
+    const strict = isStrictMetricKey(normalizeValueKey(key));
+    return metricKeyCandidates(key).map((candidate) => ({
+      strict,
+      value: normalizeValueKey(candidate),
+    }));
+  });
   const matches = normalizedMetricEntries(metrics)
-    .filter((entry) => candidates.some((candidate) => metricNameMatches(entry.normalized, candidate)))
+    .filter((entry) =>
+      candidates.some((candidate) =>
+        candidate.strict
+          ? entry.normalized === candidate.value
+          : metricNameMatches(entry.normalized, candidate.value),
+      ),
+    )
     .map((entry) => entry.value)
     .filter(predicate);
 
@@ -331,9 +353,32 @@ function primaryValueKeyForUnit(unit: string): string | null {
     return "second";
   }
 
-  return fragment
-    .replace(/^\d+[km]_/, "")
-    .replace(/s$/, "");
+  return singularize(fragment.replace(/^\d+[km]_/, ""));
+}
+
+/**
+ * Map a unit-fragment plural to its singular canonical form.
+ *
+ * Pluralization is deliberately conservative: only known suffixes are
+ * stripped, so already-singular fragments (`compute_second`,
+ * `audio_minute`, `audio_hour`, `infill_character`) pass through
+ * unchanged.
+ */
+function singularize(fragment: string): string {
+  // "1k_searches" → "searches" → "search"; "voices" → "voice"
+  // "tokens" → "token"; "pages" → "page"; "minutes" → "minute".
+  // "audio_seconds" → "audio_second"; "compute_seconds" → "compute_second".
+  // Already singular: "compute_second" / "audio_minute" / "infill_character".
+  if (fragment.endsWith("ches") || fragment.endsWith("shes") || fragment.endsWith("xes") || fragment.endsWith("zes") || fragment.endsWith("sses")) {
+    return fragment.slice(0, -2);                     // "searches"→"search"
+  }
+  if (fragment.endsWith("ies") && fragment.length > 3) {
+    return fragment.slice(0, -3) + "y";               // "queries"→"query"
+  }
+  if (fragment.endsWith("s") && !fragment.endsWith("ss")) {
+    return fragment.slice(0, -1);                     // "voices"→"voice"
+  }
+  return fragment;
 }
 
 function normalizeBillingValues(unit: string, source: Record<string, unknown>): Record<string, number> {
@@ -579,6 +624,16 @@ function normalizeBillingValuesForUnit(unitValue: string, source: Record<string,
   return normalizeBillingValues(unit, source);
 }
 
+function isPrivatePricingValueKey(normalizedKey: string): boolean {
+  return normalizedKey === "growth"
+    || normalizedKey === "enterprise"
+    || normalizedKey === "prepaid"
+    || normalizedKey === "pre_paid"
+    || normalizedKey.includes("batch")
+    || normalizedKey.includes("cached")
+    || normalizedKey.includes("cache");
+}
+
 function inferValueKeyFromUnit(unitLabel: string, unit: string): string {
   const words = new Set(normalizeUnitWords(unitLabel).map((word) => normalizeUnitWord(word)));
 
@@ -604,20 +659,24 @@ function normalizePricingValueKey(unit: string, rawKey: string): string | null {
     return null;
   }
 
+  if (isPrivatePricingValueKey(normalizedKey)) {
+    return null;
+  }
+
   if (normalizedKey.startsWith("price_") || normalizedKey.startsWith("context_") || normalizedKey === "slug" || normalizedKey === "tab" || normalizedKey === "category" || normalizedKey === "label" || normalizedKey === "href" || normalizedKey === "kind" || normalizedKey === "inferred" || normalizedKey === "inferred_confidence" || normalizedKey === "inferred_method") {
     return null;
   }
 
+  const primary = primaryValueKeyForUnit(unit);
   if (normalizedKey === "input" || normalizedKey === "output" || normalizedKey === "cached_input" || normalizedKey === "reasoning") {
-    return normalizedKey;
+    return primary && !isTokenUnit(unit) ? primary : normalizedKey;
   }
 
-  const primary = primaryValueKeyForUnit(unit);
   if (!primary) {
     return normalizedKey === "cost" || normalizedKey === "price" ? "cost" : normalizedKey;
   }
 
-  if (normalizedKey === "cost" || normalizedKey === "price") {
+  if (normalizedKey === "cost" || normalizedKey === "price" || normalizedKey === "pay_as_you_go") {
     return primary;
   }
 
@@ -673,7 +732,45 @@ function readRawPriceValues(record: Record<string, unknown>): RawPriceValue[] {
   return values;
 }
 
+function buildMixedBillingSections(record: Record<string, unknown>): BillingPriceSection[] {
+  if (typeof record.unit !== "string" || normalizeValueKey(record.unit) !== "mixed") {
+    return [];
+  }
+
+  const mappings = [
+    ["perImage", "per_image_usd"],
+    ["per_image", "per_image_usd"],
+    ["perSecond", "per_second_usd"],
+    ["per_second", "per_second_usd"],
+    ["perMinute", "per_minute_usd"],
+    ["per_minute", "per_minute_usd"],
+  ] as const;
+
+  const sections: BillingPriceSection[] = [];
+  for (const [field, unitLabel] of mappings) {
+    const amount = record[field];
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+
+    const unit = normalizeUnit(unitLabel);
+    sections.push({
+      header: displayUnit(unit).replace(/^Per /, "").replace(/\b\w/g, (char) => char.toUpperCase()),
+      unit,
+      values: normalizeBillingValuesForUnit(unit, { cost: amount }),
+      default: true,
+    });
+  }
+
+  return sections;
+}
+
 function buildDynamicBillingSections(record: Record<string, unknown>): BillingPriceSection[] {
+  const mixedSections = buildMixedBillingSections(record);
+  if (mixedSections.length > 0) {
+    return mixedSections;
+  }
+
   const explicitUnit = typeof record.unit === "string" && record.unit.trim().length > 0 ? record.unit : null;
   if (explicitUnit) {
     try {
@@ -683,13 +780,24 @@ function buildDynamicBillingSections(record: Record<string, unknown>): BillingPr
     }
   }
 
+  const tokenRecord = asRecord(record.token);
+  if (tokenRecord) {
+    const tokenSections = buildDynamicBillingSections({
+      ...tokenRecord,
+      kind: "tokens",
+    });
+    if (tokenSections.length > 0) {
+      return tokenSections;
+    }
+  }
+
   const groupedSections = new Map<string, BillingPriceSection>();
   for (const [key, value] of Object.entries(record)) {
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
       continue;
     }
 
-    const match = key.match(/^(input|output|cached_input|reasoning)_per_(.+)_usd$/);
+    const match = key.match(/^(input|output|cached_input|reasoning)_per_(.+?)(?:_usd)?$/);
     if (!match) {
       continue;
     }
@@ -699,13 +807,17 @@ function buildDynamicBillingSections(record: Record<string, unknown>): BillingPr
       ? `${rawFragment}_tokens`
       : rawFragment;
     const unit = normalizeUnit(`per_${normalizedFragment}_usd`);
+    const valueKey = normalizePricingValueKey(unit, match[1]);
+    if (!valueKey) {
+      continue;
+    }
     const section = groupedSections.get(unit) || {
       header: displayUnit(unit).replace(/^Per /, "").replace(/\b\w/g, (char) => char.toUpperCase()),
       unit,
       values: {},
       default: true,
     };
-    section.values[match[1]] = value;
+    section.values[valueKey] = value;
     groupedSections.set(unit, section);
   }
 
@@ -734,10 +846,255 @@ function buildDynamicBillingSections(record: Record<string, unknown>): BillingPr
   return [];
 }
 
-function isBatchPricingSection(section: Record<string, unknown>): boolean {
-  const header = typeof section.header === "string" ? section.header.toLowerCase() : "";
-  const unit = typeof section.unit === "string" ? section.unit.toLowerCase() : "";
-  return header.includes("batch") || unit.includes("batch");
+function pricingSectionText(section: Record<string, unknown>, includeRaw: boolean): string {
+  const source = asRecord(section.source);
+  return [
+    section.header,
+    section.unit,
+    section.unitKey,
+    source?.section,
+    source?.row,
+    includeRaw ? source?.raw : undefined,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+}
+
+function isPrivatePricingSection(section: Record<string, unknown>): boolean {
+  const sectionText = pricingSectionText(section, false);
+  const rawText = pricingSectionText(section, true);
+
+  return /\bbatch(?:ed)?\b/.test(rawText)
+    || /pre[\s_-]?paid/.test(rawText)
+    || /\bcach(?:e|ed|ing)\b/.test(sectionText);
+}
+
+function inferredTokenHeaderFromSource(section: Record<string, unknown>, unit: string): string | undefined {
+  if (!isTokenUnit(normalizeUnit(unit))) {
+    return undefined;
+  }
+
+  const header = typeof section.header === "string" ? section.header.trim() : "";
+  if (header && normalizeValueKey(header) !== "default") {
+    return header;
+  }
+
+  const source = asRecord(section.source);
+  const rows = Array.isArray(source?.rows) ? source.rows : [];
+  const rowText = rows
+    .map((row) => asRecord(row))
+    .filter((row): row is Record<string, unknown> => Boolean(row))
+    .map((row) => [row.type, row.priceName, row.rawUnit].filter((value): value is string => typeof value === "string").join(" "))
+    .join(" ")
+    .toLowerCase();
+
+  const categories = [
+    ["audio", /\baudio\b/],
+    ["vision", /\b(?:vision|image|video)\b/],
+    ["text", /\btext\b/],
+  ] as const;
+  const matches = categories
+    .filter(([, pattern]) => pattern.test(rowText))
+    .map(([category]) => category);
+
+  return matches.length === 1 ? `${matches[0]} tokens` : undefined;
+}
+
+function parsePositivePrice(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(value.replace(/[$,\s]/g, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function tokenEntriesFromSourceRows(section: Record<string, unknown>, unit: string): Record<string, number> | null {
+  if (!isTokenUnit(normalizeUnit(unit))) {
+    return null;
+  }
+
+  const source = asRecord(section.source);
+  const raw = typeof source?.raw === "string" ? source.raw : "";
+  const cells = raw.split("|").map((cell) => cell.trim()).slice(1);
+  const parsedRaw: Record<string, number> = {};
+  if (cells.length >= 3) {
+    const input = parsePositivePrice(cells[0]);
+    const cachedInput = parsePositivePrice(cells[1]);
+    const output = parsePositivePrice(cells[2]);
+    if (input !== null) parsedRaw.input = input;
+    if (cachedInput !== null) parsedRaw.cached_input = cachedInput;
+    if (output !== null) parsedRaw.output = output;
+  }
+
+  const entries = asRecord(section.entries);
+  if (entries) {
+    const hasDirectionalPrices = ["input", "output", "cached_input", "reasoning"].some((key) => {
+      const value = entries[key];
+      return typeof value === "number" && Number.isFinite(value) && value > 0;
+    });
+    if (hasDirectionalPrices) {
+      const hasInput = typeof entries.input === "number" && Number.isFinite(entries.input) && entries.input > 0;
+      const hasOutput = typeof entries.output === "number" && Number.isFinite(entries.output) && entries.output > 0;
+      if ((!hasInput || !hasOutput) && typeof parsedRaw.input === "number" && typeof parsedRaw.output === "number") {
+        return parsedRaw;
+      }
+      return null;
+    }
+  }
+
+  const rows = Array.isArray(source?.rows) ? source.rows : [];
+  const values: Record<string, number> = {};
+  for (const rowValue of rows) {
+    const row = asRecord(rowValue);
+    if (!row) {
+      continue;
+    }
+
+    const text = [row.type, row.priceName, row.rawUnit]
+      .filter((value): value is string => typeof value === "string")
+      .join(" ");
+    const normalizedText = normalizeValueKey(text);
+    if (isPrivatePricingValueKey(normalizedText)) {
+      continue;
+    }
+
+    const price = parsePositivePrice(row.rawPrice ?? row.price);
+    if (price === null) {
+      continue;
+    }
+
+    const key = /\b(output|completion)\b/.test(normalizeText(text)) || normalizedText.includes("output_token")
+      ? "output"
+      : /\b(input|prompt)\b/.test(normalizeText(text)) || normalizedText.includes("input_token")
+        ? "input"
+        : null;
+    if (!key) {
+      continue;
+    }
+
+    values[key] = Math.max(values[key] ?? 0, price);
+  }
+
+  if (Object.keys(values).length > 0) {
+    return values;
+  }
+
+  return Object.keys(parsedRaw).length > 0 ? parsedRaw : null;
+}
+
+function buildSectionFromCompiled(section: Record<string, unknown>): BillingPriceSection | null {
+  const entries = asRecord(section.entries);
+  const unit = typeof section.unitKey === "string"
+    ? section.unitKey
+    : typeof section.unit === "string"
+      ? section.unit
+      : null;
+  if (!entries || !unit) {
+    return null;
+  }
+
+  try {
+    const effectiveEntries = tokenEntriesFromSourceRows(section, unit) ?? entries;
+    return buildBillingSection(
+      unit,
+      effectiveEntries,
+      inferredTokenHeaderFromSource(section, unit) ?? (typeof section.header === "string" ? section.header : undefined),
+      section.default === true,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function splitCategorizedTokenEntries(section: Record<string, unknown>): BillingPriceSection[] | null {
+  const entries = asRecord(section.entries);
+  const unitValue = typeof section.unitKey === "string"
+    ? section.unitKey
+    : typeof section.unit === "string"
+      ? section.unit
+      : null;
+  if (!entries || !unitValue) {
+    return null;
+  }
+
+  const unit = normalizeUnit(unitValue);
+  if (!isTokenUnit(unit)) {
+    return null;
+  }
+
+  const grouped = new Map<string, Record<string, number>>();
+  for (const [rawKey, value] of Object.entries(entries)) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+
+    const normalizedKey = normalizeValueKey(rawKey);
+    if (isPrivatePricingValueKey(normalizedKey)) {
+      continue;
+    }
+
+    const match = normalizedKey.match(/^(input|output|reasoning)_(text|audio|image|video|vision)$/);
+    if (!match) {
+      continue;
+    }
+
+    const [, direction, category] = match;
+    const values = grouped.get(category) || {};
+    values[direction] = value;
+    grouped.set(category, values);
+  }
+
+  if (grouped.size === 0) {
+    return null;
+  }
+
+  return [...grouped.entries()].map(([category, values]) => ({
+    header: `${category} tokens`,
+    unit,
+    values,
+    default: section.default === true,
+  }));
+}
+
+function isGenericTokenPricingSection(section: Record<string, unknown>): boolean {
+  const unit = typeof section.unitKey === "string"
+    ? section.unitKey
+    : typeof section.unit === "string"
+      ? section.unit
+      : "";
+  try {
+    if (!isTokenUnit(normalizeUnit(unit))) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  const header = typeof section.header === "string" ? normalizeValueKey(section.header) : "";
+  return header === "" || header === "pricing" || header === "tokens" || header === "input_output_tokens";
+}
+
+function normalizeSectionDefaults(sections: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  return sections.map((section) => {
+    if (section.default !== true || !isGenericTokenPricingSection(section)) {
+      return section;
+    }
+
+    const key = `${String(section.unitKey || section.unit || "")}\u0000${String(section.header || "")}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      return section;
+    }
+
+    const { default: _default, ...rest } = section;
+    return rest;
+  });
 }
 
 export function normalizeCompiledPricing(pricing: ModelPricing | BillingPrice): ModelPricing | BillingPrice {
@@ -774,30 +1131,36 @@ export function normalizeCompiledPricing(pricing: ModelPricing | BillingPrice): 
   const normalizedSections = sections
     .map((section) => asRecord(section))
     .filter((section): section is Record<string, unknown> => Boolean(section))
-    .filter((section) => !isBatchPricingSection(section))
+    .filter((section) => !isPrivatePricingSection(section))
     .flatMap((section) => {
-      const entries = asRecord(section.entries);
-      const unit = typeof section.unitKey === "string"
-        ? section.unitKey
-        : typeof section.unit === "string"
-          ? section.unit
-          : null;
-      if (!entries || !unit) {
+      const splitTokenSections = splitCategorizedTokenEntries(section);
+      if (splitTokenSections) {
+        return splitTokenSections.map((built) => ({
+          ...(built.header ? { header: built.header } : {}),
+          ...(section.default === true ? { default: true } : {}),
+          unit: displayUnit(built.unit),
+          unitKey: built.unit,
+          entries: built.values,
+        }));
+      }
+
+      const built = buildSectionFromCompiled(section);
+      if (!built) {
         return [];
       }
 
       return [{
-        ...(typeof section.header === "string" ? { header: section.header } : {}),
+        ...(built.header ? { header: built.header } : {}),
         ...(section.default === true ? { default: true } : {}),
-        unit: typeof section.unit === "string" ? section.unit : displayUnit(normalizeUnit(unit)),
-        unitKey: normalizeUnit(unit),
-        entries,
+        unit: typeof section.unit === "string" ? section.unit : displayUnit(built.unit),
+        unitKey: built.unit,
+        entries: built.values,
       }];
     });
 
   return {
     ...record,
-    sections: normalizedSections,
+    sections: normalizeSectionDefaults(normalizedSections),
   };
 }
 
@@ -821,23 +1184,7 @@ function extractBillingSections(pricing: ModelPricing | BillingPrice): BillingPr
     const normalizedSections = sections
       .map((section) => asRecord(section))
       .filter((section): section is Record<string, unknown> => Boolean(section))
-      .map((section) => {
-        const entries = asRecord(section.entries);
-        const unit = typeof section.unitKey === "string"
-          ? section.unitKey
-          : typeof section.unit === "string"
-            ? section.unit
-            : null;
-        if (!entries || !unit) {
-          return null;
-        }
-        return buildBillingSection(
-          unit,
-          entries,
-          typeof section.header === "string" ? section.header : undefined,
-          section.default === true,
-        );
-      })
+      .map((section) => buildSectionFromCompiled(section))
       .filter((section): section is BillingPriceSection => Boolean(section));
 
     if (normalizedSections.length > 0) {
@@ -862,7 +1209,7 @@ function extractBillingSections(pricing: ModelPricing | BillingPrice): BillingPr
 
 export function resolveBillingPrice(
   pricing: ModelPricing | BillingPrice | null | undefined,
-  _modality?: UnifiedModality,
+  _modality?: Modality,
 ): BillingPrice {
   if (!pricing) {
     throw new Error("pricing is required");
@@ -1030,14 +1377,27 @@ export function extractAuthoritativeUsage(value: unknown): AuthoritativeUsage {
   const reasoningTokens = readReasoningTokens(record);
   const totalTokens = readNonNegativeInteger(record, ["totalTokens", "total_tokens"]);
   if (promptTokens !== undefined && completionTokens !== undefined) {
-      return {
-        promptTokens,
-        completionTokens,
-        ...withOptionalReasoning(reasoningTokens),
-        totalTokens: totalTokens ?? promptTokens + completionTokens,
-        ...withTokenBillingDetails(record),
-        source: "direct_fields",
-      };
+    return {
+      promptTokens,
+      completionTokens,
+      ...withOptionalReasoning(reasoningTokens),
+      totalTokens: totalTokens ?? promptTokens + completionTokens,
+      ...withTokenBillingDetails(record),
+      source: "direct_fields",
+    };
+  }
+
+  // Embeddings-only models report only input/prompt token counts; treat
+  // a missing completion as zero rather than rejecting the usage envelope.
+  if (promptTokens !== undefined) {
+    return {
+      promptTokens,
+      completionTokens: 0,
+      ...withOptionalReasoning(reasoningTokens),
+      totalTokens: totalTokens ?? promptTokens,
+      ...withTokenBillingDetails(record),
+      source: "direct_fields",
+    };
   }
 
   throw new Error("authoritative usage is required");
@@ -1048,7 +1408,7 @@ function cloneMetrics(...sources: Array<Record<string, unknown> | null | undefin
 }
 
 export function extractAuthoritativeMediaEvidence(
-  _modality: UnifiedModality,
+  _modality: Modality,
   value: unknown,
 ): BillingMediaEvidence {
   const record = asRecord(value);
@@ -1096,6 +1456,39 @@ function buildMetricMap(media: BillingMediaEvidence): Record<string, unknown> {
   }
   if (typeof media.requests === "number" && media.requests > 0 && metrics.request === undefined) {
     metrics.request = media.requests;
+  }
+
+  // Cross-derive time-aliases so callers don't need to know whether
+  // the unit is `audio_second` / `compute_second` / `audio_minute` /
+  // `audio_hour`. One canonical second ⇄ minute ⇄ hour ladder.
+  const seconds = readPositiveMetric(metrics, ["second", "duration", "audio_second", "compute_second"]);
+  if (seconds !== undefined) {
+    if (metrics.second === undefined) metrics.second = seconds;
+    if (metrics.duration === undefined) metrics.duration = seconds;
+    if (metrics.audio_second === undefined) metrics.audio_second = seconds;
+    if (metrics.compute_second === undefined) metrics.compute_second = seconds;
+    if (metrics.minute === undefined) metrics.minute = seconds / 60;
+    if (metrics.audio_minute === undefined) metrics.audio_minute = seconds / 60;
+    if (metrics.hour === undefined) metrics.hour = seconds / 3600;
+    if (metrics.audio_hour === undefined) metrics.audio_hour = seconds / 3600;
+  }
+
+  // Cross-derive megapixel ⇄ pixel.
+  const pixels = readPositiveMetric(metrics, ["pixel", "processed_pixel"]);
+  if (pixels !== undefined) {
+    if (metrics.megapixel === undefined) metrics.megapixel = pixels / 1_000_000;
+    if (metrics.processed_megapixel === undefined) metrics.processed_megapixel = pixels / 1_000_000;
+  }
+  const megapixels = readPositiveMetric(metrics, ["megapixel", "processed_megapixel"]);
+  if (megapixels !== undefined && metrics.pixel === undefined) {
+    metrics.pixel = megapixels * 1_000_000;
+  }
+
+  // Search aliases (Cohere rerank, knowledge tools).
+  const requests = readPositiveMetric(metrics, ["request", "search"]);
+  if (requests !== undefined) {
+    if (metrics.search === undefined) metrics.search = requests;
+    if (metrics.page === undefined) metrics.page = requests;
   }
 
   return metrics;
@@ -1234,6 +1627,12 @@ function resolveValuePrice(values: Record<string, number>, key: string, aliases:
     }
   }
 
+  // Single-tier sections labelled with a provider-specific key
+  // (e.g. "transcription", "voice_changer", "generation",
+  // "entity_detection", "infill_character"): when only one positive
+  // value exists, take it. We never silently pick "the cheapest" of
+  // multiple values — that would invent a price tier the caller did
+  // not select.
   const numericValues = Object.values(values).filter((value): value is number => (
     typeof value === "number" && Number.isFinite(value) && value > 0
   ));
@@ -1325,6 +1724,123 @@ function hasSpecificTokenBreakdown(metrics: Record<string, unknown> | undefined)
   );
 }
 
+function hasNonTextOutputTokenBreakdown(metrics: Record<string, unknown> | undefined): boolean {
+  if (!metrics) {
+    return false;
+  }
+
+  return Object.keys(metrics).some((key) => /^output_(?!text_).+_tokens$/.test(normalizeValueKey(key)));
+}
+
+function parseScaledTokenCount(value: string, suffix?: string): number {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    return Number.NaN;
+  }
+
+  const scale = (suffix || "").toLowerCase();
+  if (scale === "m") {
+    return parsed * 1_000_000;
+  }
+  if (scale === "k") {
+    return parsed * 1_000;
+  }
+  return parsed;
+}
+
+function tokenRangeForSection(section: BillingPriceSection): { minExclusive?: number; maxInclusive?: number } | null {
+  const header = section.header || "";
+  const text = header
+    .replace(/≤/g, "<=")
+    .replace(/≥/g, ">=")
+    .replace(/[()]/g, " ")
+    .toLowerCase();
+
+  const between = text.match(/(\d+(?:\.\d+)?)\s*([km])?\s*<[^<=>]*<=\s*(\d+(?:\.\d+)?)\s*([km])?/i);
+  if (between) {
+    return {
+      minExclusive: parseScaledTokenCount(between[1], between[2]),
+      maxInclusive: parseScaledTokenCount(between[3], between[4]),
+    };
+  }
+
+  const max = text.match(/(?:<=|<)\s*(\d+(?:\.\d+)?)\s*([km])?/i);
+  if (max) {
+    return { maxInclusive: parseScaledTokenCount(max[1], max[2]) };
+  }
+
+  const min = text.match(/>\s*(\d+(?:\.\d+)?)\s*([km])?/i);
+  if (min) {
+    return { minExclusive: parseScaledTokenCount(min[1], min[2]) };
+  }
+
+  return null;
+}
+
+function sectionMatchesTokenRange(section: BillingPriceSection, usage: AuthoritativeUsage): boolean {
+  const range = tokenRangeForSection(section);
+  if (!range) {
+    return false;
+  }
+
+  const tokenCount = usage.totalTokens > 0 ? usage.totalTokens : usage.promptTokens;
+  if (range.minExclusive !== undefined && tokenCount <= range.minExclusive) {
+    return false;
+  }
+  if (range.maxInclusive !== undefined && tokenCount > range.maxInclusive) {
+    return false;
+  }
+  return true;
+}
+
+function isPriorityProcessingSection(section: BillingPriceSection): boolean {
+  return normalizeText(section.header || "").includes("priority processing");
+}
+
+function tokenSectionPriceSignature(section: BillingPriceSection): string {
+  const values = Object.entries(section.values)
+    .filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify({ unit: section.unit, values });
+}
+
+function resolveTokenSectionsForUsage(
+  sections: BillingPriceSection[],
+  usage: AuthoritativeUsage,
+): BillingPriceSection[] {
+  if (sections.length <= 1) {
+    return sections;
+  }
+
+  const sectionCategories = sections.map((section) => tokenSectionCategory(section, sections.length));
+  const defaults = sections.filter((section) => section.default === true);
+  if (defaults.length === 1 && sectionCategories.every((category) => category === null)) {
+    return [defaults[0]];
+  }
+
+  const priceSignatures = new Set(sections.map((section) => tokenSectionPriceSignature(section)));
+  if (priceSignatures.size === 1) {
+    return [sections[0]];
+  }
+
+  const rangedSections = sections.filter((section) => tokenRangeForSection(section));
+  if (rangedSections.length === 0) {
+    return sections;
+  }
+
+  const matches = rangedSections.filter((section) => sectionMatchesTokenRange(section, usage));
+  if (matches.length === 1) {
+    return [matches[0]];
+  }
+
+  const regularMatches = matches.filter((section) => !isPriorityProcessingSection(section));
+  if (regularMatches.length === 1) {
+    return [regularMatches[0]];
+  }
+
+  return sections;
+}
+
 function buildTokenLineItems(args: {
   subject: string;
   sections: BillingPriceSection[];
@@ -1350,9 +1866,14 @@ function buildTokenLineItems(args: {
     const cachedInput = category === "generic"
       ? (args.usage.cachedInputTokens ?? readNonNegativeMetric(billingMetrics || {}, ["cached_input_tokens"]))
       : readNonNegativeMetric(billingMetrics || {}, [`cached_input_${category}_tokens`]);
-    const outputTotal = category === "generic"
+    const outputMetric = category === "generic"
       ? args.usage.completionTokens
       : readNonNegativeMetric(billingMetrics || {}, [`output_${category}_tokens`]);
+    const outputTotal = outputMetric ?? (
+      category === "text" && !hasNonTextOutputTokenBreakdown(billingMetrics)
+        ? args.usage.completionTokens
+        : undefined
+    );
     const reasoningTokens = category === "generic" || category === "text"
       ? (args.usage.reasoningTokens ?? readNonNegativeMetric(billingMetrics || {}, ["reasoning_tokens"]))
       : undefined;
@@ -1371,10 +1892,20 @@ function buildTokenLineItems(args: {
       });
     }
 
-    const billableInput = typeof inputTotal === "number"
+    const inputOnlyTotal = typeof section.values.input === "number"
+      && typeof section.values.output !== "number"
+      && typeof section.values.cached_input !== "number"
+      && typeof section.values.reasoning !== "number"
+      && inputTotal === 0
+      && outputTotal === 0
+      && args.usage.totalTokens > 0
+        ? args.usage.totalTokens
+        : inputTotal;
+
+    const billableInput = typeof inputOnlyTotal === "number"
       ? (typeof section.values.cached_input === "number" && typeof cachedInput === "number"
-        ? inputTotal - cachedInput
-        : inputTotal)
+        ? inputOnlyTotal - cachedInput
+        : inputOnlyTotal)
       : undefined;
     if (typeof section.values.input === "number" && typeof billableInput === "number" && billableInput > 0) {
       lineItems.push({
@@ -1464,9 +1995,38 @@ function optionTierIndex(options: Array<string | number>, value: unknown): numbe
   return ordered.findIndex((entry) => String(entry.option) === String(value));
 }
 
+function optionPricingTierIndex(options: Array<string | number>, value: unknown, sectionCount: number): number {
+  const selectedRank = typeof value === "string" || typeof value === "number" ? rankOptionValue(value) : null;
+  if (selectedRank === null) {
+    return -1;
+  }
+
+  const ranked = options
+    .map((option, index) => ({ index, rank: rankOptionValue(option) }))
+    .filter((entry): entry is { index: number; rank: number } => entry.rank !== null)
+    .sort((left, right) => (left.rank - right.rank) || (left.index - right.index));
+  if (ranked.length === 0) {
+    return -1;
+  }
+
+  const uniqueRanks = [...new Set(ranked.map((entry) => entry.rank))];
+  let selectedRankIndex = uniqueRanks.findIndex((rank) => rank === selectedRank);
+  if (selectedRankIndex < 0) {
+    if (selectedRank <= uniqueRanks[0]) {
+      selectedRankIndex = 0;
+    } else if (selectedRank >= uniqueRanks[uniqueRanks.length - 1]) {
+      selectedRankIndex = uniqueRanks.length - 1;
+    } else {
+      selectedRankIndex = uniqueRanks.findIndex((rank) => rank > selectedRank);
+    }
+  }
+
+  return selectedRankIndex < 0 ? -1 : Math.min(sectionCount - 1, selectedRankIndex);
+}
+
 function resolveParamDrivenMediaSection(args: {
   subject: string;
-  modality: UnifiedModality;
+  modality: Modality;
   sections: BillingPriceSection[];
   metrics: Record<string, unknown>;
 }): BillingPriceSection | null {
@@ -1481,10 +2041,32 @@ function resolveParamDrivenMediaSection(args: {
   if (!params) {
     return null;
   }
+  const primaryKeys = new Set(
+    args.sections
+      .map((section) => primaryValueKeyForUnit(section.unit))
+      .filter((key): key is string => Boolean(key)),
+  );
+  const quantityKeys = new Set(["n", "num_images", "sample_count", "sampleCount"]);
+  const geometryKeys = new Set(["size", "resolution", "aspect_ratio", "width", "height"]);
+  const sizeIsQuantity = [...primaryKeys].some((key) =>
+    key === "pixel"
+    || key === "megapixel"
+    || key.endsWith("_pixel")
+    || key.endsWith("_megapixel"),
+  );
 
   const candidates = Object.entries(params.params)
     .flatMap(([key, definition]) => {
-      if (!Array.isArray(definition.options) || definition.options.length !== args.sections.length) {
+      if (quantityKeys.has(key)) {
+        return [];
+      }
+      if (primaryKeys.has("generation") && geometryKeys.has(key)) {
+        return [];
+      }
+      if (sizeIsQuantity && (key === "size" || key === "resolution" || key === "aspect_ratio")) {
+        return [];
+      }
+      if (!Array.isArray(definition.options) || definition.options.length < args.sections.length) {
         return [];
       }
 
@@ -1493,13 +2075,13 @@ function resolveParamDrivenMediaSection(args: {
         return [];
       }
 
-      const selectedIndex = optionTierIndex(definition.options, selectedValue);
+      const selectedIndex = optionPricingTierIndex(definition.options, selectedValue, args.sections.length);
       if (selectedIndex < 0) {
         return [];
       }
 
       const defaultValue = params.defaults[key];
-      const defaultIndex = defaultValue === undefined ? -1 : optionTierIndex(definition.options, defaultValue);
+      const defaultIndex = defaultValue === undefined ? -1 : optionPricingTierIndex(definition.options, defaultValue, args.sections.length);
       return [{
         key,
         selectedIndex,
@@ -1527,16 +2109,136 @@ function resolveParamDrivenMediaSection(args: {
 
 function resolveMediaBillingSection(args: {
   subject: string;
-  modality: UnifiedModality;
+  modality: Modality;
   sections: BillingPriceSection[];
   metrics: Record<string, unknown>;
-}): BillingPriceSection {
-  const paramDriven = resolveParamDrivenMediaSection(args);
-  if (paramDriven) {
-    return paramDriven;
+}): BillingPriceSection[] {
+  if (args.sections.length === 1) {
+    return [args.sections[0]];
   }
 
-  return resolveBillingSection(args.sections);
+  // Tier-based pricing (image quality, video resolution, etc.) — when
+  // sections share a unit/header but differ by tier, params-handler
+  // ladders pick the right one.
+  const paramDriven = resolveParamDrivenMediaSection(args);
+  if (paramDriven) {
+    return [paramDriven];
+  }
+
+  const defaults = args.sections.filter((section) => section.default === true);
+
+  if (defaults.length > 1) {
+    const defaultParamDriven = resolveParamDrivenMediaSection({
+      ...args,
+      sections: defaults,
+    });
+    if (defaultParamDriven) {
+      return [defaultParamDriven];
+    }
+  }
+
+  // When multiple defaults exist with distinct unit+header pairs,
+  // each represents an *additive* billing dimension (e.g. Cartesia
+  // Sonic charges TTS-per-character + voice-changer-per-second +
+  // infill-fee-plus-per-character simultaneously). Emit a line item
+  // for each that has a positive billable quantity in the metrics.
+  if (defaults.length > 1) {
+    return resolveAdditiveDefaults(defaults, args.metrics);
+  }
+
+  if (defaults.length === 1) {
+    return [defaults[0]];
+  }
+
+  // No defaults declared and multiple sections — strict: this is a
+  // data integrity issue. Refuse to silently choose a tier.
+  throw new Error("pricing is ambiguous without an explicit default");
+}
+
+/**
+ * For multi-default media sections (e.g. Cartesia Sonic charging TTS
+ * + voice-changer + infill simultaneously, scribe with add-ons), each
+ * section is an *additive* billable dimension — emit only the ones
+ * whose primary billable quantity is present in `metrics`. A section
+ * without any matching metric is silently dropped (the call did not
+ * use that dimension).
+ *
+ * If no section produces a usable metric, raise. Tier disambiguation
+ * is the job of `params-handler.ts` + `resolveParamDrivenMediaSection`,
+ * not this fallback.
+ */
+function resolveAdditiveDefaults(
+  defaults: BillingPriceSection[],
+  metrics: Record<string, unknown>,
+): BillingPriceSection[] {
+  const applicable = defaults.filter((section) => sectionHasUsableMetric(section, metrics));
+  if (applicable.length === 0) {
+    throw new Error("pricing is ambiguous without an explicit default");
+  }
+  return applicable;
+}
+
+function sectionHasUsableMetric(section: BillingPriceSection, metrics: Record<string, unknown>): boolean {
+  const primary = primaryValueKeyForUnit(section.unit);
+  if (!primary) {
+    return false;
+  }
+
+  const genericPriceKeys = new Set([
+    primary,
+    `per_${primary}`,
+    ...unitPriceAliasesForMediaPrimaryKey(primary),
+  ]);
+  const sectionSpecificKeys = Object.keys(section.values).filter((key) => !genericPriceKeys.has(key));
+  if (sectionSpecificKeys.length > 0) {
+    return sectionSpecificKeys.some((key) => readPositiveMetric(metrics, [key]) !== undefined);
+  }
+
+  const candidateAliases = quantityAliasesForPrimaryKey(primary);
+  for (const alias of candidateAliases) {
+    const value = metrics[alias];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return true;
+    }
+  }
+  // Composite "one-time + per-X" sections always apply when at least
+  // one of their value-keys has a fee in the section. Force-include.
+  if (section.values.one_time_fee !== undefined) {
+    return true;
+  }
+  return false;
+}
+
+function quantityAliasesForPrimaryKey(primaryKey: string): string[] {
+  if (primaryKey === "generation") return ["generation", "image", "video", "request"];
+  if (primaryKey === "image") return ["image", "generation", "request"];
+  if (primaryKey === "video") return ["video", "generation", "request"];
+  if (primaryKey === "second") return ["second", "duration", "compute_second"];
+  if (primaryKey === "minute") return ["minute", "audio_minute"];
+  if (primaryKey === "hour") return ["hour", "audio_hour"];
+  if (primaryKey === "page") return ["page"];
+  if (primaryKey === "search") return ["search", "request"];
+  if (primaryKey === "voice") return ["voice", "generation", "request"];
+  if (primaryKey === "request") return ["request", "generation"];
+  if (primaryKey === "step") return ["step"];
+  if (primaryKey === "tile") return ["tile"];
+  if (primaryKey === "compute_second") return ["compute_second", "second", "duration"];
+  if (primaryKey === "audio_second") return ["audio_second", "second", "duration"];
+  if (primaryKey === "audio_minute") return ["audio_minute", "minute", "duration"];
+  if (primaryKey === "audio_hour") return ["audio_hour", "hour"];
+  if (primaryKey === "generated_audio_minute") return ["generated_audio_minute"];
+  if (primaryKey === "infill_character") return ["infill_character", "character"];
+  if (primaryKey.endsWith("_megapixel")) return [primaryKey, "megapixel"];
+  if (primaryKey.endsWith("_pixel")) return [primaryKey, "pixel"];
+  if (primaryKey.endsWith("_second")) return [primaryKey, "second", "duration"];
+  if (primaryKey.endsWith("_minute")) return [primaryKey, "minute"];
+  if (primaryKey.endsWith("_hour")) return [primaryKey, "hour"];
+  if (primaryKey.endsWith("_character")) return [primaryKey, "character"];
+  if (primaryKey === "character") return ["character"];
+  if (primaryKey === "megapixel") return ["megapixel", "processed_megapixel"];
+  if (primaryKey === "pixel") return ["pixel", "processed_pixel"];
+  if (primaryKey === "duration") return ["duration", "second"];
+  return [primaryKey];
 }
 
 function buildMeteredMediaBilling(args: {
@@ -1569,25 +2271,7 @@ function buildMeteredMediaBilling(args: {
     throw new Error(`unsupported pricing unit: ${unit}`);
   }
 
-  const quantityAliases = primaryKey === "generation"
-    ? ["generation", "image", "video", "request"]
-    : primaryKey === "image"
-      ? ["image", "generation", "request"]
-      : primaryKey === "video"
-        ? ["video", "generation", "request"]
-        : primaryKey === "second"
-          ? ["second", "duration"]
-          : primaryKey === "minute"
-            ? ["minute"]
-            : primaryKey.endsWith("_megapixel")
-              ? [primaryKey, "megapixel"]
-              : primaryKey.endsWith("_pixel")
-                ? [primaryKey, "pixel"]
-                : primaryKey.endsWith("_second")
-                  ? [primaryKey, "second", "duration"]
-                  : primaryKey.endsWith("_minute")
-                    ? [primaryKey, "minute"]
-                    : [primaryKey];
+  const quantityAliases = quantityAliasesForPrimaryKey(primaryKey);
 
   const unitPriceAliases = unitPriceAliasesForMediaPrimaryKey(primaryKey);
 
@@ -1613,7 +2297,7 @@ function buildMeteredMediaBilling(args: {
 
 export function buildAuthoritativeBilling(args: {
   subject: string;
-  modality: UnifiedModality;
+  modality: Modality;
   pricing: ModelPricing | BillingPrice;
   usage?: unknown;
   media?: unknown;
@@ -1629,14 +2313,15 @@ export function buildAuthoritativeBilling(args: {
   const usage = tokenSections.length > 0 && args.usage !== undefined && args.usage !== null
     ? extractAuthoritativeUsage(args.usage)
     : null;
+  const resolvedTokenSections = usage ? resolveTokenSectionsForUsage(tokenSections, usage) : tokenSections;
   const mediaEvidence = mediaSections.length > 0 ? extractAuthoritativeMediaEvidence(args.modality, args.media) : null;
   const mediaMetrics = mediaEvidence ? buildMetricMap(mediaEvidence) : {};
 
-  if (usage && tokenSections.length > 0) {
+  if (usage && resolvedTokenSections.length > 0) {
     lineItems.push(
       ...buildTokenLineItems({
         subject: args.subject,
-        sections: tokenSections,
+        sections: resolvedTokenSections,
         usage,
       }),
     );
@@ -1653,23 +2338,31 @@ export function buildAuthoritativeBilling(args: {
     && mediaSections.every((section) => normalizeText(section.header || "").includes("image generation"));
 
   if (mediaSections.length > 0 && !duplicateImageGenerationPricing) {
-    const pricing = resolveMediaBillingSection({
+    const pricingSections = resolveMediaBillingSection({
       subject: args.subject,
       modality: args.modality,
       sections: mediaSections,
       metrics: mediaMetrics,
     });
-    lineItems.push(
-      ...buildMeteredMediaBilling({
-        subject: args.subject,
-        pricing: {
-          unit: pricing.unit,
-          values: pricing.values,
-        },
-        media: mediaEvidence!,
-        source: "provider_response",
-      }).lineItems,
-    );
+    for (const pricing of pricingSections) {
+      try {
+        lineItems.push(
+          ...buildMeteredMediaBilling({
+            subject: args.subject,
+            pricing: {
+              unit: pricing.unit,
+              values: pricing.values,
+            },
+            media: mediaEvidence!,
+            source: "provider_response",
+          }).lineItems,
+        );
+      } catch (error) {
+        // Additive sections that don't apply this call are silently
+        // skipped — Sonic infill add-on, scribe entity-detection, etc.
+        if (pricingSections.length === 1) throw error;
+      }
+    }
   }
 
   if (lineItems.length > 0) {
@@ -1688,7 +2381,7 @@ export function buildAuthoritativeBilling(args: {
 
 export function buildRequestBilling(args: {
   subject: string;
-  modality: UnifiedModality;
+  modality: Modality;
   pricing: ModelPricing | BillingPrice;
   metrics?: Record<string, unknown>;
 }): AuthoritativeBillingRecord {
@@ -1700,23 +2393,33 @@ export function buildRequestBilling(args: {
   if (mediaSections.length === 0) {
     throw new Error("token pricing cannot be authorized from request metrics");
   }
-  const pricing = resolveMediaBillingSection({
+  const pricingSections = resolveMediaBillingSection({
     subject: args.subject,
     modality: args.modality,
     sections: mediaSections,
     metrics: args.metrics,
   });
 
-  return buildMeteredMediaBilling({
-    subject: args.subject,
-    pricing: {
-      unit: pricing.unit,
-      values: pricing.values,
-    },
-    media: {
-      billingMetrics: args.metrics,
-      requests: readPositiveMetric(args.metrics, ["request"]),
-    },
-    source: "request",
-  });
+  const lineItems: Array<MeterLineItem & { source: "provider_response" | "request" }> = [];
+  for (const pricing of pricingSections) {
+    try {
+      lineItems.push(
+        ...buildMeteredMediaBilling({
+          subject: args.subject,
+          pricing: { unit: pricing.unit, values: pricing.values },
+          media: {
+            billingMetrics: args.metrics,
+            requests: readPositiveMetric(args.metrics, ["request"]),
+          },
+          source: "request",
+        }).lineItems,
+      );
+    } catch (error) {
+      if (pricingSections.length === 1) throw error;
+    }
+  }
+  if (lineItems.length === 0) {
+    throw new Error("authoritative billable quantity is required: request");
+  }
+  return { subject: args.subject, lineItems };
 }

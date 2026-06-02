@@ -1,10 +1,18 @@
-import type { ModelProvider } from "./types.js";
-import { resolveProvidedOptionalModelParamValues } from "./params-handler.js";
+import {
+  resolveOptionalModelParamValues,
+  resolveProvidedOptionalModelParamValues,
+} from "./params-handler.js";
+import { getModelById } from "./catalog/registry.js";
+import {
+  getModelCapabilities,
+  type ModelOperationCapability,
+} from "./catalog/modalities/index.js";
 
-export type UnifiedMode = "responses" | "chat" | "embeddings";
-export type UnifiedModality = "text" | "image" | "audio" | "video" | "embedding";
+export type Mode = "responses" | "chat" | "embeddings";
+export type Modality = "text" | "image" | "audio" | "video" | "embedding" | "realtime";
+export type Schema = Record<string, unknown>;
 
-export interface UnifiedContentPart {
+export interface Part {
   type: "text" | "image_url" | "input_audio" | "video_url" | "tool-call" | "tool-result";
   text?: string;
   image_url?: { url: string; detail?: "auto" | "low" | "high" } | string;
@@ -18,43 +26,53 @@ export interface UnifiedContentPart {
   args?: unknown;
 }
 
-export interface UnifiedMessage {
+export interface Message {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | UnifiedContentPart[] | null;
+  content: string | Part[] | null;
   tool_calls?: Array<{
     id: string;
     type: "function";
     function: { name: string; arguments: string };
+    providerMetadata?: Record<string, unknown>;
   }>;
   tool_call_id?: string;
   name?: string;
 }
 
-export interface UnifiedTool {
+export interface Tool {
   type: "function";
   function: {
     name: string;
     description?: string;
-    parameters?: Record<string, unknown>;
+    parameters?: Schema;
   };
 }
 
-export type UnifiedToolChoice =
+export type Choice =
   | "none"
   | "auto"
   | "required"
   | { type: "function"; function: { name: string } };
 
-export interface UnifiedRequest {
-  mode: UnifiedMode;
+export interface Format {
+  type: "text" | "json_object" | "json_schema";
+  json_schema?: {
+    name: string;
+    schema: Schema;
+    strict?: boolean;
+  };
+}
+
+export interface Request {
+  mode: Mode;
   model: string;
-  provider?: ModelProvider;
   stream: boolean;
-  modality: UnifiedModality;
-  messages: UnifiedMessage[];
+  modality: Modality;
+  operation?: string;
+  messages: Message[];
   instructions?: string;
-  tools?: UnifiedTool[];
-  toolChoice?: UnifiedToolChoice;
+  tools?: Tool[];
+  toolChoice?: Choice;
   maxTokens?: number;
   temperature?: number;
   responseId: string;
@@ -77,30 +95,27 @@ export interface UnifiedRequest {
     aspectRatio?: string;
     resolution?: string;
     imageUrl?: string;
+    videoUrl?: string;
   };
   previousResponseId?: string;
   customParams?: Record<string, unknown>;
   billingMetrics?: Record<string, unknown>;
   /**
    * OpenAI-shaped response_format on inbound chat / responses requests.
-   * Translated by the provider adapter into AI-SDK's responseFormat (which
-   * each provider then maps to its native flag — Gemini's `responseMimeType`
-   * + `responseSchema`, OpenAI's `response_format`, etc.).
-   *
-   * Keeping the OpenAI shape here (instead of pre-mapping to AI-SDK shape)
-   * preserves `json_schema.name` / `strict` for providers that honor them.
+   * Provider modules lower this canonical value to native flags such as
+   * Gemini `responseMimeType` + `responseSchema` or OpenAI `response_format`.
    */
-  responseFormat?: {
-    type: "text" | "json_object" | "json_schema";
-    json_schema?: {
-      name: string;
-      schema: Record<string, unknown>;
-      strict?: boolean;
-    };
-  };
+  responseFormat?: Format;
 }
 
-export interface UnifiedUsage {
+export function normalizeAudioTranscriptionFile(file: string): string {
+  const trimmed = file.trim();
+  return /^https?:\/\//i.test(trimmed) || /^data:/i.test(trimmed)
+    ? trimmed
+    : `data:application/octet-stream;base64,${trimmed}`;
+}
+
+export interface Usage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -110,39 +125,61 @@ export interface UnifiedUsage {
   raw?: Record<string, unknown>;
 }
 
-export interface UnifiedToolCall {
+export interface Call {
   id?: string;
   name: string;
   arguments: string | object;
+  providerMetadata?: Record<string, unknown>;
 }
 
-export interface UnifiedOutput {
-  modality: UnifiedModality;
+export interface Media {
+  mimeType: string;
+  base64?: string;
+  url?: string;
+  revisedPrompt?: string;
+  duration?: number;
+  generatedUnits?: number;
+  jobId?: string;
+  status?: "queued" | "processing" | "completed" | "failed";
+  progress?: number;
+  billingMetrics?: Record<string, unknown>;
+}
+
+export interface Output {
+  modality: Modality;
   content?: string;
-  usage?: UnifiedUsage;
+  usage?: Usage;
   finishReason?: string;
-  toolCalls?: UnifiedToolCall[];
+  toolCalls?: Call[];
   embeddings?: number[][];
-  media?: {
-    mimeType: string;
-    base64?: string;
-    url?: string;
-    revisedPrompt?: string;
-    duration?: number;
-    generatedUnits?: number;
-    jobId?: string;
-    status?: "queued" | "processing" | "completed" | "failed";
-    progress?: number;
-    billingMetrics?: Record<string, unknown>;
-  };
+  media?: Media;
 }
 
-export interface UnifiedStreamEvent {
-  type: "text-delta" | "tool-call" | "tool-call-delta" | "thinking" | "image-partial" | "image-complete" | "done";
+export interface Event {
+  type:
+  | "created"
+  | "text-delta"
+  | "tool-call"
+  | "tool-call-delta"
+  | "thinking"
+  | "image-partial"
+  | "image-complete"
+  | "output-item"
+  | "video-status"
+  | "done";
   text?: string;
-  toolCall?: { id: string; name: string; arguments: string };
+  toolCall?: { id: string; name: string; arguments: string; providerMetadata?: Record<string, unknown> };
   toolCallDelta?: { id?: string; name?: string; arguments?: string; index: number };
   thinking?: string;
+  outputIndex?: number;
+  item?: ResponsesOutputItem;
+  videoStatus?: {
+    jobId: string;
+    status: "queued" | "processing" | "completed" | "failed";
+    progress?: number;
+    url?: string;
+    error?: string;
+  };
   image?: {
     base64: string;
     index?: number;
@@ -152,8 +189,15 @@ export interface UnifiedStreamEvent {
     generatedUnits?: number;
     billingMetrics?: Record<string, unknown>;
   };
-  usage?: UnifiedUsage;
+  usage?: Usage;
   finishReason?: string;
+}
+
+export type Result = Output;
+
+export interface Model {
+  generate(request: Request): Promise<Output>;
+  stream?(request: Request): AsyncIterable<Event>;
 }
 
 export interface ResponsesOutputItem {
@@ -164,6 +208,10 @@ export interface ResponsesOutputItem {
   audio_url?: string;
   video_url?: string;
   embedding?: number[];
+  job_id?: string;
+  status?: string;
+  progress?: number;
+  mime_type?: string;
   call_id?: string;
   name?: string;
   arguments?: string;
@@ -180,6 +228,7 @@ export interface ResponsesResponse {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    billingMetrics?: Record<string, unknown>;
   };
   error?: {
     message: string;
@@ -210,6 +259,7 @@ export interface ChatCompletionsResponse {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    billingMetrics?: Record<string, unknown>;
   };
 }
 
@@ -224,6 +274,23 @@ export interface EmbeddingsResponse {
   usage: {
     prompt_tokens: number;
     total_tokens: number;
+    billingMetrics?: Record<string, unknown>;
+  };
+}
+
+function mergeBillingMetrics(...sources: Array<Record<string, unknown> | undefined>): Record<string, unknown> | undefined {
+  const merged = Object.assign({}, ...sources.filter((source): source is Record<string, unknown> => Boolean(source)));
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function responseUsage(usage: Usage | undefined, extraMetrics?: Record<string, unknown>): ResponsesResponse["usage"] {
+  if (!usage) return undefined;
+  const billingMetrics = mergeBillingMetrics(usage.billingMetrics, extraMetrics);
+  return {
+    input_tokens: usage.promptTokens,
+    output_tokens: usage.completionTokens,
+    total_tokens: usage.totalTokens,
+    ...(billingMetrics ? { billingMetrics } : {}),
   };
 }
 
@@ -231,15 +298,64 @@ function toResponseId(): string {
   return `resp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function parseRole(role: unknown): UnifiedMessage["role"] {
+function parseRole(role: unknown): Message["role"] {
+  if (role === "developer") {
+    return "system";
+  }
   if (role === "system" || role === "assistant" || role === "tool") {
     return role;
   }
   return "user";
 }
 
-function normalizeContentParts(parts: unknown[]): UnifiedContentPart[] {
-  const normalized: UnifiedContentPart[] = [];
+const PASS = [
+  "frequency_penalty",
+  "include",
+  "logit_bias",
+  "metadata",
+  "parallel_tool_calls",
+  "presence_penalty",
+  "prompt_cache_key",
+  "prompt_cache_retention",
+  "reasoning",
+  "reasoning_effort",
+  "seed",
+  "service_tier",
+  "store",
+  "stream_options",
+  "text",
+  "top_p",
+  "user",
+] as const;
+
+function params(body: Record<string, unknown>): Record<string, unknown> | null {
+  const output: Record<string, unknown> = {};
+  for (const key of PASS) {
+    const value = body[key];
+    if (value !== undefined) {
+      output[key] = value;
+    }
+  }
+
+  const cache = pickStringValue(body.promptCacheKey);
+  if (cache) output.prompt_cache_key = cache;
+  const retention = pickStringValue(body.promptCacheRetention);
+  if (retention) output.prompt_cache_retention = retention;
+  const effort = pickStringValue(body.reasoningEffort);
+  if (effort) output.reasoning_effort = effort;
+  const verbosity = pickStringValue(body.textVerbosity, body.verbosity);
+  if (verbosity) {
+    output.text = {
+      ...(asRecord(output.text) || {}),
+      verbosity,
+    };
+  }
+
+  return Object.keys(output).length > 0 ? output : null;
+}
+
+function normalizeContentParts(parts: unknown[]): Part[] {
+  const normalized: Part[] = [];
 
   for (const item of parts) {
     if (!item || typeof item !== "object") {
@@ -249,12 +365,12 @@ function normalizeContentParts(parts: unknown[]): UnifiedContentPart[] {
     const part = item as Record<string, unknown>;
     const type = typeof part.type === "string" ? part.type : "";
 
-    if (type === "text" && typeof part.text === "string") {
+    if ((type === "text" || type === "input_text" || type === "output_text") && typeof part.text === "string") {
       normalized.push({ type: "text", text: part.text });
       continue;
     }
 
-    if (type === "image_url") {
+    if (type === "image_url" || type === "input_image") {
       const image = part.image_url;
       const url = typeof image === "string" ? image : (image as { url?: string } | undefined)?.url;
       if (url) normalized.push({ type: "image_url", image_url: { url } });
@@ -262,13 +378,13 @@ function normalizeContentParts(parts: unknown[]): UnifiedContentPart[] {
     }
 
     if (type === "input_audio") {
-      const audio = part.input_audio;
+      const audio = part.input_audio ?? part.audio_url;
       const url = typeof audio === "string" ? audio : (audio as { url?: string } | undefined)?.url;
       if (url) normalized.push({ type: "input_audio", input_audio: { url } });
       continue;
     }
 
-    if (type === "video_url") {
+    if (type === "video_url" || type === "input_video") {
       const video = part.video_url;
       const url = typeof video === "string" ? video : (video as { url?: string } | undefined)?.url;
       if (url) normalized.push({ type: "video_url", video_url: { url } });
@@ -301,7 +417,7 @@ function normalizeContentParts(parts: unknown[]): UnifiedContentPart[] {
   return normalized;
 }
 
-function normalizeMessages(input: unknown): UnifiedMessage[] {
+function normalizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) {
     return [];
   }
@@ -317,19 +433,19 @@ function normalizeMessages(input: unknown): UnifiedMessage[] {
         return {
           role,
           content: normalizeContentParts(content),
-          tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls as UnifiedMessage["tool_calls"] : undefined,
+          tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls as Message["tool_calls"] : undefined,
           tool_call_id: typeof message.tool_call_id === "string" ? message.tool_call_id : undefined,
           name: typeof message.name === "string" ? message.name : undefined,
-        } satisfies UnifiedMessage;
+        } satisfies Message;
       }
 
       return {
         role,
         content: typeof content === "string" ? content : content == null ? null : String(content),
-        tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls as UnifiedMessage["tool_calls"] : undefined,
+        tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls as Message["tool_calls"] : undefined,
         tool_call_id: typeof message.tool_call_id === "string" ? message.tool_call_id : undefined,
         name: typeof message.name === "string" ? message.name : undefined,
-      } satisfies UnifiedMessage;
+      } satisfies Message;
     });
 }
 
@@ -367,7 +483,7 @@ function pickNumberValue(...values: unknown[]): number | undefined {
   return undefined;
 }
 
-function normalizeAttachmentList(body: Record<string, unknown>): UnifiedContentPart[] {
+function normalizeAttachmentList(body: Record<string, unknown>): Part[] {
   const raw: unknown[] = [];
   if (Array.isArray(body.attachments)) {
     raw.push(...body.attachments);
@@ -378,10 +494,10 @@ function normalizeAttachmentList(body: Record<string, unknown>): UnifiedContentP
 
   return raw
     .map(attachmentToContentPart)
-    .filter((part): part is UnifiedContentPart => part !== null);
+    .filter((part): part is Part => part !== null);
 }
 
-function attachmentToContentPart(value: unknown): UnifiedContentPart | null {
+function attachmentToContentPart(value: unknown): Part | null {
   if (typeof value === "string" && value.trim().length > 0) {
     return attachmentRecordToContentPart({ url: value.trim() });
   }
@@ -394,7 +510,7 @@ function attachmentToContentPart(value: unknown): UnifiedContentPart | null {
   return attachmentRecordToContentPart(record);
 }
 
-function attachmentRecordToContentPart(record: Record<string, unknown>): UnifiedContentPart | null {
+function attachmentRecordToContentPart(record: Record<string, unknown>): Part | null {
   const url = pickStringValue(
     record.url,
     record.uri,
@@ -483,7 +599,7 @@ function inferAttachmentKind(
   return "file";
 }
 
-function appendAttachmentParts(messages: UnifiedMessage[], attachments: UnifiedContentPart[]): UnifiedMessage[] {
+function appendAttachmentParts(messages: Message[], attachments: Part[]): Message[] {
   if (attachments.length === 0) {
     return messages;
   }
@@ -503,7 +619,7 @@ function appendAttachmentParts(messages: UnifiedMessage[], attachments: UnifiedC
   }
 
   const target = next[targetIndex];
-  const parts: UnifiedContentPart[] = [];
+  const parts: Part[] = [];
   if (Array.isArray(target.content)) {
     parts.push(...target.content);
   } else if (typeof target.content === "string" && target.content.trim().length > 0) {
@@ -514,7 +630,7 @@ function appendAttachmentParts(messages: UnifiedMessage[], attachments: UnifiedC
   return next;
 }
 
-function getPrimaryText(messages: UnifiedMessage[]): string {
+function getPrimaryText(messages: Message[]): string {
   for (const message of messages) {
     if (typeof message.content === "string" && message.content.trim().length > 0) {
       return message.content;
@@ -525,7 +641,7 @@ function getPrimaryText(messages: UnifiedMessage[]): string {
     }
 
     const text = message.content
-      .filter((part): part is UnifiedContentPart & { text: string } => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0)
+      .filter((part): part is Part & { text: string } => part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0)
       .map((part) => part.text)
       .join("\n")
       .trim();
@@ -563,7 +679,7 @@ function parseDimensions(size: string | undefined): { width: number; height: num
 }
 
 function buildRequestBillingMetrics(
-  modality: UnifiedModality,
+  modality: Modality,
   resolvedParams: Record<string, unknown>,
   promptText?: string,
 ): Record<string, unknown> {
@@ -622,6 +738,20 @@ function buildRequestBillingMetrics(
   }
 
   if (modality === "audio" && promptText) {
+    const musicLengthMs = pickNumberValue(resolvedParams.music_length_ms);
+    const seconds = typeof musicLengthMs === "number" && musicLengthMs > 0
+      ? musicLengthMs / 1000
+      : pickNumberValue(resolvedParams.duration_seconds, resolvedParams.duration);
+    if (typeof seconds === "number" && seconds > 0) {
+      metrics.second = seconds;
+      metrics.audio_second = seconds;
+      metrics.minute = seconds / 60;
+      metrics.audio_minute = seconds / 60;
+      metrics.generated_audio_second = seconds;
+      metrics.generated_audio_minute = seconds / 60;
+      metrics.duration = seconds;
+    }
+
     const characters = Array.from(promptText).length;
     if (characters > 0) {
       metrics.character = characters;
@@ -631,7 +761,7 @@ function buildRequestBillingMetrics(
   return metrics;
 }
 
-function normalizeResponsesInput(input: unknown): UnifiedMessage[] {
+function normalizeResponsesInput(input: unknown): Message[] {
   if (typeof input === "string") {
     return [{ role: "user", content: input }];
   }
@@ -649,7 +779,7 @@ function normalizeResponsesInput(input: unknown): UnifiedMessage[] {
     return normalizeMessages(input);
   }
 
-  const parts: UnifiedContentPart[] = [];
+  const parts: Part[] = [];
   for (const item of input) {
     if (!item || typeof item !== "object") {
       continue;
@@ -688,7 +818,7 @@ function normalizeResponsesInput(input: unknown): UnifiedMessage[] {
   return [{ role: "user", content: parts }];
 }
 
-function pickModality(body: Record<string, unknown>, fallback: UnifiedModality): UnifiedModality {
+function requestedModalities(body: Record<string, unknown>): Modality[] {
   const directModalities = Array.isArray(body.modalities)
     ? body.modalities.filter((m): m is string => typeof m === "string")
     : [];
@@ -697,28 +827,165 @@ function pickModality(body: Record<string, unknown>, fallback: UnifiedModality):
     ? ((responseObj as Record<string, unknown>).modalities as unknown[]).filter((m): m is string => typeof m === "string")
     : [];
 
-  const modalities = [...directModalities, ...nestedModalities].map((m) => m.toLowerCase());
+  const out: Modality[] = [];
+  const push = (value: string) => {
+    const normalized = value.toLowerCase();
+    if ((normalized === "embedding" || normalized === "embeddings") && !out.includes("embedding")) {
+      out.push("embedding");
+      return;
+    }
+    if ((normalized === "text" || normalized === "image" || normalized === "audio" || normalized === "video" || normalized === "realtime") && !out.includes(normalized)) {
+      out.push(normalized);
+    }
+  };
 
-  if (modalities.includes("image")) return "image";
-  if (modalities.includes("audio")) return "audio";
-  if (modalities.includes("video")) return "video";
-  if (modalities.includes("embedding") || modalities.includes("embeddings")) return "embedding";
-  if (modalities.includes("text")) return "text";
+  for (const modality of [...directModalities, ...nestedModalities]) {
+    push(modality);
+  }
 
-  return fallback;
+  return out;
+}
+
+function pickExplicitOperation(body: Record<string, unknown>): string | null {
+  const operation = pickStringValue(body.operation);
+  if (operation) return operation;
+
+  const responseObj = body.response;
+  if (responseObj && typeof responseObj === "object") {
+    return pickStringValue((responseObj as Record<string, unknown>).operation) ?? null;
+  }
+
+  return null;
+}
+
+function inputKindsFromMessages(messages: Message[]): Modality[] {
+  const kinds: Modality[] = [];
+  const push = (kind: Modality) => {
+    if (!kinds.includes(kind)) kinds.push(kind);
+  };
+
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      if (message.content.trim().length > 0) push("text");
+      continue;
+    }
+
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+
+    for (const part of message.content) {
+      if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+        push("text");
+        continue;
+      }
+      if (part.type === "image_url") {
+        push("image");
+        continue;
+      }
+      if (part.type === "input_audio") {
+        push("audio");
+        continue;
+      }
+      if (part.type === "video_url") {
+        push("video");
+      }
+    }
+  }
+
+  return kinds;
+}
+
+function inputKindsFromRequest(body: Record<string, unknown>, messages: Message[]): Modality[] {
+  const kinds = inputKindsFromMessages(messages);
+  const push = (kind: Modality) => {
+    if (!kinds.includes(kind)) kinds.push(kind);
+  };
+
+  if (pickStringValue(body.image_url, body.image)) push("image");
+  if (pickStringValue(body.audio_url, body.file)) push("audio");
+  if (pickStringValue(body.video_url, body.video)) push("video");
+
+  return kinds;
+}
+
+function capabilityAcceptsInput(capability: ModelOperationCapability, inputKinds: Modality[]): boolean {
+  const meaningfulInputs = inputKinds.filter((kind) => kind !== "text");
+  const requestInputs = meaningfulInputs.length > 0 ? meaningfulInputs : inputKinds;
+
+  for (const kind of requestInputs) {
+    if (!capability.input.includes(kind)) return false;
+  }
+
+  return true;
+}
+
+function resolveCatalogCapability(
+  body: Record<string, unknown>,
+  model: string,
+  messages: Message[],
+  fallback: Modality,
+): ModelOperationCapability | { modality: Modality; operation?: string } {
+  const card = model ? getModelById(model) : null;
+  const explicitModalities = requestedModalities(body);
+  const explicitOperation = pickExplicitOperation(body);
+  if (!card) return { modality: explicitModalities[0] ?? fallback, ...(explicitOperation ? { operation: explicitOperation } : {}) };
+
+  const capabilities = getModelCapabilities(card);
+  if (capabilities.length === 0) {
+    return { modality: explicitModalities[0] ?? fallback, ...(explicitOperation ? { operation: explicitOperation } : {}) };
+  }
+
+  const inputKinds = inputKindsFromRequest(body, messages);
+  const candidates = capabilities
+    .filter((capability) => explicitModalities.length === 0 || explicitModalities.includes(capability.modality))
+    .filter((capability) => !explicitOperation || capability.operation === explicitOperation)
+    .filter((capability) => capabilityAcceptsInput(capability, inputKinds));
+
+  const nonTextInputs = inputKinds.filter((kind) => kind !== "text");
+  if (!explicitOperation && nonTextInputs.length > 0) {
+    const operationSpecific = candidates.find((capability) =>
+      capability.operation !== "chat"
+      && capability.operation !== "responses"
+      && capability.operation !== "completion"
+    );
+    if (operationSpecific) {
+      return operationSpecific;
+    }
+  }
+
+  if (candidates[0]) {
+    return candidates[0];
+  }
+
+  const modalityMatch = explicitModalities.length > 0
+    ? capabilities.find((capability) => explicitModalities.includes(capability.modality))
+    : null;
+  return modalityMatch ?? capabilities[0] ?? { modality: fallback, ...(explicitOperation ? { operation: explicitOperation } : {}) };
+}
+
+function pickCatalogRoute(body: Record<string, unknown>, model: string, messages: Message[], fallback: Modality): {
+  modality: Modality;
+  operation?: string;
+} {
+  const resolved = resolveCatalogCapability(body, model, messages, fallback);
+  return {
+    modality: resolved.modality,
+    ...(resolved.operation ? { operation: resolved.operation } : {}),
+  };
 }
 
 /**
  * Parse the inbound OpenAI-shape `response_format` field into our typed
- * UnifiedRequest.responseFormat. Accepts:
+ * Request.responseFormat. Accepts:
  *   { type: "text" }                                          → text
  *   { type: "json_object" }                                   → json (no schema)
  *   { type: "json_schema", json_schema: { name, schema } }    → json (with schema)
  *
  * Strings, malformed objects, and unknown types are dropped (returns undefined).
- * The translation to AI-SDK's `responseFormat` happens in providers/adapter.ts.
+ * Provider modules lower this value to their native response-format fields.
  */
-function parseInboundResponseFormat(value: unknown): UnifiedRequest["responseFormat"] {
+function parseInboundResponseFormat(value: unknown): Request["responseFormat"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
   const t = obj.type;
@@ -746,41 +1013,46 @@ function parseInboundResponseFormat(value: unknown): UnifiedRequest["responseFor
   };
 }
 
-export function normalizeChatRequest(body: Record<string, unknown>): UnifiedRequest {
+export function normalizeChatRequest(body: Record<string, unknown>): Request {
   const model = typeof body.model === "string" ? body.model : "";
   const messages = appendAttachmentParts(
     normalizeMessages(body.messages),
     normalizeAttachmentList(body),
   );
   const rawCustomParams = asRecord(body.custom_params);
+  const merged = {
+    ...(params(body) || {}),
+    ...(rawCustomParams || {}),
+  };
+  const customParams = Object.keys(merged).length > 0 ? merged : undefined;
 
   return {
     mode: "chat",
     model,
-    provider: typeof body.provider === "string" ? body.provider as ModelProvider : undefined,
     stream: body.stream === true,
     modality: "text",
+    operation: "chat",
     messages,
-    tools: Array.isArray(body.tools) ? body.tools as UnifiedTool[] : undefined,
-    toolChoice: body.tool_choice as UnifiedToolChoice | undefined,
+    tools: Array.isArray(body.tools) ? body.tools as Tool[] : undefined,
+    toolChoice: body.tool_choice as Choice | undefined,
     maxTokens: typeof body.max_tokens === "number" ? body.max_tokens : typeof body.max_completion_tokens === "number" ? body.max_completion_tokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     responseId: toResponseId(),
-    customParams: rawCustomParams || undefined,
+    customParams,
     responseFormat: parseInboundResponseFormat(body.response_format),
   };
 }
 
-export function normalizeEmbeddingsRequest(body: Record<string, unknown>): UnifiedRequest {
+export function normalizeEmbeddingsRequest(body: Record<string, unknown>): Request {
   const model = typeof body.model === "string" ? body.model : "";
   const input = body.input;
 
   return {
     mode: "embeddings",
     model,
-    provider: typeof body.provider === "string" ? body.provider as ModelProvider : undefined,
     stream: false,
     modality: "embedding",
+    operation: "text-to-embedding",
     messages: [],
     responseId: toResponseId(),
     embeddingInput: (typeof input === "string" || Array.isArray(input)) ? input as string | string[] : "",
@@ -788,51 +1060,54 @@ export function normalizeEmbeddingsRequest(body: Record<string, unknown>): Unifi
   };
 }
 
-export function normalizeResponsesRequest(body: Record<string, unknown>): UnifiedRequest {
+export function normalizeResponsesRequest(body: Record<string, unknown>): Request {
   const model = typeof body.model === "string" ? body.model : "";
-  const modality = pickModality(body, "text");
   const messages = appendAttachmentParts(
     normalizeResponsesInput(body.input),
     normalizeAttachmentList(body),
   );
+  const route = pickCatalogRoute(body, model, messages, "text");
+  const modality = route.modality;
   const promptText = getPrimaryText(messages);
   const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
   const previousResponseId =
     typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
   const rawCustomParams = asRecord(body.custom_params);
-  const resolvedModelParams = modality === "image" || modality === "video"
-    ? resolveProvidedOptionalModelParamValues(model, modality, body)
-    : null;
-  const explicitTopLevelParams: Record<string, unknown> = {};
-  if (typeof body.n === "number") explicitTopLevelParams.n = body.n;
-  if (typeof body.size === "string") explicitTopLevelParams.size = body.size;
-  if (typeof body.quality === "string") explicitTopLevelParams.quality = body.quality;
-  if (typeof body.duration === "number" || typeof body.duration === "string") explicitTopLevelParams.duration = body.duration;
-  if (typeof body.aspect_ratio === "string") explicitTopLevelParams.aspect_ratio = body.aspect_ratio;
-  if (typeof body.resolution === "string") explicitTopLevelParams.resolution = body.resolution;
-  const resolvedParams = {
+  const passParams = params(body);
+  const resolvedModelParams = resolveOptionalModelParamValues(model, modality, body);
+  const providedModelParams = resolveProvidedOptionalModelParamValues(model, modality, body);
+  const providedParams = {
+    ...(passParams || {}),
     ...(rawCustomParams || {}),
-    ...explicitTopLevelParams,
+    ...(providedModelParams?.values ?? {}),
+  };
+  const billingParams = {
+    ...(passParams || {}),
+    ...(rawCustomParams || {}),
     ...(resolvedModelParams?.values ?? {}),
   };
-  const customParams = Object.keys(resolvedParams).length > 0 ? resolvedParams : undefined;
+  const customParams = Object.keys(providedParams).length > 0 ? providedParams : undefined;
   const customParamsRecord = asRecord(customParams);
 
   return {
     mode: "responses",
     model,
-    provider: typeof body.provider === "string" ? body.provider as ModelProvider : undefined,
     stream: body.stream === true,
     modality,
+    ...(route.operation ? { operation: route.operation } : {}),
     messages,
     instructions,
-    tools: Array.isArray(body.tools) ? body.tools as UnifiedTool[] : undefined,
-    toolChoice: body.tool_choice as UnifiedToolChoice | undefined,
+    tools: Array.isArray(body.tools) ? body.tools as Tool[] : undefined,
+    toolChoice: body.tool_choice as Choice | undefined,
     maxTokens: typeof body.max_output_tokens === "number" ? body.max_output_tokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     responseId: toResponseId(),
     embeddingInput: modality === "embedding"
-      ? (typeof body.input === "string" || Array.isArray(body.input) ? body.input as string | string[] : "")
+      ? (typeof body.input === "string"
+        ? body.input
+        : Array.isArray(body.input) && body.input.every((item) => typeof item === "string")
+          ? body.input as string[]
+          : promptText)
       : undefined,
     imageOptions: {
       n: pickNumberValue(body.n, customParamsRecord?.n, customParamsRecord?.num_images),
@@ -874,25 +1149,87 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Unifie
         typeof body.image_url === "string" ? body.image_url : undefined,
         customParamsRecord?.image_url,
       ),
+      videoUrl: pickStringValue(
+        typeof body.video_url === "string" ? body.video_url : undefined,
+        customParamsRecord?.video_url,
+      ),
     },
     previousResponseId,
     customParams,
     responseFormat: modality === "text" ? parseInboundResponseFormat(body.response_format) : undefined,
     billingMetrics: (modality === "image" || modality === "video" || modality === "audio")
-      ? buildRequestBillingMetrics(modality, resolvedParams, promptText)
+      ? buildRequestBillingMetrics(modality, billingParams, promptText)
       : undefined,
   };
 }
 
-export function toResponsesResponse(model: string, requestId: string, output: UnifiedOutput): ResponsesResponse {
-  const created = Math.floor(Date.now() / 1000);
-  const usage = output.usage
-    ? {
-      input_tokens: output.usage.promptTokens,
-      output_tokens: output.usage.completionTokens,
-      total_tokens: output.usage.totalTokens,
+export function toResponsesOutputItems(output: Output): ResponsesOutputItem[] {
+  if (output.modality === "embedding") {
+    return (output.embeddings || []).map((embedding) => ({
+      type: "output_embedding",
+      role: "assistant",
+      embedding,
+    }));
+  }
+
+  if (output.media) {
+    if (output.modality === "image") {
+      const url = output.media.url || (output.media.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
+      return [{
+        type: "output_image",
+        role: "assistant",
+        ...(url ? { image_url: url } : {}),
+        ...(output.media.mimeType ? { mime_type: output.media.mimeType } : {}),
+      }];
     }
-    : undefined;
+
+    if (output.modality === "audio") {
+      const url = output.media.url || (output.media.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
+      return [{
+        type: "output_audio",
+        role: "assistant",
+        ...(url ? { audio_url: url } : {}),
+        ...(output.media.mimeType ? { mime_type: output.media.mimeType } : {}),
+        ...(output.media.status ? { status: output.media.status } : {}),
+      }];
+    }
+
+    if (output.modality === "video") {
+      const url = output.media.url || (output.media.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
+      return [{
+        type: "output_video",
+        role: "assistant",
+        ...(url ? { video_url: url } : {}),
+        ...(output.media.mimeType ? { mime_type: output.media.mimeType } : {}),
+        ...(output.media.jobId ? { job_id: output.media.jobId } : {}),
+        ...(output.media.status ? { status: output.media.status } : {}),
+        ...(typeof output.media.progress === "number" ? { progress: output.media.progress } : {}),
+      }];
+    }
+  }
+
+  const items: ResponsesOutputItem[] = [];
+  const text = output.content || "";
+  items.push({ type: "output_text", role: "assistant", text });
+
+  if (output.toolCalls?.length) {
+    for (const call of output.toolCalls) {
+      items.push({
+        type: "tool_call",
+        call_id: call.id || `call_${Date.now()}`,
+        name: call.name,
+        arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
+        ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
+      } as ResponsesOutputItem);
+    }
+  }
+
+  return items;
+}
+
+export function toResponsesResponse(model: string, requestId: string, output: Output): ResponsesResponse {
+  const created = Math.floor(Date.now() / 1000);
+  const usage = responseUsage(output.usage, output.media?.billingMetrics);
 
   const response: ResponsesResponse = {
     id: requestId,
@@ -904,50 +1241,13 @@ export function toResponsesResponse(model: string, requestId: string, output: Un
     ...(usage ? { usage } : {}),
   };
 
-  if (output.modality === "embedding") {
-    response.output = (output.embeddings || []).map((embedding) => ({
-      type: "output_embedding",
-      role: "assistant",
-      embedding,
-    }));
-    return response;
-  }
-
-  if (output.modality === "image") {
-    const url = output.media?.url || (output.media?.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
-    response.output = [{ type: "output_image", role: "assistant", ...(url ? { image_url: url } : {}) }];
-    return response;
-  }
-
-  if (output.modality === "audio") {
-    const url = output.media?.url || (output.media?.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
-    response.output = [{ type: "output_audio", role: "assistant", ...(url ? { audio_url: url } : {}) }];
-    return response;
-  }
-
-  if (output.modality === "video") {
-    const url = output.media?.url || (output.media?.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
-    response.output = [{ type: "output_video", role: "assistant", ...(url ? { video_url: url } : {}) }];
-    return response;
-  }
-
-  const text = output.content || "";
-  response.output.push({ type: "output_text", role: "assistant", text });
-  if (output.toolCalls?.length) {
-    for (const call of output.toolCalls) {
-      response.output.push({
-        type: "tool_call",
-        call_id: call.id || `call_${Date.now()}`,
-        name: call.name,
-        arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
-      });
-    }
-  }
+  response.output = toResponsesOutputItems(output);
   return response;
 }
 
-export function toChatCompletionsResponse(model: string, requestId: string, output: UnifiedOutput): ChatCompletionsResponse {
+export function toChatCompletionsResponse(model: string, requestId: string, output: Output): ChatCompletionsResponse {
   const usage = output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const billingMetrics = mergeBillingMetrics(usage.billingMetrics, output.media?.billingMetrics);
 
   return {
     id: requestId,
@@ -969,6 +1269,7 @@ export function toChatCompletionsResponse(model: string, requestId: string, outp
                   name: call.name,
                   arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
                 },
+                ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
               })),
             }
             : {}),
@@ -983,6 +1284,7 @@ export function toChatCompletionsResponse(model: string, requestId: string, outp
       prompt_tokens: usage.promptTokens,
       completion_tokens: usage.completionTokens,
       total_tokens: usage.totalTokens,
+      ...(billingMetrics ? { billingMetrics } : {}),
     },
   };
 }
@@ -1009,8 +1311,9 @@ export function toOpenAIChatFinishReason(
   }
 }
 
-export function toEmbeddingsResponse(model: string, output: UnifiedOutput): EmbeddingsResponse {
+export function toEmbeddingsResponse(model: string, output: Output): EmbeddingsResponse {
   const promptTokens = output.usage?.promptTokens || 0;
+  const billingMetrics = output.usage?.billingMetrics;
   return {
     object: "list",
     data: (output.embeddings || []).map((embedding, index) => ({
@@ -1022,6 +1325,7 @@ export function toEmbeddingsResponse(model: string, output: UnifiedOutput): Embe
     usage: {
       prompt_tokens: promptTokens,
       total_tokens: promptTokens,
+      ...(billingMetrics ? { billingMetrics } : {}),
     },
   };
 }
@@ -1060,7 +1364,45 @@ export function formatSSENamedEvent(name: string, data: unknown): string {
  *   - structured error frames when the stream fails mid-flight
  *   - video-job poll status updates when clients ask for SSE polling
  */
-export interface ComposeReceiptStreamPayload {
+export interface ReceiptBillPayload {
+  kind: "agent" | "workflow" | "model" | "tool" | "search" | "memory" | "connector";
+  source?: string;
+  name?: string;
+  action?: string;
+  subject?: string;
+  amountWei: string;
+  lineItems: Array<{
+    key: string;
+    unit: string;
+    quantity: number;
+    unitPriceUsd: number;
+    amountWei: string;
+  }>;
+  agent?: string;
+  agentWallet?: string;
+  depth?: number;
+  model?: string;
+  tokens?: Record<string, number>;
+  tools?: string[];
+  total?: string;
+  duration?: string;
+  txId?: string;
+  fees?: {
+    total: {
+      percent: string;
+      amount: string;
+    };
+    distribution: Record<string, string>;
+  };
+  children?: ReceiptBillPayload[];
+}
+
+export interface ReceiptStreamPayload {
+  id?: string;
+  service?: string;
+  action?: string;
+  resource?: string;
+  userAddress?: string;
   finalAmountWei: string;
   providerAmountWei?: string;
   platformFeeWei?: string;
@@ -1072,18 +1414,30 @@ export interface ComposeReceiptStreamPayload {
     unitPriceUsd: number;
     amountWei: string;
   }>;
+  bills?: ReceiptBillPayload[];
   txHash?: string;
+  settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+  claimTxHash?: string;
+  settleTxHash?: string;
+  paymentChannelId?: string;
+  paymentCumulativeAmountWei?: string;
   network?: string;
   settledAt: number;
+  cumulative?: {
+    totalAmountWei: string;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    receiptCount: number;
+  };
 }
 
-export function toComposeReceiptStreamEvent(
-  payload: ComposeReceiptStreamPayload,
+export function toReceiptStreamEvent(
+  payload: ReceiptStreamPayload,
 ): string {
   return formatSSENamedEvent("compose.receipt", payload);
 }
 
-export function toComposeErrorStreamEvent(payload: {
+export function toErrorStreamEvent(payload: {
   code: string;
   message: string;
   details?: Record<string, unknown>;
@@ -1091,7 +1445,7 @@ export function toComposeErrorStreamEvent(payload: {
   return formatSSENamedEvent("compose.error", payload);
 }
 
-export function toComposeVideoStatusStreamEvent(payload: {
+export function toVideoStatusStreamEvent(payload: {
   jobId: string;
   status: "queued" | "processing" | "completed" | "failed";
   progress?: number;
@@ -1101,7 +1455,21 @@ export function toComposeVideoStatusStreamEvent(payload: {
   return formatSSENamedEvent("compose.video.status", payload);
 }
 
-export function toResponsesStreamEvent(requestId: string, model: string, event: UnifiedStreamEvent): Record<string, unknown> {
+export function toResponsesStreamEvent(requestId: string, model: string, event: Event): Record<string, unknown> {
+  if (event.type === "created") {
+    return {
+      type: "response.created",
+      response: {
+        id: requestId,
+        object: "response",
+        created_at: Math.floor(Date.now() / 1000),
+        status: "in_progress",
+        model,
+        output: [],
+      },
+    };
+  }
+
   if (event.type === "text-delta") {
     return {
       type: "response.output_text.delta",
@@ -1154,6 +1522,7 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
   }
 
   if (event.type === "image-complete") {
+    const usage = responseUsage(event.usage, event.image?.billingMetrics);
     return {
       type: "response.image_generation_call.completed",
       response_id: requestId,
@@ -1161,13 +1530,30 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       image_b64: event.image?.base64 || "",
       mime_type: event.image?.mimeType,
       revised_prompt: event.image?.revisedPrompt,
-      usage: event.usage
-        ? {
-          input_tokens: event.usage.promptTokens,
-          output_tokens: event.usage.completionTokens,
-          total_tokens: event.usage.totalTokens,
-        }
-        : undefined,
+      usage,
+    };
+  }
+
+  if (event.type === "output-item") {
+    return {
+      type: "response.output_item.completed",
+      response_id: requestId,
+      model,
+      output_index: event.outputIndex ?? 0,
+      item: event.item ?? { type: "output_text", role: "assistant", text: "" },
+    };
+  }
+
+  if (event.type === "video-status") {
+    return {
+      type: "response.output_video.status",
+      response_id: requestId,
+      model,
+      job_id: event.videoStatus?.jobId || "",
+      status: event.videoStatus?.status || "processing",
+      progress: event.videoStatus?.progress,
+      url: event.videoStatus?.url,
+      error: event.videoStatus?.error,
     };
   }
 
@@ -1176,20 +1562,14 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
     response_id: requestId,
     model,
     finish_reason: event.finishReason || "stop",
-    usage: event.usage
-      ? {
-        input_tokens: event.usage.promptTokens,
-        output_tokens: event.usage.completionTokens,
-        total_tokens: event.usage.totalTokens,
-      }
-      : undefined,
+    usage: responseUsage(event.usage),
   };
 }
 
 export function toChatStreamEvent(
   requestId: string,
   model: string,
-  event: UnifiedStreamEvent,
+  event: Event,
   isFirstToken = false,
 ): Record<string, unknown> {
   if (event.type === "text-delta") {
@@ -1250,6 +1630,7 @@ export function toChatStreamEvent(
                   name: event.toolCall?.name,
                   arguments: event.toolCall?.arguments,
                 },
+                ...(event.toolCall?.providerMetadata ? { providerMetadata: event.toolCall.providerMetadata } : {}),
               },
             ],
           },
@@ -1306,7 +1687,7 @@ export function toChatStreamEvent(
 export function toChatUsageStreamEvent(
   requestId: string,
   model: string,
-  usage: UnifiedUsage,
+  usage: Usage,
 ): Record<string, unknown> {
   return {
     id: requestId,

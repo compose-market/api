@@ -1,4 +1,4 @@
-import type { Express, NextFunction, Request, Response } from "express";
+import type { Express, NextFunction, Request as Req, Response as Res } from "express";
 import type { PaymentRequired } from "@x402/core/types";
 
 import {
@@ -9,59 +9,79 @@ import {
   searchModels,
   type ModelSearchInput,
   type ResolvedModel,
-} from "./models-registry.js";
-import type { ModelCard, ModelProvider } from "./types.js";
+} from "./catalog/registry.js";
+import { isProvider, type ModelCard, type ModelProvider } from "./types.js";
+import type { AdapterStatus } from "./catalog/adapter.js";
 import {
+  CANONICAL_MODALITIES,
   getModelCapabilities,
   getModalityCatalog,
   getModalityOperations,
   isCanonicalModality,
   isCanonicalOperation,
-  isStreamableModality,
-} from "./modality/index.js";
+} from "./catalog/modalities/index.js";
+import {
+  getFamilyCatalog,
+  normalizeFamily,
+} from "./catalog/families/index.js";
 import {
   buildResolvedAuthorizationInput,
   buildSettlementMeterFromOutput,
 } from "../x402/metering.js";
 import {
+  kickBatchSettlement,
   prepareInferencePayment,
   settlePreparedInferencePayment,
   type PreparedInferencePayment,
   type InferenceAuthorizationInput,
-  type InferenceSettlementReceipt,
 } from "../x402/index.js";
-import {
-  encodeReceiptHeader,
-  RECEIPT_HEADER,
-  type ComposeReceipt,
-} from "../http/request-context.js";
+import { type Receipt } from "../http/request-context.js";
 import {
   type MeteredSettlementInput,
 } from "../x402/metering.js";
+import {
+  applyReceiptHeader,
+  attachReceiptToJsonBody,
+  finalizeReceipt,
+  receiptFromInferenceSettlement,
+  receiptStreamPayload,
+  receiptForJsonBody,
+  type ReceiptContext,
+} from "../x402/receipts.js";
+import { recordChargeEvidence, type EvidenceKind } from "../x402/evidence.js";
 import {
   createErrorResponse as createCoreErrorResponse,
   formatSSE as formatCoreSSE,
   formatSSEDone as formatCoreSSEDone,
   normalizeChatRequest,
   normalizeEmbeddingsRequest,
+  normalizeAudioTranscriptionFile,
   normalizeResponsesRequest,
   toOpenAIChatFinishReason,
   toChatCompletionsResponse,
   toChatStreamEvent,
   toChatUsageStreamEvent,
   toEmbeddingsResponse,
+  toResponsesOutputItems,
   toResponsesResponse,
   toResponsesStreamEvent,
-  toComposeReceiptStreamEvent,
-  toComposeErrorStreamEvent,
-  toComposeVideoStatusStreamEvent,
-  type UnifiedMessage,
-  type UnifiedOutput,
-  type UnifiedRequest,
-  type UnifiedStreamEvent,
+  toReceiptStreamEvent,
+  toErrorStreamEvent,
+  toVideoStatusStreamEvent,
+  type Message,
+  type Output,
+  type Request,
+  type Event,
 } from "./core.js";
-import { runWithPolicy } from "./policy.js";
+import {
+  cancel as cancelEngine,
+  generate as generateEngine,
+  retrieve as retrieveEngine,
+  stream as streamEngine,
+} from "./engine.js";
 import { redisGet, redisSet } from "../x402/keys/redis.js";
+
+export { attachReceiptToJsonBody, receiptForJsonBody };
 
 // =============================================================================
 // Types
@@ -120,6 +140,7 @@ export interface ChatMessage {
     id: string;
     type: "function";
     function: { name: string; arguments: string };
+    providerMetadata?: Record<string, unknown>;
   }>;
   tool_call_id?: string;
   name?: string;
@@ -162,6 +183,7 @@ export interface ChatResult {
     id?: string;
     name: string;
     arguments: string | object;
+    providerMetadata?: Record<string, unknown>;
   }>;
 }
 
@@ -304,9 +326,9 @@ interface StoredResponseRecord {
   provider: ModelProvider;
   createdAt: number;
   status: "in_progress" | "completed" | "failed" | "cancelled";
-  inputMessages?: UnifiedMessage[];
+  inputMessages?: Message[];
   previousResponseId?: string;
-  output?: UnifiedOutput;
+  output?: Output;
   jobId?: string;
   error?: string;
 }
@@ -319,9 +341,25 @@ interface StoredResponseRecord {
 // kept for backward compatibility with test callers that mock an Express
 // response without the middleware chain in front of it; in the real server it
 // is a no-op on top of the canonical headers the middleware has already set.
-export function setCorsHeaders(_res: Response): void {
+export function setCorsHeaders(_res: Res): void {
   // Intentional no-op. See api/http/cors.ts for the canonical policy.
 }
+
+function withModelOperations(model: ModelCard): ModelCard & { operations: ReturnType<typeof getModelCapabilities> } {
+  return {
+    ...model,
+    operations: getModelCapabilities(model),
+  };
+}
+
+function phrase(values: readonly string[]): string {
+  if (values.length <= 1) return values[0] ?? "";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, or ${values[values.length - 1]}`;
+}
+
+const MODALITIES = phrase(CANONICAL_MODALITIES);
+const MODALITY_ERROR = `modality must be ${MODALITIES}`;
 
 // =============================================================================
 // Route Topology
@@ -332,7 +370,7 @@ type RouteMethod = "GET" | "POST";
 export interface InferenceRoute {
   method: RouteMethod;
   path: string;
-  handler: (req: Request, res: Response) => Promise<void>;
+  handler: (req: Req, res: Res) => Promise<void>;
   description?: string;
 }
 
@@ -340,13 +378,15 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "GET", path: "/v1/models", handler: (req, res) => handleListModels(req, res, false), description: "List models" },
   { method: "GET", path: "/v1/models/all", handler: (req, res) => handleListModels(req, res, true), description: "List all models" },
   { method: "POST", path: "/v1/models/search", handler: handleSearchModels, description: "Search models" },
+  { method: "GET", path: "/v1/families", handler: handleListFamilies, description: "List family catalogs" },
+  { method: "GET", path: "/v1/families/:family", handler: handleGetFamily, description: "Get family catalog" },
   { method: "GET", path: "/v1/modalities", handler: handleListModalities, description: "List modality catalogs" },
   { method: "GET", path: "/v1/modalities/:modality", handler: handleGetModality, description: "Get modality catalog" },
   { method: "GET", path: "/v1/modalities/:modality/operations", handler: handleListModalityOperations, description: "List modality operations" },
   { method: "GET", path: "/v1/modalities/:modality/operations/:operation/models", handler: handleListOperationModels, description: "List models by modality operation" },
   { method: "GET", path: "/v1/models/:model/params", handler: handleModelParams, description: "Model optional params" },
   { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model" },
-  { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical unified responses API" },
+  { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical request responses API" },
   { method: "GET", path: "/v1/responses/:id", handler: handleGetResponse, description: "Retrieve response by ID" },
   { method: "GET", path: "/v1/responses/:id/input_items", handler: handleGetResponseInputItems, description: "Retrieve response input items" },
   { method: "POST", path: "/v1/responses/:id/cancel", handler: handleCancelResponse, description: "Cancel response by ID" },
@@ -365,7 +405,7 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
 export function registerInferenceRoutes(app: Express): void {
   for (const route of INFERENCE_ROUTES) {
     const method = route.method.toLowerCase() as "get" | "post" | "put" | "delete";
-    app[method](route.path, (req: Request, res: Response, next: NextFunction) => {
+    app[method](route.path, (req: Req, res: Res, next: NextFunction) => {
       void route.handler(req, res).catch(next);
     });
   }
@@ -420,6 +460,32 @@ function getErrorStatusCode(record: Record<string, unknown> | null): number | un
   }
 
   return undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  const record = getErrorRecord(error);
+  if (typeof record?.message === "string") return record.message;
+  return String(error);
+}
+
+function missingInput(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("missing input")
+    || message.includes("requires an image input")
+    || message.includes("requires an audio input")
+    || message.includes("requires a video input")
+    || message.includes("requires a pdf input")
+    || message.includes("image input is required")
+    || message.includes("audio input is required")
+    || message.includes("video input is required")
+    || message.includes("pdf input is required")
+    || message.includes("image is required")
+    || message.includes("audio is required")
+    || message.includes("video is required")
+    || message.includes("file is required")
+  );
 }
 
 function getPaymentRequiredBody(record: Record<string, unknown> | null): PaymentRequired | undefined {
@@ -482,6 +548,7 @@ function adaptChatResponse(result: ChatResult, model: string, requestId: string)
                   arguments:
                     typeof tc.arguments === "string" ? tc.arguments : JSON.stringify(tc.arguments),
                 },
+                ...(tc.providerMetadata ? { providerMetadata: tc.providerMetadata } : {}),
               })),
             }
             : {}),
@@ -618,6 +685,17 @@ export function adaptError(
     };
   }
 
+  if (missingInput(error) || missingInput(asRecord?.cause)) {
+    return {
+      status: 400,
+      body: createErrorResponse(
+        getErrorMessage(error),
+        "invalid_request_error",
+        "missing_input",
+      ),
+    };
+  }
+
   if (statusCode === 404) {
     return {
       status: 404,
@@ -662,6 +740,18 @@ export function adaptError(
     };
   }
 
+  if (statusCode === 504) {
+    const record = getErrorRecord(error);
+    return {
+      status: 504,
+      body: createErrorResponse(
+        error instanceof Error ? error.message : "Upstream timeout",
+        "upstream_error",
+        typeof record?.code === "string" ? record.code : "upstream_timeout",
+      ),
+    };
+  }
+
   if (statusCode === 402 || paymentRequiredHeader) {
     return {
       status: 402,
@@ -687,6 +777,12 @@ export function adaptError(
         body: createErrorResponse(error.message, "invalid_request_error", "model_not_found"),
       };
     }
+    if (message.includes("429") || message.includes("rate limit")) {
+      return {
+        status: 429,
+        body: createErrorResponse(error.message, "rate_limit_error", "rate_limit_exceeded"),
+      };
+    }
     if (message.includes("budget") || message.includes("payment") || message.includes("402")) {
       return {
         status: 402,
@@ -697,12 +793,6 @@ export function adaptError(
       return {
         status: 401,
         body: createErrorResponse(error.message, "authentication_error", "invalid_auth"),
-      };
-    }
-    if (message.includes("429") || message.includes("rate limit")) {
-      return {
-        status: 429,
-        body: createErrorResponse(error.message, "rate_limit_error", "rate_limit_exceeded"),
       };
     }
   }
@@ -716,7 +806,7 @@ export function adaptError(
   };
 }
 
-function writeAdaptedError(res: Response, error: unknown, defaultStatus = 500): void {
+function writeAdaptedError(res: Res, error: unknown, defaultStatus = 500): void {
   const { status, body, headers } = adaptError(error, defaultStatus);
 
   if (!res.headersSent && headers) {
@@ -735,7 +825,7 @@ function writeAdaptedError(res: Response, error: unknown, defaultStatus = 500): 
   res.status(status).json(body);
 }
 
-function validateStreamFlag(body: Record<string, unknown>, res: Response): boolean {
+function validateStreamFlag(body: Record<string, unknown>, res: Res): boolean {
   if (!Object.prototype.hasOwnProperty.call(body, "stream") || body.stream === undefined) {
     return true;
   }
@@ -752,17 +842,37 @@ function validateStreamFlag(body: Record<string, unknown>, res: Response): boole
   return false;
 }
 
-function validateStreamingModality(unified: UnifiedRequest, res: Response): boolean {
-  if (!unified.stream || isStreamableModality(unified.modality)) {
-    return true;
+function validateStreamingModality(request: Request, res: Res): boolean {
+  void request;
+  void res;
+  return true;
+}
+
+const REALTIME_REST_ERROR = "This model requires a realtime WebSocket session.";
+
+function rejectRealtimeRequest(request: Request, res: Res): boolean {
+  if (request.modality !== "realtime") {
+    return false;
   }
 
-  res.status(400).json(createErrorResponse(
-    "streaming is only supported for text and image modalities",
+  res.status(400).json(createCoreErrorResponse(
+    REALTIME_REST_ERROR,
     "invalid_request_error",
-    "unsupported_stream_modality",
+    "realtime_session_required",
   ));
-  return false;
+  return true;
+}
+
+function usesProviderStream(request: Request): boolean {
+  if (request.modality === "text") {
+    return true;
+  }
+  if (request.modality !== "image") {
+    return false;
+  }
+  return request.operation === "text-to-image"
+    || request.operation === "image-to-image"
+    || !request.operation;
 }
 
 function requireModel(modelId: string): { provider: ModelProvider; card: ModelCard } {
@@ -773,27 +883,15 @@ function requireModel(modelId: string): { provider: ModelProvider; card: ModelCa
   return { provider: card.provider, card };
 }
 
-function loadAdapterRuntime() {
-  return import("./providers/adapter.js");
+async function invokeDirectAdapter(request: Request, signal?: AbortSignal): Promise<Output> {
+  return (await generateEngine(request, { signal })).result.output;
 }
 
-async function invokeDirectAdapter(unified: UnifiedRequest): Promise<UnifiedOutput> {
-  const { invokeAdapter } = await loadAdapterRuntime();
-  const resolved = resolveModel(unified.model, unified.provider);
-  return (
-    await invokeAdapter(unified, {
-      modelId: unified.model,
-      provider: resolved.provider,
-    })
-  ).output;
+async function retrieveDirectAdapter(jobId: string): Promise<AdapterStatus> {
+  return retrieveEngine(jobId);
 }
 
-async function retrieveDirectAdapter(jobId: string) {
-  const { retrieveAdapter } = await loadAdapterRuntime();
-  return retrieveAdapter(jobId);
-}
-
-function getRequiredOutputMedia(output: UnifiedOutput): NonNullable<UnifiedOutput["media"]> {
+function getRequiredOutputMedia(output: Output): NonNullable<Output["media"]> {
   if (!output.media) {
     throw new Error(`Adapter returned no media for ${output.modality}`);
   }
@@ -801,7 +899,7 @@ function getRequiredOutputMedia(output: UnifiedOutput): NonNullable<UnifiedOutpu
   return output.media;
 }
 
-async function readOutputMediaBuffer(output: UnifiedOutput): Promise<Buffer> {
+async function readOutputMediaBuffer(output: Output): Promise<Buffer> {
   const media = getRequiredOutputMedia(output);
   if (media.base64) {
     return Buffer.from(media.base64, "base64");
@@ -873,6 +971,132 @@ type ResponseShape = "responses" | "chat" | "embeddings";
 
 const RESPONSE_RECORD_TTL_SECONDS = 24 * 60 * 60;
 const responseRecordMemory = new Map<string, StoredResponseRecord>();
+const DEFAULT_DIRECT_CALL_TIMEOUT_MS = 4 * 60_000;
+
+class UpstreamTimeoutError extends Error {
+  statusCode = 504;
+  code = "upstream_timeout";
+
+  constructor(timeoutMs: number) {
+    super(`upstream_timeout: provider did not return within ${timeoutMs}ms`);
+    this.name = "UpstreamTimeoutError";
+  }
+}
+
+function directCallTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.INFERENCE_DIRECT_CALL_TIMEOUT_MS || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DIRECT_CALL_TIMEOUT_MS;
+}
+
+function createRequestAbort(req: Req, res: Res): { signal: AbortSignal; aborted: () => boolean; done: () => void; cleanup: () => void } {
+  const controller = new AbortController();
+  let completed = false;
+
+  const abort = (reason: string) => {
+    if (completed || controller.signal.aborted) {
+      return;
+    }
+    controller.abort(new Error(reason));
+  };
+  const onReqAborted = () => abort("client_request_aborted");
+  const onReqClose = () => {
+    if (req.destroyed && !req.complete) {
+      abort("client_request_closed");
+    }
+  };
+  const onResClose = () => {
+    if (!res.writableEnded && !res.writableFinished) {
+      abort("client_response_closed");
+    }
+  };
+  const cleanup = () => {
+    req.off("aborted", onReqAborted);
+    req.off("close", onReqClose);
+    res.off("close", onResClose);
+    res.off("finish", done);
+  };
+  const done = () => {
+    completed = true;
+    cleanup();
+  };
+
+  req.on("aborted", onReqAborted);
+  req.on("close", onReqClose);
+  res.on("close", onResClose);
+  res.on("finish", done);
+
+  return {
+    signal: controller.signal,
+    aborted: () => controller.signal.aborted,
+    done,
+    cleanup,
+  };
+}
+
+function abortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) return reason;
+  const error = new Error(typeof reason === "string" ? reason : "request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function composeSignals(signals: Array<AbortSignal | undefined>): { signal: AbortSignal; cleanup: () => void } {
+  const live = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  const controller = new AbortController();
+  const listeners: Array<readonly [AbortSignal, () => void]> = [];
+  const abortFrom = (signal: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+
+  for (const signal of live) {
+    if (signal.aborted) {
+      abortFrom(signal);
+      break;
+    }
+    const listener = () => abortFrom(signal);
+    signal.addEventListener("abort", listener, { once: true });
+    listeners.push([signal, listener] as const);
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      for (const [signal, listener] of listeners) {
+        signal.removeEventListener("abort", listener);
+      }
+    },
+  };
+}
+
+function withDirectDeadline(parent: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
+  const timeoutMs = directCallTimeoutMs();
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new UpstreamTimeoutError(timeoutMs)), timeoutMs);
+  const combined = composeSignals([parent, deadline.signal]);
+  return {
+    signal: combined.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      combined.cleanup();
+    },
+  };
+}
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(abortError(signal));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    }, { once: true });
+  });
+}
 
 function responseRecordKey(id: string): string {
   return `responses:record:${id}`;
@@ -908,7 +1132,7 @@ async function getResponseRecord(id: string): Promise<StoredResponseRecord | nul
 }
 
 function applyRoutingHeaders(
-  res: Response,
+  res: Res,
   routing: { attempts: number; fallbackUsed: boolean; primary: { modelId: string }; final: { modelId: string } },
 ): void {
   res.setHeader("x-routing-primary-model", routing.primary.modelId);
@@ -917,53 +1141,20 @@ function applyRoutingHeaders(
   res.setHeader("x-routing-fallback-used", routing.fallbackUsed ? "true" : "false");
 }
 
-function receiptFromSettlement(
-  settlement: InferenceSettlementReceipt | null,
-  chainId?: number,
-): ComposeReceipt | null {
-  if (!settlement) {
-    return null;
-  }
-
-  const resolvedChainId = settlement.chainId ?? chainId;
-  if (typeof resolvedChainId !== "number" || !Number.isFinite(resolvedChainId)) {
-    return null;
-  }
-
-  const receipt: ComposeReceipt = {
-    finalAmountWei: settlement.finalAmountWei,
-    network: `eip155:${resolvedChainId}` as `eip155:${number}`,
-    settledAt: settlement.settledAt,
-  };
-
-  if (settlement.meterSubject) receipt.subject = settlement.meterSubject;
-  if (settlement.lineItems && settlement.lineItems.length > 0) receipt.lineItems = settlement.lineItems;
-  if (settlement.providerAmountWei) receipt.providerAmountWei = settlement.providerAmountWei;
-  if (settlement.platformFeeWei) receipt.platformFeeWei = settlement.platformFeeWei;
-  if (settlement.txHash) receipt.txHash = settlement.txHash;
-
-  return receipt;
-}
-
-function applyReceiptHeader(res: Response, receipt: ComposeReceipt | null): void {
-  if (!receipt || res.headersSent) return;
-  res.setHeader(RECEIPT_HEADER, encodeReceiptHeader(receipt));
-}
-
 interface PaidInferenceContext {
   resolved: ResolvedModel;
   payment: PreparedInferencePayment;
 }
 
 async function preparePaidInference(args: {
-  req: Request;
-  res: Response;
-  unified: UnifiedRequest;
+  req: Req;
+  res: Res;
+  request: Request;
   resolved?: ResolvedModel;
 }): Promise<PaidInferenceContext | null> {
-  const resolved = args.resolved ?? resolveModel(args.unified.model, args.unified.provider);
+  const resolved = args.resolved ?? resolveModel(args.request.model);
   const authorizationInput = buildResolvedAuthorizationInput({
-    request: args.unified,
+    request: args.request,
     resolved,
   }) as InferenceAuthorizationInput;
   const payment = await prepareInferencePayment(args.req, args.res, authorizationInput);
@@ -975,74 +1166,134 @@ async function preparePaidInference(args: {
 }
 
 async function settlePaidInference(args: {
-  req: Request;
-  res: Response;
+  req: Req;
+  res: Res;
   payment: PreparedInferencePayment;
-  unified: UnifiedRequest;
-  output: UnifiedOutput;
+  request: Request;
+  output: Output;
   resolved: ResolvedModel;
-}): Promise<ComposeReceipt | null> {
+}): Promise<Receipt | null> {
   const settlementReceipt = await settlePreparedInferencePayment(
     args.payment,
     args.res,
     {
       meter: buildSettlementMeterFromOutput({
-        request: args.unified,
+        request: args.request,
         output: args.output,
         resolved: args.resolved,
       }).meter as MeteredSettlementInput,
     },
   );
 
-  return receiptFromSettlement(settlementReceipt, getChainIdFromInferenceRequest(args.req));
-}
-
-export function receiptForJsonBody(receipt: ComposeReceipt | null): Record<string, unknown> | undefined {
-  if (!receipt) return undefined;
-
-  const body: Record<string, unknown> = {
-    final_amount_wei: receipt.finalAmountWei,
-    network: receipt.network,
-    settled_at: receipt.settledAt,
-  };
-
-  if (receipt.subject) body.subject = receipt.subject;
-  if (receipt.lineItems && receipt.lineItems.length > 0) {
-    body.line_items = receipt.lineItems.map((item) => ({
-      key: item.key,
-      unit: item.unit,
-      quantity: item.quantity,
-      unit_price_usd: item.unitPriceUsd,
-      amount_wei: item.amountWei,
-    }));
+  if (
+    settlementReceipt
+    && BigInt(settlementReceipt.finalAmountWei || "0") > 0n
+    && !settlementReceipt.txHash
+    && !settlementReceipt.paymentIntentId
+    && !settlementReceipt.sessionBudgetIntentId
+    && !(settlementReceipt.paymentChannelId && settlementReceipt.paymentCumulativeAmountWei)
+  ) {
+    throw Object.assign(
+      new Error("Nonzero settlement is missing x402 payment backing"),
+      { statusCode: 402 },
+    );
   }
-  if (receipt.providerAmountWei) body.provider_amount_wei = receipt.providerAmountWei;
-  if (receipt.platformFeeWei) body.platform_fee_wei = receipt.platformFeeWei;
-  if (receipt.txHash) body.tx_hash = receipt.txHash;
 
-  return body;
-}
-
-export function attachReceiptToJsonBody<T extends Record<string, unknown>>(
-  body: T,
-  receipt: ComposeReceipt | null,
-): T & { compose_receipt?: Record<string, unknown> } {
-  const receiptJson = receiptForJsonBody(receipt);
-  if (!receiptJson) {
-    return body;
+  if (settlementReceipt?.providerAmountWei) {
+    const rootRunId = readHeader(args.req, "x-run-id");
+    const executionRunId = readHeader(args.req, "x-execution-run-id") || rootRunId;
+    if (rootRunId && executionRunId) {
+      const kind = resourceKind(args.req);
+      const action = resourceAction(args.req, "v1-responses");
+      await recordChargeEvidence({
+        kind,
+        rootRunId,
+        executionRunId,
+        parentExecutionRunId: readHeader(args.req, "x-parent-run-id"),
+        service: kind === "model" ? "inference" : kind,
+        action,
+        subject: settlementReceipt.meterSubject,
+        providerAmountWei: settlementReceipt.providerAmountWei,
+        composeFeeWei: settlementReceipt.platformFeeWei || "0",
+        finalAmountWei: settlementReceipt.finalAmountWei,
+        settlementStatus: settlementReceipt.settlementStatus || (settlementReceipt.txHash ? "settled" : "queued"),
+        txHash: settlementReceipt.txHash,
+        claimTxHash: settlementReceipt.claimTxHash,
+        settleTxHash: settlementReceipt.settleTxHash,
+        paymentIntentId: settlementReceipt.paymentIntentId,
+        sessionBudgetIntentId: settlementReceipt.sessionBudgetIntentId,
+        paymentChannelId: settlementReceipt.paymentChannelId,
+        paymentCumulativeAmountWei: settlementReceipt.paymentCumulativeAmountWei,
+        chainId: settlementReceipt.chainId || getChainIdFromInferenceRequest(args.req),
+        settledAt: settlementReceipt.settledAt,
+      });
+    }
   }
-  return {
-    ...body,
-    compose_receipt: receiptJson,
-  };
+  if (settlementReceipt?.evidenceOnly) {
+    if (shouldKickSettlement(args.req)) {
+      await kickBatchSettlement(settlementReceipt, "inference:evidence");
+    }
+    return null;
+  }
+  const receipt = await finalizeReceipt(
+    receiptFromInferenceSettlement(settlementReceipt, getChainIdFromInferenceRequest(args.req)),
+    receiptContextFromInferenceRequest(args.req),
+  );
+  if (shouldKickSettlement(args.req)) {
+    await kickBatchSettlement(settlementReceipt, "inference:receipt");
+  }
+  return receipt;
 }
 
-function getChainIdFromInferenceRequest(req: Request): number | undefined {
+function resourceKind(req: Req): EvidenceKind {
+  const raw = readHeader(req, "x-resource-kind")?.toLowerCase();
+  switch (raw) {
+    case "agent":
+    case "model":
+    case "tool":
+    case "search":
+    case "memory":
+    case "connector":
+      return raw;
+    default:
+      return "model";
+  }
+}
+
+function resourceAction(req: Req, fallback: string): string {
+  return readHeader(req, "x-resource-action") || fallback;
+}
+
+function shouldKickSettlement(req: Req): boolean {
+  return !readHeader(req, "x-execution-run-id");
+}
+
+function readHeader(req: Req, name: string): string | undefined {
+  const value = req.get?.(name) || req.headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function getChainIdFromInferenceRequest(req: Req): number | undefined {
   const header = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
   if (!header) return undefined;
   const value = Array.isArray(header) ? header[0] : header;
   const parsed = parseInt(String(value), 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function receiptContextFromInferenceRequest(req: Req): ReceiptContext {
+  const userHeader = req.get?.("x-session-user-address") || req.headers?.["x-session-user-address"];
+  const userAddress = Array.isArray(userHeader) ? userHeader[0] : userHeader;
+  const kind = resourceKind(req);
+  return {
+    service: kind === "model" ? "inference" : kind,
+    action: kind === "model"
+      ? `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`
+      : resourceAction(req, `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`),
+    resource: `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url || ""}`,
+    userAddress: typeof userAddress === "string" ? userAddress.toLowerCase() : undefined,
+  };
 }
 
 function responseFromRecord(record: StoredResponseRecord): Record<string, unknown> {
@@ -1074,7 +1325,7 @@ function responseFromRecord(record: StoredResponseRecord): Record<string, unknow
   return payload;
 }
 
-function outputToAssistantMessage(output: UnifiedOutput): UnifiedMessage | null {
+function outputToAssistantMessage(output: Output): Message | null {
   if (output.modality === "embedding") {
     return null;
   }
@@ -1101,13 +1352,14 @@ function outputToAssistantMessage(output: UnifiedOutput): UnifiedMessage | null 
             name: call.name,
             arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
           },
+          ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
         })),
       }
       : {}),
   };
 }
 
-async function buildResponsesHistory(responseId: string, visited = new Set<string>()): Promise<UnifiedMessage[]> {
+async function buildResponsesHistory(responseId: string, visited = new Set<string>()): Promise<Message[]> {
   if (visited.has(responseId)) {
     throw Object.assign(new Error(`Response history cycle detected for '${responseId}'`), { statusCode: 400 });
   }
@@ -1129,16 +1381,16 @@ async function buildResponsesHistory(responseId: string, visited = new Set<strin
     : [...prior, ...inputMessages];
 }
 
-async function hydrateResponsesRequest(unified: UnifiedRequest): Promise<UnifiedRequest> {
-  const priorMessages = unified.previousResponseId
-    ? await buildResponsesHistory(unified.previousResponseId)
+async function hydrateResponsesRequest(request: Request): Promise<Request> {
+  const priorMessages = request.previousResponseId
+    ? await buildResponsesHistory(request.previousResponseId)
     : [];
-  const currentMessages = unified.instructions
-    ? [{ role: "system", content: unified.instructions } satisfies UnifiedMessage, ...priorMessages, ...unified.messages]
-    : [...priorMessages, ...unified.messages];
+  const currentMessages = request.instructions
+    ? [{ role: "system", content: request.instructions } satisfies Message, ...priorMessages, ...request.messages]
+    : [...priorMessages, ...request.messages];
 
   return {
-    ...unified,
+    ...request,
     messages: currentMessages,
   };
 }
@@ -1153,31 +1405,37 @@ function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unkn
   }));
 }
 
-async function executeUnifiedRequest(args: {
-  req: Request;
-  res: Response;
-  unified: UnifiedRequest;
+async function executeRequest(args: {
+  req: Req;
+  res: Res;
+  request: Request;
   shape: ResponseShape;
 }): Promise<void> {
-  const unified = args.shape === "responses"
-    ? await hydrateResponsesRequest(args.unified)
-    : args.unified;
-  const modelId = unified.model;
+  const request = args.shape === "responses"
+    ? await hydrateResponsesRequest(args.request)
+    : args.request;
+  const modelId = request.model;
   if (!modelId) {
     args.res.status(400).json(createCoreErrorResponse("model is required", "invalid_request_error", "missing_model"));
     return;
   }
 
-  if (!validateStreamingModality(unified, args.res)) {
+  if (rejectRealtimeRequest(request, args.res)) {
     return;
   }
 
+  if (!validateStreamingModality(request, args.res)) {
+    return;
+  }
+
+  const lifecycle = createRequestAbort(args.req, args.res);
   const paid = await preparePaidInference({
     req: args.req,
     res: args.res,
-    unified,
+    request,
   });
   if (!paid) {
+    lifecycle.cleanup();
     return;
   }
   let paymentTerminal = false;
@@ -1188,60 +1446,203 @@ async function executeUnifiedRequest(args: {
     paymentTerminal = true;
     await paid.payment.abort(reason);
   };
-  const settleOutput = async (output: UnifiedOutput) => {
+  const settleOutput = async (output: Output) => {
     const receipt = await settlePaidInference({
       req: args.req,
       res: args.res,
       payment: paid.payment,
-      unified,
+      request,
       output,
       resolved: paid.resolved,
     });
     paymentTerminal = true;
     return receipt;
   };
+  const abortPaymentOnClose = () => {
+    void abortPaidInference(abortError(lifecycle.signal).message).catch((error) => {
+      console.warn("[gateway] failed to abort inference payment after client close:", error instanceof Error ? error.message : String(error));
+    });
+  };
+  lifecycle.signal.addEventListener("abort", abortPaymentOnClose, { once: true });
 
   const baseRecord: StoredResponseRecord = {
-    id: unified.responseId,
+    id: request.responseId,
     model: modelId,
     provider: paid.resolved.provider,
     createdAt: Math.floor(Date.now() / 1000),
     status: "in_progress",
-    inputMessages: args.shape === "responses" ? args.unified.messages : undefined,
-    previousResponseId: args.shape === "responses" ? args.unified.previousResponseId : undefined,
+    inputMessages: args.shape === "responses" ? args.request.messages : undefined,
+    previousResponseId: args.shape === "responses" ? args.request.previousResponseId : undefined,
   };
   await saveResponseRecord(baseRecord);
 
   try {
-    if (unified.stream && isStreamableModality(unified.modality)) {
+    if (request.stream && args.shape === "responses" && !usesProviderStream(request)) {
+      args.res.setHeader("Content-Type", "text/event-stream");
+      args.res.setHeader("Cache-Control", "no-cache");
+      args.res.setHeader("Connection", "keep-alive");
+      args.res.setHeader("x-response-id", request.responseId);
+      applyRoutingHeaders(args.res, {
+        attempts: 1,
+        fallbackUsed: false,
+        primary: { modelId },
+        final: { modelId },
+      });
+      paid.payment.applyHeaders(args.res);
+      args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, { type: "created" })));
+
+      try {
+        const direct = withDirectDeadline(lifecycle.signal);
+        let routed: Awaited<ReturnType<typeof generateEngine>>;
+        try {
+          routed = await generateEngine(request, { signal: direct.signal });
+        } finally {
+          direct.cleanup();
+        }
+        const output = routed.result.output;
+        const receipt = await settleOutput(output);
+        let finalOutput = output;
+
+        toResponsesOutputItems(output).forEach((item, outputIndex) => {
+          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+            type: "output-item",
+            outputIndex,
+            item,
+          })));
+        });
+
+        if (receipt) {
+          args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
+        }
+
+        const jobId = output.media?.jobId;
+        if (output.modality === "video" && jobId && output.media?.status !== "completed") {
+          const startedAt = Date.now();
+          const timeoutMs = 1_800_000;
+          const pollIntervalMs = 2_000;
+          let outputIndex = toResponsesOutputItems(output).length;
+
+          while (!args.res.writableEnded && !lifecycle.aborted()) {
+            const status = await retrieveDirectAdapter(jobId);
+            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+              type: "video-status",
+              videoStatus: {
+                jobId,
+                status: status.status,
+                progress: status.progress,
+                url: status.url,
+                error: status.error,
+              },
+            })));
+
+            if (status.status === "completed") {
+              finalOutput = {
+                ...output,
+                media: {
+                  ...output.media,
+                  mimeType: output.media!.mimeType,
+                  status: "completed",
+                  ...(status.url ? { url: status.url } : {}),
+                  ...(typeof status.progress === "number" ? { progress: status.progress } : { progress: 100 }),
+                },
+              };
+              for (const item of toResponsesOutputItems(finalOutput)) {
+                args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+                  type: "output-item",
+                  outputIndex,
+                  item,
+                })));
+                outputIndex += 1;
+              }
+              break;
+            }
+
+            if (status.status === "failed") {
+              finalOutput = {
+                ...output,
+                media: {
+                  ...output.media,
+                  mimeType: output.media!.mimeType,
+                  status: "failed",
+                  ...(typeof status.progress === "number" ? { progress: status.progress } : {}),
+                },
+              };
+              args.res.write(toErrorStreamEvent({
+                code: "upstream_error",
+                message: status.error || `Video job ${jobId} failed`,
+              }));
+              break;
+            }
+
+            if (Date.now() - startedAt >= timeoutMs) {
+              args.res.write(toErrorStreamEvent({
+                code: "upstream_timeout",
+                message: `Video job ${jobId} did not complete within ${timeoutMs}ms`,
+              }));
+              break;
+            }
+
+            await wait(pollIntervalMs, lifecycle.signal);
+          }
+
+          if (lifecycle.aborted()) {
+            throw abortError(lifecycle.signal);
+          }
+        }
+
+        args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+          type: "done",
+          finishReason: finalOutput.finishReason || "stop",
+          usage: finalOutput.usage,
+        })));
+        args.res.write(formatCoreSSEDone());
+        args.res.end();
+
+        await saveResponseRecord({
+          ...baseRecord,
+          status: finalOutput.media?.status === "failed"
+            ? "failed"
+            : finalOutput.media?.jobId && finalOutput.media.status && finalOutput.media.status !== "completed"
+              ? "in_progress"
+              : "completed",
+          output: finalOutput,
+          ...(finalOutput.media?.jobId ? { jobId: finalOutput.media.jobId } : {}),
+          ...(finalOutput.media?.status === "failed" ? { error: finalOutput.media.status } : {}),
+        });
+      } catch (error) {
+        try {
+          await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
+        } catch { /* best-effort */ }
+        try {
+          args.res.write(toErrorStreamEvent({
+            code: "upstream_error",
+            message: error instanceof Error ? error.message : String(error),
+          }));
+          args.res.write(formatCoreSSEDone());
+          args.res.end();
+        } catch { /* best-effort */ }
+        throw error;
+      }
+
+      return;
+    }
+
+    if (request.stream && usesProviderStream(request)) {
       args.res.setHeader("Content-Type", "text/event-stream");
       args.res.setHeader("Cache-Control", "no-cache");
       args.res.setHeader("Connection", "keep-alive");
       // X-Request-Id is set by the top-level middleware. We also keep the
-      // inference-specific response id available under x-compose-response-id
+      // inference-specific response id available under x-response-id
       // so clients can round-trip it for /v1/responses/:id retrieval.
-      args.res.setHeader("x-compose-response-id", unified.responseId);
+      args.res.setHeader("x-response-id", request.responseId);
 
-      const routed = await runWithPolicy({
-        context: {
-          modelId,
-          provider: paid.resolved.provider,
-          card: paid.resolved.card,
-        },
-        execute: async (target) => {
-          const { streamAdapter } = await loadAdapterRuntime();
-          return {
-            target,
-            stream: streamAdapter(unified, {
-              modelId: target.modelId,
-              provider: target.provider,
-            }),
-          };
-        },
-      });
+      const routed = await streamEngine(request, { signal: lifecycle.signal });
 
-      applyRoutingHeaders(args.res, routed);
+      applyRoutingHeaders(args.res, routed.route);
       paid.payment.applyHeaders(args.res);
+      if (args.shape === "responses") {
+        args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, { type: "created" })));
+      }
 
       let isFirstToken = true;
       let aggregatedText = "";
@@ -1255,16 +1656,16 @@ async function executeUnifiedRequest(args: {
         generatedUnits?: number;
         billingMetrics?: Record<string, unknown>;
       } | null = null;
-      let pendingImageCompleteEvent: UnifiedStreamEvent | null = null;
-      let pendingImageDoneEvent: UnifiedStreamEvent | null = null;
+      let pendingImageCompleteEvent: Event | null = null;
+      let pendingImageDoneEvent: Event | null = null;
 
       try {
         for await (const event of routed.result.stream) {
           if (event.type === "text-delta") {
             aggregatedText += event.text || "";
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(unified.responseId, modelId, event, isFirstToken)
-              : toResponsesStreamEvent(unified.responseId, modelId, event);
+              ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
+              : toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
             isFirstToken = false;
             continue;
@@ -1272,15 +1673,15 @@ async function executeUnifiedRequest(args: {
 
           if (event.type === "thinking" || event.type === "tool-call" || event.type === "tool-call-delta") {
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(unified.responseId, modelId, event, isFirstToken)
-              : toResponsesStreamEvent(unified.responseId, modelId, event);
+              ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
+              : toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
             isFirstToken = false;
             continue;
           }
 
           if (event.type === "image-partial") {
-            const payload = toResponsesStreamEvent(unified.responseId, modelId, event);
+            const payload = toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
             continue;
           }
@@ -1288,13 +1689,13 @@ async function executeUnifiedRequest(args: {
           if (event.type === "image-complete") {
             streamedImage = event.image
               ? {
-                  base64: event.image.base64,
-                  ...(event.image.mimeType ? { mimeType: event.image.mimeType } : {}),
-                  ...(event.image.revisedPrompt ? { revisedPrompt: event.image.revisedPrompt } : {}),
-                  ...(typeof event.image.duration === "number" ? { duration: event.image.duration } : {}),
-                  ...(typeof event.image.generatedUnits === "number" ? { generatedUnits: event.image.generatedUnits } : {}),
-                  ...(event.image.billingMetrics ? { billingMetrics: event.image.billingMetrics } : {}),
-                }
+                base64: event.image.base64,
+                ...(event.image.mimeType ? { mimeType: event.image.mimeType } : {}),
+                ...(event.image.revisedPrompt ? { revisedPrompt: event.image.revisedPrompt } : {}),
+                ...(typeof event.image.duration === "number" ? { duration: event.image.duration } : {}),
+                ...(typeof event.image.generatedUnits === "number" ? { generatedUnits: event.image.generatedUnits } : {}),
+                ...(event.image.billingMetrics ? { billingMetrics: event.image.billingMetrics } : {}),
+              }
               : null;
             if (event.usage) {
               lastUsage = event.usage;
@@ -1313,11 +1714,11 @@ async function executeUnifiedRequest(args: {
               continue;
             }
             const payload = args.shape === "chat"
-              ? toChatStreamEvent(unified.responseId, modelId, event)
-              : toResponsesStreamEvent(unified.responseId, modelId, event);
+              ? toChatStreamEvent(request.responseId, modelId, event)
+              : toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
             if (args.shape === "chat" && event.usage) {
-              args.res.write(formatCoreSSE(toChatUsageStreamEvent(unified.responseId, modelId, event.usage)));
+              args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, event.usage)));
             }
           }
         }
@@ -1328,20 +1729,20 @@ async function executeUnifiedRequest(args: {
           return;
         }
 
-        const finalOutput: UnifiedOutput = {
+        const finalOutput: Output = {
           modality: streamedImage ? "image" : "text",
           ...(streamedImage
             ? {
-                media: {
-                  mimeType: streamedImage.mimeType || "image/png",
-                  base64: streamedImage.base64,
-                  ...(streamedImage.revisedPrompt ? { revisedPrompt: streamedImage.revisedPrompt } : {}),
-                  ...(typeof streamedImage.duration === "number" ? { duration: streamedImage.duration } : {}),
-                  ...(typeof streamedImage.generatedUnits === "number" ? { generatedUnits: streamedImage.generatedUnits } : {}),
-                  ...(streamedImage.billingMetrics ? { billingMetrics: streamedImage.billingMetrics } : {}),
-                  status: "completed" as const,
-                },
-              }
+              media: {
+                mimeType: streamedImage.mimeType || "image/png",
+                base64: streamedImage.base64,
+                ...(streamedImage.revisedPrompt ? { revisedPrompt: streamedImage.revisedPrompt } : {}),
+                ...(typeof streamedImage.duration === "number" ? { duration: streamedImage.duration } : {}),
+                ...(typeof streamedImage.generatedUnits === "number" ? { generatedUnits: streamedImage.generatedUnits } : {}),
+                ...(streamedImage.billingMetrics ? { billingMetrics: streamedImage.billingMetrics } : {}),
+                status: "completed" as const,
+              },
+            }
             : { content: aggregatedText }),
           usage: lastUsage,
           finishReason,
@@ -1350,9 +1751,9 @@ async function executeUnifiedRequest(args: {
         const streamReceipt = await settleOutput(finalOutput);
 
         if (pendingImageCompleteEvent) {
-          args.res.write(formatCoreSSE(toResponsesStreamEvent(unified.responseId, modelId, pendingImageCompleteEvent)));
+          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
           args.res.write(formatCoreSSE(toResponsesStreamEvent(
-            unified.responseId,
+            request.responseId,
             modelId,
             pendingImageDoneEvent ?? {
               type: "done",
@@ -1363,16 +1764,7 @@ async function executeUnifiedRequest(args: {
         }
 
         if (streamReceipt) {
-          args.res.write(toComposeReceiptStreamEvent({
-            finalAmountWei: streamReceipt.finalAmountWei,
-            providerAmountWei: streamReceipt.providerAmountWei,
-            platformFeeWei: streamReceipt.platformFeeWei,
-            meterSubject: streamReceipt.subject,
-            lineItems: streamReceipt.lineItems,
-            txHash: streamReceipt.txHash,
-            network: streamReceipt.network,
-            settledAt: streamReceipt.settledAt,
-          }));
+          args.res.write(toReceiptStreamEvent(receiptStreamPayload(streamReceipt)));
         }
         args.res.write(formatCoreSSEDone());
         args.res.end();
@@ -1392,7 +1784,7 @@ async function executeUnifiedRequest(args: {
           // Emit structured error frame before propagating so clients know why
           // the stream closed without a final `done` event.
           try {
-            args.res.write(toComposeErrorStreamEvent({
+            args.res.write(toErrorStreamEvent({
               code: "upstream_error",
               message: error instanceof Error ? error.message : String(error),
             }));
@@ -1406,20 +1798,15 @@ async function executeUnifiedRequest(args: {
       return;
     }
 
-    const routed = await runWithPolicy({
-      context: {
-        modelId,
-        provider: paid.resolved.provider,
-        card: paid.resolved.card,
-      },
-      execute: async (target) =>
-        (await loadAdapterRuntime()).invokeAdapter(unified, {
-          modelId: target.modelId,
-          provider: target.provider,
-        }),
-    });
+    const direct = withDirectDeadline(lifecycle.signal);
+    let routed: Awaited<ReturnType<typeof generateEngine>>;
+    try {
+      routed = await generateEngine(request, { signal: direct.signal });
+    } finally {
+      direct.cleanup();
+    }
 
-    applyRoutingHeaders(args.res, routed);
+    applyRoutingHeaders(args.res, routed.route);
 
     const output = routed.result.output;
     const jsonReceipt = await settleOutput(output);
@@ -1434,7 +1821,7 @@ async function executeUnifiedRequest(args: {
     await saveResponseRecord(record);
 
     if (args.shape === "chat") {
-      const body = toChatCompletionsResponse(modelId, unified.responseId, output) as unknown as Record<string, unknown>;
+      const body = toChatCompletionsResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
       args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
       return;
     }
@@ -1445,7 +1832,7 @@ async function executeUnifiedRequest(args: {
       return;
     }
 
-    const payload = toResponsesResponse(modelId, unified.responseId, output) as unknown as Record<string, unknown>;
+    const payload = toResponsesResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
     if (record.status !== "completed") {
       payload.status = record.status;
     }
@@ -1454,17 +1841,20 @@ async function executeUnifiedRequest(args: {
     }
     args.res.status(200).json(attachReceiptToJsonBody(payload, jsonReceipt));
   } catch (error) {
-    await abortPaidInference(error instanceof Error ? error.message : "unified_inference_failed");
+    await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
     await saveResponseRecord({
       ...baseRecord,
       status: "failed",
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
+  } finally {
+    lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);
+    lifecycle.cleanup();
   }
 }
 
-async function handleResponses(req: Request, res: Response): Promise<void> {
+export async function handleResponses(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1477,33 +1867,33 @@ async function handleResponses(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const unified = normalizeResponsesRequest(body);
-    if (!validateStreamingModality(unified, res)) {
+    const request = normalizeResponsesRequest(body);
+    if (!validateStreamingModality(request, res)) {
       return;
     }
 
-    if (!unified.model) {
+    if (!request.model) {
       res.status(400).json(createCoreErrorResponse("model is required", "invalid_request_error", "missing_model"));
       return;
     }
 
-    if (unified.modality === "embedding" && !unified.embeddingInput) {
+    if (request.modality === "embedding" && !request.embeddingInput && request.messages.length === 0) {
       res.status(400).json(createCoreErrorResponse("input is required for embeddings", "invalid_request_error", "missing_input"));
       return;
     }
 
-    if (unified.modality !== "embedding" && unified.messages.length === 0 && !unified.previousResponseId) {
+    if (request.modality !== "embedding" && request.messages.length === 0 && !request.previousResponseId) {
       res.status(400).json(createCoreErrorResponse("input is required", "invalid_request_error", "missing_input"));
       return;
     }
 
-    await executeUnifiedRequest({ req, res, unified, shape: "responses" });
+    await executeRequest({ req, res, request, shape: "responses" });
   } catch (error) {
     writeAdaptedError(res, error, 500);
   }
 }
 
-async function handleGetResponse(req: Request, res: Response): Promise<void> {
+async function handleGetResponse(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1526,8 +1916,7 @@ async function handleGetResponse(req: Request, res: Response): Promise<void> {
     }
 
     if (record.status === "in_progress" && record.jobId) {
-      const { retrieveAdapter } = await loadAdapterRuntime();
-      const status = await retrieveAdapter(record.jobId);
+      const status = await retrieveEngine(record.jobId);
       if (status.status === "completed") {
         record.status = "completed";
         if (record.output?.media) {
@@ -1552,7 +1941,7 @@ async function handleGetResponse(req: Request, res: Response): Promise<void> {
   }
 }
 
-async function handleGetResponseInputItems(req: Request, res: Response): Promise<void> {
+async function handleGetResponseInputItems(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1582,7 +1971,7 @@ async function handleGetResponseInputItems(req: Request, res: Response): Promise
   }
 }
 
-async function handleCancelResponse(req: Request, res: Response): Promise<void> {
+async function handleCancelResponse(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1605,8 +1994,7 @@ async function handleCancelResponse(req: Request, res: Response): Promise<void> 
     }
 
     if (record.jobId) {
-      const { cancelAdapter } = await loadAdapterRuntime();
-      await cancelAdapter(record.jobId);
+      await cancelEngine(record.jobId);
     }
 
     record.status = "cancelled";
@@ -1618,27 +2006,33 @@ async function handleCancelResponse(req: Request, res: Response): Promise<void> 
 }
 
 async function runDeferredInference(args: {
-  req: Request;
-  res: Response;
-  unified: UnifiedRequest;
+  req: Req;
+  res: Res;
+  request: Request;
   provider: ModelProvider;
   card: ModelCard | null;
-  execute: () => Promise<UnifiedOutput>;
-  onSuccess: (result: UnifiedOutput, receipt: ComposeReceipt | null) => void | Promise<void>;
+  execute: (signal: AbortSignal) => Promise<Output>;
+  onSuccess: (result: Output, receipt: Receipt | null) => void | Promise<void>;
 }): Promise<void> {
+  if (rejectRealtimeRequest(args.request, args.res)) {
+    return;
+  }
+
   const resolved: ResolvedModel = {
-    modelId: args.unified.model,
+    modelId: args.request.model,
     provider: args.provider,
     known: true,
     card: args.card,
   };
+  const lifecycle = createRequestAbort(args.req, args.res);
   const paid = await preparePaidInference({
     req: args.req,
     res: args.res,
-    unified: args.unified,
+    request: args.request,
     resolved,
   });
   if (!paid) {
+    lifecycle.cleanup();
     return;
   }
   let paymentTerminal = false;
@@ -1649,23 +2043,39 @@ async function runDeferredInference(args: {
     paymentTerminal = true;
     await paid.payment.abort(reason);
   };
+  const abortPaymentOnClose = () => {
+    void abortPaidInference(abortError(lifecycle.signal).message).catch((error) => {
+      console.warn("[gateway] failed to abort deferred inference payment after client close:", error instanceof Error ? error.message : String(error));
+    });
+  };
+  lifecycle.signal.addEventListener("abort", abortPaymentOnClose, { once: true });
 
   try {
-    const result = await args.execute();
+    const direct = withDirectDeadline(lifecycle.signal);
+    let result: Output;
+    try {
+      result = await args.execute(direct.signal);
+    } finally {
+      direct.cleanup();
+    }
     const receipt = await settlePaidInference({
       req: args.req,
       res: args.res,
       payment: paid.payment,
-      unified: args.unified,
+      request: args.request,
       output: result,
       resolved: paid.resolved,
     });
     paymentTerminal = true;
     applyReceiptHeader(args.res, receipt);
     await args.onSuccess(result, receipt);
+    lifecycle.done();
   } catch (error) {
     await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
     throw error;
+  } finally {
+    lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);
+    lifecycle.cleanup();
   }
 }
 
@@ -1673,7 +2083,7 @@ async function runDeferredInference(args: {
 // Endpoint Handlers
 // =============================================================================
 
-export async function handleListModels(req: Request, res: Response, extended = false): Promise<void> {
+export async function handleListModels(req: Req, res: Res, extended = false): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1682,13 +2092,13 @@ export async function handleListModels(req: Request, res: Response, extended = f
 
   try {
     const models = extended ? getExtendedModels() : getCompiledModels();
-    res.status(200).json({ object: "list", data: models.models });
+    res.status(200).json({ object: "list", data: models.models.map(withModelOperations) });
   } catch (error) {
     writeAdaptedError(res, error, 500);
   }
 }
 
-export async function handleSearchModels(req: Request, res: Response): Promise<void> {
+export async function handleSearchModels(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1719,10 +2129,10 @@ export async function handleSearchModels(req: Request, res: Response): Promise<v
       return undefined;
     };
 
-    const modality = pickString("modality");
-    const validModalities = ["text", "image", "audio", "video", "embedding"] as const;
-    if (modality && !validModalities.includes(modality as typeof validModalities[number])) {
-      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+    const rawModality = pickString("modality");
+    const modality = rawModality && isCanonicalModality(rawModality) ? rawModality : undefined;
+    if (rawModality && !modality) {
+      res.status(400).json(createErrorResponse(MODALITY_ERROR, "invalid_request_error", "invalid_modality"));
       return;
     }
     const operation = pickString("operation");
@@ -1730,12 +2140,18 @@ export async function handleSearchModels(req: Request, res: Response): Promise<v
       res.status(400).json(createErrorResponse("operation is not supported", "invalid_request_error", "invalid_operation"));
       return;
     }
+    const rawProvider = pickString("provider");
+    const provider = rawProvider && isProvider(rawProvider) ? rawProvider : undefined;
+    if (rawProvider && !provider) {
+      res.status(400).json(createErrorResponse("provider is not supported", "invalid_request_error", "invalid_provider"));
+      return;
+    }
 
     const result = searchModels({
       q: pickString("q"),
       modality: modality as ModelSearchInput["modality"],
       operation: operation as ModelSearchInput["operation"],
-      provider: pickString("provider") as ModelProvider | undefined,
+      provider,
       priceMaxPerMTok: pickNumber("priceMaxPerMTok") ?? pickNumber("price_max_per_mtok"),
       contextWindowMin: pickNumber("contextWindowMin") ?? pickNumber("context_window_min"),
       streaming: pickBoolean("streaming"),
@@ -1745,7 +2161,7 @@ export async function handleSearchModels(req: Request, res: Response): Promise<v
 
     res.status(200).json({
       object: "list",
-      data: result.data,
+      data: result.data.map(withModelOperations),
       total: result.total,
       next_cursor: result.next_cursor,
     });
@@ -1754,7 +2170,51 @@ export async function handleSearchModels(req: Request, res: Response): Promise<v
   }
 }
 
-export async function handleListModalities(req: Request, res: Response): Promise<void> {
+export async function handleListFamilies(req: Req, res: Res): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    res.status(200).json({
+      object: "list",
+      data: getFamilyCatalog(getExtendedModels().models),
+    });
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleGetFamily(req: Req, res: Res): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const raw = Array.isArray(req.params.family) ? req.params.family[0] : req.params.family;
+    const family = normalizeFamily(raw);
+    if (!family) {
+      res.status(400).json(createErrorResponse("family is required", "invalid_request_error", "invalid_family"));
+      return;
+    }
+
+    const entry = getFamilyCatalog(getExtendedModels().models).find((item) => item.family === family);
+    if (!entry) {
+      res.status(404).json(createErrorResponse(`Family '${family}' not found`, "invalid_request_error", "family_not_found"));
+      return;
+    }
+
+    res.status(200).json(entry);
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleListModalities(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1772,7 +2232,7 @@ export async function handleListModalities(req: Request, res: Response): Promise
   }
 }
 
-export async function handleGetModality(req: Request, res: Response): Promise<void> {
+export async function handleGetModality(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1782,7 +2242,7 @@ export async function handleGetModality(req: Request, res: Response): Promise<vo
   try {
     const rawModality = Array.isArray(req.params.modality) ? req.params.modality[0] : req.params.modality;
     if (!isCanonicalModality(rawModality)) {
-      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      res.status(400).json(createErrorResponse(MODALITY_ERROR, "invalid_request_error", "invalid_modality"));
       return;
     }
 
@@ -1793,7 +2253,7 @@ export async function handleGetModality(req: Request, res: Response): Promise<vo
   }
 }
 
-export async function handleListModalityOperations(req: Request, res: Response): Promise<void> {
+export async function handleListModalityOperations(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1803,7 +2263,7 @@ export async function handleListModalityOperations(req: Request, res: Response):
   try {
     const rawModality = Array.isArray(req.params.modality) ? req.params.modality[0] : req.params.modality;
     if (!isCanonicalModality(rawModality)) {
-      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      res.status(400).json(createErrorResponse(MODALITY_ERROR, "invalid_request_error", "invalid_modality"));
       return;
     }
 
@@ -1817,7 +2277,7 @@ export async function handleListModalityOperations(req: Request, res: Response):
   }
 }
 
-export async function handleListOperationModels(req: Request, res: Response): Promise<void> {
+export async function handleListOperationModels(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1828,7 +2288,7 @@ export async function handleListOperationModels(req: Request, res: Response): Pr
     const rawModality = Array.isArray(req.params.modality) ? req.params.modality[0] : req.params.modality;
     const rawOperation = Array.isArray(req.params.operation) ? req.params.operation[0] : req.params.operation;
     if (!isCanonicalModality(rawModality)) {
-      res.status(400).json(createErrorResponse("modality must be text, image, audio, video, or embedding", "invalid_request_error", "invalid_modality"));
+      res.status(400).json(createErrorResponse(MODALITY_ERROR, "invalid_request_error", "invalid_modality"));
       return;
     }
     if (!isCanonicalOperation(rawOperation)) {
@@ -1862,12 +2322,12 @@ export async function handleListOperationModels(req: Request, res: Response): Pr
   }
 }
 
-async function handleModelParams(req: Request, res: Response): Promise<void> {
+async function handleModelParams(req: Req, res: Res): Promise<void> {
   const { handleGetModelParams } = await import("./params-handler.js");
   await handleGetModelParams(req, res);
 }
 
-export async function handleGetModel(req: Request, res: Response): Promise<void> {
+export async function handleGetModel(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1890,13 +2350,13 @@ export async function handleGetModel(req: Request, res: Response): Promise<void>
       return;
     }
 
-    res.status(200).json(model);
+    res.status(200).json(withModelOperations(model));
   } catch (error) {
     writeAdaptedError(res, error, 500);
   }
 }
 
-export async function handleChatCompletions(req: Request, res: Response): Promise<void> {
+export async function handleChatCompletions(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1909,12 +2369,12 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
       return;
     }
 
-    const unified = normalizeChatRequest(body);
-    if (!validateStreamingModality(unified, res)) {
+    const request = normalizeChatRequest(body);
+    if (!validateStreamingModality(request, res)) {
       return;
     }
 
-    if (!unified.model) {
+    if (!request.model) {
       res.status(400).json(createErrorResponse("model is required", "invalid_request_error", "missing_model"));
       return;
     }
@@ -1929,13 +2389,13 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
     // Legacy attachments are normalized into the user message payload.
     if (typeof body.image_url === "string" || typeof body.audio_url === "string" || typeof body.video_url === "string") {
       const source = body as unknown as ChatCompletionRequest;
-      unified.messages = applyLegacyAttachments(unified.messages as any, source) as any;
+      request.messages = applyLegacyAttachments(request.messages as any, source) as any;
     }
 
-    await executeUnifiedRequest({
+    await executeRequest({
       req,
       res,
-      unified,
+      request,
       shape: "chat",
     });
   } catch (error) {
@@ -1943,7 +2403,7 @@ export async function handleChatCompletions(req: Request, res: Response): Promis
   }
 }
 
-export async function handleImageGeneration(req: Request, res: Response): Promise<void> {
+export async function handleImageGeneration(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -1963,7 +2423,7 @@ export async function handleImageGeneration(req: Request, res: Response): Promis
     }
 
     const model = body.model;
-    const unified = normalizeResponsesRequest({
+    const request = normalizeResponsesRequest({
       model,
       input: [{ type: "input_text", text: body.prompt }],
       modalities: ["image"],
@@ -1979,10 +2439,10 @@ export async function handleImageGeneration(req: Request, res: Response): Promis
     await runDeferredInference({
       req,
       res,
-      unified,
+      request,
       provider: resolved.provider,
       card: resolved.card,
-      execute: () => invokeDirectAdapter(unified),
+      execute: (signal) => invokeDirectAdapter(request, signal),
       onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
         const body = adaptImageResponse({
@@ -2005,7 +2465,7 @@ export async function handleImageGeneration(req: Request, res: Response): Promis
   }
 }
 
-export async function handleImageEdit(req: Request, res: Response): Promise<void> {
+export async function handleImageEdit(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2029,7 +2489,7 @@ export async function handleImageEdit(req: Request, res: Response): Promise<void
     }
 
     const model = body.model;
-    const unified = normalizeResponsesRequest({
+    const request = normalizeResponsesRequest({
       model,
       input: [{ type: "input_text", text: body.prompt }],
       modalities: ["image"],
@@ -2044,10 +2504,10 @@ export async function handleImageEdit(req: Request, res: Response): Promise<void
     await runDeferredInference({
       req,
       res,
-      unified,
+      request,
       provider: resolved.provider,
       card: resolved.card,
-      execute: () => invokeDirectAdapter(unified),
+      execute: (signal) => invokeDirectAdapter(request, signal),
       onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
         const body = adaptImageResponse({
@@ -2065,7 +2525,7 @@ export async function handleImageEdit(req: Request, res: Response): Promise<void
   }
 }
 
-export async function handleAudioSpeech(req: Request, res: Response): Promise<void> {
+export async function handleAudioSpeech(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2086,7 +2546,7 @@ export async function handleAudioSpeech(req: Request, res: Response): Promise<vo
 
     const model = body.model;
     const format = body.response_format;
-    const unified = normalizeResponsesRequest({
+    const request = normalizeResponsesRequest({
       model,
       input: [{ type: "input_text", text: body.input }],
       modalities: ["audio"],
@@ -2101,10 +2561,10 @@ export async function handleAudioSpeech(req: Request, res: Response): Promise<vo
     await runDeferredInference({
       req,
       res,
-      unified,
+      request,
       provider: resolved.provider,
       card: resolved.card,
-      execute: () => invokeDirectAdapter(unified),
+      execute: (signal) => invokeDirectAdapter(request, signal),
       onSuccess: async (output) => {
         const media = getRequiredOutputMedia(output);
         res.setHeader("Content-Type", media.mimeType || "audio/mpeg");
@@ -2116,7 +2576,7 @@ export async function handleAudioSpeech(req: Request, res: Response): Promise<vo
   }
 }
 
-export async function handleAudioTranscription(req: Request, res: Response): Promise<void> {
+export async function handleAudioTranscription(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2125,7 +2585,7 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
 
   try {
     const body = req.body as AudioTranscriptionRequest;
-    if (!body.file) {
+    if (typeof body.file !== "string" || body.file.trim().length === 0) {
       res.status(400).json(createErrorResponse("file is required", "invalid_request_error", "missing_file"));
       return;
     }
@@ -2136,9 +2596,10 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
     }
 
     const model = body.model;
-    const unified = normalizeResponsesRequest({
+    const audioUrl = normalizeAudioTranscriptionFile(body.file);
+    const request = normalizeResponsesRequest({
       model,
-      input: [{ type: "input_audio", audio_url: `data:application/octet-stream;base64,${body.file}` }],
+      input: [{ type: "input_audio", audio_url: audioUrl }],
       modalities: ["audio"],
       language: body.language,
       response_format: body.response_format,
@@ -2150,10 +2611,10 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
     await runDeferredInference({
       req,
       res,
-      unified,
+      request,
       provider: resolved.provider,
       card: resolved.card,
-      execute: () => invokeDirectAdapter(unified),
+      execute: (signal) => invokeDirectAdapter(request, signal),
       onSuccess: (output, receipt) => {
         const response = adaptTranscriptionResponse({ text: output.content || "" });
         if (body.response_format === "text") {
@@ -2169,7 +2630,7 @@ export async function handleAudioTranscription(req: Request, res: Response): Pro
   }
 }
 
-export async function handleEmbeddings(req: Request, res: Response): Promise<void> {
+export async function handleEmbeddings(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2178,20 +2639,20 @@ export async function handleEmbeddings(req: Request, res: Response): Promise<voi
 
   try {
     const body = (req.body || {}) as Record<string, unknown>;
-    const unified = normalizeEmbeddingsRequest(body);
-    if (!unified.embeddingInput) {
+    const request = normalizeEmbeddingsRequest(body);
+    if (!request.embeddingInput) {
       res.status(400).json(createErrorResponse("input is required", "invalid_request_error", "missing_input"));
       return;
     }
-    if (!unified.model) {
+    if (!request.model) {
       res.status(400).json(createErrorResponse("model is required", "invalid_request_error", "missing_model"));
       return;
     }
 
-    await executeUnifiedRequest({
+    await executeRequest({
       req,
       res,
-      unified,
+      request,
       shape: "embeddings",
     });
   } catch (error) {
@@ -2199,7 +2660,7 @@ export async function handleEmbeddings(req: Request, res: Response): Promise<voi
   }
 }
 
-export async function handleVideoGeneration(req: Request, res: Response): Promise<void> {
+export async function handleVideoGeneration(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2217,7 +2678,7 @@ export async function handleVideoGeneration(req: Request, res: Response): Promis
       return;
     }
 
-    const unified = normalizeResponsesRequest({
+    const request = normalizeResponsesRequest({
       model: body.model,
       input: [{ type: "input_text", text: body.prompt }],
       modalities: ["video"],
@@ -2233,10 +2694,10 @@ export async function handleVideoGeneration(req: Request, res: Response): Promis
     await runDeferredInference({
       req,
       res,
-      unified,
+      request,
       provider: resolved.provider,
       card: resolved.card,
-      execute: () => invokeDirectAdapter(unified),
+      execute: (signal) => invokeDirectAdapter(request, signal),
       onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
         if (media.jobId && media.status && media.status !== "completed") {
@@ -2270,7 +2731,7 @@ export async function handleVideoGeneration(req: Request, res: Response): Promis
   }
 }
 
-export async function handleVideoStatus(req: Request, res: Response): Promise<void> {
+export async function handleVideoStatus(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2310,9 +2771,9 @@ export async function handleVideoStatus(req: Request, res: Response): Promise<vo
  *
  * Query params:
  *   - pollIntervalMs  (default 2000, min 500, max 30000)
- *   - timeoutMs       (default 600000, min 5000, max 3600000)
+ *   - timeoutMs       (default 1800000, min 5000, max 3600000)
  */
-export async function handleVideoStatusStream(req: Request, res: Response): Promise<void> {
+export async function handleVideoStatusStream(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
     res.status(200).end();
@@ -2331,7 +2792,7 @@ export async function handleVideoStatusStream(req: Request, res: Response): Prom
     500,
   ), 30_000);
   const timeoutMs = Math.min(Math.max(
-    parseInt(String(req.query.timeoutMs ?? ""), 10) || 600_000,
+    parseInt(String(req.query.timeoutMs ?? ""), 10) || 1_800_000,
     5_000,
   ), 3_600_000);
 
@@ -2349,7 +2810,7 @@ export async function handleVideoStatusStream(req: Request, res: Response): Prom
       try {
         status = await retrieveDirectAdapter(jobId);
       } catch (pollError) {
-        res.write(toComposeErrorStreamEvent({
+        res.write(toErrorStreamEvent({
           code: "upstream_error",
           message: pollError instanceof Error ? pollError.message : String(pollError),
         }));
@@ -2358,7 +2819,7 @@ export async function handleVideoStatusStream(req: Request, res: Response): Prom
         return;
       }
 
-      res.write(toComposeVideoStatusStreamEvent({
+      res.write(toVideoStatusStreamEvent({
         jobId,
         status: status.status,
         progress: status.progress,
@@ -2373,7 +2834,7 @@ export async function handleVideoStatusStream(req: Request, res: Response): Prom
       }
 
       if (Date.now() - startedAt >= timeoutMs) {
-        res.write(toComposeErrorStreamEvent({
+        res.write(toErrorStreamEvent({
           code: "upstream_timeout",
           message: `Video job ${jobId} did not complete within ${timeoutMs}ms`,
         }));
@@ -2393,7 +2854,7 @@ export async function handleVideoStatusStream(req: Request, res: Response): Prom
       return;
     }
     try {
-      res.write(toComposeErrorStreamEvent({
+      res.write(toErrorStreamEvent({
         code: "internal_error",
         message: error instanceof Error ? error.message : String(error),
       }));

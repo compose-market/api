@@ -532,22 +532,30 @@ export function createErrorResponse(
 // Provider Types
 // =============================================================================
 
-export type ModelProvider =
-    | "gemini"
-    | "openai"
-    | "asicloud"
-    | "alibaba"
-    | "digitalocean"
-    | "hugging face"
-    | "aiml"
-    | "azure"
-    | "vertex"
-    | "fireworks"
-    | "cloudflare"
-    | "deepgram"
-    | "elevenlabs"
-    | "cartesia"
-    | "roboflow";
+export const PROVIDERS = [
+    "gemini",
+    "openai",
+    "asicloud",
+    "alibaba",
+    "hugging face",
+    "azure",
+    "vertex",
+    "fireworks",
+    "cloudflare",
+    "deepgram",
+    "elevenlabs",
+    "cartesia",
+    "roboflow",
+    "aiml",
+] as const;
+
+export type ModelProvider = typeof PROVIDERS[number];
+
+const PROVIDER_SET = new Set<string>(PROVIDERS);
+
+export function isProvider(value: unknown): value is ModelProvider {
+    return typeof value === "string" && PROVIDER_SET.has(value);
+}
 
 /**
  * Provider priority for deduplication and routing
@@ -556,17 +564,16 @@ export type ModelProvider =
  */
 export const PROVIDER_PRIORITY: Record<ModelProvider, number> = {
     "gemini": 1,
-    "openai": 1,
     "azure": 1,
+    "fireworks": 1,
     "alibaba": 1,
-    "digitalocean": 1,
     "vertex": 1,
+    "openai": 2,
     "hugging face": 2,
-    "fireworks": 2,
     "deepgram": 2,
     "elevenlabs": 2,
     "cartesia": 2,
-    "aiml": 3,
+    "aiml": 2,
     "asicloud": 3,
     "cloudflare": 3,
     "roboflow": 3,
@@ -656,10 +663,14 @@ export type ModelPricing = Record<string, unknown>;
 export interface ModelCard {
     /** Canonical ID for inference calls. */
     modelId: string;
+    /** Provider-wire model ID when the public ID is disambiguated. */
+    upstreamModelId?: string;
     /** Human-readable display name. */
     name: string | null;
-    /** Provider family from the compiled provider catalog. */
+    /** Inference provider or hosting catalog from the compiled provider catalog. */
     provider: ModelProvider;
+    /** Source model family/creator line from the compiled catalog. */
+    family?: string;
     /** Canonical task/modality/pipeline field from the compiled catalog. */
     type: string | string[] | null;
     /** Raw model description from the compiled catalog. */
@@ -684,6 +695,8 @@ export interface ModelCard {
     modelType?: unknown;
     /** Optional provider-specific source/evidence metadata. */
     sourceMetadata?: unknown;
+    /** Optional model-specific request parameter schema from provider docs/specs. */
+    params?: unknown;
     /** Optional Hugging Face router provider. */
     hfInferenceProvider?: string;
     /** Optional provider-specific model ID for HF Router. */
@@ -692,6 +705,8 @@ export interface ModelCard {
     available?: boolean;
     /** Optional source tracking. */
     availableFrom?: ModelProvider[];
+    /** Derived semantic routing/search profile compiled from catalog classifiers. */
+    semantics?: unknown;
 }
 
 // =============================================================================
