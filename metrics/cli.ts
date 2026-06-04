@@ -1,73 +1,56 @@
 import "dotenv/config";
 
-import { closeRedis } from "../x402/keys/redis.js";
-import { getMetricsSnapshot, runMetricsWatch } from "./service.js";
-import { runMetricsBackfill } from "./onchain.js";
+import { syncDownloads } from "./downloads.js";
+import { syncPayments } from "./payments.js";
+import { setSessionBaseline, syncSessionsFromRedis } from "./sessions.js";
+import { getMetricsSnapshot, refreshMetricsSnapshot } from "./snapshot.js";
 
-function readArg(name: string): string | undefined {
-    const prefix = `--${name}=`;
-    const directIndex = process.argv.indexOf(`--${name}`);
-    if (directIndex !== -1) return process.argv[directIndex + 1];
-    const inline = process.argv.find((arg) => arg.startsWith(prefix));
-    return inline ? inline.slice(prefix.length) : undefined;
-}
-
-function readPositiveIntArg(name: string): number | undefined {
-    const value = readArg(name);
-    if (!value) return undefined;
-    const parsed = Number.parseInt(value, 10);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`--${name} must be a positive integer`);
-    }
-    return parsed;
+async function syncAll(): Promise<void> {
+    const downloads = await syncDownloads();
+    const sessions = await syncSessionsFromRedis();
+    const payments = await syncPayments();
+    const snapshot = await refreshMetricsSnapshot();
+    console.log(JSON.stringify({ downloads, sessions, payments, snapshot }, null, 2));
 }
 
 async function main(): Promise<void> {
     const command = process.argv[2] || "snapshot";
+
     switch (command) {
-        case "snapshot": {
-            const refresh = !process.argv.includes("--no-refresh");
-            console.log(JSON.stringify(await getMetricsSnapshot({ refresh }), null, 2));
-            await closeRedis();
-            return;
+        case "snapshot":
+            console.log(JSON.stringify(
+                process.argv.includes("--refresh") ? await refreshMetricsSnapshot() : await getMetricsSnapshot(),
+                null,
+                2,
+            ));
+            break;
+        case "sync":
+            await syncAll();
+            break;
+        case "downloads":
+            console.log(JSON.stringify(await syncDownloads({ force: process.argv.includes("--force") }), null, 2));
+            break;
+        case "payments":
+            console.log(JSON.stringify({ payments: await syncPayments(), snapshot: await refreshMetricsSnapshot() }, null, 2));
+            break;
+        case "sessions":
+            console.log(JSON.stringify({ sessions: await syncSessionsFromRedis(), snapshot: await refreshMetricsSnapshot() }, null, 2));
+            break;
+        case "sessions-baseline": {
+            const total = Number.parseInt(process.argv[3] ?? "", 10);
+            console.log(JSON.stringify({ baseline: await setSessionBaseline(total), snapshot: await refreshMetricsSnapshot() }, null, 2));
+            break;
         }
-        case "backfill": {
-            const summary = await runMetricsBackfill({
-                fromDate: readArg("from-date"),
-                maxRanges: readPositiveIntArg("max-ranges"),
-                skipDeploymentDiscovery: process.argv.includes("--fast")
-                    || process.argv.includes("--skip-deployments"),
-            });
-            console.log(JSON.stringify(summary, null, 2));
-            await closeRedis();
-            return;
-        }
-        case "watch": {
-            const controller = new AbortController();
-            process.once("SIGINT", () => controller.abort(new Error("SIGINT")));
-            process.once("SIGTERM", () => controller.abort(new Error("SIGTERM")));
-            await runMetricsWatch({
-                signal: controller.signal,
-                maxRangesPerTick: readPositiveIntArg("max-ranges"),
-            });
-            return;
-        }
-        case "help":
-        case "--help":
-        case "-h":
-            console.log([
-                "Usage: tsx metrics/cli.ts <snapshot|backfill|watch>",
-                "  snapshot [--no-refresh]",
-                "  backfill [--from-date 2025-12-01T00:00:00.000Z] [--max-ranges 250] [--fast]",
-                "  watch [--max-ranges 50]",
-            ].join("\n"));
-            return;
         default:
             throw new Error(`Unknown metrics command: ${command}`);
     }
 }
 
-main().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-});
+main()
+    .then(() => {
+        process.exit(0);
+    })
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });

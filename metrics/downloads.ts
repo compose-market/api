@@ -1,173 +1,168 @@
-import { loadMetricsConfig, type MetricsConfig } from "./config.js";
-import { recordDownloadsSnapshotMetric, readDownloadsSnapshot } from "./redis.js";
-import type { MetricsDownloadsSnapshot } from "./types.js";
+import { ensure, rows, setState, sql, stateUpdatedAt } from "./db.js";
 
-interface NpmDownloadPoint {
-    downloads?: number;
+export const SDK_PACKAGE = "@compose-market/sdk";
+
+type Fetch = typeof fetch;
+
+interface NpmPackage {
+    time?: {
+        created?: string;
+    };
 }
 
-interface GitHubAsset {
-    name?: string;
-    download_count?: number;
+interface NpmDownloads {
+    downloads?: Array<{
+        day?: string;
+        downloads?: number;
+    }>;
 }
 
-interface GitHubRelease {
-    tag_name?: string;
-    assets?: GitHubAsset[];
+export interface DownloadSyncOptions {
+    force?: boolean;
+    fetcher?: Fetch;
 }
 
-interface GitHubTrafficSummary {
-    count?: number;
-    uniques?: number;
+const DAY_MS = 86_400_000;
+
+function day(date: Date): string {
+    return date.toISOString().slice(0, 10);
 }
 
-async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(url, {
-        ...init,
-        headers: {
-            Accept: "application/json",
-            "User-Agent": "compose-market-metrics",
-            ...(init.headers || {}),
-        },
-        signal: AbortSignal.timeout(20_000),
+function addDays(value: string, count: number): string {
+    return day(new Date(Date.parse(`${value}T00:00:00.000Z`) + count * DAY_MS));
+}
+
+function minDay(a: string, b: string): string {
+    return a <= b ? a : b;
+}
+
+function yesterday(): string {
+    return day(new Date(Date.now() - DAY_MS));
+}
+
+function npmPackagePath(): string {
+    return encodeURIComponent(SDK_PACKAGE);
+}
+
+async function json<T>(fetcher: Fetch, url: string): Promise<T> {
+    const response = await fetcher(url, {
+        headers: { "User-Agent": "compose-market-metrics" },
+        signal: AbortSignal.timeout(12_000),
     });
     if (!response.ok) {
-        throw new Error(`${url} returned HTTP ${response.status}`);
+        const body = await response.text().catch(() => "");
+        throw new Error(`npm metrics request failed ${response.status}: ${body.slice(0, 240)}`);
     }
-    return response.json() as Promise<T>;
+    return await response.json() as T;
 }
 
-async function fetchNpmDownloads(packageName: string, period: "last-day" | "last-week" | "last-month" | "last-year"): Promise<number> {
-    const encoded = encodeURIComponent(packageName);
-    const body = await fetchJson<NpmDownloadPoint>(`https://api.npmjs.org/downloads/point/${period}/${encoded}`);
-    return Number.isFinite(body.downloads) ? Number(body.downloads) : 0;
+async function packageCreated(fetcher: Fetch): Promise<string> {
+    const metadata = await json<NpmPackage>(fetcher, `https://registry.npmjs.org/${npmPackagePath()}`);
+    const created = metadata.time?.created;
+    if (!created) {
+        throw new Error(`npm metadata missing created time for ${SDK_PACKAGE}`);
+    }
+    return day(new Date(created));
 }
 
-async function fetchGitHubJson<T>(path: string, config: MetricsConfig): Promise<T> {
-    const headers: Record<string, string> = {
-        "X-GitHub-Api-Version": "2022-11-28",
-    };
-    if (config.githubToken) {
-        headers.Authorization = `Bearer ${config.githubToken}`;
-    }
-    return fetchJson<T>(`https://api.github.com${path}`, { headers });
+async function lastDownloadedDay(): Promise<string | undefined> {
+    await ensure();
+    const result = await rows<{ day?: string }>(
+        `SELECT to_char(max(day), 'YYYY-MM-DD') AS day
+         FROM downloads
+         WHERE package = $1`,
+        [SDK_PACKAGE],
+    );
+    return result[0]?.day;
 }
 
-async function fetchMeshReleaseDownloads(config: MetricsConfig): Promise<{
-    releases: number;
-    total: number;
-    assets: MetricsDownloadsSnapshot["mesh"]["assets"];
-}> {
-    let page = 1;
-    let releases = 0;
-    const assets: MetricsDownloadsSnapshot["mesh"]["assets"] = [];
+async function upsert(rows: Array<{ day: string; downloads: number }>): Promise<void> {
+    if (rows.length === 0) return;
+    await ensure();
 
-    while (true) {
-        const rows = await fetchGitHubJson<GitHubRelease[]>(
-            `/repos/${config.meshRepoOwner}/${config.meshRepoName}/releases?per_page=100&page=${page}`,
-            config,
-        );
-        if (rows.length === 0) break;
-        releases += rows.length;
-        for (const release of rows) {
-            for (const asset of release.assets || []) {
-                assets.push({
-                    name: asset.name || "unnamed",
-                    downloadCount: Number.isFinite(asset.download_count) ? Number(asset.download_count) : 0,
-                    ...(release.tag_name ? { releaseTag: release.tag_name } : {}),
-                });
-            }
-        }
-        if (rows.length < 100) break;
-        page++;
-    }
+    const values: string[] = [];
+    const params: unknown[] = [];
+    rows.forEach((row, index) => {
+        const base = index * 3;
+        values.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+        params.push(SDK_PACKAGE, row.day, row.downloads);
+    });
 
-    return {
-        releases,
-        total: assets.reduce((sum, asset) => sum + asset.downloadCount, 0),
-        assets: assets
-            .sort((a, b) => b.downloadCount - a.downloadCount)
-            .slice(0, 50),
-    };
+    await sql().query(
+        `INSERT INTO downloads (package, day, downloads)
+         VALUES ${values.join(", ")}
+         ON CONFLICT (package, day) DO UPDATE SET
+           downloads = EXCLUDED.downloads,
+           updated_at = now()`,
+        params,
+    );
 }
 
-async function fetchTraffic(config: MetricsConfig): Promise<Partial<MetricsDownloadsSnapshot["mesh"]>> {
-    if (!config.githubToken) {
-        return {};
+async function fetchRange(fetcher: Fetch, from: string, to: string): Promise<Array<{ day: string; downloads: number }>> {
+    const data = await json<NpmDownloads>(
+        fetcher,
+        `https://api.npmjs.org/downloads/range/${from}:${to}/${npmPackagePath()}`,
+    );
+    return (data.downloads ?? [])
+        .map((item) => ({
+            day: item.day || "",
+            downloads: Number.isInteger(item.downloads) && item.downloads! >= 0 ? item.downloads! : 0,
+        }))
+        .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.day));
+}
+
+export async function syncDownloads(options: DownloadSyncOptions = {}): Promise<{ rows: number; from?: string; to?: string }> {
+    const fetcher = options.fetcher ?? fetch;
+    const end = yesterday();
+    const created = await packageCreated(fetcher);
+    const last = options.force ? undefined : await lastDownloadedDay();
+    let cursor = last ? addDays(last, 1) : created;
+
+    if (cursor > end) {
+        await setState("downloads", end);
+        return { rows: 0, from: cursor, to: end };
     }
-    const [clones, views] = await Promise.all([
-        fetchGitHubJson<GitHubTrafficSummary>(
-            `/repos/${config.meshRepoOwner}/${config.meshRepoName}/traffic/clones`,
-            config,
+
+    let total = 0;
+    const first = cursor;
+    while (cursor <= end) {
+        const rangeEnd = minDay(addDays(cursor, 364), end);
+        const rows = await fetchRange(fetcher, cursor, rangeEnd);
+        await upsert(rows);
+        total += rows.length;
+        cursor = addDays(rangeEnd, 1);
+    }
+
+    await setState("downloads", end);
+    return { rows: total, from: first, to: end };
+}
+
+export async function totalDownloads(): Promise<{ total: number; daily: number; updatedAt?: string }> {
+    await ensure();
+    const [result, daily] = await Promise.all([
+        rows<{ total?: string | number }>(
+            `SELECT COALESCE(sum(downloads), 0) AS total
+             FROM downloads
+             WHERE package = $1`,
+            [SDK_PACKAGE],
         ),
-        fetchGitHubJson<GitHubTrafficSummary>(
-            `/repos/${config.meshRepoOwner}/${config.meshRepoName}/traffic/views`,
-            config,
+        rows<{ downloads?: string | number }>(
+            `SELECT downloads
+             FROM downloads
+             WHERE package = $1
+             ORDER BY day DESC
+             LIMIT 1`,
+            [SDK_PACKAGE],
         ),
     ]);
     return {
-        clonesLast14Days: Number.isFinite(clones.count) ? Number(clones.count) : 0,
-        uniqueClonersLast14Days: Number.isFinite(clones.uniques) ? Number(clones.uniques) : 0,
-        viewsLast14Days: Number.isFinite(views.count) ? Number(views.count) : 0,
-        uniqueViewersLast14Days: Number.isFinite(views.uniques) ? Number(views.uniques) : 0,
+        total: Number(result[0]?.total ?? 0),
+        daily: Number(daily[0]?.downloads ?? 0),
+        updatedAt: await stateUpdatedAt("downloads"),
     };
 }
 
-export async function refreshDownloadMetrics(options: {
-    force?: boolean;
-    config?: MetricsConfig;
-} = {}): Promise<MetricsDownloadsSnapshot> {
-    const config = options.config || loadMetricsConfig();
-    const cached = await readDownloadsSnapshot(config);
-    const cachedAt = Math.max(cached.sdk.updatedAt || 0, cached.mesh.updatedAt || 0);
-    if (!options.force && cachedAt && Date.now() - cachedAt < config.downloadsRefreshMs) {
-        return cached;
-    }
-
-    const warnings: string[] = [];
-    const now = Date.now();
-    const [lastDay, lastWeek, lastMonth, lastYear] = await Promise.all([
-        fetchNpmDownloads(config.sdkPackageName, "last-day"),
-        fetchNpmDownloads(config.sdkPackageName, "last-week"),
-        fetchNpmDownloads(config.sdkPackageName, "last-month"),
-        fetchNpmDownloads(config.sdkPackageName, "last-year"),
-    ]);
-
-    const releaseDownloads = await fetchMeshReleaseDownloads(config);
-    let traffic: Partial<MetricsDownloadsSnapshot["mesh"]> = {};
-    try {
-        traffic = await fetchTraffic(config);
-        if (!config.githubToken) {
-            warnings.push("GitHub clone/view traffic requires METRICS_GITHUB_TOKEN or GITHUB_TOKEN; release asset downloads are still public.");
-        }
-    } catch (error) {
-        warnings.push(`GitHub clone/view traffic unavailable: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const snapshot: MetricsDownloadsSnapshot = {
-        totalObserved: lastMonth + releaseDownloads.total,
-        sdk: {
-            packageName: config.sdkPackageName,
-            downloads: {
-                lastDay,
-                lastWeek,
-                lastMonth,
-                lastYear,
-            },
-            source: "npm",
-            updatedAt: now,
-        },
-        mesh: {
-            repository: `${config.meshRepoOwner}/${config.meshRepoName}`,
-            releaseAssetDownloads: releaseDownloads.total,
-            releases: releaseDownloads.releases,
-            assets: releaseDownloads.assets,
-            ...traffic,
-            source: "github",
-            updatedAt: now,
-        },
-        warnings,
-    };
-    await recordDownloadsSnapshotMetric(snapshot, config);
-    return snapshot;
-}
+export const downloadsDay = {
+    add: addDays,
+    yesterday,
+};

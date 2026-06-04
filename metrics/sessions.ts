@@ -1,0 +1,153 @@
+import { getRedisClient } from "../x402/keys/redis.js";
+import { bumpSessionSnapshot } from "./cache.js";
+import { ensure, getState, rows, setState, stateUpdatedAt } from "./db.js";
+
+export interface SessionRecord {
+    keyId: string;
+    userAddress?: string;
+    chainId?: number;
+    createdAt?: number | Date;
+}
+
+function createdDate(value: number | Date | undefined): string | null {
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        return new Date(value).toISOString();
+    }
+    return null;
+}
+
+function parseBaseline(value: string | undefined): number {
+    if (!value) return 0;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function latest(values: Array<string | undefined>): string | undefined {
+    const times = values
+        .map((value) => value ? Date.parse(value) : NaN)
+        .filter((value) => Number.isFinite(value));
+
+    if (times.length === 0) {
+        return undefined;
+    }
+
+    return new Date(Math.max(...times)).toISOString();
+}
+
+export async function recordSession(input: SessionRecord): Promise<boolean> {
+    await ensure();
+    const result = await rows<{ inserted: number }>(
+        `INSERT INTO sessions (key_id, user_address, chain_id, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (key_id) DO NOTHING
+         RETURNING 1 AS inserted`,
+        [
+            input.keyId,
+            input.userAddress?.toLowerCase() ?? null,
+            input.chainId ?? null,
+            createdDate(input.createdAt),
+        ],
+    );
+    if (result.length > 0) {
+        await setState("sessions", new Date().toISOString());
+        await bumpSessionSnapshot();
+        return true;
+    }
+    return false;
+}
+
+function purpose(value: string | undefined): "session" | "api" | undefined {
+    return value === "session" || value === "api" ? value : undefined;
+}
+
+function addressFromSessionSet(key: string): string | undefined {
+    const match = /^session:budget:(0x[a-fA-F0-9]{40}):intents$/.exec(key);
+    return match?.[1]?.toLowerCase();
+}
+
+export async function syncSessionsFromRedis(): Promise<{ scanned: number; inserted: number }> {
+    const redis = await getRedisClient();
+    let scanned = 0;
+    let inserted = 0;
+
+    for await (const item of redis.scanIterator({ MATCH: "session:budget:*:intents", COUNT: 500 })) {
+        const keys = Array.isArray(item) ? item : [item];
+        for (const raw of keys) {
+            const key = String(raw);
+            const userAddress = addressFromSessionSet(key);
+            const ids = await redis.sMembers(key);
+
+            for (const keyId of ids) {
+                scanned += 1;
+                if (await recordSession({
+                    keyId,
+                    userAddress,
+                })) {
+                    inserted += 1;
+                }
+            }
+        }
+    }
+
+    for await (const item of redis.scanIterator({ MATCH: "payment-intent:*", COUNT: 500 })) {
+        const keys = Array.isArray(item) ? item : [item];
+        for (const raw of keys) {
+            const record = await redis.hGetAll(String(raw));
+            if (!record.paymentIntentId || purpose(record.purpose) !== "session") {
+                continue;
+            }
+
+            scanned += 1;
+            if (await recordSession({
+                keyId: record.paymentIntentId,
+                userAddress: record.userAddress,
+                chainId: record.chainId ? Number.parseInt(record.chainId, 10) : undefined,
+                createdAt: record.createdAt ? Number.parseInt(record.createdAt, 10) : undefined,
+            })) {
+                inserted += 1;
+            }
+        }
+    }
+
+    await setState("sessions:seed", new Date().toISOString());
+    return { scanned, inserted };
+}
+
+export async function setSessionBaseline(total: number): Promise<number> {
+    if (!Number.isSafeInteger(total) || total < 0) {
+        throw new Error("Session baseline must be a non-negative safe integer");
+    }
+
+    await ensure();
+    await setState("sessions:baseline", String(total));
+    return total;
+}
+
+export async function sessionBaseline(): Promise<number> {
+    return parseBaseline(await getState("sessions:baseline"));
+}
+
+export async function sessionTotals(): Promise<{ total: number; daily: number; updatedAt?: string }> {
+    await ensure();
+    const [result, daily, baseline, sessionsUpdatedAt, baselineUpdatedAt] = await Promise.all([
+        rows<{ total?: string | number }>(
+            `SELECT count(*) AS total FROM sessions`,
+        ),
+        rows<{ total?: string | number }>(
+            `SELECT count(*) AS total
+             FROM sessions
+             WHERE created_at >= date_trunc('day', now())`,
+        ),
+        sessionBaseline(),
+        stateUpdatedAt("sessions"),
+        stateUpdatedAt("sessions:baseline"),
+    ]);
+    return {
+        total: Number(result[0]?.total ?? 0) + baseline,
+        daily: Number(daily[0]?.total ?? 0),
+        updatedAt: latest([sessionsUpdatedAt, baselineUpdatedAt]),
+    };
+}
