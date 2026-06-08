@@ -11,8 +11,10 @@ import { corsMiddleware, requestIdMiddleware } from "./http/middleware.js";
 import { buildError } from "./http/errors.js";
 import { errors as bodyErrors, form, json } from "./http/body.js";
 import { registerMetricsRoutes } from "./metrics/routes.js";
-import { runMetricsBackfill } from "./metrics/onchain.js";
-import { runMetricsWatch } from "./metrics/service.js";
+import { syncDownloads } from "./metrics/downloads.js";
+import { syncPayments } from "./metrics/payments.js";
+import { syncSessionsFromRedis } from "./metrics/sessions.js";
+import { refreshMetricsSnapshot } from "./metrics/snapshot.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
 export { expiryWorker } from "./x402/keys/expiry.js";
@@ -34,12 +36,30 @@ async function runJob() {
       case "expiry-scan":
         await expiryWorker({ source: "scheduled" } as any, {} as any);
         break;
-      case "metrics-backfill":
-        await runMetricsBackfill();
+      case "agents-backfill": {
+        const { backfill } = await import("./agents.js");
+        const result = await backfill();
+        log(`Agents backfill fetched ${result.fetched}, indexed ${result.indexed}.`, "job");
         break;
-      case "metrics-watch":
-        await runMetricsWatch();
-        return;
+      }
+      case "metrics-sync":
+        await syncDownloads();
+        await syncSessionsFromRedis();
+        await syncPayments();
+        await refreshMetricsSnapshot();
+        break;
+      case "metrics-payments":
+        await syncPayments();
+        await refreshMetricsSnapshot();
+        break;
+      case "metrics-downloads":
+        await syncDownloads();
+        await refreshMetricsSnapshot();
+        break;
+      case "metrics-sessions":
+        await syncSessionsFromRedis();
+        await refreshMetricsSnapshot();
+        break;
       default:
         throw new Error(`Unknown job task: ${task}`);
     }

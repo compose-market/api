@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
 
 import {
@@ -25,6 +25,7 @@ import {
 } from "./x402/evidence.js";
 import { type Receipt, type ReceiptBill, type ReceiptLineItem } from "./http/request-context.js";
 import { toReceiptStreamEvent } from "./inference/core.js";
+import { triggerConfirmedPayment } from "./metrics/payments.js";
 import {
   buildAgentResponsesSettlement,
   buildAgentTextSettlement,
@@ -38,8 +39,8 @@ import {
 import {
   findAgentByWallet,
   findWorkflowByWallet,
-  listAgents,
   listWorkflows,
+  page as pageAgents,
   searchAgents as searchAgentCards,
   type AgentCard,
   type WorkflowMetadata,
@@ -50,6 +51,7 @@ export type { AgentCard, WorkflowMetadata } from "./agents.js";
 interface PublicRouteEvent {
   rawPath: string;
   requestContext: { http: { method: string } };
+  headers?: Record<string, string | undefined>;
   queryStringParameters?: Record<string, string | undefined>;
 }
 
@@ -123,8 +125,160 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
+const AGENTS_CACHE = "public, max-age=120, s-maxage=900, stale-while-revalidate=1800";
+const AVATAR_CACHE = "public, max-age=31536000, immutable, s-maxage=31536000";
+const AVATAR_MISS_CACHE = "public, max-age=300, s-maxage=300";
+
+function cachedJsonResult(
+  event: PublicRouteEvent,
+  statusCode: number,
+  headers: Record<string, string>,
+  body: unknown,
+): PublicRouteResult {
+  const text = JSON.stringify(body);
+  const etag = `"agents-${createHash("sha1").update(text).digest("base64url")}"`;
+  const match = event.headers?.["if-none-match"] || event.headers?.["If-None-Match"];
+  const cached = match?.split(",").map((value) => value.trim()).includes(etag);
+  if (cached) {
+    return {
+      statusCode: 304,
+      headers: {
+        ...headers,
+        ETag: etag,
+      },
+      body: "",
+    };
+  }
+  return {
+    statusCode,
+    headers: {
+      ...headers,
+      ETag: etag,
+      "Content-Type": "application/json",
+    },
+    body: text,
+  };
+}
+
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function header(event: PublicRouteEvent, name: string): string | undefined {
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(event.headers || {})) {
+    if (key.toLowerCase() === wanted) return value;
+  }
+  return undefined;
+}
+
+function origin(event: PublicRouteEvent): string {
+  const host = header(event, "x-forwarded-host") || header(event, "host") || "api.compose.market";
+  const proto = header(event, "x-forwarded-proto") || "https";
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+type AvatarAgent = {
+  walletAddress?: string;
+  image?: string;
+  avatar?: string;
+  avatarUrl?: string;
+};
+
+function avatarSource(agent: Pick<AvatarAgent, "image" | "avatar">): string | null {
+  const value = (agent.image || agent.avatar || "").trim();
+  return value && value !== "none" ? value : null;
+}
+
+function avatarTag(value: string): string {
+  return `"avatar-${createHash("sha1").update(value).digest("base64url")}"`;
+}
+
+function avatarUrl(event: PublicRouteEvent, agent: AvatarAgent): string | undefined {
+  const source = avatarSource(agent);
+  if (!source || !agent.walletAddress) return undefined;
+  return `${origin(event)}/agent/${agent.walletAddress}/avatar?v=${createHash("sha1").update(source).digest("base64url")}`;
+}
+
+function withAvatar<T extends AvatarAgent>(event: PublicRouteEvent, agent: T): T {
+  const url = avatarUrl(event, agent);
+  return url ? { ...agent, avatarUrl: url } : agent;
+}
+
+function withAvatars(event: PublicRouteEvent, page: Awaited<ReturnType<typeof pageAgents>>): Awaited<ReturnType<typeof pageAgents>> {
+  return {
+    ...page,
+    agents: page.agents.map((agent) => withAvatar(event, agent)),
+  };
+}
+
+function avatarGateway(): string | null {
+  const value = process.env.PINATA_GATEWAY_URL || process.env.IPFS_PINATA_GATEWAY || process.env.PINATA_GATEWAY;
+  return value ? normalizePinataGateway(value) : null;
+}
+
+function avatarSourceUrl(source: string): string | null {
+  const value = source.trim();
+  if (/^https?:\/\//i.test(value)) return value;
+  const cid = value.startsWith("ipfs://") ? value.slice("ipfs://".length) : value;
+  if (/^(baf[a-z0-9]+|Qm[1-9A-HJ-NP-Za-km-z]+)(\/.*)?$/.test(cid)) {
+    const gateway = avatarGateway();
+    return gateway ? `https://${gateway}/ipfs/${cid.replace(/^\/+/, "")}` : null;
+  }
+  return null;
+}
+
+async function avatarResult(
+  event: PublicRouteEvent,
+  corsHeaders: Record<string, string>,
+  walletAddress: string,
+): Promise<PublicRouteResult> {
+  const agent = await findAgentByWallet(walletAddress);
+  const source = agent ? avatarSource(agent) : null;
+  if (!agent || !source) {
+    return jsonResult(404, { ...corsHeaders, "Cache-Control": AVATAR_MISS_CACHE }, { error: "Avatar not found" });
+  }
+
+  const etag = avatarTag(source);
+  const match = header(event, "if-none-match");
+  if (match?.split(",").map((value) => value.trim()).includes(etag)) {
+    return {
+      statusCode: 304,
+      headers: {
+        ...corsHeaders,
+        ETag: etag,
+        "Cache-Control": AVATAR_CACHE,
+      },
+      body: "",
+    };
+  }
+
+  const url = avatarSourceUrl(source);
+  if (!url) {
+    return jsonResult(404, { ...corsHeaders, "Cache-Control": AVATAR_MISS_CACHE }, { error: "Avatar not found" });
+  }
+
+  const response = await fetch(url, {
+    headers: { Accept: "image/*,*/*;q=0.8" },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    return jsonResult(404, { ...corsHeaders, "Cache-Control": AVATAR_MISS_CACHE }, { error: "Avatar not found" });
+  }
+
+  const contentType = response.headers.get("content-type") || "application/octet-stream";
+  const bytes = Buffer.from(await response.arrayBuffer()).toString("base64");
+  return {
+    statusCode: 200,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": contentType,
+      "Cache-Control": AVATAR_CACHE,
+      ETag: etag,
+    },
+    body: bytes,
+    isBase64Encoded: true,
+  };
 }
 
 function normalizePinataGateway(value: string): string {
@@ -198,11 +352,12 @@ export async function handlePublicRoute(
     }
 
     if (method === "GET" && path === "/agents") {
-      const agents = await listAgents();
-      return jsonResult(200, corsHeaders, {
-        agents,
-        total: agents.length,
-      });
+      return cachedJsonResult(
+        event,
+        200,
+        { ...corsHeaders, "Cache-Control": AGENTS_CACHE },
+        withAvatars(event, await pageAgents(event.queryStringParameters || {})),
+      );
     }
 
     if (method === "GET" && path === "/agents/search") {
@@ -210,14 +365,27 @@ export async function handlePublicRoute(
       if (!q.trim()) {
         return jsonResult(400, corsHeaders, { error: "q is required" });
       }
+      const market = event.queryStringParameters?.view === "market";
       const limit = event.queryStringParameters?.limit
-        ? Math.max(1, Math.min(50, Number.parseInt(event.queryStringParameters.limit, 10) || 8))
-        : 8;
+        ? Math.max(1, Math.min(market ? 72 : 50, Number.parseInt(event.queryStringParameters.limit, 10) || (market ? 72 : 8)))
+        : market ? 72 : 8;
       const agents = await searchAgentCards(q, limit);
-      return jsonResult(200, corsHeaders, {
-        agents,
+      return cachedJsonResult(event, 200, { ...corsHeaders, "Cache-Control": AGENTS_CACHE }, {
+        agents: agents.map((agent) => withAvatar(event, agent)),
         total: agents.length,
+        count: agents.length,
+        nextCursor: null,
+        hasMore: false,
       });
+    }
+
+    const agentAvatarMatch = path.match(/^\/agent\/(0x[a-fA-F0-9]{40})\/avatar$/);
+    if (method === "GET" && agentAvatarMatch) {
+      const walletAddress = agentAvatarMatch[1];
+      if (!isWalletAddress(walletAddress)) {
+        return jsonResult(400, corsHeaders, { error: "Invalid wallet address format" });
+      }
+      return await avatarResult(event, corsHeaders, walletAddress);
     }
 
     const agentMatch = path.match(/^\/agent\/(0x[a-fA-F0-9]{40})$/);
@@ -230,7 +398,7 @@ export async function handlePublicRoute(
       if (!agent) {
         return jsonResult(404, corsHeaders, { error: "Agent not found" });
       }
-      return jsonResult(200, corsHeaders, agent);
+      return cachedJsonResult(event, 200, { ...corsHeaders, "Cache-Control": AGENTS_CACHE }, withAvatar(event, agent));
     }
 
     if (method === "GET" && path === "/workflows") {
@@ -256,7 +424,7 @@ export async function handlePublicRoute(
 
     if (method === "GET" && path === "/api/agentverse/agents") {
       // Bridge to Fetch.ai's Agentverse directory. Returns Agentverse-shape
-      // agents (NOT ComposeAgentManifest); consumers wanting compose-shape
+      // agents (NOT AgentManifest); consumers wanting compose-shape
       // should map via toAgentManifest. Filter is "compose-compatible"
       // (active + non-empty name) per external/agentverse.ts.
       const q = event.queryStringParameters || {};
@@ -281,15 +449,13 @@ export async function handlePublicRoute(
 }
 
 /**
- * Build a runtime-internal URL. The runtime mounts ALL gateway-facing routes
- * (agent + workflow + memory + workspace + triggers) under `/internal/workflow`
- * for historical reasons; the prefix is the mount path, not a product
- * namespace. The api/ gateway proxies straight through.
+ * Build a runtime-internal URL. The runtime mounts all gateway-facing Manowar
+ * routes (agent + workflow + memory + workspace + triggers) under one
+ * internal prefix. The api/ gateway proxies straight through.
  */
-export function buildRuntimeInternalUrl(pathAndQuery: string): string {
-  return `${requireRuntimeUrl()}/internal/workflow${pathAndQuery}`;
+export function buildRuntimeManowarUrl(pathAndQuery: string): string {
+  return `${requireRuntimeUrl()}/internal/manowar${pathAndQuery}`;
 }
-
 function getHeader(req: Request, name: string): string | undefined {
   const value = req.headers[name.toLowerCase()];
   if (Array.isArray(value)) {
@@ -467,7 +633,7 @@ async function callRuntime(
   extraHeaders: Record<string, string> = {},
   signal?: AbortSignal,
 ): Promise<globalThis.Response> {
-  return fetch(buildRuntimeInternalUrl(pathAndQuery), {
+  return fetch(buildRuntimeManowarUrl(pathAndQuery), {
     method: req.method,
     headers: buildRuntimeHeaders(req, extraHeaders),
     body: await buildRuntimeBody(req),
@@ -627,6 +793,12 @@ async function settlePreparedPayment(
       new Error("Nonzero settlement is missing x402 payment backing"),
       { statusCode: 402 },
     );
+  }
+  if (settlementReceipt?.txHash && settlementReceipt.settlementStatus === "settled") {
+    const settledChainId = settlementReceipt.chainId || chainId;
+    if (settledChainId) {
+      triggerConfirmedPayment({ chainId: settledChainId, txHash: settlementReceipt.txHash }, "route");
+    }
   }
   await remember(settlementReceipt);
   if (settlementReceipt?.evidenceOnly) {
@@ -1124,8 +1296,8 @@ const memory: ReadonlyArray<readonly [Method, string]> = [
   ["post", "/api/memory/turns/record"],
   ["post", "/api/memory/remember"],
   ["post", "/api/memory/loop"],
-  ["get", "/api/memory/workflows"],
-  ["get", "/api/memory/workflows/:workflowId"],
+  ["get", "/api/memory/loops"],
+  ["get", "/api/memory/loops/:loopId"],
   ["get", "/api/memory/patterns"],
   ["get", "/api/memory/patterns/:patternId"],
   ["post", "/api/memory/patterns/:patternId/validate"],
@@ -1734,7 +1906,7 @@ function payableStreamRoute(config: {
   };
 }
 
-export function registerWorkflowRoutes(app: Application): void {
+export function registerManowarRoutes(app: Application): void {
   app.use("/api/mcps", connectorsProxyRoute());
   app.use("/api/onchain", connectorsProxyRoute());
   app.get("/api/receipts", receiptsRoute());

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveServiceConfig, resolveServiceImageFromDescribe } from "../deploy.js";
+import {
+  buildSecretManifest,
+  diffSecretManifest,
+  resolveServiceConfig,
+  resolveServiceImageFromDescribe,
+} from "../deploy.js";
 
 test("resolveServiceImageFromDescribe reads service image from spec.template.spec.containers", () => {
   const image = resolveServiceImageFromDescribe({
@@ -64,4 +69,36 @@ test("resolveServiceConfig reads Cloud Run knobs from env", () => {
     concurrency: "120",
     timeout: "900",
   });
+});
+
+test("secret manifest diff tracks added removed changed and unchanged keys", () => {
+  const previous = buildSecretManifest([
+    { key: "A", value: "one" },
+    { key: "B", value: "two" },
+    { key: "D", value: "old" },
+  ]);
+  const current = buildSecretManifest([
+    { key: "A", value: "one" },
+    { key: "B", value: "changed" },
+    { key: "C", value: "three" },
+  ]);
+
+  assert.deepEqual(diffSecretManifest(current, previous), {
+    added: ["C"],
+    removed: ["D"],
+    changed: ["B"],
+    unchanged: ["A"],
+    keySetChanged: true,
+    valueChanged: true,
+  });
+});
+
+test("secret manifest diff does not require service rebinding for value-only changes", () => {
+  const previous = buildSecretManifest([{ key: "METRICS_DATABASE_URL", value: "old" }]);
+  const current = buildSecretManifest([{ key: "METRICS_DATABASE_URL", value: "new" }]);
+  const diff = diffSecretManifest(current, previous);
+
+  assert.equal(diff.keySetChanged, false);
+  assert.equal(diff.valueChanged, true);
+  assert.deepEqual(diff.changed, ["METRICS_DATABASE_URL"]);
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -10,10 +10,10 @@ import type { AddressInfo } from "node:net";
 
 import {
   handlePublicRoute,
-  buildRuntimeInternalUrl,
+  buildRuntimeManowarUrl,
   buildRuntimeHeaders,
   buildRuntimeSessionHeaders,
-  registerWorkflowRoutes,
+  registerManowarRoutes,
 } from "../routes.js";
 import { findAgentByWallet, test as agentSearchTest } from "../agents.js";
 import { createComposeKey } from "../x402/keys/storage.js";
@@ -41,6 +41,8 @@ const ORIGINAL_MODELS_URL = process.env.MODELS_URL;
 const ORIGINAL_COMPOSE_SESSION_SECRET = process.env.COMPOSE_SESSION_SECRET;
 const NATIVE_FETCH = globalThis.fetch;
 const ROUTES_SOURCE = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../routes.ts"), "utf8");
+const HANDLER_SOURCE = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../handler.ts"), "utf8");
+const CORS_SOURCE = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../http/cors.ts"), "utf8");
 const TEST_SETTLEMENT_TX_HASH = `0x${"12".repeat(32)}`;
 
 interface RouteLayer {
@@ -77,8 +79,8 @@ const memory = [
   "post /api/memory/turns/record",
   "post /api/memory/remember",
   "post /api/memory/loop",
-  "get /api/memory/workflows",
-  "get /api/memory/workflows/:workflowId",
+  "get /api/memory/loops",
+  "get /api/memory/loops/:loopId",
   "get /api/memory/patterns",
   "get /api/memory/patterns/:patternId",
   "post /api/memory/patterns/:patternId/validate",
@@ -116,9 +118,9 @@ const memory = [
   "get /api/memory/:agentWallet",
 ] as const;
 
-test("registerWorkflowRoutes registers the explicit public workflow surface", () => {
+test("registerManowarRoutes registers the explicit public workflow surface", () => {
   const app = express();
-  registerWorkflowRoutes(app);
+  registerManowarRoutes(app);
   const routes = listRegisteredRoutes(app).map((route) => `${route.methods[0]} ${route.path}`);
   const routeSet = new Set(routes);
 
@@ -147,9 +149,23 @@ test("registerWorkflowRoutes registers the explicit public workflow surface", ()
   }
 });
 
+test("API route source excludes stale internal workflow names", () => {
+  const source = [ROUTES_SOURCE, HANDLER_SOURCE, CORS_SOURCE].join("\n");
+  for (const pattern of [
+    new RegExp("/internal/" + "workflow"),
+    new RegExp("register" + "WorkflowRoutes"),
+    new RegExp("buildRuntime" + "InternalUrl"),
+    new RegExp("X-" + "Workflow-Internal"),
+    new RegExp("x-" + "workflow-internal"),
+    new RegExp("/api/memory/work" + "flows"),
+  ]) {
+    assert.doesNotMatch(source, pattern);
+  }
+});
+
 test("GET /frameworks exposes other after manowar", async () => {
   const app = express();
-  registerWorkflowRoutes(app);
+  registerManowarRoutes(app);
   const server = app.listen(0);
   try {
     const { port } = server.address() as AddressInfo;
@@ -164,11 +180,11 @@ test("GET /frameworks exposes other after manowar", async () => {
   }
 });
 
-test("buildRuntimeInternalUrl targets the embedded runtime route", () => {
+test("buildRuntimeManowarUrl targets the embedded runtime route", () => {
   process.env.RUNTIME_URL = "https://runtime.compose.market/";
   assert.equal(
-    buildRuntimeInternalUrl("/agent/0xabc/chat"),
-    "https://runtime.compose.market/internal/workflow/agent/0xabc/chat",
+    buildRuntimeManowarUrl("/agent/0xabc/chat"),
+    "https://runtime.compose.market/internal/manowar/agent/0xabc/chat",
   );
   process.env.RUNTIME_URL = ORIGINAL_RUNTIME_URL;
 });
@@ -208,38 +224,33 @@ test("runtime proxy body construction does not perform agent catalog lookups", (
   assert.doesNotMatch(body, /agentCard/);
 });
 
-test("handlePublicRoute resolves agent catalog with PINATA_GATEWAY_URL", async () => {
+test("handlePublicRoute lists agents from D1 without Pinata fallback", async () => {
+  process.env.AGENTS_D1_ID = "agents-db";
+  process.env.CF_ACCOUNT_ID = "account";
+  process.env.CF_GLOBAL_TOKEN = "cf-token";
   process.env.PINATA_JWT = "pinata-jwt";
   process.env.PINATA_GATEWAY_URL = "compose.mypinata.cloud";
-  delete process.env.IPFS_PINATA_GATEWAY;
-  delete process.env.PINATA_GATEWAY;
-  let pinListQuery: unknown = null;
+  agentSearchTest.reset();
 
-  globalThis.fetch = async (input: string | URL | Request) => {
+  const rows = new Map<string, AgentD1Row>();
+  rows.set("0xba04fa4baacbac0d93bb73a7fd473a41aa7f2815", {
+    ...agentRow({
+      walletAddress: "0xba04fa4baacbac0d93bb73a7fd473a41aa7f2815",
+      name: "Compose Agent",
+      model: "gpt-4o",
+      protocols: [],
+      plugins: [],
+    }, "gpt-4o", { kind: "exact", from: "gpt-4o", checked: "2026-06-01T00:00:00.000Z", source: "catalog" }),
+    state: "indexed",
+  } as AgentD1Row);
+  const calls: string[] = [];
+
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-
-    if (url.includes("/data/pinList")) {
-      const parsedUrl = new URL(url);
-      const rawQuery = parsedUrl.searchParams.get("metadata[keyvalues]");
-      pinListQuery = rawQuery ? JSON.parse(rawQuery) : null;
-      return new Response(JSON.stringify({
-        rows: [{ ipfs_pin_hash: "baf-agent-card" }],
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+    calls.push(url);
+    if (url === "https://api.cloudflare.com/client/v4/accounts/account/d1/database/agents-db/query") {
+      return agentsD1(rows, init);
     }
-
-    if (url === "https://compose.mypinata.cloud/ipfs/baf-agent-card") {
-      return new Response(JSON.stringify({
-        walletAddress: "0xba04fa4baacbac0d93bb73a7fd473a41aa7f2815",
-        name: "Compose Agent",
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     throw new Error(`Unexpected fetch: ${url}`);
   };
 
@@ -257,77 +268,219 @@ test("handlePublicRoute resolves agent catalog with PINATA_GATEWAY_URL", async (
       agents: [{
         walletAddress: "0xba04fa4baacbac0d93bb73a7fd473a41aa7f2815",
         name: "Compose Agent",
-        cid: "baf-agent-card",
+        model: "gpt-4o",
         creatorFee: 1,
+        target: "gpt-4o",
+        route: {
+          kind: "exact",
+          from: "gpt-4o",
+          checked: "2026-06-01T00:00:00.000Z",
+          source: "catalog",
+        },
         framework: "other",
         protocols: [],
         plugins: [],
       }],
       total: 1,
+      count: 1,
+      nextCursor: null,
+      hasMore: false,
     });
-    assert.deepEqual(pinListQuery, {
-      type: {
-        value: "agent-card",
-        op: "eq",
+    assert.match(result?.headers?.ETag || "", /^"agents-/);
+    const cached = await handlePublicRoute(
+      {
+        rawPath: "/agents",
+        requestContext: { http: { method: "GET" } },
+        headers: { "if-none-match": result!.headers!.ETag },
       },
-    });
+      {},
+    );
+    assert.equal(cached?.statusCode, 304);
+    assert.equal(cached?.body, "");
+    assert.equal(calls.some((url) => url.includes("pinata") || url.includes("/ipfs/")), false);
   } finally {
     globalThis.fetch = NATIVE_FETCH;
+    restoreEnv("AGENTS_D1_ID", ORIGINAL_AGENTS_D1_ID);
+    restoreEnv("CF_ACCOUNT_ID", ORIGINAL_CF_ACCOUNT_ID);
+    restoreEnv("CF_GLOBAL_TOKEN", ORIGINAL_CF_GLOBAL_TOKEN);
     process.env.PINATA_JWT = ORIGINAL_PINATA_JWT;
     process.env.PINATA_GATEWAY_URL = ORIGINAL_PINATA_GATEWAY_URL;
-    process.env.IPFS_PINATA_GATEWAY = ORIGINAL_IPFS_PINATA_GATEWAY;
-    process.env.PINATA_GATEWAY = ORIGINAL_PINATA_GATEWAY;
+    agentSearchTest.reset();
   }
 });
 
-test("handlePublicRoute lists only canonical mcp/onchain agent plugins", async () => {
+test("GET /agent/:wallet/avatar proxies and caches indexed avatar bytes", async () => {
+  process.env.AGENTS_D1_ID = "agents-db";
+  process.env.CF_ACCOUNT_ID = "account";
+  process.env.CF_GLOBAL_TOKEN = "cf-token";
+  process.env.PINATA_GATEWAY_URL = "compose.mypinata.cloud";
+  agentSearchTest.reset();
+
+  const wallet = "0x4444444444444444444444444444444444444444";
+  const cid = "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const source = `ipfs://${cid}`;
+  const rows = new Map<string, AgentD1Row>();
+  rows.set(wallet, {
+    ...agentRow({
+      walletAddress: wallet,
+      name: "Avatar Agent",
+      model: "gpt-4o",
+      image: source,
+      protocols: [],
+      plugins: [],
+    }, "gpt-4o", { kind: "exact", from: "gpt-4o", checked: "2026-06-01T00:00:00.000Z", source: "catalog" }),
+    state: "indexed",
+  } as AgentD1Row);
+
+  const calls: string[] = [];
+  const image = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    if (url === "https://api.cloudflare.com/client/v4/accounts/account/d1/database/agents-db/query") {
+      return agentsD1(rows, init);
+    }
+    if (url === `https://compose.mypinata.cloud/ipfs/${cid}`) {
+      return new Response(image, { status: 200, headers: { "Content-Type": "image/png" } });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const result = await handlePublicRoute(
+      {
+        rawPath: `/agent/${wallet}/avatar`,
+        requestContext: { http: { method: "GET" } },
+        headers: { host: "api.test" },
+      },
+      {},
+    );
+
+    assert.equal(result?.statusCode, 200);
+    assert.equal(result?.headers?.["Content-Type"], "image/png");
+    assert.equal(result?.headers?.["Cache-Control"], "public, max-age=31536000, immutable, s-maxage=31536000");
+    assert.equal(result?.headers?.ETag, `"avatar-${createHash("sha1").update(source).digest("base64url")}"`);
+    assert.equal(result?.isBase64Encoded, true);
+    assert.deepEqual(Buffer.from(result!.body, "base64"), Buffer.from(image));
+    assert.equal(calls.includes(`https://compose.mypinata.cloud/ipfs/${cid}`), true);
+
+    calls.length = 0;
+    const cached = await handlePublicRoute(
+      {
+        rawPath: `/agent/${wallet}/avatar`,
+        requestContext: { http: { method: "GET" } },
+        headers: { "if-none-match": result!.headers!.ETag },
+      },
+      {},
+    );
+    assert.equal(cached?.statusCode, 304);
+    assert.equal(cached?.body, "");
+    assert.equal(calls.includes(`https://compose.mypinata.cloud/ipfs/${cid}`), false);
+  } finally {
+    globalThis.fetch = NATIVE_FETCH;
+    restoreEnv("AGENTS_D1_ID", ORIGINAL_AGENTS_D1_ID);
+    restoreEnv("CF_ACCOUNT_ID", ORIGINAL_CF_ACCOUNT_ID);
+    restoreEnv("CF_GLOBAL_TOKEN", ORIGINAL_CF_GLOBAL_TOKEN);
+    restoreEnv("PINATA_GATEWAY_URL", ORIGINAL_PINATA_GATEWAY_URL);
+    agentSearchTest.reset();
+  }
+});
+
+test("GET /agent/:wallet/avatar returns cacheable 404 for missing avatars", async () => {
+  process.env.AGENTS_D1_ID = "agents-db";
+  process.env.CF_ACCOUNT_ID = "account";
+  process.env.CF_GLOBAL_TOKEN = "cf-token";
+  agentSearchTest.reset();
+
+  const wallet = "0x5555555555555555555555555555555555555555";
+  const rows = new Map<string, AgentD1Row>();
+  rows.set(wallet, {
+    ...agentRow({
+      walletAddress: wallet,
+      name: "No Avatar Agent",
+      model: "gpt-4o",
+      protocols: [],
+      plugins: [],
+    }, "gpt-4o", { kind: "exact", from: "gpt-4o", checked: "2026-06-01T00:00:00.000Z", source: "catalog" }),
+    state: "indexed",
+  } as AgentD1Row);
+
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://api.cloudflare.com/client/v4/accounts/account/d1/database/agents-db/query") {
+      return agentsD1(rows, init);
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const result = await handlePublicRoute(
+      {
+        rawPath: `/agent/${wallet}/avatar`,
+        requestContext: { http: { method: "GET" } },
+      },
+      {},
+    );
+    assert.equal(result?.statusCode, 404);
+    assert.equal(result?.headers?.["Cache-Control"], "public, max-age=300, s-maxage=300");
+    assert.deepEqual(JSON.parse(result!.body), { error: "Avatar not found" });
+  } finally {
+    globalThis.fetch = NATIVE_FETCH;
+    restoreEnv("AGENTS_D1_ID", ORIGINAL_AGENTS_D1_ID);
+    restoreEnv("CF_ACCOUNT_ID", ORIGINAL_CF_ACCOUNT_ID);
+    restoreEnv("CF_GLOBAL_TOKEN", ORIGINAL_CF_GLOBAL_TOKEN);
+    agentSearchTest.reset();
+  }
+});
+
+test("handlePublicRoute canonicalizes stored D1 agent plugins without Pinata", async () => {
+  process.env.AGENTS_D1_ID = "agents-db";
+  process.env.CF_ACCOUNT_ID = "account";
+  process.env.CF_GLOBAL_TOKEN = "cf-token";
   process.env.PINATA_JWT = "pinata-jwt";
   process.env.PINATA_GATEWAY_URL = "compose.mypinata.cloud";
   agentSearchTest.reset();
 
-  globalThis.fetch = async (input: string | URL | Request) => {
+  const rows = new Map<string, AgentD1Row>();
+  const cards = [
+    {
+      walletAddress: "0x1111111111111111111111111111111111111111",
+      name: "Canonical Agent",
+      model: "gpt-4o",
+      plugins: [{ registryId: "mcp:perplexity", name: "Perplexity", origin: "mcp" }],
+    },
+    {
+      walletAddress: "0x2222222222222222222222222222222222222222",
+      name: "Legacy Tools Agent",
+      model: "gpt-4o",
+      plugins: [{ registryId: "tools:perplexity", name: "Perplexity", origin: "tools" }],
+    },
+    {
+      walletAddress: "0x3333333333333333333333333333333333333333",
+      name: "Legacy Goat Agent",
+      model: "gpt-4o",
+      plugins: [{ registryId: "goat:coingecko", name: "Coingecko", origin: "goat" }],
+    },
+    {
+      walletAddress: "0x4444444444444444444444444444444444444444",
+      name: "Unprefixed Agent",
+      model: "gpt-4o",
+      plugins: [{ registryId: "coingecko", name: "Coingecko", origin: "onchain" }],
+    },
+  ];
+  for (const card of cards) {
+    rows.set(card.walletAddress, {
+      ...agentRow(card, "gpt-4o", { kind: "exact", from: "gpt-4o", checked: "2026-06-01T00:00:00.000Z", source: "catalog" }),
+      state: "indexed",
+    } as AgentD1Row);
+  }
+  const calls: string[] = [];
+
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes("/data/pinList")) {
-      return new Response(JSON.stringify({
-        rows: [
-          { ipfs_pin_hash: "baf-agent-valid" },
-          { ipfs_pin_hash: "baf-agent-tools" },
-          { ipfs_pin_hash: "baf-agent-goat" },
-          { ipfs_pin_hash: "baf-agent-unprefixed" },
-        ],
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-    if (url === "https://compose.mypinata.cloud/ipfs/baf-agent-valid") {
-      return new Response(JSON.stringify({
-        walletAddress: "0x1111111111111111111111111111111111111111",
-        name: "Canonical Agent",
-        model: "gpt-4o",
-        plugins: [{ registryId: "mcp:perplexity", name: "Perplexity", origin: "mcp" }],
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-    if (url === "https://compose.mypinata.cloud/ipfs/baf-agent-tools") {
-      return new Response(JSON.stringify({
-        walletAddress: "0x2222222222222222222222222222222222222222",
-        name: "Legacy Tools Agent",
-        model: "gpt-4o",
-        plugins: [{ registryId: "tools:perplexity", name: "Perplexity", origin: "tools" }],
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-    if (url === "https://compose.mypinata.cloud/ipfs/baf-agent-goat") {
-      return new Response(JSON.stringify({
-        walletAddress: "0x3333333333333333333333333333333333333333",
-        name: "Legacy Goat Agent",
-        model: "gpt-4o",
-        plugins: [{ registryId: "goat:coingecko", name: "Coingecko", origin: "goat" }],
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-    if (url === "https://compose.mypinata.cloud/ipfs/baf-agent-unprefixed") {
-      return new Response(JSON.stringify({
-        walletAddress: "0x4444444444444444444444444444444444444444",
-        name: "Unprefixed Agent",
-        model: "gpt-4o",
-        plugins: [{ registryId: "coingecko", name: "Coingecko", origin: "onchain" }],
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    calls.push(url);
+    if (url === "https://api.cloudflare.com/client/v4/accounts/account/d1/database/agents-db/query") {
+      return agentsD1(rows, init);
     }
     throw new Error(`Unexpected fetch: ${url}`);
   };
@@ -373,15 +526,19 @@ test("handlePublicRoute lists only canonical mcp/onchain agent plugins", async (
         },
       ],
     );
+    assert.equal(calls.some((url) => url.includes("pinata") || url.includes("/ipfs/")), false);
   } finally {
     globalThis.fetch = NATIVE_FETCH;
+    restoreEnv("AGENTS_D1_ID", ORIGINAL_AGENTS_D1_ID);
+    restoreEnv("CF_ACCOUNT_ID", ORIGINAL_CF_ACCOUNT_ID);
+    restoreEnv("CF_GLOBAL_TOKEN", ORIGINAL_CF_GLOBAL_TOKEN);
     process.env.PINATA_JWT = ORIGINAL_PINATA_JWT;
     process.env.PINATA_GATEWAY_URL = ORIGINAL_PINATA_GATEWAY_URL;
     agentSearchTest.reset();
   }
 });
 
-test("findAgentByWallet canonicalizes legacy source cards without catalog refresh", async () => {
+test("findAgentByWallet returns null instead of scanning Pinata when D1 has no row", async () => {
   delete process.env.AGENTS_D1_ID;
   delete process.env.CF_ACCOUNT_ID;
   delete process.env.CF_GLOBAL_TOKEN;
@@ -420,13 +577,8 @@ test("findAgentByWallet canonicalizes legacy source cards without catalog refres
 
   try {
     const agent = await findAgentByWallet(target);
-    assert.equal(agent?.walletAddress, target);
-    assert.deepEqual(agent?.skills, ["onchain:coingecko"]);
-    assert.deepEqual(agent?.plugins, [{ registryId: "onchain:coingecko", name: "coingecko", origin: "onchain" }]);
-    assert.deepEqual(calls, [
-      "https://api.pinata.cloud/data/pinList?status=pinned&metadata[keyvalues]=%7B%22type%22%3A%7B%22value%22%3A%22agent-card%22%2C%22op%22%3A%22eq%22%7D%7D&pageLimit=1000",
-      "https://compose.mypinata.cloud/ipfs/baf-agent-target",
-    ]);
+    assert.equal(agent, null);
+    assert.deepEqual(calls, []);
   } finally {
     globalThis.fetch = NATIVE_FETCH;
     restoreEnv("AGENTS_D1_ID", ORIGINAL_AGENTS_D1_ID);
@@ -522,6 +674,18 @@ function agentsD1(rows: Map<string, AgentD1Row>, init?: RequestInit): Response {
   if (sql.includes("FROM agents") && sql.includes("lower(walletAddress) IN")) {
     const wanted = new Set(params.map((item) => String(item).toLowerCase()));
     return d1Result([...rows.values()].filter((row) => row.state === "indexed" && wanted.has(row.walletAddress.toLowerCase())));
+  }
+  if (sql.includes("FROM agents") && sql.includes("lower(walletAddress) = lower(?1)")) {
+    const wallet = String(params[0] || "").toLowerCase();
+    const row = rows.get(wallet);
+    return d1Result(row?.state === "indexed" ? [row] : []);
+  }
+  if (sql.includes("count(*) AS total")) {
+    return d1Result([{ total: [...rows.values()].filter((row) => row.state === "indexed").length }]);
+  }
+  if (sql.includes("FROM agents") && sql.includes("ORDER BY") && sql.includes("LIMIT")) {
+    const limit = Number(params[params.length - 1] || rows.size);
+    return d1Result([...rows.values()].filter((row) => row.state === "indexed").slice(0, limit));
   }
   if (sql.includes("FROM agents") && sql.includes("state = 'indexed'")) {
     return d1Result([...rows.values()].filter((row) => row.state === "indexed"));
@@ -1028,6 +1192,38 @@ test("handlePublicRoute searches deployed agents through API-owned semantic sear
 
   const calls: string[] = [];
   const rows = new Map<string, AgentD1Row>();
+  for (const card of [
+    {
+      walletAddress: "0x1111111111111111111111111111111111111111",
+      name: "Coingecko Agent",
+      description: "Answers crypto price questions.",
+      model: "gpt-4o",
+      skills: ["onchain:coingecko"],
+      plugins: [{ registryId: "onchain:coingecko", name: "Coingecko", origin: "onchain" }],
+    },
+    {
+      walletAddress: "0x2222222222222222222222222222222222222222",
+      name: "Writer Agent",
+      description: "Writes prose.",
+      model: "gpt-4o",
+      skills: ["writing"],
+      plugins: [],
+    },
+    {
+      walletAddress: "0x3333333333333333333333333333333333333333",
+      name: "Legacy Tools Agent",
+      description: "Uses a legacy plugin prefix.",
+      model: "gpt-4o",
+      skills: ["tools:perplexity"],
+      plugins: [{ registryId: "tools:perplexity", name: "Perplexity", origin: "tools" }],
+    },
+  ]) {
+    rows.set(card.walletAddress, {
+      ...agentRow(card, "gpt-4o", { kind: "exact", from: "gpt-4o", checked: "2026-06-01T00:00:00.000Z", source: "catalog" }),
+      text: `${card.name} ${card.description} ${(card.skills || []).join(" ")}`,
+      state: "indexed",
+    } as AgentD1Row);
+  }
   globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     calls.push(url);
@@ -1188,7 +1384,7 @@ test("handlePublicRoute searches deployed agents through API-owned semantic sear
     assert.equal(body.agents[0].walletAddress, "0x1111111111111111111111111111111111111111");
     assert.equal(body.agents[0].plugins[0].registryId, "onchain:coingecko");
     assert.equal(body.agents[0].score, 0.99);
-    assert.deepEqual(calls.filter((url) => url.includes("agentverse")), []);
+    assert.deepEqual(calls.filter((url) => url.includes("agentverse") || url.includes("pinata") || url.includes("/ipfs/")), []);
   } finally {
     globalThis.fetch = NATIVE_FETCH;
     process.env.PINATA_JWT = ORIGINAL_PINATA_JWT;
@@ -1215,8 +1411,46 @@ test("handlePublicRoute ranks agents using source-owned tool descriptions", asyn
   agentSearchTest.reset();
 
   const rows = new Map<string, AgentD1Row>();
+  const cards = [
+    {
+      walletAddress: "0x1111111111111111111111111111111111111111",
+      name: "Coingecko Agent",
+      description: "Answers crypto price questions.",
+      model: "gpt-4o",
+      skills: ["onchain:coingecko"],
+      plugins: [{ registryId: "onchain:coingecko", name: "Coingecko", origin: "onchain" }],
+      text: "Coingecko Agent Answers crypto price questions. onchain:coingecko",
+    },
+    {
+      walletAddress: "0x2222222222222222222222222222222222222222",
+      name: "Research Agent",
+      description: "Investigates open-ended questions.",
+      model: "gpt-4o",
+      skills: ["mcp:perplexity"],
+      plugins: [{ registryId: "mcp:perplexity", name: "Perplexity", origin: "mcp" }],
+      text: "Research Agent Investigates open-ended questions. Real-time web search, reasoning, and research through Perplexity's API. Search the live web and cite current sources.",
+    },
+    {
+      walletAddress: "0x3333333333333333333333333333333333333333",
+      name: "Stale Tool Agent",
+      description: "References an unserved connector.",
+      model: "gpt-4o",
+      skills: ["mcp:socket"],
+      plugins: [{ registryId: "mcp:socket", name: "Socket", origin: "mcp" }],
+      text: "Stale Tool Agent References an unserved connector. mcp:socket",
+    },
+  ];
+  for (const card of cards) {
+    rows.set(card.walletAddress, {
+      ...agentRow(card, "gpt-4o", { kind: "exact", from: "gpt-4o", checked: "2026-06-01T00:00:00.000Z", source: "catalog" }),
+      text: card.text,
+      state: "indexed",
+    } as AgentD1Row);
+  }
+  const calls: string[] = [];
   globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    calls.push(url);
 
     if (url === "https://api.cloudflare.com/client/v4/accounts/account/d1/database/agents-db/query") {
       return agentsD1(rows, init);
@@ -1390,6 +1624,7 @@ test("handlePublicRoute ranks agents using source-owned tool descriptions", asyn
     assert.equal(body.agents[0].walletAddress, "0x2222222222222222222222222222222222222222");
     assert.equal(body.agents[0].plugins[0].registryId, "mcp:perplexity");
     assert.equal(body.agents[0].score, 0.99);
+    assert.deepEqual(calls.filter((url) => url.includes("pinata") || url.includes("/ipfs/") || url.includes("connectors.compose.market")), []);
   } finally {
     globalThis.fetch = NATIVE_FETCH;
     process.env.PINATA_JWT = ORIGINAL_PINATA_JWT;
@@ -1492,7 +1727,7 @@ test("workflow price passthrough uses RUNTIME_URL without payment bypass headers
   };
 
   const app = express();
-  registerWorkflowRoutes(app);
+  registerManowarRoutes(app);
   const server = app.listen(0);
 
   try {
@@ -1503,7 +1738,7 @@ test("workflow price passthrough uses RUNTIME_URL without payment bypass headers
     if (!capturedCall) {
       throw new Error("Expected runtime passthrough to be invoked");
     }
-    assert.equal(capturedCall.url, "https://runtime.compose.market/internal/workflow/workflow/prices");
+    assert.equal(capturedCall.url, "https://runtime.compose.market/internal/manowar/workflow/prices");
     assert.equal(new Headers(capturedCall.init?.headers).has("payment-signature"), false);
   } finally {
     server.close();
@@ -1630,7 +1865,7 @@ test("payable resource routes emit 402 PAYMENT-REQUIRED with the expected raw x4
 
   const app = express();
   app.use(express.json({ limit: "1mb" }));
-  registerWorkflowRoutes(app);
+  registerManowarRoutes(app);
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.on("listening", () => resolve()));
   const { port } = server.address() as AddressInfo;
@@ -1642,6 +1877,7 @@ test("payable resource routes emit 402 PAYMENT-REQUIRED with the expected raw x4
       { method: "POST", path: "/agent/0x0000000000000000000000000000000000000001/responses", scheme: "batch-settlement" },
       { method: "POST", path: "/workflow/0x0000000000000000000000000000000000000001/chat", scheme: "upto" },
       { method: "POST", path: "/workflow/execute", scheme: "upto" },
+      { method: "POST", path: "/workflow/0x0000000000000000000000000000000000000001/run", scheme: "upto" },
       { method: "POST", path: "/api/memory/search", scheme: "upto" },
     ];
 
@@ -1730,12 +1966,12 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
 
   process.env.NODE_ENV = "test";
   process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH = TEST_SETTLEMENT_TX_HASH;
-  process.env.COMPOSE_SESSION_SECRET ||= "test-compose-session-secret";
+  process.env.COMPOSE_SESSION_SECRET ||= "test-session-secret";
   process.env.RUNTIME_URL = "https://runtime.compose.market";
 
   globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    assert.equal(url, `https://runtime.compose.market/internal/workflow/agent/${walletAddress}/stream`);
+    assert.equal(url, `https://runtime.compose.market/internal/manowar/agent/${walletAddress}/stream`);
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("x-run-id"), rootRunId);
     assert.equal(headers.has("payment-signature"), false);
@@ -1769,7 +2005,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
 
   const server = express();
   server.use(express.json({ limit: "1mb" }));
-  registerWorkflowRoutes(server);
+  registerManowarRoutes(server);
   const listener = server.listen(0);
   await once(listener, "listening");
   const { port } = listener.address() as AddressInfo;
@@ -1877,12 +2113,12 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
 
   process.env.NODE_ENV = "test";
   process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH = TEST_SETTLEMENT_TX_HASH;
-  process.env.COMPOSE_SESSION_SECRET ||= "test-compose-session-secret";
+  process.env.COMPOSE_SESSION_SECRET ||= "test-session-secret";
   process.env.RUNTIME_URL = "https://runtime.compose.market";
 
   globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    assert.equal(url, `https://runtime.compose.market/internal/workflow/agent/${walletAddress}/stream`);
+    assert.equal(url, `https://runtime.compose.market/internal/manowar/agent/${walletAddress}/stream`);
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("x-run-id"), rootRunId);
     assert.equal(headers.has("payment-signature"), false);
@@ -1916,7 +2152,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
 
   const server = express();
   server.use(express.json({ limit: "1mb" }));
-  registerWorkflowRoutes(server);
+  registerManowarRoutes(server);
   const listener = server.listen(0);
   await once(listener, "listening");
   const { port } = listener.address() as AddressInfo;

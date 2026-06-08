@@ -10,12 +10,19 @@
  */
 
 import { getModelById } from "../registry.js";
+import { pricingHasTokenSections } from "../../telemetry.js";
 import type { Call, Choice, Format, Message, Tool, Usage } from "../../core.js";
 import {
   buildBodyChat,
   buildBodyResponses,
   mapMessagesForResponsesWire,
 } from "../families/openai.js";
+import {
+  MAI_PATH_IMAGES,
+  buildImageBody as buildMaiImageBody,
+  meteredImageUsage as meteredMaiImageUsage,
+  parseImageResponse as parseMaiImageResponse,
+} from "../families/microsoft.js";
 import {
   asRecord,
   audioMimeType as _audioMimeType,
@@ -226,6 +233,17 @@ function servicesEndpoint(credential: AzureCredential): boolean {
   } catch {
     return credential.baseUrl.includes(".services.ai.azure.com");
   }
+}
+
+function tokenPriced(modelId: string): boolean {
+  return pricingHasTokenSections(getModelById(modelId, "azure")?.pricing);
+}
+
+function missingMaiUsage(modelId: string): Error {
+  return Object.assign(
+    new Error(`Azure MAI image response is missing authoritative token usage for token-priced model ${modelId}; cannot settle this generation`),
+    { statusCode: 400, code: "missing_authoritative_usage", retryable: false },
+  );
 }
 
 function audioFormat(mimeType: string): string {
@@ -550,14 +568,23 @@ export async function generateAzureImage(
       ...customParams,
     }, "bearer");
   } else if (route === "mai_image") {
-    raw = await postAzure(credential, "/mai/v1/images/generations", {
-      model: deploymentNameForModel(modelId),
-      prompt,
-      ...(options.size ? { size: options.size } : {}),
-      ...(dimensions.width ? { width: dimensions.width } : {}),
-      ...(dimensions.height ? { height: dimensions.height } : {}),
-      ...customParams,
-    });
+    const maiOptions = {
+      n: options.n,
+      size: options.size,
+      width: dimensions.width,
+      height: dimensions.height,
+      customParams,
+    };
+    raw = await postAzure(credential, MAI_PATH_IMAGES, buildMaiImageBody(deploymentNameForModel(modelId), prompt, maiOptions));
+    const image = await parseMaiImageResponse(raw, { n: options.n });
+    const usage = image.usage || (tokenPriced(modelId) ? meteredMaiImageUsage(prompt, raw, maiOptions) : undefined);
+    if (!usage && tokenPriced(modelId)) {
+      throw missingMaiUsage(modelId);
+    }
+    return {
+      ...image,
+      ...(usage ? { usage } : {}),
+    };
   } else if (options.imageUrl) {
     const media = await bufferFromPayload(options.imageUrl, "image/png");
     const form = new FormData();

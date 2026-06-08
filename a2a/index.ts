@@ -9,7 +9,7 @@
 
 // ACP Base Types
 export type {
-    AgentManifest,
+    AgentManifest as BaseAgentManifest,
     AgentMetadata,
     AgentStatus,
     Person,
@@ -26,28 +26,28 @@ export { taskTypeToContentTypes } from "./types.js";
 
 // Agent Schema
 export type {
-    ComposeAgentManifest,
-    ComposeAgentExtensions,
+    AgentManifest,
+    AgentExtensions,
 } from "./agentSchema.js";
 
 export {
-    ComposeAgentExtensionsSchema,
-    ComposeAgentManifestSchema,
+    AgentExtensionsSchema,
+    AgentManifestSchema,
     buildAgentEndpoints,
     toAgentManifest,
-    isComposeAgentManifest,
+    isAgentManifest,
 } from "./agentSchema.js";
 
 // Workflow Schema
 export type {
     WorkflowManifest,
-    ComposeWorkflowExtensions,
+    WorkflowExtensions,
     WorkflowEdge,
     Coordinator,
 } from "./workflowSchema.js";
 
 export {
-    ComposeWorkflowExtensionsSchema,
+    WorkflowExtensionsSchema,
     WorkflowEdgeSchema,
     CoordinatorSchema,
     WorkflowManifestSchema,

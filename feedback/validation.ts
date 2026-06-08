@@ -26,6 +26,13 @@ function sanitizeString(value: unknown, maxLength: number): string | undefined {
     return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 }
 
+function readWallet(value: unknown, field: string): string | undefined {
+    const wallet = sanitizeString(value, 256)?.replace(/^0X/, "0x");
+    if (!wallet) return undefined;
+    if (!EVM_ADDRESS.test(wallet)) throw new Error(`${field} must be an EVM address`);
+    return wallet.toLowerCase();
+}
+
 function sanitizeJsonValue(value: unknown, depth = 0): unknown {
     if (depth > 4) return undefined;
     if (value === null) return null;
@@ -138,14 +145,11 @@ function readContext(value: unknown): FeedbackContext {
     const provider = sanitizeString(value.provider, 128);
     if (provider) context.provider = provider;
 
-    const agentWallet = sanitizeString(value.agentWallet, 256);
-    if (agentWallet) {
-        if (!EVM_ADDRESS.test(agentWallet)) throw new Error("context.agentWallet must be an EVM address");
-        context.agentWallet = agentWallet.toLowerCase();
-    }
+    const agentWallet = readWallet(value.agentWallet, "context.agentWallet");
+    if (agentWallet) context.agentWallet = agentWallet;
 
-    const workflowId = sanitizeString(value.workflowId, 256);
-    if (workflowId) context.workflowId = workflowId;
+    const workflowWallet = readWallet(value.workflowWallet, "context.workflowWallet");
+    if (workflowWallet) context.workflowWallet = workflowWallet;
 
     if (isRecord(value.endpoint)) {
         const endpoint: NonNullable<FeedbackContext["endpoint"]> = {};

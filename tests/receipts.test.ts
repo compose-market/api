@@ -6,7 +6,7 @@ import test from "node:test";
 
 import express from "express";
 
-import { registerWorkflowRoutes } from "../routes.js";
+import { registerManowarRoutes } from "../routes.js";
 import {
   buildAgentTextSettlement,
   buildReceiptBills,
@@ -105,7 +105,7 @@ test("nested model meters fail closed without canonical modality evidence", () =
 test("receipt listing uses ComposeKey identity instead of userAddress query trust", {
   skip: !process.env.REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT || !process.env.REDIS_KEYS_DEFAULT_PASSWORD,
 }, async () => {
-  process.env.COMPOSE_SESSION_SECRET ||= "test-compose-session-secret";
+  process.env.COMPOSE_SESSION_SECRET ||= "test-session-secret";
   const userAddress = wallet();
   const otherAddress = wallet();
   let keyId: string | undefined;
@@ -120,7 +120,7 @@ test("receipt listing uses ComposeKey identity instead of userAddress query trus
   keyId = created.keyId;
 
   const app = express();
-  registerWorkflowRoutes(app);
+  registerManowarRoutes(app);
   const server = app.listen(0);
   await once(server, "listening");
 

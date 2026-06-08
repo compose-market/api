@@ -11,7 +11,7 @@
  * (Azure, future direct) own the transport.
  */
 
-import { asRecord, bufferFromPayload, clean, sizeToDimensions } from "../shared/index.js";
+import { asRecord, bufferFromPayload, clean, normalizeOpenAIUsage, sizeToDimensions } from "../shared/index.js";
 import type { Usage } from "../../core.js";
 
 /** Path under the host's MAI surface. */
@@ -34,6 +34,57 @@ export interface MaiImageResult {
     mimeType: string;
     usage?: Usage;
     raw: unknown;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? Math.ceil(value)
+        : undefined;
+}
+
+function dimensions(raw: unknown, options: MaiImageOptions = {}): { width: number; height: number } | undefined {
+    const root = asRecord(raw) || {};
+    const size = clean(root.size) || options.size;
+    const parsed = sizeToDimensions(size);
+    const width = positiveInteger(options.width) ?? positiveInteger(parsed.width);
+    const height = positiveInteger(options.height) ?? positiveInteger(parsed.height);
+    return width && height ? { width, height } : undefined;
+}
+
+function promptTokens(prompt: string): number {
+    const text = clean(prompt);
+    if (!text) return 0;
+    return Math.max(7, Math.ceil(text.length / 4) + 5);
+}
+
+export function meteredImageUsage(
+    prompt: string,
+    raw: unknown,
+    options: MaiImageOptions = {},
+): Usage | undefined {
+    const dim = dimensions(raw, options);
+    if (!dim) return undefined;
+    const count = positiveInteger(options.n) ?? 1;
+    const inputTokens = promptTokens(prompt);
+    const outputTokens = Math.ceil((dim.width * dim.height * count) / 1024);
+    return {
+        promptTokens: inputTokens,
+        completionTokens: outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        billingMetrics: {
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            total_tokens: inputTokens + outputTokens,
+            input_text_tokens: inputTokens,
+            output_image_tokens: outputTokens,
+        },
+        raw: {
+            source: "azure_monitor_meter_formula",
+            width: dim.width,
+            height: dim.height,
+            images: count,
+        },
+    };
 }
 
 /**
@@ -64,7 +115,7 @@ export function buildImageBody(
 
 /**
  * Decode the raw MAI image-generation response into a buffer + mime
- * pair plus a billing-metrics-bearing usage envelope.
+ * pair plus provider token usage when the API includes it.
  */
 export async function parseImageResponse(
     raw: unknown,
@@ -76,12 +127,10 @@ export async function parseImageResponse(
     const payload = clean(first.b64_json) || clean(first.base64) || clean(first.image) || clean(first.url);
     if (!payload) throw new Error("MAI returned no image data");
     const image = await bufferFromPayload(payload, "image/png");
+    const usage = normalizeOpenAIUsage(root.usage);
     return {
         ...image,
-        usage: {
-            promptTokens: 0, completionTokens: 0, totalTokens: 0,
-            billingMetrics: { request: 1, image: options.n ?? 1 },
-        },
+        ...(usage ? { usage } : {}),
         raw,
     };
 }

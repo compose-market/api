@@ -159,20 +159,41 @@ export interface Event {
   type:
   | "created"
   | "text-delta"
+  | "reasoning-delta"
   | "tool-call"
   | "tool-call-delta"
   | "thinking"
+  | "citation"
+  | "warning"
+  | "error"
   | "image-partial"
   | "image-complete"
+  | "audio-chunk"
+  | "subtitle"
   | "output-item"
+  | "status"
   | "video-status"
+  | "video-complete"
   | "done";
   text?: string;
   toolCall?: { id: string; name: string; arguments: string; providerMetadata?: Record<string, unknown> };
   toolCallDelta?: { id?: string; name?: string; arguments?: string; index: number };
   thinking?: string;
+  citation?: Record<string, unknown>;
+  warning?: { code: string; message: string };
+  error?: { code: string; message: string; details?: Record<string, unknown> };
   outputIndex?: number;
   item?: ResponsesOutputItem;
+  audio?: {
+    base64?: string;
+    sequenceIndex?: number;
+    mimeType?: string;
+  };
+  subtitle?: {
+    start: number;
+    end: number;
+    text: string;
+  };
   videoStatus?: {
     jobId: string;
     status: "queued" | "processing" | "completed" | "failed";
@@ -188,6 +209,14 @@ export interface Event {
     duration?: number;
     generatedUnits?: number;
     billingMetrics?: Record<string, unknown>;
+  };
+  video?: {
+    url?: string;
+    base64?: string;
+    jobId?: string;
+    status?: "queued" | "processing" | "completed" | "failed";
+    progress?: number;
+    mimeType?: string;
   };
   usage?: Usage;
   finishReason?: string;
@@ -1479,12 +1508,39 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
     };
   }
 
-  if (event.type === "thinking") {
+  if (event.type === "thinking" || event.type === "reasoning-delta") {
     return {
       type: "response.reasoning.delta",
       response_id: requestId,
       model,
-      delta: event.thinking || "",
+      delta: event.thinking || event.text || "",
+    };
+  }
+
+  if (event.type === "citation") {
+    return {
+      type: "response.citation",
+      response_id: requestId,
+      model,
+      citation: event.citation || {},
+    };
+  }
+
+  if (event.type === "warning") {
+    return {
+      type: "response.warning",
+      response_id: requestId,
+      model,
+      warning: event.warning || { code: "warning", message: "" },
+    };
+  }
+
+  if (event.type === "error") {
+    return {
+      type: "response.error",
+      response_id: requestId,
+      model,
+      error: event.error || { code: "upstream_error", message: "" },
     };
   }
 
@@ -1534,6 +1590,26 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
     };
   }
 
+  if (event.type === "audio-chunk") {
+    return {
+      type: "response.output_audio.delta",
+      response_id: requestId,
+      model,
+      delta: event.audio?.base64 || "",
+      sequence_index: event.audio?.sequenceIndex ?? 0,
+      mime_type: event.audio?.mimeType,
+    };
+  }
+
+  if (event.type === "subtitle") {
+    return {
+      type: "response.output_audio.subtitle",
+      response_id: requestId,
+      model,
+      subtitle: event.subtitle,
+    };
+  }
+
   if (event.type === "output-item") {
     return {
       type: "response.output_item.completed",
@@ -1541,6 +1617,19 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       model,
       output_index: event.outputIndex ?? 0,
       item: event.item ?? { type: "output_text", role: "assistant", text: "" },
+    };
+  }
+
+  if (event.type === "status") {
+    return {
+      type: "response.output_video.status",
+      response_id: requestId,
+      model,
+      job_id: event.videoStatus?.jobId || event.video?.jobId || "",
+      status: event.videoStatus?.status || event.video?.status || "processing",
+      progress: event.videoStatus?.progress ?? event.video?.progress,
+      url: event.videoStatus?.url || event.video?.url,
+      error: event.videoStatus?.error,
     };
   }
 
@@ -1554,6 +1643,24 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       progress: event.videoStatus?.progress,
       url: event.videoStatus?.url,
       error: event.videoStatus?.error,
+    };
+  }
+
+  if (event.type === "video-complete") {
+    return {
+      type: "response.output_item.completed",
+      response_id: requestId,
+      model,
+      output_index: event.outputIndex ?? 0,
+      item: {
+        type: "output_video",
+        role: "assistant",
+        video_url: event.video?.url,
+        job_id: event.video?.jobId,
+        status: event.video?.status || "completed",
+        progress: event.video?.progress ?? 100,
+        mime_type: event.video?.mimeType,
+      },
     };
   }
 
@@ -1591,7 +1698,7 @@ export function toChatStreamEvent(
     };
   }
 
-  if (event.type === "thinking") {
+  if (event.type === "thinking" || event.type === "reasoning-delta") {
     return {
       id: requestId,
       object: "chat.completion.chunk",
@@ -1602,12 +1709,16 @@ export function toChatStreamEvent(
           index: 0,
           delta: {
             ...(isFirstToken ? { role: "assistant" } : {}),
-            reasoning_content: event.thinking || "",
+            reasoning_content: event.thinking || event.text || "",
           },
           finish_reason: null,
         },
       ],
     };
+  }
+
+  if (event.type === "citation" || event.type === "warning" || event.type === "error" || event.type === "audio-chunk" || event.type === "subtitle" || event.type === "status" || event.type === "video-status" || event.type === "video-complete") {
+    return toResponsesStreamEvent(requestId, model, event);
   }
 
   if (event.type === "tool-call") {

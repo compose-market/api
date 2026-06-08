@@ -24,7 +24,7 @@ export interface OpenAIError {
     };
 }
 
-export interface ComposeAttachment {
+export interface Attachment {
     type?: string;
     url?: string;
     uri?: string;
@@ -49,7 +49,7 @@ export interface ComposeAttachment {
 
 export type ChatRole = "system" | "user" | "assistant" | "tool" | "function";
 
-export interface ChatMessage {
+export interface Message {
     role: ChatRole;
     content: string | ChatContentPart[] | null;
     name?: string;
@@ -79,9 +79,9 @@ export interface ToolCall {
 
 export interface ChatCompletionRequest {
     model: string;
-    messages: ChatMessage[];
-    attachments?: Array<ComposeAttachment | string>;
-    attachment?: ComposeAttachment | string;
+    messages: Message[];
+    attachments?: Array<Attachment | string>;
+    attachment?: Attachment | string;
     temperature?: number;
     top_p?: number;
     n?: number;
@@ -127,7 +127,7 @@ export interface ResponseFormat {
 
 export interface ChatCompletionChoice {
     index: number;
-    message: ChatMessage;
+    message: Message;
     finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null;
     logprobs?: object | null;
 }
@@ -155,7 +155,7 @@ export interface ChatCompletionChunk {
 
 export interface ChatCompletionChunkChoice {
     index: number;
-    delta: Partial<ChatMessage>;
+    delta: Partial<Message>;
     finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null;
     logprobs?: object | null;
 }
@@ -167,8 +167,8 @@ export interface ChatCompletionChunkChoice {
 export interface ImageGenerationRequest {
     prompt: string;
     model?: string;
-    attachments?: Array<ComposeAttachment | string>;
-    attachment?: ComposeAttachment | string;
+    attachments?: Array<Attachment | string>;
+    attachment?: Attachment | string;
     n?: number;
     quality?: "standard" | "hd";
     response_format?: "url" | "b64_json";
@@ -216,8 +216,8 @@ export interface ImagesResponse {
 export interface AudioSpeechRequest {
     model: string;
     input: string;
-    attachments?: Array<ComposeAttachment | string>;
-    attachment?: ComposeAttachment | string;
+    attachments?: Array<Attachment | string>;
+    attachment?: Attachment | string;
     voice: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer" | string;
     response_format?: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm";
     speed?: number;  // 0.25 to 4.0
@@ -232,8 +232,8 @@ export interface AudioSpeechRequest {
 export interface AudioTranscriptionRequest {
     file: string;  // base64 audio or file path
     model: string;
-    attachments?: Array<ComposeAttachment | string>;
-    attachment?: ComposeAttachment | string;
+    attachments?: Array<Attachment | string>;
+    attachment?: Attachment | string;
     language?: string;
     prompt?: string;
     response_format?: "json" | "text" | "srt" | "verbose_json" | "vtt";
@@ -320,8 +320,8 @@ export interface EmbeddingResponse {
 export interface VideoGenerationRequest {
     prompt: string;
     model: string;
-    attachments?: Array<ComposeAttachment | string>;
-    attachment?: ComposeAttachment | string;
+    attachments?: Array<Attachment | string>;
+    attachment?: Attachment | string;
     image?: string;  // base64 for image-to-video (OpenAI style)
     image_url?: string;  // URL for image-to-video (AIML style)
     duration?: number;  // seconds

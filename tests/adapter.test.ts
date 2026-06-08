@@ -1476,6 +1476,101 @@ test("Azure image generation preserves authoritative provider usage", async () =
   });
 });
 
+test("Azure MAI image generation preserves authoritative provider usage when present", async () => {
+  process.env.AZURE_MICROSOFT_FOUNDRY_ENDPOINT = "https://azure.services.ai.azure.com";
+  process.env.AZURE_MICROSOFT_FOUNDRY_API_KEY = "test-azure";
+  let requestBody: any;
+
+  globalThis.fetch = (async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://azure.services.ai.azure.com/mai/v1/images/generations") {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({
+        created: 1,
+        model: "MAI-Image-2e",
+        size: "1024x1024",
+        data: [{ b64_json: Buffer.from("mai-png").toString("base64") }],
+        usage: {
+          input_tokens: 19,
+          output_tokens: 37,
+          total_tokens: 56,
+        },
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as FetchImpl;
+
+  const result = await generateWithTools({
+    mode: "responses",
+    model: "MAI-Image-2e",
+    stream: false,
+    modality: "image",
+    operation: "text-to-image",
+    responseId: "resp_azure_mai_image_usage",
+    messages: [{ role: "user", content: "A polished ceramic object on a white table." }],
+    imageOptions: { size: "1024x1024" },
+  }, {
+    modelId: "MAI-Image-2e",
+    provider: "azure",
+  });
+
+  assert.equal(requestBody.model, "MAI-Image-2e");
+  assert.equal(requestBody.width, 1024);
+  assert.equal(requestBody.height, 1024);
+  assert.equal(result.output.modality, "image");
+  assert.deepEqual(result.output.usage?.billingMetrics, {
+    input_tokens: 19,
+    output_tokens: 37,
+    total_tokens: 56,
+  });
+});
+
+test("Azure MAI image generation derives metered token usage when response omits usage", async () => {
+  process.env.AZURE_MICROSOFT_FOUNDRY_ENDPOINT = "https://azure.services.ai.azure.com";
+  process.env.AZURE_MICROSOFT_FOUNDRY_API_KEY = "test-azure";
+  let calls = 0;
+
+  globalThis.fetch = (async (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://azure.services.ai.azure.com/mai/v1/images/generations") {
+      calls += 1;
+      return Response.json({
+        created: 1,
+        model: "MAI-Image-2e",
+        size: "1024x1024",
+        data: [{ b64_json: Buffer.from("mai-png").toString("base64") }],
+      });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as FetchImpl;
+
+  const result = await generateWithTools({
+    mode: "responses",
+    model: "MAI-Image-2e",
+    stream: false,
+    modality: "image",
+    operation: "text-to-image",
+    responseId: "resp_azure_mai_image_missing_usage",
+    messages: [{ role: "user", content: "A polished ceramic object on a white table." }],
+    imageOptions: { size: "1024x1024" },
+  }, {
+    modelId: "MAI-Image-2e",
+    provider: "azure",
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.output.modality, "image");
+  assert.deepEqual(result.output.usage?.billingMetrics, {
+    input_tokens: 16,
+    output_tokens: 1024,
+    total_tokens: 1040,
+    input_text_tokens: 16,
+    output_image_tokens: 1024,
+  });
+});
+
 test("Azure image edits use multipart edit body instead of image_url JSON", async () => {
   process.env.AZURE_MOV00XVH_ENDPOINT = "https://azure.example.com";
   process.env.AZURE_MOV00XVH_API_KEY = "test-azure";

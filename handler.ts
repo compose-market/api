@@ -53,9 +53,10 @@ import {
 import {
     getSessionFundingReadiness,
 } from "./x402/session-allowance.js";
+import { recordSession } from "./metrics/sessions.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
-import { handlePublicRoute, registerWorkflowRoutes } from "./routes.js";
+import { handlePublicRoute, registerManowarRoutes } from "./routes.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
 import type { Modality, Usage } from "./inference/core.js";
 import type { BillingMediaEvidence } from "./inference/telemetry.js";
@@ -68,11 +69,13 @@ import { getActiveChainId, CHAIN_CONFIG, USDC_ADDRESSES, type ChainId } from "./
 import {
     getComposeFacilitatorSupported,
     getComposeFacilitatorChainMetadata,
+    getChainIdFromPaymentPayload,
     parseComposeFacilitatorSettleRequest,
     parseComposeFacilitatorVerifyRequest,
     settleComposePayment,
     verifyComposePayment,
 } from "./x402/facilitator.js";
+import { recordConfirmedPayment, triggerConfirmedPayment } from "./metrics/payments.js";
 
 // Backpack / Composio
 const loadBackpack = () => import("./backpack/composio.js");
@@ -95,6 +98,66 @@ const loadDispenser = () => import("./dispenser/index.js");
 // x-payment-intent-id, PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Transaction-Hash,
 // X-Receipt) freely on top of the middleware-set CORS + X-Request-Id.
 const corsHeaders: Record<string, string> = {};
+
+function chainIdHeader(event: APIGatewayProxyEventV2): number | undefined {
+    const raw = getHeader(event, "x-chain-id");
+    const chainId = raw ? Number.parseInt(raw, 10) : Number.NaN;
+    return Number.isInteger(chainId) && chainId > 0 ? chainId : undefined;
+}
+
+function triggerPaymentMetric(chainId: number | undefined, txHash: unknown, source: string): void {
+    if (!chainId || typeof txHash !== "string" || txHash.trim().length === 0) return;
+    triggerConfirmedPayment({ chainId, txHash }, source);
+}
+
+async function recordSettlementCycleMetrics(result: {
+    native?: {
+        chains?: Array<{
+            chainId: number;
+            settleTxHash?: string;
+        }>;
+    } | null;
+    intents?: {
+        results?: Array<{
+            chainId: number;
+            txHash?: string;
+            error?: string;
+        }>;
+    } | null;
+}, source: string): Promise<void> {
+    const tasks: Array<Promise<unknown>> = [];
+    for (const chain of result.native?.chains || []) {
+        if (chain.settleTxHash) {
+            tasks.push(recordConfirmedPayment({
+                chainId: chain.chainId,
+                txHash: chain.settleTxHash,
+            }).catch((error) => {
+                console.error("[metrics] native batch settlement record failed", {
+                    source,
+                    chainId: chain.chainId,
+                    txHash: chain.settleTxHash,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }));
+        }
+    }
+    for (const item of result.intents?.results || []) {
+        if (!item.error && item.txHash) {
+            tasks.push(recordConfirmedPayment({
+                chainId: item.chainId,
+                txHash: item.txHash,
+            }).catch((error) => {
+                console.error("[metrics] intent batch settlement record failed", {
+                    source,
+                    chainId: item.chainId,
+                    txHash: item.txHash,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }));
+        }
+    }
+    await Promise.all(tasks);
+}
 
 function buildInactiveSessionPayload(reason: SessionInactiveReason): {
     hasSession: false;
@@ -276,12 +339,13 @@ function expressApiHandler(): RequestHandler {
 export function registerHandlerRoutes(app: Application): void {
     const routeHandler = expressApiHandler();
 
-    registerWorkflowRoutes(app);
+    registerManowarRoutes(app);
 
     app.get("/health", routeHandler);
     app.get("/api/models", routeHandler);
     app.get("/agents", routeHandler);
     app.get("/agents/search", routeHandler);
+    app.get(/^\/agent\/0x[a-fA-F0-9]{40}\/avatar$/, routeHandler);
     app.get(/^\/agent\/0x[a-fA-F0-9]{40}$/, routeHandler);
     app.get("/workflows", routeHandler);
     app.get(/^\/workflow\/0x[a-fA-F0-9]{40}$/, routeHandler);
@@ -504,6 +568,7 @@ export async function handler(
                 if (result.native) {
                     assertNativeBatchSettlement(result.native);
                 }
+                await recordSettlementCycleMetrics(result, "manual-batch");
 
                 return {
                     statusCode: 200,
@@ -688,6 +753,7 @@ export async function batchSettlementHandler(
         if (result.native) {
             assertNativeBatchSettlement(result.native);
         }
+        await recordSettlementCycleMetrics(result, "scheduled-batch");
 
         console.log("[batch-settlement] Completed:", {
             skipped: result.skipped,
@@ -856,6 +922,20 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
         idempotencyKey: body.idempotencyKey,
     });
 
+    if (result.ok && typeof result.body.paymentIntentId === "string" && result.headers["x-session-budget-limit"]) {
+        try {
+            await recordSession({
+                keyId: result.body.paymentIntentId,
+                chainId: Number.isFinite(chainId) ? chainId : undefined,
+                createdAt: new Date(),
+            });
+        } catch (error) {
+            console.error("[metrics] session record failed", {
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
     return {
         statusCode: result.status,
         headers: {
@@ -897,6 +977,9 @@ async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise
             }
             : undefined,
     });
+    if (result.ok) {
+        triggerPaymentMetric(chainIdHeader(event), (result.body as { txHash?: unknown }).txHash, "payment-intent");
+    }
 
     return {
         statusCode: result.status,
@@ -1269,6 +1352,7 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
 
     await consumeKeyBudget(validation.payload!.keyId, amountWei);
     const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
+    triggerPaymentMetric(keyChainId, result.txHash, "compose-key");
 
     return {
         statusCode: 200,
@@ -1438,7 +1522,11 @@ async function handleComposeFacilitatorSettle(event: APIGatewayProxyEventV2): Pr
     try {
         const body = event.body ? JSON.parse(event.body) : {};
         const { paymentPayload, paymentRequirements } = parseComposeFacilitatorSettleRequest(body);
+        const chainId = getChainIdFromPaymentPayload(paymentPayload);
         const result = await settleComposePayment(paymentPayload, paymentRequirements);
+        if (result.success) {
+            triggerPaymentMetric(chainId, result.transaction, "facilitator");
+        }
 
         return {
             statusCode: 200,

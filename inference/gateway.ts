@@ -68,7 +68,8 @@ import {
   toReceiptStreamEvent,
   toErrorStreamEvent,
   toVideoStatusStreamEvent,
-  type Message,
+  type Message as CoreMessage,
+  type Part as CorePart,
   type Output,
   type Request,
   type Event,
@@ -133,7 +134,7 @@ export type ChatContentPart =
   | ChatContentPartToolResult
   | Record<string, unknown>;
 
-export interface ChatMessage {
+export interface Message {
   role: "system" | "user" | "assistant" | "tool";
   content: string | ChatContentPart[] | null;
   tool_calls?: Array<{
@@ -252,7 +253,7 @@ export interface EmbeddingResult {
 
 export interface ChatCompletionRequest {
   model: string;
-  messages: ChatMessage[];
+  messages: Message[];
   attachments?: unknown[];
   attachment?: unknown;
   stream?: boolean;
@@ -326,7 +327,7 @@ interface StoredResponseRecord {
   provider: ModelProvider;
   createdAt: number;
   status: "in_progress" | "completed" | "failed" | "cancelled";
-  inputMessages?: Message[];
+  inputMessages?: CoreMessage[];
   previousResponseId?: string;
   output?: Output;
   jobId?: string;
@@ -916,7 +917,7 @@ async function readOutputMediaBuffer(output: Output): Promise<Buffer> {
   return Buffer.from(await response.arrayBuffer());
 }
 
-function applyLegacyAttachments(messages: ChatMessage[], body: ChatCompletionRequest): ChatMessage[] {
+function applyLegacyAttachments(messages: CoreMessage[], body: ChatCompletionRequest): CoreMessage[] {
   const { image_url, audio_url, video_url } = body;
   if (!image_url && !audio_url && !video_url) {
     return messages;
@@ -937,7 +938,7 @@ function applyLegacyAttachments(messages: ChatMessage[], body: ChatCompletionReq
   }
 
   const target = next[targetIndex];
-  const parts: ChatContentPart[] = [];
+  const parts: CorePart[] = [];
 
   if (Array.isArray(target.content)) {
     parts.push(...target.content);
@@ -1325,7 +1326,7 @@ function responseFromRecord(record: StoredResponseRecord): Record<string, unknow
   return payload;
 }
 
-function outputToAssistantMessage(output: Output): Message | null {
+function outputToAssistantMessage(output: Output): CoreMessage | null {
   if (output.modality === "embedding") {
     return null;
   }
@@ -1359,7 +1360,7 @@ function outputToAssistantMessage(output: Output): Message | null {
   };
 }
 
-async function buildResponsesHistory(responseId: string, visited = new Set<string>()): Promise<Message[]> {
+async function buildResponsesHistory(responseId: string, visited = new Set<string>()): Promise<CoreMessage[]> {
   if (visited.has(responseId)) {
     throw Object.assign(new Error(`Response history cycle detected for '${responseId}'`), { statusCode: 400 });
   }
@@ -1386,7 +1387,7 @@ async function hydrateResponsesRequest(request: Request): Promise<Request> {
     ? await buildResponsesHistory(request.previousResponseId)
     : [];
   const currentMessages = request.instructions
-    ? [{ role: "system", content: request.instructions } satisfies Message, ...priorMessages, ...request.messages]
+    ? [{ role: "system", content: request.instructions } satisfies CoreMessage, ...priorMessages, ...request.messages]
     : [...priorMessages, ...request.messages];
 
   return {
@@ -1671,7 +1672,12 @@ async function executeRequest(args: {
             continue;
           }
 
-          if (event.type === "thinking" || event.type === "tool-call" || event.type === "tool-call-delta") {
+          if (
+            event.type === "thinking"
+            || event.type === "reasoning-delta"
+            || event.type === "tool-call"
+            || event.type === "tool-call-delta"
+          ) {
             const payload = args.shape === "chat"
               ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
               : toResponsesStreamEvent(request.responseId, modelId, event);
@@ -1683,6 +1689,24 @@ async function executeRequest(args: {
           if (event.type === "image-partial") {
             const payload = toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
+            continue;
+          }
+
+          if (
+            event.type === "citation"
+            || event.type === "warning"
+            || event.type === "error"
+            || event.type === "audio-chunk"
+            || event.type === "subtitle"
+            || event.type === "status"
+            || event.type === "video-status"
+            || event.type === "video-complete"
+          ) {
+            const payload = args.shape === "chat"
+              ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
+              : toResponsesStreamEvent(request.responseId, modelId, event);
+            args.res.write(formatCoreSSE(payload));
+            isFirstToken = false;
             continue;
           }
 

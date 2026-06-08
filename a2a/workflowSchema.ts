@@ -6,10 +6,10 @@
  */
 
 import { z } from "zod";
-import type { AgentManifest, TaskType } from "./types.js";
+import type { AgentManifest as BaseAgentManifest, TaskType } from "./types.js";
 import { taskTypeToContentTypes } from "./types.js";
-import type { ComposeAgentManifest, ComposeAgentExtensions } from "./agentSchema.js";
-import { ComposeAgentManifestSchema } from "./agentSchema.js";
+import type { AgentManifest as AgentManifest, AgentExtensions } from "./agentSchema.js";
+import { AgentManifestSchema as AgentManifestSchema } from "./agentSchema.js";
 
 // =============================================================================
 // Workflow Extensions
@@ -18,7 +18,7 @@ import { ComposeAgentManifestSchema } from "./agentSchema.js";
 /**
  * Compose-specific Workflow data
  */
-export interface ComposeWorkflowExtensions {
+export interface WorkflowExtensions {
     /** Primary identifier - derived wallet address */
     walletAddress: string;
 
@@ -85,9 +85,9 @@ export interface Coordinator {
 /**
  * Full Compose Workflow Manifest - ACP base + workflow extensions
  */
-export interface WorkflowManifest extends AgentManifest {
+export interface WorkflowManifest extends BaseAgentManifest {
     /** Nested agent manifests */
-    agents: ComposeAgentManifest[];
+    agents: AgentManifest[];
 
     /** Workflow edges (agent connections) */
     edges: WorkflowEdge[];
@@ -96,7 +96,7 @@ export interface WorkflowManifest extends AgentManifest {
     coordinator?: Coordinator;
 
     /** Compose-specific extensions */
-    compose: ComposeWorkflowExtensions;
+    compose: WorkflowExtensions;
 
     /** Workflow execution endpoint */
     endpoint: string;
@@ -106,7 +106,7 @@ export interface WorkflowManifest extends AgentManifest {
 // Zod Validation Schemas
 // =============================================================================
 
-export const ComposeWorkflowExtensionsSchema = z.object({
+export const WorkflowExtensionsSchema = z.object({
     walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid wallet address"),
     dnaHash: z.string().optional(),
     tokenId: z.number().int().optional(),
@@ -151,10 +151,10 @@ export const WorkflowManifestSchema = z.object({
         domains: z.array(z.string()).optional(),
         created_at: z.string().optional(),
     }).optional(),
-    agents: z.array(ComposeAgentManifestSchema),
+    agents: z.array(AgentManifestSchema),
     edges: z.array(WorkflowEdgeSchema),
     coordinator: CoordinatorSchema.optional(),
-    compose: ComposeWorkflowExtensionsSchema,
+    compose: WorkflowExtensionsSchema,
     endpoint: z.string(),
 });
 
@@ -182,7 +182,7 @@ export function toWorkflowManifest(
         dnaHash?: string;
         walletAddress?: string;
         metadata?: {
-            agents?: ComposeAgentManifest[];
+            agents?: AgentManifest[];
             edges?: WorkflowEdge[];
         };
     },

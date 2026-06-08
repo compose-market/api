@@ -47,6 +47,17 @@ test("normalizeFeedbackInput rejects feedback with no rating and no message", ()
   );
 });
 
+test("normalizeFeedbackInput accepts workflow wallet context", () => {
+  const wallet = "0x0000000000000000000000000000000000000001";
+  const normalized = normalizeFeedbackInput({
+    target: { type: "workflow", id: wallet },
+    rating: 5,
+    context: { workflowWallet: wallet.toUpperCase() },
+  });
+
+  assert.equal(normalized.context?.workflowWallet, wallet);
+});
+
 test("toPublicFeedback omits reviewer address but preserves verification kind", () => {
   const record: FeedbackRecord = {
     id: "fb_test",

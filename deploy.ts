@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createHash } from "crypto";
 import { execSync } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -15,6 +16,7 @@ const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID ?? "";
 const REGION = "us-east1";
 const SERVICE_NAME = "compose-market-api";
 const REPOSITORY_NAME = "compose";
+const MANIFEST_SECRET = `${SERVICE_NAME}-env-manifest`;
 const GCLOUD_ENV = {
     ...process.env,
     CLOUDSDK_CORE_DISABLE_PROMPTS: "1",
@@ -29,6 +31,20 @@ export interface ServiceConfig {
     maxInstances: string;
     concurrency: string;
     timeout: string;
+}
+
+export interface SecretManifest {
+    version: 1;
+    secrets: Record<string, string>;
+}
+
+export interface SecretDiff {
+    added: string[];
+    removed: string[];
+    changed: string[];
+    unchanged: string[];
+    keySetChanged: boolean;
+    valueChanged: boolean;
 }
 
 function env(env: NodeJS.ProcessEnv, key: string, fallback: string): string {
@@ -114,6 +130,56 @@ function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function hash(value: string): string {
+    return createHash("sha256").update(value).digest("hex");
+}
+
+function sort(values: Iterable<string>): string[] {
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+}
+
+export function buildSecretManifest(entries: Array<{ key: string; value: string }>): SecretManifest {
+    return {
+        version: 1,
+        secrets: Object.fromEntries(
+            entries
+                .map(({ key, value }) => [key, hash(value)] as const)
+                .sort(([a], [b]) => a.localeCompare(b)),
+        ),
+    };
+}
+
+export function diffSecretManifest(current: SecretManifest, previous: SecretManifest | null): SecretDiff {
+    if (!previous) {
+        const added = sort(Object.keys(current.secrets));
+        return {
+            added,
+            removed: [],
+            changed: [],
+            unchanged: [],
+            keySetChanged: added.length > 0,
+            valueChanged: added.length > 0,
+        };
+    }
+
+    const currentKeys = new Set(Object.keys(current.secrets));
+    const previousKeys = new Set(Object.keys(previous.secrets));
+    const added = sort([...currentKeys].filter((key) => !previousKeys.has(key)));
+    const removed = sort([...previousKeys].filter((key) => !currentKeys.has(key)));
+    const shared = [...currentKeys].filter((key) => previousKeys.has(key));
+    const changed = sort(shared.filter((key) => current.secrets[key] !== previous.secrets[key]));
+    const unchanged = sort(shared.filter((key) => current.secrets[key] === previous.secrets[key]));
+
+    return {
+        added,
+        removed,
+        changed,
+        unchanged,
+        keySetChanged: added.length > 0 || removed.length > 0,
+        valueChanged: added.length > 0 || removed.length > 0 || changed.length > 0,
+    };
+}
+
 export function resolveServiceImageFromDescribe(describe: unknown): string {
     const service = describe as {
         spec?: { template?: { spec?: { containers?: Array<{ image?: string }> } } };
@@ -160,41 +226,115 @@ function parseEnvSecrets(): Array<{ key: string; value: string }> {
     return Array.from(entries.entries()).map(([key, value]) => ({ key, value }));
 }
 
-async function syncAllSecrets(): Promise<{ secretNames: string[]; changed: boolean }> {
+function readManifest(projectId: string): SecretManifest | null {
+    const exists = getOutput(`gcloud secrets describe ${MANIFEST_SECRET} --project=${projectId} 2>/dev/null`);
+    if (!exists) {
+        return null;
+    }
+
+    const raw = getOutput(
+        `gcloud secrets versions access latest --secret=${MANIFEST_SECRET} --project=${projectId} 2>/dev/null`,
+    );
+    if (!raw) {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(raw) as SecretManifest;
+        if (parsed.version !== 1 || !parsed.secrets || typeof parsed.secrets !== "object") {
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function writeManifest(projectId: string, manifest: SecretManifest): void {
+    const exists = getOutput(`gcloud secrets describe ${MANIFEST_SECRET} --project=${projectId} 2>/dev/null`);
+    if (!exists) {
+        console.log(`🆕 Creating deploy manifest: ${MANIFEST_SECRET}`);
+        run(`gcloud secrets create ${MANIFEST_SECRET} --replication-policy="automatic" --project=${projectId}`);
+    }
+
+    run(
+        `gcloud secrets versions add ${MANIFEST_SECRET} --data-file=- --project=${projectId}`,
+        { silent: true, input: JSON.stringify(manifest) },
+    );
+}
+
+function ensureSecret(projectId: string, key: string): boolean {
+    const exists = getOutput(`gcloud secrets describe ${key} --project=${projectId} 2>/dev/null`);
+    if (exists) {
+        return false;
+    }
+
+    console.log(`🆕 Creating secret: ${key}`);
+    run(`gcloud secrets create ${key} --replication-policy="automatic" --project=${projectId}`);
+    return true;
+}
+
+async function syncAllSecrets(): Promise<{ secretNames: string[]; changed: boolean; keySetChanged: boolean }> {
     console.log("🛡️  Syncing deployable .env variables to GCP Secret Manager...");
 
     const entries = parseEnvSecrets();
-    const secretNames: string[] = [];
+    const secretNames = sort(entries.map(({ key }) => key));
+    const entryByKey = new Map(entries.map((entry) => [entry.key, entry]));
+    const currentManifest = buildSecretManifest(entries);
+    const previousManifest = readManifest(requireProjectId());
+    const diff = diffSecretManifest(currentManifest, previousManifest);
     let changed = false;
     const projectId = requireProjectId();
 
-    for (const { key, value } of entries) {
-        secretNames.push(key);
-
-        const exists = getOutput(`gcloud secrets describe ${key} --project=${projectId} 2>/dev/null`);
-        if (!exists) {
-            console.log(`🆕 Creating secret: ${key}`);
-            run(`gcloud secrets create ${key} --replication-policy="automatic" --project=${projectId}`);
-            changed = true;
-        }
-
-        const currentRemoteValue = getOutput(
-            `gcloud secrets versions access latest --secret=${key} --project=${projectId} 2>/dev/null`,
-        );
-        if (currentRemoteValue === value) {
-            console.log(`✅ ${key} is up to date.`);
-        } else {
-            console.log(`🔄 Updating ${key}...`);
-            run(
-                `gcloud secrets versions add ${key} --data-file=- --project=${projectId}`,
-                { silent: true, input: value },
-            );
-            console.log(`   ↳ Updated ${key}`);
-            changed = true;
-        }
+    if (previousManifest) {
+        console.log(`   Δ secrets: ${diff.added.length} added, ${diff.changed.length} changed, ${diff.removed.length} removed, ${diff.unchanged.length} unchanged.`);
+    } else {
+        console.log("   No deploy manifest found; checking all deployable secrets once.");
     }
 
-    return { secretNames, changed };
+    const dirtyKeys = previousManifest
+        ? sort([...diff.added, ...diff.changed])
+        : secretNames;
+
+    for (const key of dirtyKeys) {
+        const entry = entryByKey.get(key);
+        if (!entry) continue;
+
+        const created = ensureSecret(projectId, key);
+        if (!previousManifest) {
+            const currentRemoteValue = getOutput(
+                `gcloud secrets versions access latest --secret=${key} --project=${projectId} 2>/dev/null`,
+            );
+            if (currentRemoteValue === entry.value) {
+                console.log(`✅ ${key} is up to date.`);
+                changed ||= created;
+                continue;
+            }
+        }
+
+        if (previousManifest && !created) {
+            console.log(`🔄 Updating ${key}...`);
+        } else if (!previousManifest) {
+            console.log(`🔄 Updating ${key}...`);
+        }
+        run(
+            `gcloud secrets versions add ${key} --data-file=- --project=${projectId}`,
+            { silent: true, input: entry.value },
+        );
+        console.log(`   ↳ Updated ${key}`);
+        changed = true;
+    }
+
+    if (diff.removed.length > 0) {
+        console.log(`   Removed from service bindings: ${diff.removed.join(", ")}`);
+        changed = true;
+    }
+
+    if (!previousManifest || diff.valueChanged) {
+        writeManifest(projectId, currentManifest);
+    }
+
+    return { secretNames, changed, keySetChanged: !previousManifest || diff.keySetChanged };
 }
 
 async function grantSecretAccess(secretNames: string[]) {
@@ -248,6 +388,48 @@ async function ensureInfrastructure(): Promise<boolean> {
 function buildSecretFlags(secrets: string[]): string {
     const unique = Array.from(new Set(secrets));
     return unique.map((secret) => `${secret}=${secret}:latest`).join(",");
+}
+
+function extractServiceSecretNames(describe: unknown): string[] {
+    const service = describe as {
+        spec?: { template?: { spec?: { containers?: Array<{ env?: Array<Record<string, unknown>> }> } } };
+        template?: { containers?: Array<{ env?: Array<Record<string, unknown>> }> };
+    };
+    const env =
+        service.spec?.template?.spec?.containers?.[0]?.env ??
+        service.template?.containers?.[0]?.env ??
+        [];
+
+    return sort(env
+        .filter((entry) => {
+            const valueFrom = entry.valueFrom as { secretKeyRef?: unknown } | undefined;
+            return Boolean(valueFrom?.secretKeyRef);
+        })
+        .map((entry) => String(entry.name || ""))
+        .filter(Boolean));
+}
+
+function serviceSecretBindingsMatch(secretNames: string[]): boolean {
+    const projectId = requireProjectId();
+    const raw = getOutput(
+        `gcloud run services describe ${SERVICE_NAME} \
+      --platform managed \
+      --region ${REGION} \
+      --project ${projectId} \
+      --format=json`,
+    );
+
+    if (!raw) {
+        return false;
+    }
+
+    try {
+        const bound = extractServiceSecretNames(JSON.parse(raw));
+        const desired = sort(secretNames);
+        return bound.length === desired.length && bound.every((name, index) => name === desired[index]);
+    } catch {
+        return false;
+    }
 }
 
 function buildImageTag(): string {
@@ -348,7 +530,7 @@ async function deployService(image: string, secrets: string[], includeSecrets: b
         const secretFlags = buildSecretFlags(secrets);
         commandParts.push(`--set-secrets "${secretFlags}"`);
     } else {
-        console.log("   ⚡ Fast mode: preserving existing service secrets/env bindings");
+        console.log("   ⚡ Preserving existing service secrets/env bindings");
     }
 
     commandParts.push("--quiet");
@@ -512,11 +694,13 @@ async function deploy() {
 
     let secrets: string[] = [];
     let secretsChanged = false;
+    let serviceSecretBindingsChanged = !skipSecrets;
     let infrastructureChanged = false;
     if (!skipSecrets) {
         const syncResult = await syncAllSecrets();
         secrets = syncResult.secretNames;
         secretsChanged = syncResult.changed;
+        serviceSecretBindingsChanged = syncResult.keySetChanged || !serviceSecretBindingsMatch(secrets);
         infrastructureChanged = await ensureInfrastructure();
         await grantSecretAccess(secrets);
         if (secretsChanged || infrastructureChanged) {
@@ -526,7 +710,7 @@ async function deploy() {
     }
 
     const image = await buildImage();
-    await deployService(image, secrets, !skipSecrets);
+    await deployService(image, secrets, serviceSecretBindingsChanged);
 
     if (!skipJobs) {
         await deployJobs(image);

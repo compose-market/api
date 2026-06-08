@@ -6,6 +6,7 @@ import {
   normalizeResponsesRequest,
   toChatStreamEvent,
   toChatUsageStreamEvent,
+  toResponsesStreamEvent,
   type Event,
   type Usage,
 } from "../inference/core.js";
@@ -315,5 +316,58 @@ test("chat stream conversion emits the chunks runtime normalizes", () => {
     prompt_tokens: 11,
     completion_tokens: 7,
     total_tokens: 18,
+  });
+});
+
+test("responses stream conversion preserves rich modality events", () => {
+  assert.deepEqual(toResponsesStreamEvent("resp_2", "gemini-3", {
+    type: "reasoning-delta",
+    text: "thought",
+  }), {
+    type: "response.reasoning.delta",
+    response_id: "resp_2",
+    model: "gemini-3",
+    delta: "thought",
+  });
+
+  assert.deepEqual(toResponsesStreamEvent("resp_2", "rerank-2.5", {
+    type: "citation",
+    citation: { title: "Doc", url: "https://example.test" },
+  }), {
+    type: "response.citation",
+    response_id: "resp_2",
+    model: "rerank-2.5",
+    citation: { title: "Doc", url: "https://example.test" },
+  });
+
+  assert.deepEqual(toResponsesStreamEvent("resp_2", "speech", {
+    type: "audio-chunk",
+    audio: { base64: "AAA", sequenceIndex: 2, mimeType: "audio/mpeg" },
+  }), {
+    type: "response.output_audio.delta",
+    response_id: "resp_2",
+    model: "speech",
+    delta: "AAA",
+    sequence_index: 2,
+    mime_type: "audio/mpeg",
+  });
+
+  assert.deepEqual(toResponsesStreamEvent("resp_2", "veo", {
+    type: "video-complete",
+    video: { jobId: "job_1", url: "https://example.test/video.mp4", status: "completed", progress: 100, mimeType: "video/mp4" },
+  }), {
+    type: "response.output_item.completed",
+    response_id: "resp_2",
+    model: "veo",
+    output_index: 0,
+    item: {
+      type: "output_video",
+      role: "assistant",
+      video_url: "https://example.test/video.mp4",
+      job_id: "job_1",
+      status: "completed",
+      progress: 100,
+      mime_type: "video/mp4",
+    },
   });
 });

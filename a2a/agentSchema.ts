@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { AgentManifest, AgentMetadata, TaskType } from "./types.js";
+import type { AgentManifest as BaseAgentManifest, AgentMetadata, TaskType } from "./types.js";
 import { taskTypeToContentTypes } from "./types.js";
 
 // =============================================================================
@@ -16,7 +16,7 @@ import { taskTypeToContentTypes } from "./types.js";
 /**
  * Compose-specific agent data (on-chain + x402)
  */
-export interface ComposeAgentExtensions {
+export interface AgentExtensions {
     /** Primary identifier - derived wallet address */
     walletAddress: string;
 
@@ -80,9 +80,9 @@ export interface ComposeAgentExtensions {
 /**
  * Full Compose Agent Manifest - ACP base + Compose extensions
  */
-export interface ComposeAgentManifest extends AgentManifest {
+export interface AgentManifest extends BaseAgentManifest {
     /** Compose-specific extensions */
-    compose: ComposeAgentExtensions;
+    compose: AgentExtensions;
 
     /** v1/* endpoints for this agent */
     endpoints: {
@@ -105,7 +105,7 @@ export interface ComposeAgentManifest extends AgentManifest {
 // Zod Validation Schemas
 // =============================================================================
 
-export const ComposeAgentExtensionsSchema = z.object({
+export const AgentExtensionsSchema = z.object({
     walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid wallet address"),
     dnaHash: z.string().regex(/^0x[a-fA-F0-9]+$/, "Invalid DNA hash"),
     chain: z.number().int().positive(),
@@ -131,7 +131,7 @@ export const ComposeAgentExtensionsSchema = z.object({
     })).optional(),
 });
 
-export const ComposeAgentManifestSchema = z.object({
+export const AgentManifestSchema = z.object({
     name: z.string().min(1),
     description: z.string(),
     input_content_types: z.array(z.string()).min(1),
@@ -152,7 +152,7 @@ export const ComposeAgentManifestSchema = z.object({
         recommended_models: z.array(z.string()).optional(),
         created_at: z.string().optional(),
     }).optional(),
-    compose: ComposeAgentExtensionsSchema,
+    compose: AgentExtensionsSchema,
     endpoints: z.object({
         chat: z.string().optional(),
         image: z.string().optional(),
@@ -174,7 +174,7 @@ export function buildAgentEndpoints(
     walletAddress: string,
     task: TaskType,
     baseUrl = "https://api.compose.market"
-): ComposeAgentManifest["endpoints"] {
+): AgentManifest["endpoints"] {
     const agentPath = `/agent/${walletAddress}`;
 
     switch (task) {
@@ -199,7 +199,7 @@ export function buildAgentEndpoints(
 }
 
 /**
- * Convert on-chain agent data to ComposeAgentManifest
+ * Convert on-chain agent data to AgentManifest
  */
 export function toAgentManifest(
     onchain: {
@@ -227,7 +227,7 @@ export function toAgentManifest(
         };
     },
     task: TaskType = "text-generation"
-): ComposeAgentManifest {
+): AgentManifest {
     const contentTypes = taskTypeToContentTypes(task);
     const metadata = onchain.metadata;
 
@@ -266,6 +266,6 @@ export function toAgentManifest(
 }
 
 // Type guard
-export function isComposeAgentManifest(obj: unknown): obj is ComposeAgentManifest {
-    return ComposeAgentManifestSchema.safeParse(obj).success;
+export function isAgentManifest(obj: unknown): obj is AgentManifest {
+    return AgentManifestSchema.safeParse(obj).success;
 }

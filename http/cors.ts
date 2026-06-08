@@ -67,8 +67,8 @@ const ALLOWED_HEADERS = [
     "x-client-source",
     "X-Internal-Secret",
     "x-internal-secret",
-    "X-Workflow-Internal",
-    "x-workflow-internal",
+    "X-Manowar-Internal",
+    "x-manowar-internal",
     "X-Network-Internal",
     "x-network-internal",
 ];

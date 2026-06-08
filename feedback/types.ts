@@ -30,7 +30,7 @@ export interface FeedbackContext {
     modelId?: string;
     provider?: string;
     agentWallet?: string;
-    workflowId?: string;
+    workflowWallet?: string;
     endpoint?: {
         method?: string;
         path?: string;

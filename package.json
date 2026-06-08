@@ -12,14 +12,15 @@
     "copy-data": "mkdir -p dist/data && cp -f inference/data/models.json inference/data/models_extended.json dist/data/ 2>/dev/null || echo 'Note: Some data files not found'",
     "sync-models": "cd inference/scripts && npx tsx sync-models.ts",
     "dev": "tsx index.ts",
-    "metrics": "tsx metrics/cli.ts && tsx metrics/cli.ts snapshot && tsx metrics/cli.ts backfill && tsx metrics/cli.ts watch && tsx scripts/check.ts"
+    "metrics": "tsx metrics/cli.ts sync && tsx metrics/cli.ts snapshot"
   },
   "dependencies": {
     "@composio/core": "^0.10.0",
-    "@filoz/synapse-core": "^0.5.2",
+    "@filoz/synapse-core": "^0.6.0",
     "@filoz/synapse-sdk": "^0.41.0",
-    "@google/genai": "^2.7.0",
+    "@google/genai": "^2.8.0",
     "@huggingface/inference": "^4.13.18",
+    "@neondatabase/serverless": "^1.1.0",
     "@x402/core": "^2.14.0",
     "@x402/evm": "^2.14.0",
     "cheerio": "^1.2.0",
@@ -29,14 +30,14 @@
     "filecoin-pin": "^0.22.3",
     "puppeteer": "^25.1.0",
     "redis": "^6.0.0",
-    "viem": "^2.52.0",
+    "viem": "^2.52.2",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "ajv": "^8.20.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",

@@ -26,6 +26,7 @@ export interface AgentCard {
   x402Support: boolean;
   image?: string;
   avatar?: string;
+  avatarUrl?: string;
   dnaHash: string;
   walletAddress: string;
   walletTimestamp?: number;
@@ -154,7 +155,35 @@ type StoredAgentRow = {
   creatorFee?: number | null;
   target?: string | null;
   route?: string | null;
+  sortValue?: string | number | null;
 };
+
+export type AgentSort = "newest" | "price-low" | "price-high" | "name";
+
+export interface AgentPageInput {
+  limit?: number | string | null;
+  view?: "market" | string | null;
+  cursor?: string | null;
+  sort?: AgentSort | string | null;
+  q?: string | null;
+  query?: string | null;
+  creator?: string | null;
+  chain?: number | string | null;
+  framework?: string | null;
+  cloneable?: boolean | string | null;
+  skill?: string | null;
+  plugin?: string | null;
+  minPrice?: number | string | null;
+  maxPrice?: number | string | null;
+}
+
+export interface AgentPage {
+  agents: AgentCard[];
+  total: number;
+  count: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+}
 
 type AgentVectorMetadata = Record<string, unknown>;
 
@@ -581,6 +610,218 @@ function parseStoredAgent(card: string): AgentCard | null {
   }
 }
 
+function storedCard(row: Pick<StoredAgentRow, "card" | "target" | "route" | "creatorFee">): AgentCard | null {
+  const agent = parseStoredAgent(row.card);
+  if (!agent) return null;
+  agent.plugins = (agent.plugins || []).map((plugin) => {
+    const { tools: _tools, ...rest } = plugin;
+    return rest;
+  });
+  if (typeof row.creatorFee === "number" && Number.isFinite(row.creatorFee)) {
+    agent.creatorFee = row.creatorFee;
+  }
+  const target = maybeText(row.target);
+  const modelRoute = parseRoute(row.route);
+  if (target) {
+    agent.target = target;
+  } else {
+    delete agent.target;
+  }
+  if (modelRoute) {
+    agent.route = modelRoute;
+  } else {
+    delete agent.route;
+  }
+  return agent;
+}
+
+function max(value: unknown, fallback: number, ceiling: number): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.min(ceiling, Math.floor(parsed)));
+}
+
+function order(value: unknown): AgentSort {
+  return value === "price-low" || value === "price-high" || value === "name" ? value : "newest";
+}
+
+function decode(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function encode(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function pageKey(input: AgentPageInput): string {
+  const compact = input.view === "market";
+  return JSON.stringify({
+    view: compact ? "market" : "",
+    limit: max(input.limit, compact ? 72 : 24, compact ? 72 : 60),
+    cursor: input.cursor || "",
+    sort: order(input.sort),
+    q: maybeText(input.q) || maybeText(input.query) || "",
+    creator: maybeText(input.creator) || "",
+    chain: input.chain ?? "",
+    framework: maybeText(input.framework) || "",
+    cloneable: input.cloneable ?? "",
+    skill: maybeText(input.skill) || "",
+    plugin: maybeText(input.plugin) || "",
+    minPrice: input.minPrice ?? "",
+    maxPrice: input.maxPrice ?? "",
+  });
+}
+
+function market(agent: AgentCard): AgentCard {
+  return {
+    schemaVersion: agent.schemaVersion,
+    name: agent.name,
+    description: agent.description,
+    skills: strings(agent.skills),
+    x402Support: Boolean(agent.x402Support),
+    ...(agent.image ? { image: agent.image } : {}),
+    ...(agent.avatar ? { avatar: agent.avatar } : {}),
+    ...(agent.avatarUrl ? { avatarUrl: agent.avatarUrl } : {}),
+    dnaHash: agent.dnaHash,
+    walletAddress: agent.walletAddress,
+    ...(typeof agent.walletTimestamp === "number" ? { walletTimestamp: agent.walletTimestamp } : {}),
+    chain: agent.chain,
+    model: agent.model,
+    ...(typeof agent.creatorFee === "number" ? { creatorFee: agent.creatorFee } : {}),
+    ...(agent.target ? { target: agent.target } : {}),
+    ...(agent.route ? { route: agent.route } : {}),
+    framework: frame(agent.framework),
+    licensePrice: agent.licensePrice,
+    licenses: agent.licenses,
+    cloneable: Boolean(agent.cloneable),
+    protocols: Array.isArray(agent.protocols) ? agent.protocols : [],
+    plugins: (agent.plugins || []).map((plugin) => {
+      const { tools: _tools, ...rest } = plugin;
+      return rest;
+    }),
+    createdAt: agent.createdAt,
+    ...(agent.creator ? { creator: agent.creator } : {}),
+    ...(agent.cid ? { cid: agent.cid } : {}),
+  };
+}
+
+function priceExpr(): string {
+  return "coalesce(CAST(json_extract(card, '$.licensePrice') AS REAL), 0)";
+}
+
+function pageSort(sort: AgentSort): { select: string; order: string; expr: string; dir: "ASC" | "DESC" } {
+  if (sort === "price-low") {
+    const expr = priceExpr();
+    return { select: `${expr} AS sortValue`, order: `${expr} ASC, lower(walletAddress) ASC`, expr, dir: "ASC" };
+  }
+  if (sort === "price-high") {
+    const expr = priceExpr();
+    return { select: `${expr} AS sortValue`, order: `${expr} DESC, lower(walletAddress) ASC`, expr, dir: "DESC" };
+  }
+  if (sort === "name") {
+    const expr = "lower(coalesce(name, json_extract(card, '$.name'), ''))";
+    return { select: `${expr} AS sortValue`, order: `${expr} ASC, lower(walletAddress) ASC`, expr, dir: "ASC" };
+  }
+  const expr = "coalesce(json_extract(card, '$.createdAt'), updated)";
+  return { select: `${expr} AS sortValue`, order: `${expr} DESC, lower(walletAddress) ASC`, expr, dir: "DESC" };
+}
+
+function pageWhere(input: AgentPageInput, params: unknown[]): string[] {
+  const filters = ["state = 'indexed'"];
+  const q = maybeText(input.q) || maybeText(input.query);
+  if (q) {
+    const like = `%${q.toLowerCase()}%`;
+    filters.push(`(
+      lower(coalesce(name, '')) LIKE ?
+      OR lower(coalesce(text, '')) LIKE ?
+      OR lower(coalesce(card, '')) LIKE ?
+    )`);
+    params.push(like, like, like);
+  }
+  const creator = maybeText(input.creator);
+  if (creator) {
+    filters.push("lower(coalesce(json_extract(card, '$.creator'), '')) = lower(?)");
+    params.push(creator);
+  }
+  const chain = maybeText(input.chain);
+  if (chain) {
+    filters.push("CAST(json_extract(card, '$.chain') AS TEXT) = ?");
+    params.push(chain);
+  }
+  const framework = maybeText(input.framework);
+  if (framework) {
+    filters.push("lower(coalesce(json_extract(card, '$.framework'), 'other')) = lower(?)");
+    params.push(framework);
+  }
+  const cloneable = typeof input.cloneable === "boolean"
+    ? input.cloneable
+    : typeof input.cloneable === "string" && input.cloneable.trim()
+      ? /^(1|true|yes)$/i.test(input.cloneable.trim())
+      : null;
+  if (cloneable !== null) {
+    filters.push(cloneable
+      ? "json_extract(card, '$.cloneable') IN (1, 'true')"
+      : "(json_extract(card, '$.cloneable') IS NULL OR json_extract(card, '$.cloneable') IN (0, 'false'))");
+  }
+  const skill = maybeText(input.skill);
+  if (skill) {
+    filters.push(`EXISTS (
+      SELECT 1
+      FROM json_each(agents.card, '$.skills') AS skill
+      WHERE lower(CAST(skill.value AS TEXT)) = lower(?)
+    )`);
+    params.push(skill);
+  }
+  const plugin = maybeText(input.plugin);
+  if (plugin) {
+    filters.push(`EXISTS (
+      SELECT 1
+      FROM json_each(agents.card, '$.plugins') AS plugin
+      WHERE lower(coalesce(json_extract(plugin.value, '$.registryId'), '')) = lower(?)
+    )`);
+    params.push(plugin);
+  }
+  const minPrice = typeof input.minPrice === "number" ? input.minPrice : Number(input.minPrice);
+  if (Number.isFinite(minPrice)) {
+    filters.push(`${priceExpr()} >= ?`);
+    params.push(minPrice);
+  }
+  const maxPrice = typeof input.maxPrice === "number" ? input.maxPrice : Number(input.maxPrice);
+  if (Number.isFinite(maxPrice)) {
+    filters.push(`${priceExpr()} <= ?`);
+    params.push(maxPrice);
+  }
+  return filters;
+}
+
+function pageCursor(sort: AgentSort, value: Record<string, unknown> | null, params: unknown[]): string | null {
+  if (value?.sort !== sort || typeof value.wallet !== "string") return null;
+  const wallet = value.wallet.toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(wallet)) return null;
+  const sorted = pageSort(sort);
+  if (sort === "price-low" || sort === "price-high") {
+    const amount = typeof value.value === "number" ? value.value : Number(value.value);
+    if (!Number.isFinite(amount)) return null;
+    const op = sorted.dir === "DESC" ? "<" : ">";
+    params.push(amount, amount, wallet);
+    return `(${sorted.expr} ${op} ? OR (${sorted.expr} = ? AND lower(walletAddress) > lower(?)))`;
+  }
+  const text = maybeText(value.value);
+  if (!text) return null;
+  const op = sorted.dir === "DESC" ? "<" : ">";
+  params.push(text, text, wallet);
+  return `(${sorted.expr} ${op} ? OR (${sorted.expr} = ? AND lower(walletAddress) > lower(?)))`;
+}
+
+const pageCache = new Map<string, { at: number; value: AgentPage }>();
+const exactCache = new Map<string, { at: number; value: AgentCard | null }>();
+
 function checkedAt(): string {
   return new Date().toISOString();
 }
@@ -854,11 +1095,14 @@ function validExactProjection(agent: AgentCard, target: string | undefined, mode
   return false;
 }
 
-async function projectStoredAgent(agent: AgentCard, row: Pick<StoredAgentRow, "target" | "route">): Promise<AgentCard> {
+async function projectStoredAgent(agent: AgentCard, row: Pick<StoredAgentRow, "target" | "route">, opts: { enrich?: boolean } = {}): Promise<AgentCard> {
+  const complete = async (projected: AgentCard): Promise<AgentCard> => (
+    opts.enrich === false ? projected : await enrich(projected)
+  );
   const target = maybeText(row.target);
   const modelRoute = parseRoute(row.route);
   if (modelRoute && validExactProjection(agent, target, modelRoute)) {
-    return await enrich(withProjection(agent, target, modelRoute!));
+    return await complete(withProjection(agent, target, modelRoute!));
   }
   if (modelRoute?.kind === "bump" && modelRoute.from === agent.model && target && modelRoute.to === target && getModelById(target)) {
     const current = await explicitRoute(agent.model);
@@ -866,10 +1110,10 @@ async function projectStoredAgent(agent: AgentCard, row: Pick<StoredAgentRow, "t
     const currentModel = currentTarget ? getModelById(currentTarget) : null;
     const currentReason = current?.reason || undefined;
     if (current?.source === "models.rebind" && currentModel?.modelId === target && currentReason === modelRoute.reason) {
-      return await enrich(withProjection(agent, target, modelRoute));
+      return await complete(withProjection(agent, target, modelRoute));
     }
   }
-  return await projectAgent(agent);
+  return await projectAgent(agent, opts);
 }
 
 async function fetchFromPinataGateway<T>(cid: string, pinataGateway: string): Promise<T | null> {
@@ -1046,8 +1290,13 @@ export async function listPinsByType(type: "agent-card" | "workflow-metadata"): 
 
   const items: Array<Card | null> = await Promise.all(
     rows.map(async (pin): Promise<Card | null> => {
-      const content = await fetchFromPinataGateway<Card>(pin.ipfs_pin_hash, pinataGateway);
-      return content ? { ...content, cid: pin.ipfs_pin_hash } : null;
+      try {
+        const content = await fetchFromPinataGateway<Card>(pin.ipfs_pin_hash, pinataGateway);
+        return content ? { ...content, cid: pin.ipfs_pin_hash } : null;
+      } catch (error) {
+        console.warn(`[agents] skipped unreadable ${type} pin ${pin.ipfs_pin_hash}`, error);
+        return null;
+      }
     }),
   );
 
@@ -1076,37 +1325,79 @@ async function fetchAgents(): Promise<AgentCard[]> {
 }
 
 export async function listAgents(): Promise<AgentCard[]> {
-  let rows: AgentCard[] = [];
   try {
-    rows = await stored();
-    if (rows.length > 0 && await stamped()) {
-      return rows;
-    }
+    return await stored();
   } catch (error) {
-    console.warn("[agents] cached catalog read failed; falling back to source scan", error);
+    console.warn("[agents] D1 catalog read failed", error);
+    return [];
+  }
+}
+
+export async function page(input: AgentPageInput = {}): Promise<AgentPage> {
+  const key = pageKey(input);
+  const cached = pageCache.get(key);
+  if (cached && Date.now() - cached.at < 120_000) {
+    return cached.value;
+  }
+  if (!catalogEnabled()) {
+    return { agents: [], total: 0, count: 0, nextCursor: null, hasMore: false };
   }
 
+  const sort = order(input.sort);
+  const compact = input.view === "market";
+  const limit = max(input.limit, compact ? 72 : 24, compact ? 72 : 60);
+  const sorted = pageSort(sort);
+  const countParams: unknown[] = [];
+  const countFilters = pageWhere(input, countParams);
+  const params: unknown[] = [];
+  const filters = pageWhere(input, params);
+  const cursor = pageCursor(sort, decode(input.cursor), params);
+  if (cursor) filters.push(cursor);
+  const [count, rows] = await Promise.all([
+    d1<{ total?: number }>(
+      `SELECT count(*) AS total
+       FROM agents
+       WHERE ${countFilters.join("\n AND ")}`,
+      countParams,
+    ),
+    d1<StoredAgentRow>(
+      `SELECT walletAddress, card, text, creatorFee, target, route, ${sorted.select}
+       FROM agents
+       WHERE ${filters.join("\n AND ")}
+       ORDER BY ${sorted.order}
+       LIMIT ?`,
+      [...params, limit + 1],
+    ),
+  ]);
+  const visible = rows.slice(0, limit);
+  const agents = visible
+    .map(storedCard)
+    .filter((agent): agent is AgentCard => Boolean(agent))
+    .map((agent) => compact ? market(agent) : agent);
+  const last = visible[visible.length - 1];
+  const nextCursor = rows.length > limit && last?.walletAddress && (typeof last.sortValue === "string" || typeof last.sortValue === "number")
+    ? encode({ sort, value: last.sortValue, wallet: last.walletAddress.toLowerCase() })
+    : null;
+  const value = {
+    agents,
+    total: Number(count[0]?.total ?? agents.length),
+    count: agents.length,
+    nextCursor,
+    hasMore: Boolean(nextCursor),
+  };
+  pageCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+export async function backfill(): Promise<{ fetched: number; indexed: number }> {
   const agents = await fetchAgents();
-  try {
-    await sync(agents);
-    await stamp();
-    const rows = await stored();
-    if (rows.length > 0) {
-      return rows;
-    }
-  } catch (error) {
-    console.warn("[agents] catalog refresh failed; returning fetched cards", error);
-    if (rows.length > 0) {
-      return rows;
-    }
-  }
-  return await Promise.all(agents.map(async (agent) => {
-    try {
-      return await projectAgent(agent);
-    } catch {
-      return agent;
-    }
-  }));
+  await sync(agents);
+  await stamp();
+  const rows = await stored();
+  return {
+    fetched: agents.length,
+    indexed: rows.length,
+  };
 }
 
 export async function listWorkflows(): Promise<WorkflowMetadata[]> {
@@ -1117,20 +1408,14 @@ export async function findAgentByWallet(walletAddress: string): Promise<AgentCar
   const normalizedAddress = walletAddress.toLowerCase();
   const cached = synced?.agents.get(id(normalizedAddress));
   if (cached) return cached;
-
-  const storedAgent = await storedByWallet(normalizedAddress);
-  if (storedAgent) return storedAgent;
-
-  const rows = await listPinRowsByType("agent-card");
-  const pinataGateway = requirePinataGateway();
-  for (const pin of rows) {
-    const card = await fetchFromPinataGateway<AgentCard>(pin.ipfs_pin_hash, pinataGateway);
-    if (card?.walletAddress?.toLowerCase() === normalizedAddress) {
-      return await projectAgent(normalizeAgentCard({ ...card, cid: pin.ipfs_pin_hash }), { enrich: catalogEnabled() });
-    }
+  const exact = exactCache.get(normalizedAddress);
+    if (exact && Date.now() - exact.at < 120_000) {
+    return exact.value;
   }
 
-  return null;
+  const value = await storedByWallet(normalizedAddress);
+  exactCache.set(normalizedAddress, { at: Date.now(), value });
+  return value;
 }
 
 export async function findWorkflowByWallet(walletAddress: string): Promise<WorkflowMetadata | null> {
@@ -1457,6 +1742,53 @@ async function start(documents: Array<{ agent: AgentCard; id: string; text: stri
   }
 }
 
+
+export async function countAgents(): Promise<{ total: number; source: "cloudflare-d1" | "pinata"; updatedAt?: string }> {
+  try {
+    if (await ensure()) {
+      const rows = await d1<{ total?: number; updated?: string }>(
+        `SELECT count(*) AS total, max(updated) AS updated
+         FROM agents
+         WHERE state = 'indexed'`,
+      );
+      const total = Number(rows[0]?.total ?? 0);
+      if (total > 0 || await stamped()) {
+        return {
+          total,
+          source: "cloudflare-d1",
+          updatedAt: rows[0]?.updated,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("[agents] D1 count failed", error);
+  }
+
+  return {
+    total: 0,
+    source: "cloudflare-d1",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function countAgentsToday(): Promise<number> {
+  try {
+    if (await ensure()) {
+      const rows = await d1<{ total?: number }>(
+        `SELECT count(*) AS total
+         FROM agents
+         WHERE state = 'indexed'
+           AND updated >= datetime('now', 'start of day')`,
+      );
+      return Number(rows[0]?.total ?? 0);
+    }
+  } catch (error) {
+    console.warn("[agents] D1 daily count failed", error);
+  }
+
+  return 0;
+}
+
 async function publish(documents: Array<{ agent: AgentCard; id: string; text: string }>, batch: string): Promise<void> {
   if (!(await ensure())) return;
   await step(documents.map((doc) => doc.agent), batch, "publish", "succeeded");
@@ -1526,7 +1858,7 @@ async function cached(): Promise<Stored[]> {
   const projected = await Promise.all(rows.map(async (row): Promise<Stored | null> => {
       const agent = parseStoredAgent(row.card);
       if (!agent) return null;
-      return { agent: await projectStoredAgent(agent, row), id: id(agent.walletAddress), text: row.text };
+      return { agent: await projectStoredAgent(agent, row, { enrich: false }), id: id(agent.walletAddress), text: row.text };
     }));
   return projected.filter((row): row is Stored => Boolean(row));
 }
@@ -1544,7 +1876,7 @@ async function storedByWallet(walletAddress: string): Promise<AgentCard | null> 
     );
     const row = rows[0];
     const agent = row?.card ? parseStoredAgent(row.card) : null;
-    return agent && row ? await projectStoredAgent(agent, row) : null;
+    return agent && row ? await projectStoredAgent(agent, row, { enrich: false }) : null;
   };
 
   try {
@@ -1621,6 +1953,7 @@ function routeVectors(doc: { agent: AgentCard; id: string; text: string }, vecto
 }
 
 async function sync(agents: AgentCard[]): Promise<Sync> {
+  await ensure();
   const documents = await docs(agents);
   if (documents.length === 0) {
     const empty = { hash: hash("[]"), at: Date.now(), agents: new Map<string, AgentCard>(), texts: new Map<string, string>() };
@@ -1736,12 +2069,28 @@ function agentSearchText(agent: AgentSearchHit): string {
 
 function hit(agent: AgentCard): AgentSearchHit {
   return {
+    schemaVersion: agent.schemaVersion,
     walletAddress: agent.walletAddress,
     name: agent.name,
     description: agent.description || "",
+    x402Support: Boolean(agent.x402Support),
     skills: strings(agent.skills),
     plugins: agent.plugins || [],
+    ...(agent.image ? { image: agent.image } : {}),
+    ...(agent.avatar ? { avatar: agent.avatar } : {}),
+    ...(agent.avatarUrl ? { avatarUrl: agent.avatarUrl } : {}),
+    dnaHash: agent.dnaHash,
+    ...(typeof agent.walletTimestamp === "number" ? { walletTimestamp: agent.walletTimestamp } : {}),
+    chain: agent.chain,
     ...(typeof agent.creatorFee === "number" ? { creatorFee: agent.creatorFee } : {}),
+    framework: frame(agent.framework),
+    licensePrice: agent.licensePrice,
+    licenses: agent.licenses,
+    cloneable: Boolean(agent.cloneable),
+    protocols: Array.isArray(agent.protocols) ? agent.protocols : [],
+    createdAt: agent.createdAt,
+    ...(agent.creator ? { creator: agent.creator } : {}),
+    ...(agent.cid ? { cid: agent.cid } : {}),
     ...(agent.model ? { model: agent.model } : {}),
     ...(agent.target ? { target: agent.target } : {}),
     ...(agent.route ? { route: agent.route } : {}),
@@ -1804,7 +2153,7 @@ async function hydrate(candidates: AgentCandidate[]): Promise<AgentCandidate[]> 
     }
   }
   const wallets = [...byWallet.keys()];
-  if (wallets.length === 0 || !(await ensure())) return [];
+  if (wallets.length === 0 || !catalogEnabled()) return [];
   const marks = wallets.map((_, index) => `?${index + 1}`).join(", ");
   const rows = await d1<StoredAgentRow>(
     `SELECT walletAddress, card, text, creatorFee, target, route
@@ -1835,12 +2184,7 @@ async function hydrate(candidates: AgentCandidate[]): Promise<AgentCandidate[]> 
 export async function searchAgents(query: string, limit = 8): Promise<AgentSearchHit[]> {
   const q = query.trim();
   if (!q) return [];
-  if (!(await stamped())) {
-    await listAgents().catch((error) => {
-      console.warn("[agents] search catalog refresh failed", error);
-    });
-  }
-  const topK = Math.max(1, Math.min(50, limit));
+  const topK = Math.max(1, Math.min(72, limit));
   const [queryVector] = await embed([q], "query");
   if (!queryVector) {
     throw new Error("agent query embedding returned empty vector");
@@ -1854,7 +2198,7 @@ export async function searchAgents(query: string, limit = 8): Promise<AgentSearc
     },
     body: JSON.stringify({
       vector: queryVector,
-      topK: Math.min(Math.max(topK * 6, 16), 50),
+      topK: Math.min(Math.max(topK * 6, 16), 100),
       returnMetadata: "all",
     }),
   });
@@ -1885,6 +2229,8 @@ export const test = {
     synced = null;
     catalogs = new Map();
     pluginTools = new Map();
+    pageCache.clear();
+    exactCache.clear();
     ready = false;
   },
 };

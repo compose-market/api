@@ -406,7 +406,7 @@ function withRetry<T>(operation: () => Promise<T>, retries = 3, signal?: AbortSi
         return await operation();
       } catch (error) {
         lastError = error;
-        if (attempt >= retries || aborted(signal) || isAbort(error)) {
+        if (attempt >= retries || aborted(signal) || isAbort(error) || !retryable(error)) {
           break;
         }
         await wait(250 * attempt, signal);
@@ -414,6 +414,20 @@ function withRetry<T>(operation: () => Promise<T>, retries = 3, signal?: AbortSi
     }
     throw (lastError instanceof Error ? lastError : new Error(String(lastError)));
   })();
+}
+
+function retryable(error: unknown): boolean {
+  const record = asRecord(error);
+  if (record?.retryable === false) return false;
+  const status = typeof record?.statusCode === "number"
+    ? record.statusCode
+    : typeof record?.status === "number"
+      ? record.status
+      : undefined;
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    return status === 408 || status === 409 || status === 425 || status === 429;
+  }
+  return true;
 }
 
 function getPrimaryText(messages: Message[]): string {
