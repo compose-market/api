@@ -366,7 +366,7 @@ test("catalog classifiers emit operation-specific input and output shapes", () =
     && capability.output.includes("video")
   ));
 
-  const elevenLabsScribe = capabilitiesFor("scribe_v1");
+  const elevenLabsScribe = capabilitiesFor("scribe_v2");
   assert.equal(elevenLabsScribe.some((capability) => capability.operation === "chat"), false);
   assert.ok(elevenLabsScribe.some((capability) =>
     capability.modality === "text"
@@ -405,7 +405,7 @@ test("normalizeResponsesRequest carries catalog operation through universal rout
   assert.equal(openaiStt.operation, "speech-to-text");
 
   const realtime = normalizeResponsesRequest({
-    model: "gpt-realtime-1.5",
+    model: "gpt-realtime-2",
     input: [{ type: "input_text", text: "Answer over a realtime session." }],
   });
 
@@ -472,22 +472,20 @@ test("native inference ignores caller provider overrides and resolves from catal
   assert.equal(resolveInferenceRequest(chat).provider, TEXT_MODEL_PROVIDER);
 });
 
-test("realtime-only models are rejected before REST payment/provider execution", async () => {
+test("realtime-only REST calls enter paid inference instead of legacy websocket rejection", async () => {
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-realtime-1.5",
+        model: "gpt-realtime-2",
         input: [{ type: "input_text", text: "Start a voice session." }],
       }),
     });
 
-    assert.equal(response.status, 400);
-    assert.equal(response.headers.get("payment-required"), null);
-    const body = await response.json() as { error?: { code?: string; message?: string } };
-    assert.equal(body.error?.code, "realtime_session_required");
-    assert.match(body.error?.message || "", /realtime WebSocket session/i);
+    const body = await response.json() as { error?: { code?: string } };
+    assert.notEqual(body.error?.code, "realtime_session_required");
+    assert.notEqual(response.status, 400);
   });
 });
 

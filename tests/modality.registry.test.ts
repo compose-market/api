@@ -113,7 +113,7 @@ function operations(modelId: string): Array<{ modality: string; operation: strin
 }
 
 test("realtime modality is catalog-native without stealing dual-mode REST operations", () => {
-  assert.deepEqual(operations("gpt-realtime-1.5"), [
+  assert.deepEqual(operations("gpt-realtime-2"), [
     { modality: "realtime", operation: "realtime-omni" },
   ]);
 

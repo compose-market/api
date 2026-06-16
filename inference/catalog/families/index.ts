@@ -21,8 +21,7 @@ export function normalizeFamily(value: unknown): string | null {
 
 const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "deepgram", patterns: ["deepgram/flux", "=flux", "nova-*", "aura-*"] },
-  { family: "alibaba", patterns: ["qwen*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*"] },
-  { family: "happyhorse", patterns: ["happyhorse-*"] },
+  { family: "alibaba", patterns: ["qwen*", "happyhorse", "happyhorse-*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*"] },
   { family: "nvidia", patterns: ["nemotron-*", "nv-*"] },
   { family: "xai", patterns: ["grok-*"] },
   { family: "anthropic", patterns: ["claude-*"] },
@@ -41,7 +40,7 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "cohere", patterns: ["command-*", "rerank-*", "embed-*", "cohere-rerank-*", "cohere-embed-*", "aya-*", "c4ai-*"] },
   { family: "openai", patterns: ["whisper-*", "gpt-*", "o1", "o3", "o4", "dall-e-*", "sora", "chatgpt-*", "tts-*", "text-embedding-*", "gpt-oss-*"] },
   { family: "elevenlabs", patterns: ["eleven-*", "music-*", "scribe-*"] },
-  { family: "cartesia", patterns: ["sonic-*"] },
+  { family: "cartesia", patterns: ["sonic-*", "ink-*"] },
   { family: "roboflow", patterns: ["roboflow-*"] },
   { family: "baai", patterns: ["bge-*"] },
   { family: "stabilityai", patterns: ["stable-diffusion", "sdxl", "sd3", "stable-cascade"] },
@@ -65,14 +64,13 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "allenai", patterns: ["tulu-*", "olmo-*"] },
   { family: "asicloud", patterns: ["asi1-*"] },
   { family: "leonardo", patterns: ["lucid-*", "phoenix-*"] },
-  { family: "llava-hf", patterns: ["llava-*"] },
   { family: "lykon", patterns: ["dreamshaper-*"] },
   { family: "pfnet", patterns: ["plamo-*"] },
   { family: "playht", patterns: ["playai", "playht"] },
   { family: "arcee", patterns: ["arcee-*"] },
   { family: "nousresearch", patterns: ["nous-*", "hermes-*"] },
-  { family: "huggingface", patterns: ["smol*", "distilbert-*"] },
-  { family: "pipecat", patterns: ["pipecat-ai"] },
+  { family: "huggingface", patterns: ["smol*", "llava-hf", "distilbert-*"] },
+  { family: "daily", patterns: ["pipecat-ai", "smart-turn-*", "smart-turn", "pipecat"] },
   { family: "myshell", patterns: ["myshell-ai/melotts"] },
 ];
 

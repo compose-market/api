@@ -96,6 +96,9 @@ const LOWEST_DEFAULT_KEYS = new Set([
   "n",
   "music_length_ms",
   "prompt_extend",
+  "eot_threshold",
+  "eot_timeout_ms",
+  "include_timestamps",
 ]);
 
 const ALIAS_TO_CANONICAL = Object.fromEntries(
@@ -164,7 +167,7 @@ function modalityParamCatalog(modality: CanonicalModality, card?: ModelCard | nu
     case "embedding":
       return normalizeDefinitions(getEmbeddingParameterCatalog());
     case "realtime":
-      return normalizeDefinitions(getRealtimeParameterCatalog());
+      return normalizeDefinitions(getRealtimeParameterCatalog(card));
     case "text":
       return {};
   }

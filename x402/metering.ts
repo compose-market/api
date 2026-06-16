@@ -27,9 +27,11 @@ export interface MeteredAuthorizationInput {
   lineItems: MeterLineItem[];
 }
 
+type Scheme = "exact" | "upto" | "batch-settlement";
+
 export type ResolvedAuthorizationInput =
   | { meter: MeteredAuthorizationInput }
-  | { useBudgetCap: true };
+  | { useBudgetCap: true; scheme?: Scheme };
 
 export interface MeteredSettlementInput {
   subject: string;
@@ -251,6 +253,9 @@ export function buildResolvedAuthorizationInput(args: {
   resolved: ResolvedBillingModel;
 }): ResolvedAuthorizationInput {
   requireResolvedCard(args.resolved, "authorization");
+  if (args.request.modality === "realtime") {
+    return { useBudgetCap: true, scheme: "batch-settlement" };
+  }
   return { useBudgetCap: true };
 }
 
@@ -297,7 +302,7 @@ export function buildSettlementMeterFromOutput(args: {
         ...(args.request.billingMetrics || {}),
         ...(args.output.usage?.billingMetrics || {}),
         ...(args.output.media?.billingMetrics || {}),
-        request: 1,
+        ...(args.request.modality === "realtime" ? {} : { request: 1 }),
       },
     },
   });

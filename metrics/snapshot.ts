@@ -1,10 +1,38 @@
-import { countAgents, countAgentsToday } from "../agents.js";
 import { totalDownloads, SDK_PACKAGE } from "./downloads.js";
 import { formatUsdcAtomic } from "./format.js";
 import { paymentTotals } from "./payments.js";
 import { sessionTotals } from "./sessions.js";
 import { readSnapshot, writeSnapshot } from "./cache.js";
 import type { MetricTotals, MetricsSnapshot } from "./types.js";
+
+interface AgentCounts {
+    total: number;
+    daily: number;
+    source: "cloudflare-d1";
+    updatedAt?: string;
+}
+
+function agentsUrl(): string {
+    return (process.env.AGENTS_URL || "https://agents.compose.market").replace(/\/+$/, "");
+}
+
+async function agentCounts(): Promise<AgentCounts> {
+    const response = await fetch(`${agentsUrl()}/counts`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(8000),
+    });
+    const body = await response.json().catch(() => ({})) as Partial<AgentCounts> & { error?: unknown };
+    if (!response.ok) {
+        const message = typeof body.error === "string" ? body.error : `status ${response.status}`;
+        throw new Error(`agents worker counts failed: ${message}`);
+    }
+    return {
+        total: Number(body.total ?? 0),
+        daily: Number(body.daily ?? 0),
+        source: "cloudflare-d1",
+        updatedAt: typeof body.updatedAt === "string" ? body.updatedAt : undefined,
+    };
+}
 
 function latest(values: Array<string | undefined>): string {
     const times = values
@@ -69,20 +97,16 @@ export function buildSnapshot(input: MetricTotals): MetricsSnapshot {
 }
 
 export async function refreshMetricsSnapshot(): Promise<MetricsSnapshot> {
-    const [downloads, agents, agentsDaily, payments, sessions] = await Promise.all([
+    const [downloads, agents, payments, sessions] = await Promise.all([
         totalDownloads(),
-        countAgents(),
-        countAgentsToday(),
+        agentCounts(),
         paymentTotals(),
         sessionTotals(),
     ]);
 
     return writeSnapshot(buildSnapshot({
         downloads,
-        agents: {
-            ...agents,
-            daily: agentsDaily,
-        },
+        agents,
         payments,
         sessions,
     }));

@@ -8,6 +8,32 @@ import {
 } from "../source.js";
 import type { ModelOperationCapability, ModelSourceShape } from "./types.js";
 
+function text(value: unknown, depth = 0): string[] {
+  if (depth > 4 || value === null || value === undefined) return [];
+  if (Array.isArray(value)) return value.flatMap((entry) => text(entry, depth + 1));
+  if (typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap((entry) => text(entry, depth + 1));
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const normalized = String(value).trim().toLowerCase();
+    return normalized ? [normalized] : [];
+  }
+  return [];
+}
+
+function hasEvidence(model: ModelCard, pattern: RegExp): boolean {
+  const evidence = text(model.params).concat(text(model.sourceMetadata));
+  return evidence.some((entry) => pattern.test(entry));
+}
+
+function hasDepthEvidence(model: ModelCard): boolean {
+  return hasEvidence(model, /\bdepth(?:[-_\s]+estimation)?\b/);
+}
+
+function hasCompareEvidence(model: ModelCard): boolean {
+  return model.provider === "roboflow" && hasEvidence(model, /\b(?:compare|similarity|perception[-_\s]+encoder)\b/);
+}
+
 /**
  * Rich computer-vision tasks that are more specific than generic
  * image-generation / image-understanding.
@@ -69,7 +95,20 @@ export function classifyVisionModel(model: ModelCard, source: ModelSourceShape):
     }));
   }
 
-  if (hasSourceType(source, ["zero-shot-classification"]) && hasInput(source, "image")) {
+  if (
+    hasSourceType(source, ["depth-estimation"])
+    || (hasInput(source, "image") && hasDepthEvidence(model))
+  ) {
+    capabilities.push(buildCapability(model, source, "image", "depth-estimation", false, {
+      input: ["image"],
+      output: source.output,
+    }));
+  }
+
+  if (
+    (hasSourceType(source, ["zero-shot-classification"]) && hasInput(source, "image"))
+    || (hasInput(source, "image") && hasInput(source, "text") && hasCompareEvidence(model))
+  ) {
     capabilities.push(buildCapability(model, source, "image", "zero-shot-classification", false, {
       input: ["image", "text"],
       output: source.output,

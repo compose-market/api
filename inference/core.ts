@@ -7,6 +7,7 @@ import {
   getModelCapabilities,
   type ModelOperationCapability,
 } from "./catalog/modalities/index.js";
+import { realtimeInputParams } from "./catalog/modalities/realtime.js";
 
 export type Mode = "responses" | "chat" | "embeddings";
 export type Modality = "text" | "image" | "audio" | "video" | "embedding" | "realtime";
@@ -188,6 +189,9 @@ export interface Event {
     base64?: string;
     sequenceIndex?: number;
     mimeType?: string;
+    sampleRate?: number;
+    channels?: number;
+    format?: string;
   };
   subtitle?: {
     start: number;
@@ -219,6 +223,7 @@ export interface Event {
     mimeType?: string;
   };
   usage?: Usage;
+  media?: Media;
   finishReason?: string;
 }
 
@@ -233,6 +238,10 @@ export interface ResponsesOutputItem {
   type: string;
   role?: "assistant";
   text?: string;
+  response_id?: string;
+  model?: string;
+  provider?: string;
+  target?: Record<string, unknown>;
   image_url?: string;
   audio_url?: string;
   video_url?: string;
@@ -1105,11 +1114,22 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
   const passParams = params(body);
   const resolvedModelParams = resolveOptionalModelParamValues(model, modality, body);
   const providedModelParams = resolveProvidedOptionalModelParamValues(model, modality, body);
-  const providedParams = {
-    ...(passParams || {}),
-    ...(rawCustomParams || {}),
-    ...(providedModelParams?.values ?? {}),
-  };
+  const inputParams = modality === "realtime"
+    ? realtimeInputParams(getModelById(model), messages)
+    : {};
+  const providedParams = modality === "realtime"
+    ? {
+      ...(resolvedModelParams?.values ?? {}),
+      ...inputParams,
+      ...(passParams || {}),
+      ...(rawCustomParams || {}),
+      ...(providedModelParams?.values ?? {}),
+    }
+    : {
+      ...(passParams || {}),
+      ...(rawCustomParams || {}),
+      ...(providedModelParams?.values ?? {}),
+    };
   const billingParams = {
     ...(passParams || {}),
     ...(rawCustomParams || {}),
@@ -1598,6 +1618,9 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       delta: event.audio?.base64 || "",
       sequence_index: event.audio?.sequenceIndex ?? 0,
       mime_type: event.audio?.mimeType,
+      ...(event.audio?.sampleRate ? { sample_rate: event.audio.sampleRate } : {}),
+      ...(event.audio?.channels ? { channels: event.audio.channels } : {}),
+      ...(event.audio?.format ? { format: event.audio.format } : {}),
     };
   }
 
@@ -1621,15 +1644,25 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
   }
 
   if (event.type === "status") {
+    const isVideo = Boolean(event.videoStatus || event.video);
+    if (isVideo) {
+      return {
+        type: "response.output_video.status",
+        response_id: requestId,
+        model,
+        job_id: event.videoStatus?.jobId || event.video?.jobId || "",
+        status: event.videoStatus?.status || event.video?.status || "processing",
+        progress: event.videoStatus?.progress ?? event.video?.progress,
+        url: event.videoStatus?.url || event.video?.url,
+        error: event.videoStatus?.error,
+      };
+    }
     return {
-      type: "response.output_video.status",
+      type: "response.status",
       response_id: requestId,
       model,
-      job_id: event.videoStatus?.jobId || event.video?.jobId || "",
-      status: event.videoStatus?.status || event.video?.status || "processing",
-      progress: event.videoStatus?.progress ?? event.video?.progress,
-      url: event.videoStatus?.url || event.video?.url,
-      error: event.videoStatus?.error,
+      status: "processing",
+      usage: event.usage ? responseUsage(event.usage) : undefined,
     };
   }
 

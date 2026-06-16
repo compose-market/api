@@ -405,7 +405,7 @@ test("external response shaping hides Compose receipts and preserves public mode
   app.post("/external/stream", resolveExternalModel(), shape(), (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
     res.write(`data: ${JSON.stringify({ model: req.body.model, choices: [] })}\n\n`);
-    res.write("event: compose.receipt\ndata: {\"finalAmountWei\":\"100\"}\n\n");
+    res.write("event: receipt\ndata: {\"finalAmountWei\":\"100\"}\n\n");
     res.write("data: [DONE]\n\n");
     res.end();
   });

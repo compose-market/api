@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildAgentScopedComposioUserId,
+  buildComposioUserId,
   buildToolRouterSessionConfig,
-} from "../backpack/composio.js";
+} from "../backpack/accounts.js";
 
-test("buildAgentScopedComposioUserId derives a stable per-agent Composio user id", () => {
+test("buildComposioUserId derives a stable per-agent Composio user id", () => {
   assert.equal(
-    buildAgentScopedComposioUserId(
+    buildComposioUserId(
       "0xABCD000000000000000000000000000000000123",
       "0xDeFf000000000000000000000000000000000456",
     ),
-    "mesh:0xabcd000000000000000000000000000000000123:agent:0xdeff000000000000000000000000000000000456",
+    "compose:0xabcd000000000000000000000000000000000123:agent:0xdeff000000000000000000000000000000000456",
   );
 });
 

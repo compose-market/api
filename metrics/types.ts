@@ -1,4 +1,4 @@
-export type AgentMetricSource = "cloudflare-d1" | "pinata";
+export type AgentMetricSource = "cloudflare-d1";
 
 export interface MetricsSnapshot {
     updatedAt: string;

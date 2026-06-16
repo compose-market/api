@@ -4,7 +4,7 @@
  * Handles non-inference API endpoints:
  * - Account management (Compose Keys, sessions)
  * - Compose x402 facilitator
- * - Backpack/Composio integrations
+ * - Per-agent permissions and Composio accounts
  * - Model registry queries
  */
 
@@ -77,9 +77,9 @@ import {
 } from "./x402/facilitator.js";
 import { recordConfirmedPayment, triggerConfirmedPayment } from "./metrics/payments.js";
 
-// Backpack / Composio
-const loadBackpack = () => import("./backpack/composio.js");
-const loadBackpackPermissions = () => import("./backpack/backpack.js");
+// Per-agent permissions / Composio accounts
+const loadBackpack = () => import("./backpack/accounts.js");
+const loadBackpackPermissions = () => import("./backpack/permissions.js");
 
 // Model Registry
 const loadRegistry = () => import("./inference/catalog/registry.js");
@@ -369,7 +369,16 @@ export function registerHandlerRoutes(app: Application): void {
     app.get(/^\/api\/keys\/[^/]+$/, routeHandler);
     app.delete(/^\/api\/keys\/[^/]+$/, routeHandler);
 
-    app.use("/api/backpack", routeHandler);
+    app.get("/permissions", routeHandler);
+    app.post("/permissions", routeHandler);
+    app.delete("/permissions", routeHandler);
+    app.get("/accounts", routeHandler);
+    app.post("/accounts/connect", routeHandler);
+    app.get("/accounts/status", routeHandler);
+    app.post("/accounts/execute", routeHandler);
+    app.delete("/accounts", routeHandler);
+    app.get("/accounts/toolkits", routeHandler);
+    app.get(/^\/accounts\/toolkits\/[^/]+\/actions$/, routeHandler);
     app.use("/api/registry", routeHandler);
     app.post("/api/local/link-token", routeHandler);
     app.post("/api/local/link-token/redeem", routeHandler);
@@ -515,12 +524,12 @@ export async function handler(
             return handleRevokeKey(event);
         }
 
-        // ==========================================================================
-        // Backpack API Routes (Composio)
-        // ==========================================================================
+        if (path === "/permissions") {
+            return handlePermissionsRoutes(event);
+        }
 
-        if (path.startsWith("/api/backpack/")) {
-            return handleBackpackRoutes(event);
+        if (path === "/accounts" || path.startsWith("/accounts/")) {
+            return handleAccountsRoutes(event);
         }
 
         // ==========================================================================
@@ -1547,167 +1556,154 @@ async function handleComposeFacilitatorSettle(event: APIGatewayProxyEventV2): Pr
 }
 
 // =============================================================================
-// Backpack Routes Handler
+// Permission / Account Route Handlers
 // =============================================================================
 
-async function handleBackpackRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const bp = await loadBackpack();
+function body(event: APIGatewayProxyEventV2): Record<string, any> {
+    return event.body ? JSON.parse(event.body) : {};
+}
+
+function query(event: APIGatewayProxyEventV2): Record<string, string | undefined> {
+    return event.queryStringParameters || {};
+}
+
+async function handlePermissionsRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const permissions = await loadBackpackPermissions();
+    const method = event.requestContext.http.method;
+
+    try {
+        if (method === "GET") {
+            const params = query(event);
+            if (!params.userAddress || !params.agentWallet) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and agentWallet required" }) };
+            }
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    permissions: await permissions.listPermissions(params.userAddress, params.agentWallet),
+                }),
+            };
+        }
+
+        if (method === "POST") {
+            const data = body(event);
+            if (!data.userAddress || !data.agentWallet || !data.consentType) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and consentType required" }) };
+            }
+            const permission = await permissions.grantPermission({
+                userAddress: data.userAddress,
+                agentWallet: data.agentWallet,
+                consentType: data.consentType,
+                expiresAt: data.expiresAt,
+            });
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, permission }) };
+        }
+
+        if (method === "DELETE") {
+            const data = { ...query(event), ...body(event) };
+            if (!data.userAddress || !data.agentWallet || !data.consentType) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and consentType required" }) };
+            }
+            await permissions.revokePermission(data.userAddress, data.agentWallet, data.consentType);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
+        }
+
+        return { statusCode: 405, headers: corsHeaders, body: JSON.stringify({ error: "Method not allowed" }) };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("[permissions] Error:", message);
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
+    }
+}
+
+async function handleAccountsRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const accounts = await loadBackpack();
     const path = event.rawPath;
     const method = event.requestContext.http.method;
 
     try {
-        // GET /api/backpack/permissions
-        if (path === "/api/backpack/permissions" && method === "GET") {
-            const userAddress = event.queryStringParameters?.userAddress;
-            if (!userAddress) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
-            }
-            const permissions = await loadBackpackPermissions();
-            return {
-                statusCode: 200,
-                headers: corsHeaders,
-                body: JSON.stringify({ permissions: permissions.listPermissions(userAddress) }),
-            };
+        if (path === "/accounts/toolkits" && method === "GET") {
+            const params = query(event);
+            const limit = Number.parseInt(params.limit || "20", 10);
+            const toolkits = await accounts.searchToolkits(params.search || "", limit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkits }) };
         }
 
-        // POST /api/backpack/permissions/grant
-        if (path === "/api/backpack/permissions/grant" && method === "POST") {
-            const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userAddress || !body.consentType) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and consentType required" }) };
-            }
-            const permissions = await loadBackpackPermissions();
-            permissions.grantPermission({
-                userAddress: body.userAddress,
-                consentType: body.consentType,
-                sessionId: body.sessionId,
-                agentWallet: body.agentWallet,
-                expiresAt: body.expiresAt,
-            });
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
+        if (path.startsWith("/accounts/toolkits/") && path.endsWith("/actions") && method === "GET") {
+            const toolkit = decodeURIComponent(path.replace("/accounts/toolkits/", "").replace(/\/actions$/u, ""));
+            const limit = Number.parseInt(query(event).limit || "40", 10);
+            const actions = await accounts.listToolkitActions(toolkit, limit);
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, actions }) };
         }
 
-        // POST /api/backpack/permissions/revoke
-        if (path === "/api/backpack/permissions/revoke" && method === "POST") {
-            const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userAddress || !body.consentType) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and consentType required" }) };
+        if (path === "/accounts/connect" && method === "POST") {
+            const data = body(event);
+            if (!data.userAddress || !data.agentWallet || !data.toolkit) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and toolkit required" }) };
             }
-            const permissions = await loadBackpackPermissions();
-            permissions.revokePermission(body.userAddress, body.consentType, body.sessionId, body.agentWallet);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
-        }
-
-        // POST /api/backpack/connect
-        if (path === "/api/backpack/connect" && method === "POST") {
-            const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userAddress || !body.toolkit) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and toolkit required" }) };
-            }
-            const result = await bp.initiateConnection(body.userAddress, body.toolkit);
+            const result = await accounts.initiateConnection(data.userAddress, data.agentWallet, data.toolkit);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
         }
 
-        // GET /api/backpack/connections
-        if (path === "/api/backpack/connections" && method === "GET") {
-            const userAddress = event.queryStringParameters?.userAddress;
-            if (!userAddress) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
+        if (path === "/accounts" && method === "GET") {
+            const params = query(event);
+            if (!params.userAddress || !params.agentWallet) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and agentWallet required" }) };
             }
-            const connections = await bp.listConnections(userAddress);
+            const connections = await accounts.listConnections(params.userAddress, params.agentWallet, params.toolkit);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ connections }) };
         }
 
-        // GET /api/backpack/status/:toolkit
-        if (path.startsWith("/api/backpack/status/") && method === "GET") {
-            const toolkit = decodeURIComponent(path.replace("/api/backpack/status/", ""));
-            const userAddress = event.queryStringParameters?.userAddress;
-            if (!userAddress) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
+        if (path === "/accounts/status" && method === "GET") {
+            const params = query(event);
+            if (!params.userAddress || !params.agentWallet || !params.toolkit || !params.connectedAccountId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet, toolkit and connectedAccountId required" }) };
             }
-            const status = await bp.checkConnection(userAddress, toolkit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, ...status }) };
+            const status = await accounts.checkConnection({
+                userAddress: params.userAddress,
+                agentWallet: params.agentWallet,
+                toolkit: params.toolkit,
+                connectedAccountId: params.connectedAccountId,
+            });
+            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(status) };
         }
 
-        // POST /api/backpack/disconnect
-        if (path === "/api/backpack/disconnect" && method === "POST") {
-            const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userAddress || !body.toolkit) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and toolkit required" }) };
+        if (path === "/accounts/execute" && method === "POST") {
+            const data = body(event);
+            if (!data.userAddress || !data.agentWallet || !data.toolkit || !data.connectedAccountId || !data.action) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet, toolkit, connectedAccountId and action required" }) };
             }
-            const result = await bp.disconnectToolkit(body.userAddress, body.toolkit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
-        }
-
-        // POST /api/backpack/execute
-        if (path === "/api/backpack/execute" && method === "POST") {
-            const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userAddress || !body.toolkit || !body.action) {
-                return {
-                    statusCode: 400,
-                    headers: corsHeaders,
-                    body: JSON.stringify({ error: "userAddress, toolkit and action required" }),
-                };
-            }
-            const result = await bp.executeToolkitAction({
-                userAddress: body.userAddress,
-                toolkit: body.toolkit,
-                action: body.action,
-                params: body.params,
-                text: body.text,
+            const result = await accounts.executeToolkitAction({
+                userAddress: data.userAddress,
+                agentWallet: data.agentWallet,
+                toolkit: data.toolkit,
+                connectedAccountId: data.connectedAccountId,
+                action: data.action,
+                params: data.params,
+                text: data.text,
             });
             return { statusCode: result.success ? 200 : 400, headers: corsHeaders, body: JSON.stringify(result) };
         }
 
-        // GET /api/backpack/toolkits
-        if (path === "/api/backpack/toolkits" && method === "GET") {
-            const search = event.queryStringParameters?.search || "";
-            const limit = parseInt(event.queryStringParameters?.limit || "20", 10);
-            const toolkits = await bp.searchToolkits(search, limit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkits }) };
-        }
-
-        // GET /api/backpack/toolkits/:toolkit/actions
-        if (path.startsWith("/api/backpack/toolkits/") && path.endsWith("/actions") && method === "GET") {
-            const toolkit = decodeURIComponent(
-                path.replace("/api/backpack/toolkits/", "").replace(/\/actions$/, ""),
-            );
-            const limit = parseInt(event.queryStringParameters?.limit || "40", 10);
-            const actions = await bp.listToolkitActions(toolkit, limit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, actions }) };
-        }
-
-        // POST /api/backpack/telegram/link
-        if (path === "/api/backpack/telegram/link" && method === "POST") {
-            const body = event.body ? JSON.parse(event.body) : {};
-            if (!body.userAddress) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
+        if (path === "/accounts" && method === "DELETE") {
+            const data = { ...query(event), ...body(event) };
+            if (!data.userAddress || !data.agentWallet || !data.toolkit || !data.connectedAccountId) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet, toolkit and connectedAccountId required" }) };
             }
-            const result = await bp.initiateTelegramLink(body.userAddress);
+            const result = await accounts.disconnectToolkit({
+                userAddress: data.userAddress,
+                agentWallet: data.agentWallet,
+                toolkit: data.toolkit,
+                connectedAccountId: data.connectedAccountId,
+            });
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
-        }
-
-        // GET /api/backpack/telegram/status
-        if (path === "/api/backpack/telegram/status" && method === "GET") {
-            const userAddress = event.queryStringParameters?.userAddress;
-            if (!userAddress) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
-            }
-            const status = await bp.checkTelegramBinding(userAddress);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit: "telegram", ...status }) };
-        }
-
-        // POST /api/backpack/webhook/telegram
-        if (path === "/api/backpack/webhook/telegram" && method === "POST") {
-            const update = event.body ? JSON.parse(event.body) : {};
-            const result = await bp.handleTelegramWebhook(update);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true, ...result }) };
         }
 
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Not found" }) };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error("[backpack] Error:", message);
+        console.error("[accounts] Error:", message);
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
     }
 }

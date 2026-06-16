@@ -91,3 +91,13 @@ export async function cancel(jobId: string): Promise<Cancel> {
   const { cancelJob } = await load();
   return cancelJob(jobId);
 }
+
+export async function appendRealtime(responseId: string, data: Record<string, unknown>): Promise<boolean> {
+  const { appendRealtime } = await load();
+  return appendRealtime(responseId, data);
+}
+
+export async function closeRealtime(responseId: string): Promise<boolean> {
+  const { closeRealtime } = await load();
+  return closeRealtime(responseId);
+}

@@ -36,12 +36,6 @@ async function runJob() {
       case "expiry-scan":
         await expiryWorker({ source: "scheduled" } as any, {} as any);
         break;
-      case "agents-backfill": {
-        const { backfill } = await import("./agents.js");
-        const result = await backfill();
-        log(`Agents backfill fetched ${result.fetched}, indexed ${result.indexed}.`, "job");
-        break;
-      }
       case "metrics-sync":
         await syncDownloads();
         await syncSessionsFromRedis();

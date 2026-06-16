@@ -75,7 +75,9 @@ import {
   type Event,
 } from "./core.js";
 import {
+  appendRealtime as appendRealtimeEngine,
   cancel as cancelEngine,
+  closeRealtime as closeRealtimeEngine,
   generate as generateEngine,
   retrieve as retrieveEngine,
   stream as streamEngine,
@@ -325,6 +327,7 @@ interface StoredResponseRecord {
   id: string;
   model: string;
   provider: ModelProvider;
+  operation?: string;
   createdAt: number;
   status: "in_progress" | "completed" | "failed" | "cancelled";
   inputMessages?: CoreMessage[];
@@ -390,6 +393,7 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical request responses API" },
   { method: "GET", path: "/v1/responses/:id", handler: handleGetResponse, description: "Retrieve response by ID" },
   { method: "GET", path: "/v1/responses/:id/input_items", handler: handleGetResponseInputItems, description: "Retrieve response input items" },
+  { method: "POST", path: "/v1/responses/:id/input_items", handler: handleAppendResponseInputItems, description: "Append input to live realtime response" },
   { method: "POST", path: "/v1/responses/:id/cancel", handler: handleCancelResponse, description: "Cancel response by ID" },
   { method: "POST", path: "/v1/chat/completions", handler: handleChatCompletions, description: "Chat completions" },
   { method: "POST", path: "/v1/images/generations", handler: handleImageGeneration, description: "Image generation" },
@@ -849,23 +853,11 @@ function validateStreamingModality(request: Request, res: Res): boolean {
   return true;
 }
 
-const REALTIME_REST_ERROR = "This model requires a realtime WebSocket session.";
-
-function rejectRealtimeRequest(request: Request, res: Res): boolean {
-  if (request.modality !== "realtime") {
-    return false;
-  }
-
-  res.status(400).json(createCoreErrorResponse(
-    REALTIME_REST_ERROR,
-    "invalid_request_error",
-    "realtime_session_required",
-  ));
-  return true;
-}
-
 function usesProviderStream(request: Request): boolean {
   if (request.modality === "text") {
+    return true;
+  }
+  if (request.modality === "realtime") {
     return true;
   }
   if (request.modality !== "image") {
@@ -1246,6 +1238,66 @@ async function settlePaidInference(args: {
   return receipt;
 }
 
+function metricDelta(current?: Record<string, unknown>, previous?: Record<string, unknown>): Record<string, unknown> | undefined {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(current || {})) {
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const prior = previous?.[key];
+    const priorNumber = typeof prior === "number" && Number.isFinite(prior) ? prior : 0;
+    const delta = value - priorNumber;
+    if (delta > 0) {
+      result[key] = delta;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function usageDelta(current?: Output["usage"], previous?: Output["usage"]): Output["usage"] | undefined {
+  if (!current) return undefined;
+  const promptTokens = Math.max(0, current.promptTokens - (previous?.promptTokens || 0));
+  const completionTokens = Math.max(0, current.completionTokens - (previous?.completionTokens || 0));
+  const totalTokens = Math.max(0, current.totalTokens - (previous?.totalTokens || 0));
+  const reasoningTokens = typeof current.reasoningTokens === "number"
+    ? Math.max(0, current.reasoningTokens - (previous?.reasoningTokens || 0))
+    : undefined;
+  const cachedInputTokens = typeof current.cachedInputTokens === "number"
+    ? Math.max(0, current.cachedInputTokens - (previous?.cachedInputTokens || 0))
+    : undefined;
+  const billingMetrics = metricDelta(current.billingMetrics, previous?.billingMetrics);
+  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && !reasoningTokens && !cachedInputTokens && !billingMetrics) {
+    return undefined;
+  }
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: totalTokens || promptTokens + completionTokens,
+    ...(reasoningTokens ? { reasoningTokens } : {}),
+    ...(cachedInputTokens ? { cachedInputTokens } : {}),
+    ...(billingMetrics ? { billingMetrics } : {}),
+  };
+}
+
+function mediaDelta(current?: Output["media"], previous?: Output["media"]): Output["media"] | undefined {
+  if (!current) return undefined;
+  const duration = typeof current.duration === "number"
+    ? Math.max(0, current.duration - (previous?.duration || 0))
+    : undefined;
+  const generatedUnits = typeof current.generatedUnits === "number"
+    ? Math.max(0, current.generatedUnits - (previous?.generatedUnits || 0))
+    : undefined;
+  const billingMetrics = metricDelta(current.billingMetrics, previous?.billingMetrics);
+  if (!duration && !generatedUnits && !billingMetrics) {
+    return undefined;
+  }
+  return {
+    mimeType: current.mimeType,
+    ...(duration ? { duration } : {}),
+    ...(generatedUnits ? { generatedUnits } : {}),
+    status: "completed",
+    ...(billingMetrics ? { billingMetrics } : {}),
+  };
+}
+
 function resourceKind(req: Req): EvidenceKind {
   const raw = readHeader(req, "x-resource-kind")?.toLowerCase();
   switch (raw) {
@@ -1421,10 +1473,6 @@ async function executeRequest(args: {
     return;
   }
 
-  if (rejectRealtimeRequest(request, args.res)) {
-    return;
-  }
-
   if (!validateStreamingModality(request, args.res)) {
     return;
   }
@@ -1470,6 +1518,7 @@ async function executeRequest(args: {
     id: request.responseId,
     model: modelId,
     provider: paid.resolved.provider,
+    operation: request.operation,
     createdAt: Math.floor(Date.now() / 1000),
     status: "in_progress",
     inputMessages: args.shape === "responses" ? args.request.messages : undefined,
@@ -1647,7 +1696,7 @@ async function executeRequest(args: {
 
       let isFirstToken = true;
       let aggregatedText = "";
-      let lastUsage: TokenUsage | undefined;
+      let lastUsage: Output["usage"] | undefined;
       let finishReason = "stop";
       let streamedImage: {
         base64: string;
@@ -1659,6 +1708,52 @@ async function executeRequest(args: {
       } | null = null;
       let pendingImageCompleteEvent: Event | null = null;
       let pendingImageDoneEvent: Event | null = null;
+      let lastMedia: Output["media"] | undefined;
+      const realtimeStream = request.modality === "realtime";
+      let settledUsage: Output["usage"] | undefined;
+      let settledMedia: Output["media"] | undefined;
+      let realtimeSettlements = 0;
+      let settlementFailure: unknown = null;
+      let settlementChain: Promise<void> = Promise.resolve();
+      const scheduleRealtimeSettlement = () => {
+        if (!realtimeStream) return;
+        const deltaUsage = usageDelta(lastUsage, settledUsage);
+        const deltaMedia = mediaDelta(lastMedia, settledMedia);
+        if (!deltaUsage && !deltaMedia) return;
+        settledUsage = lastUsage;
+        settledMedia = lastMedia;
+
+        const output: Output = {
+          modality: "realtime",
+          content: "",
+          ...(deltaUsage ? { usage: deltaUsage } : {}),
+          ...(deltaMedia ? { media: deltaMedia } : {}),
+          finishReason: "stop",
+        };
+
+        settlementChain = settlementChain
+          .then(async () => {
+            if (settlementFailure) return;
+            const receipt = await settleOutput(output);
+            if (!receipt || BigInt(receipt.finalAmountWei || "0") <= 0n) {
+              throw Object.assign(new Error("Realtime settlement produced no backed nonzero receipt"), { statusCode: 402 });
+            }
+            realtimeSettlements += 1;
+            if (!args.res.writableEnded) {
+              args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
+            }
+          })
+          .catch((error) => {
+            settlementFailure = error;
+            try {
+              args.res.write(toErrorStreamEvent({
+                code: "payment_settlement_failed",
+                message: error instanceof Error ? error.message : String(error),
+              }));
+            } catch { /* best-effort */ }
+            void closeRealtimeEngine(request.responseId).catch(() => undefined);
+          });
+      };
 
       try {
         for await (const event of routed.result.stream) {
@@ -1702,10 +1797,17 @@ async function executeRequest(args: {
             || event.type === "video-status"
             || event.type === "video-complete"
           ) {
+            if (event.usage) {
+              lastUsage = event.usage;
+            }
+            if (event.media) {
+              lastMedia = event.media;
+            }
             const payload = args.shape === "chat"
               ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
               : toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
+            scheduleRealtimeSettlement();
             isFirstToken = false;
             continue;
           }
@@ -1732,6 +1834,9 @@ async function executeRequest(args: {
             if (event.usage) {
               lastUsage = event.usage;
             }
+            if (event.media) {
+              lastMedia = event.media;
+            }
             finishReason = event.finishReason || "stop";
             if (streamedImage) {
               pendingImageDoneEvent = event;
@@ -1744,17 +1849,25 @@ async function executeRequest(args: {
             if (args.shape === "chat" && event.usage) {
               args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, event.usage)));
             }
+            scheduleRealtimeSettlement();
           }
         }
 
-        if (!lastUsage) {
-          await abortPaidInference("missing_stream_usage");
+        if (realtimeStream) {
+          await settlementChain;
+          if (settlementFailure) {
+            throw settlementFailure;
+          }
+        }
+
+        if (!lastUsage && !(request.modality === "realtime" && lastMedia)) {
+          await abortPaidInference("missing_stream_evidence");
           args.res.end();
           return;
         }
 
         const finalOutput: Output = {
-          modality: streamedImage ? "image" : "text",
+          modality: streamedImage ? "image" : request.modality === "realtime" ? "realtime" : "text",
           ...(streamedImage
             ? {
               media: {
@@ -1767,12 +1880,20 @@ async function executeRequest(args: {
                 status: "completed" as const,
               },
             }
-            : { content: aggregatedText }),
-          usage: lastUsage,
+            : {
+              content: aggregatedText,
+              ...(request.modality === "realtime" && lastMedia ? { media: lastMedia } : {}),
+            }),
+          ...(lastUsage ? { usage: lastUsage } : {}),
           finishReason,
         };
 
-        const streamReceipt = await settleOutput(finalOutput);
+        const streamReceipt = realtimeStream ? null : await settleOutput(finalOutput);
+        if (realtimeStream && realtimeSettlements <= 0) {
+          await abortPaidInference("missing_realtime_settlement_evidence");
+          args.res.end();
+          return;
+        }
 
         if (pendingImageCompleteEvent) {
           args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
@@ -1995,6 +2116,75 @@ async function handleGetResponseInputItems(req: Req, res: Res): Promise<void> {
   }
 }
 
+async function handleAppendResponseInputItems(req: Req, res: Res): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const idParam = req.params.id;
+    const id = Array.isArray(idParam) ? idParam[0] : idParam;
+    if (!id) {
+      res.status(400).json(createCoreErrorResponse("response id is required", "invalid_request_error", "missing_response_id"));
+      return;
+    }
+
+    const record = await getResponseRecord(id);
+    if (!record) {
+      res.status(404).json(createCoreErrorResponse(`Response '${id}' not found`, "invalid_request_error", "response_not_found"));
+      return;
+    }
+    if (record.status !== "in_progress") {
+      res.status(409).json(createCoreErrorResponse(`Response '${id}' is not active`, "invalid_request_error", "response_not_active"));
+      return;
+    }
+
+    const body = (req.body && typeof req.body === "object" && !Array.isArray(req.body))
+      ? req.body as Record<string, unknown>
+      : {};
+    const input = Object.prototype.hasOwnProperty.call(body, "input")
+      ? body.input
+      : Object.prototype.hasOwnProperty.call(body, "message")
+        ? body.message
+        : Object.prototype.hasOwnProperty.call(body, "prompt")
+          ? body.prompt
+          : body;
+    const normalized = normalizeResponsesRequest({
+      model: record.model,
+      input,
+      ...(record.previousResponseId ? { previous_response_id: record.previousResponseId } : {}),
+      ...(body.instructions ? { instructions: body.instructions } : {}),
+      ...(body.custom_params ? { custom_params: body.custom_params } : {}),
+      ...(body.params ? { custom_params: body.params } : {}),
+    });
+
+    const appended = await appendRealtimeEngine(id, {
+      ...body,
+      model: record.model,
+      ...(record.operation ? { operation: record.operation } : {}),
+      input,
+      messages: normalized.messages,
+      customParams: normalized.customParams,
+    });
+    if (!appended) {
+      res.status(409).json(createCoreErrorResponse(`Response '${id}' has no active realtime stream`, "invalid_request_error", "realtime_stream_not_active"));
+      return;
+    }
+
+    record.inputMessages = [...(record.inputMessages || []), ...normalized.messages];
+    await saveResponseRecord(record);
+
+    res.status(200).json({
+      object: "list",
+      data: inputItemsFromRecord(record),
+    });
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
 async function handleCancelResponse(req: Req, res: Res): Promise<void> {
   setCorsHeaders(res);
   if (req.method === "OPTIONS") {
@@ -2020,6 +2210,7 @@ async function handleCancelResponse(req: Req, res: Res): Promise<void> {
     if (record.jobId) {
       await cancelEngine(record.jobId);
     }
+    await closeRealtimeEngine(responseId);
 
     record.status = "cancelled";
     await saveResponseRecord(record);
@@ -2038,10 +2229,6 @@ async function runDeferredInference(args: {
   execute: (signal: AbortSignal) => Promise<Output>;
   onSuccess: (result: Output, receipt: Receipt | null) => void | Promise<void>;
 }): Promise<void> {
-  if (rejectRealtimeRequest(args.request, args.res)) {
-    return;
-  }
-
   const resolved: ResolvedModel = {
     modelId: args.request.model,
     provider: args.provider,

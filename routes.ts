@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
 
 import {
@@ -36,17 +36,7 @@ import {
   type ReceiptContext,
   type RouteSettlement,
 } from "./x402/receipts.js";
-import {
-  findAgentByWallet,
-  findWorkflowByWallet,
-  listWorkflows,
-  page as pageAgents,
-  searchAgents as searchAgentCards,
-  type AgentCard,
-  type WorkflowMetadata,
-} from "./agents.js";
 import { searchAgents as searchAgentverseAgents } from "./agentverse.js";
-export type { AgentCard, WorkflowMetadata } from "./agents.js";
 
 interface PublicRouteEvent {
   rawPath: string;
@@ -60,6 +50,94 @@ interface PublicRouteResult {
   headers?: Record<string, string>;
   body: string;
   isBase64Encoded?: boolean;
+}
+
+export interface AgentModelRoute {
+  kind: "exact" | "bump" | "missing" | "invalid";
+  from: string;
+  to?: string;
+  checked: string;
+  reason?: string;
+  source?: string;
+  score?: number;
+  candidates?: string[];
+}
+
+export interface AgentCard {
+  schemaVersion: string;
+  name: string;
+  description: string;
+  skills: string[];
+  x402Support: boolean;
+  image?: string;
+  avatar?: string;
+  avatarUrl?: string;
+  dnaHash: string;
+  walletAddress: string;
+  walletTimestamp?: number;
+  chain: number;
+  model: string;
+  creatorFee?: number;
+  target?: string;
+  route?: AgentModelRoute;
+  framework?: "manowar" | "other";
+  licensePrice: string;
+  licenses: number;
+  cloneable: boolean;
+  knowledge?: string[];
+  endpoint?: string;
+  protocols: Array<{ name: string; version: string }>;
+  plugins?: Array<{
+    registryId: string;
+    name?: string;
+    origin?: string;
+    tools?: Array<{
+      name: string;
+      description?: string;
+      parameters?: Record<string, unknown>;
+      inputSchema?: Record<string, unknown>;
+    }>;
+  }>;
+  createdAt: string;
+  creator?: string;
+  cid?: string;
+}
+
+export interface WorkflowMetadata {
+  schemaVersion: string;
+  title: string;
+  description: string;
+  image?: string;
+  dnaHash: string;
+  walletAddress: string;
+  walletTimestamp?: number;
+  agents: AgentCard[];
+  edges?: Array<{
+    source: number;
+    target: number;
+    label?: string;
+  }>;
+  coordinator?: {
+    hasCoordinator: boolean;
+    model: string;
+  };
+  pricing?: {
+    totalAgentPrice: string;
+  };
+  lease?: {
+    enabled: boolean;
+    durationDays: number;
+    creatorPercent: number;
+  };
+  rfa?: {
+    title: string;
+    description: string;
+    skills: string[];
+    offerAmount: string;
+  };
+  creator?: string;
+  createdAt?: string;
+  cid?: string;
 }
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -125,167 +203,80 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
-const AGENTS_CACHE = "public, max-age=120, s-maxage=900, stale-while-revalidate=1800";
-const AVATAR_CACHE = "public, max-age=31536000, immutable, s-maxage=31536000";
-const AVATAR_MISS_CACHE = "public, max-age=300, s-maxage=300";
-
-function cachedJsonResult(
-  event: PublicRouteEvent,
-  statusCode: number,
-  headers: Record<string, string>,
-  body: unknown,
-): PublicRouteResult {
-  const text = JSON.stringify(body);
-  const etag = `"agents-${createHash("sha1").update(text).digest("base64url")}"`;
-  const match = event.headers?.["if-none-match"] || event.headers?.["If-None-Match"];
-  const cached = match?.split(",").map((value) => value.trim()).includes(etag);
-  if (cached) {
-    return {
-      statusCode: 304,
-      headers: {
-        ...headers,
-        ETag: etag,
-      },
-      body: "",
-    };
-  }
-  return {
-    statusCode,
-    headers: {
-      ...headers,
-      ETag: etag,
-      "Content-Type": "application/json",
-    },
-    body: text,
-  };
-}
+const PINATA_LIST_URL = "https://api.pinata.cloud/data/pinList";
 
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function header(event: PublicRouteEvent, name: string): string | undefined {
-  const wanted = name.toLowerCase();
-  for (const [key, value] of Object.entries(event.headers || {})) {
-    if (key.toLowerCase() === wanted) return value;
-  }
-  return undefined;
+function agentsUrl(): string {
+  return normalizeUrl(process.env.AGENTS_URL || "https://agents.compose.market");
 }
 
-function origin(event: PublicRouteEvent): string {
-  const host = header(event, "x-forwarded-host") || header(event, "host") || "api.compose.market";
-  const proto = header(event, "x-forwarded-proto") || "https";
-  return `${proto}://${host}`.replace(/\/+$/, "");
+
+function gatewayUrl(): string {
+  const value = process.env.PINATA_GATEWAY_URL
+    || process.env.IPFS_PINATA_GATEWAY
+    || process.env.PINATA_GATEWAY
+    || "gateway.pinata.cloud";
+  const host = value.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return `https://${host}`;
 }
 
-type AvatarAgent = {
-  walletAddress?: string;
-  image?: string;
-  avatar?: string;
-  avatarUrl?: string;
-};
-
-function avatarSource(agent: Pick<AvatarAgent, "image" | "avatar">): string | null {
-  const value = (agent.image || agent.avatar || "").trim();
-  return value && value !== "none" ? value : null;
-}
-
-function avatarTag(value: string): string {
-  return `"avatar-${createHash("sha1").update(value).digest("base64url")}"`;
-}
-
-function avatarUrl(event: PublicRouteEvent, agent: AvatarAgent): string | undefined {
-  const source = avatarSource(agent);
-  if (!source || !agent.walletAddress) return undefined;
-  return `${origin(event)}/agent/${agent.walletAddress}/avatar?v=${createHash("sha1").update(source).digest("base64url")}`;
-}
-
-function withAvatar<T extends AvatarAgent>(event: PublicRouteEvent, agent: T): T {
-  const url = avatarUrl(event, agent);
-  return url ? { ...agent, avatarUrl: url } : agent;
-}
-
-function withAvatars(event: PublicRouteEvent, page: Awaited<ReturnType<typeof pageAgents>>): Awaited<ReturnType<typeof pageAgents>> {
+function typedWorkflow(value: unknown, cid: string): WorkflowMetadata | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const card = value as Partial<WorkflowMetadata>;
+  if (typeof card.walletAddress !== "string" || !isWalletAddress(card.walletAddress)) return null;
+  if (typeof card.title !== "string" || typeof card.description !== "string") return null;
   return {
-    ...page,
-    agents: page.agents.map((agent) => withAvatar(event, agent)),
-  };
+    ...card,
+    walletAddress: card.walletAddress.toLowerCase(),
+    agents: Array.isArray(card.agents) ? card.agents : [],
+    cid,
+  } as WorkflowMetadata;
 }
 
-function avatarGateway(): string | null {
-  const value = process.env.PINATA_GATEWAY_URL || process.env.IPFS_PINATA_GATEWAY || process.env.PINATA_GATEWAY;
-  return value ? normalizePinataGateway(value) : null;
-}
+async function listWorkflows(): Promise<WorkflowMetadata[]> {
+  const jwt = process.env.PINATA_JWT;
+  if (!jwt) return [];
 
-function avatarSourceUrl(source: string): string | null {
-  const value = source.trim();
-  if (/^https?:\/\//i.test(value)) return value;
-  const cid = value.startsWith("ipfs://") ? value.slice("ipfs://".length) : value;
-  if (/^(baf[a-z0-9]+|Qm[1-9A-HJ-NP-Za-km-z]+)(\/.*)?$/.test(cid)) {
-    const gateway = avatarGateway();
-    return gateway ? `https://${gateway}/ipfs/${cid.replace(/^\/+/, "")}` : null;
-  }
-  return null;
-}
-
-async function avatarResult(
-  event: PublicRouteEvent,
-  corsHeaders: Record<string, string>,
-  walletAddress: string,
-): Promise<PublicRouteResult> {
-  const agent = await findAgentByWallet(walletAddress);
-  const source = agent ? avatarSource(agent) : null;
-  if (!agent || !source) {
-    return jsonResult(404, { ...corsHeaders, "Cache-Control": AVATAR_MISS_CACHE }, { error: "Avatar not found" });
-  }
-
-  const etag = avatarTag(source);
-  const match = header(event, "if-none-match");
-  if (match?.split(",").map((value) => value.trim()).includes(etag)) {
-    return {
-      statusCode: 304,
-      headers: {
-        ...corsHeaders,
-        ETag: etag,
-        "Cache-Control": AVATAR_CACHE,
-      },
-      body: "",
-    };
-  }
-
-  const url = avatarSourceUrl(source);
-  if (!url) {
-    return jsonResult(404, { ...corsHeaders, "Cache-Control": AVATAR_MISS_CACHE }, { error: "Avatar not found" });
-  }
+  const url = new URL(PINATA_LIST_URL);
+  url.searchParams.set("status", "pinned");
+  url.searchParams.set("pageLimit", "1000");
+  url.searchParams.set("metadata[keyvalues]", JSON.stringify({
+    type: {
+      value: "workflow-metadata",
+      op: "eq",
+    },
+  }));
 
   const response = await fetch(url, {
-    headers: { Accept: "image/*,*/*;q=0.8" },
+    headers: { Authorization: `Bearer ${jwt}`, Accept: "application/json" },
     signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
-    return jsonResult(404, { ...corsHeaders, "Cache-Control": AVATAR_MISS_CACHE }, { error: "Avatar not found" });
+    const body = await response.text().catch(() => "");
+    throw new Error(`Pinata workflow listing failed (${response.status}): ${body.slice(0, 300)}`);
   }
+  const body = await response.json().catch(() => ({})) as { rows?: Array<{ ipfs_pin_hash?: unknown }> };
+  const hashes = (body.rows || [])
+    .map((row) => typeof row.ipfs_pin_hash === "string" ? row.ipfs_pin_hash : "")
+    .filter(Boolean);
 
-  const contentType = response.headers.get("content-type") || "application/octet-stream";
-  const bytes = Buffer.from(await response.arrayBuffer()).toString("base64");
-  return {
-    statusCode: 200,
-    headers: {
-      ...corsHeaders,
-      "Content-Type": contentType,
-      "Cache-Control": AVATAR_CACHE,
-      ETag: etag,
-    },
-    body: bytes,
-    isBase64Encoded: true,
-  };
+  const workflows = await Promise.all(hashes.map(async (cid) => {
+    const card = await fetch(`${gatewayUrl()}/ipfs/${cid}`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    }).then((item) => item.ok ? item.json() : null).catch(() => null);
+    return typedWorkflow(card, cid);
+  }));
+  return workflows.filter((item): item is WorkflowMetadata => Boolean(item));
 }
 
-function normalizePinataGateway(value: string): string {
-  return value
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/+$/, "");
+async function findWorkflowByWallet(walletAddress: string): Promise<WorkflowMetadata | null> {
+  const wallet = walletAddress.toLowerCase();
+  const workflows = await listWorkflows();
+  return workflows.find((workflow) => workflow.walletAddress.toLowerCase() === wallet) || null;
 }
 
 function requireRuntimeUrl(): string {
@@ -329,6 +320,30 @@ function isWalletAddress(value: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(value);
 }
 
+function queryString(query: Record<string, string | undefined> | undefined): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value !== undefined) params.set(key, value);
+  }
+  const value = params.toString();
+  return value ? `?${value}` : "";
+}
+
+function agentsRedirect(
+  event: PublicRouteEvent,
+  headers: Record<string, string>,
+): PublicRouteResult {
+  return {
+    statusCode: 307,
+    headers: {
+      ...headers,
+      Location: `${agentsUrl()}${event.rawPath}${queryString(event.queryStringParameters)}`,
+      "Cache-Control": "no-store",
+    },
+    body: "",
+  };
+}
+
 export async function handlePublicRoute(
   event: PublicRouteEvent,
   corsHeaders: Record<string, string>,
@@ -352,12 +367,7 @@ export async function handlePublicRoute(
     }
 
     if (method === "GET" && path === "/agents") {
-      return cachedJsonResult(
-        event,
-        200,
-        { ...corsHeaders, "Cache-Control": AGENTS_CACHE },
-        withAvatars(event, await pageAgents(event.queryStringParameters || {})),
-      );
+      return agentsRedirect(event, corsHeaders);
     }
 
     if (method === "GET" && path === "/agents/search") {
@@ -365,18 +375,7 @@ export async function handlePublicRoute(
       if (!q.trim()) {
         return jsonResult(400, corsHeaders, { error: "q is required" });
       }
-      const market = event.queryStringParameters?.view === "market";
-      const limit = event.queryStringParameters?.limit
-        ? Math.max(1, Math.min(market ? 72 : 50, Number.parseInt(event.queryStringParameters.limit, 10) || (market ? 72 : 8)))
-        : market ? 72 : 8;
-      const agents = await searchAgentCards(q, limit);
-      return cachedJsonResult(event, 200, { ...corsHeaders, "Cache-Control": AGENTS_CACHE }, {
-        agents: agents.map((agent) => withAvatar(event, agent)),
-        total: agents.length,
-        count: agents.length,
-        nextCursor: null,
-        hasMore: false,
-      });
+      return agentsRedirect(event, corsHeaders);
     }
 
     const agentAvatarMatch = path.match(/^\/agent\/(0x[a-fA-F0-9]{40})\/avatar$/);
@@ -385,7 +384,7 @@ export async function handlePublicRoute(
       if (!isWalletAddress(walletAddress)) {
         return jsonResult(400, corsHeaders, { error: "Invalid wallet address format" });
       }
-      return await avatarResult(event, corsHeaders, walletAddress);
+      return agentsRedirect(event, corsHeaders);
     }
 
     const agentMatch = path.match(/^\/agent\/(0x[a-fA-F0-9]{40})$/);
@@ -394,11 +393,7 @@ export async function handlePublicRoute(
       if (!isWalletAddress(walletAddress)) {
         return jsonResult(400, corsHeaders, { error: "Invalid wallet address format" });
       }
-      const agent = await findAgentByWallet(walletAddress);
-      if (!agent) {
-        return jsonResult(404, corsHeaders, { error: "Agent not found" });
-      }
-      return cachedJsonResult(event, 200, { ...corsHeaders, "Cache-Control": AGENTS_CACHE }, withAvatar(event, agent));
+      return agentsRedirect(event, corsHeaders);
     }
 
     if (method === "GET" && path === "/workflows") {
@@ -1350,18 +1345,18 @@ function pathSegment(value: unknown): string | null {
   }
 }
 
-function queryString(value: unknown): string | undefined {
+function queryValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function receiptChainId(req: Request): number {
-  const raw = queryString(req.query.chainId) ?? getHeader(req, "x-chain-id");
+  const raw = queryValue(req.query.chainId) ?? getHeader(req, "x-chain-id");
   const parsed = raw ? Number.parseInt(raw, 10) : getActiveChainId();
   return Number.isInteger(parsed) && parsed > 0 ? parsed : getActiveChainId();
 }
 
 function receiptLimit(req: Request): number {
-  const parsed = Number.parseInt(queryString(req.query.limit) || "", 10);
+  const parsed = Number.parseInt(queryValue(req.query.limit) || "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : 50;
 }
 

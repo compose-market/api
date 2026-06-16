@@ -79,6 +79,12 @@ import {
   generateElevenLabsSound,
   transcribeElevenLabsAudio,
 } from "./families/elevenlabs.js";
+import {
+  append as appendRealtimeInput,
+  close as closeRealtimeInput,
+  open as openRealtime,
+  stream as streamRealtime,
+} from "./vendors/wss.js";
 import { generateCartesiaSpeech } from "./families/cartesia.js";
 import { analyzeRoboflowImage, generateRoboflowEmbeddings } from "./families/roboflow.js";
 import {
@@ -107,6 +113,7 @@ export interface AdapterTarget {
   modelId: string;
   provider: ModelProvider;
   signal?: AbortSignal;
+  params?: Record<string, unknown>;
 }
 
 export interface AdapterResult {
@@ -356,6 +363,17 @@ function useOpenAIResponsesWire(request: Request, target: AdapterTarget): boolea
   return target.provider === "openai"
     && request.modality === "text"
     && (request.mode === "responses" || (hasFunctionTools(request) && hasReasoning(request)));
+}
+
+function realtimeParams(request: Request): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {
+    ...(request.customParams || {}),
+  };
+  const audio = request.audioOptions || {};
+  for (const [key, value] of Object.entries(audio)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function estimateTokens(text: string): number {
@@ -1985,7 +2003,8 @@ async function* streamFinalImageFromInvoke(
  */
 export async function generateWithTools(request: Request, target: AdapterTarget): Promise<AdapterResult> {
   if (request.modality === "realtime") {
-    throw new Error("Realtime models require a realtime WebSocket session.");
+    const output = await openRealtime(request, { ...target, params: realtimeParams(request) });
+    return { output };
   }
 
   switch (request.modality) {
@@ -2028,7 +2047,8 @@ export async function* streamWithTools(
   target: AdapterTarget,
 ): AsyncGenerator<Event> {
   if (request.modality === "realtime") {
-    throw new Error("Realtime models require a realtime WebSocket session.");
+    yield* streamRealtime(request, { ...target, params: realtimeParams(request) });
+    return;
   }
 
   if (request.modality === "image") {
@@ -2412,6 +2432,14 @@ export async function* streamWithTools(
   })) {
     yield event;
   }
+}
+
+export async function appendRealtime(responseId: string, data: Record<string, unknown>): Promise<boolean> {
+  return appendRealtimeInput(responseId, data);
+}
+
+export async function closeRealtime(responseId: string): Promise<boolean> {
+  return closeRealtimeInput(responseId);
 }
 
 /**

@@ -2,7 +2,7 @@ import "dotenv/config";
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import express from "express";
 import {
@@ -60,6 +60,12 @@ function randomWalletAddress(): `0x${string}` {
 function sessionBudgetKey(userAddress: string, chainId: number): string {
   return `session:budget:${userAddress.toLowerCase()}:${chainId}`;
 }
+
+after(async () => {
+  const backpack = await import("../backpack/storage.js");
+  await backpack.close();
+  await closeRedis();
+});
 
 test("registerHandlerRoutes registers /health directly", async () => {
   const app = await createHandlerApp();
@@ -200,10 +206,13 @@ test("handler serves compose facilitator supported response without cronos or v1
 test("handler persists Backpack cloud permissions via dedicated permission routes", async () => {
   const { handler } = await import("../handler.js");
   const userAddress = "0x1111111111111111111111111111111111111111";
+  const agentWallet = "0x2222222222222222222222222222222222222222";
+  const otherAgentWallet = "0x3333333333333333333333333333333333333333";
 
   const grantResult = await handler(
-    createEvent("POST", "/api/backpack/permissions/grant", {
+    createEvent("POST", "/permissions", {
       userAddress,
+      agentWallet,
       consentType: "camera",
     }),
     {},
@@ -211,11 +220,12 @@ test("handler persists Backpack cloud permissions via dedicated permission route
   assert.equal(grantResult.statusCode, 200);
 
   const listAfterGrant = await handler({
-    rawPath: "/api/backpack/permissions",
+    rawPath: "/permissions",
     requestContext: { http: { method: "GET" } },
     headers: {},
     queryStringParameters: {
       userAddress,
+      agentWallet,
     },
   }, {});
   assert.equal(listAfterGrant.statusCode, 200);
@@ -227,9 +237,25 @@ test("handler persists Backpack cloud permissions via dedicated permission route
     true,
   );
 
-  const revokeResult = await handler(
-    createEvent("POST", "/api/backpack/permissions/revoke", {
+  const isolatedAgentList = await handler({
+    rawPath: "/permissions",
+    requestContext: { http: { method: "GET" } },
+    headers: {},
+    queryStringParameters: {
       userAddress,
+      agentWallet: otherAgentWallet,
+    },
+  }, {});
+  assert.equal(isolatedAgentList.statusCode, 200);
+  const isolatedBody = JSON.parse(isolatedAgentList.body) as {
+    permissions: Array<{ consentType: string; granted: boolean }>;
+  };
+  assert.equal(isolatedBody.permissions.length, 0);
+
+  const revokeResult = await handler(
+    createEvent("DELETE", "/permissions", {
+      userAddress,
+      agentWallet,
       consentType: "camera",
     }),
     {},
@@ -237,11 +263,12 @@ test("handler persists Backpack cloud permissions via dedicated permission route
   assert.equal(revokeResult.statusCode, 200);
 
   const listAfterRevoke = await handler({
-    rawPath: "/api/backpack/permissions",
+    rawPath: "/permissions",
     requestContext: { http: { method: "GET" } },
     headers: {},
     queryStringParameters: {
       userAddress,
+      agentWallet,
     },
   }, {});
   assert.equal(listAfterRevoke.statusCode, 200);
@@ -252,6 +279,31 @@ test("handler persists Backpack cloud permissions via dedicated permission route
     revokedBody.permissions.some((permission) => permission.consentType === "camera" && permission.granted),
     false,
   );
+});
+
+test("registerHandlerRoutes does not expose legacy /api/backpack routes", async () => {
+  const app = await createHandlerApp();
+  const routes = listRegisteredRoutes(app);
+
+  assert.equal(routes.some((route) => route.path.startsWith("/api/backpack")), false);
+});
+
+test("handler requires explicit connectedAccountId for account execution", async () => {
+  const { handler } = await import("../handler.js");
+
+  const result = await handler(
+    createEvent("POST", "/accounts/execute", {
+      userAddress: "0x1111111111111111111111111111111111111111",
+      agentWallet: "0x2222222222222222222222222222222222222222",
+      toolkit: "gmail",
+      action: "GMAIL_SEND_EMAIL",
+      params: {},
+    }),
+    {},
+  );
+
+  assert.equal(result.statusCode, 400);
+  assert.match(JSON.parse(result.body).error, /connectedAccountId/);
 });
 
 test("handler rejects session creation when the tied wallet lacks the required USDC funding", async () => {

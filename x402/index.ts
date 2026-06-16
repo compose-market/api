@@ -882,6 +882,7 @@ export async function prepareInferencePayment(
     let maxAmountWei = sessionMaxAmountWei || "0";
     const idempotencyKey = getIdempotencyKeyFromRequest(req);
     let paymentSettled = false;
+    let paymentIntentSequence = 0;
 
     if (purpose !== "session") {
         const authorizationResult = await authorizePaymentIntent({
@@ -1017,8 +1018,49 @@ export async function prepareInferencePayment(
                 };
             }
 
+            let activePaymentIntentId = paymentIntentId;
+            if (paymentSettled) {
+                paymentIntentSequence += 1;
+                const authorizationResult = await authorizePaymentIntent({
+                    authorization,
+                    chainId,
+                    service: "api",
+                    action: "inference",
+                    resource: publicResourceUrl(req),
+                    method: req.method || "POST",
+                    useBudgetCap: true,
+                    composeRunId: getComposeRunIdFromRequest(req) || undefined,
+                    idempotencyKey: idempotencyKey ? `${idempotencyKey}:settlement:${paymentIntentSequence}` : undefined,
+                });
+
+                currentHeaders = {
+                    ...authorizationResult.headers,
+                };
+
+                if (!authorizationResult.ok) {
+                    setComposeSessionInvalidHeader(currentHeaders, getComposeSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
+                    return {
+                        success: false,
+                        error: typeof authorizationResult.body.error === "string"
+                            ? authorizationResult.body.error
+                            : "Payment authorization failed",
+                        statusCode: authorizationResult.status,
+                        paymentRequired: authorizationResult.status === 402
+                            ? authorizationResult.body as unknown as PaymentRequired
+                            : undefined,
+                        paymentRequiredHeader: authorizationResult.headers["PAYMENT-REQUIRED"]
+                            || authorizationResult.headers["payment-required"]
+                            || null,
+                    };
+                }
+
+                activePaymentIntentId = authorizationResult.body.paymentIntentId;
+                paymentIntentId = activePaymentIntentId;
+                maxAmountWei = authorizationResult.body.maxAmountWei;
+            }
+
             const intentSettlement = await settlePaymentIntent({
-                paymentIntentId,
+                paymentIntentId: activePaymentIntentId,
                 finalAmountWei,
                 providerAmountWei,
                 platformFeeWei,
@@ -1029,10 +1071,16 @@ export async function prepareInferencePayment(
             currentHeaders = {
                 ...currentHeaders,
                 ...intentSettlement.headers,
-                "x-payment-intent-id": paymentIntentId,
+                "x-payment-intent-id": activePaymentIntentId,
             };
 
             if (!intentSettlement.ok) {
+                await abortPaymentIntent({
+                    paymentIntentId: activePaymentIntentId,
+                    reason: typeof intentSettlement.body.error === "string"
+                        ? intentSettlement.body.error
+                        : "Payment settlement failed",
+                }).catch(() => undefined);
                 return {
                     success: false,
                     error: typeof intentSettlement.body.error === "string"
@@ -1061,7 +1109,7 @@ export async function prepareInferencePayment(
                 chainId,
                 settledAt: Date.now(),
                 settlementStatus: txHash ? "settled" : "queued",
-                paymentIntentId,
+                paymentIntentId: activePaymentIntentId,
             };
         },
         abort: async (reason?: string) => {
