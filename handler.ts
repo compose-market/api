@@ -76,6 +76,7 @@ import {
     verifyComposePayment,
 } from "./x402/facilitator.js";
 import { recordConfirmedPayment, triggerConfirmedPayment } from "./metrics/payments.js";
+import { readActiveRawEnvelope, type RawEnvelope } from "./x402/envelope.js";
 
 // Per-agent permissions / Composio accounts
 const loadBackpack = () => import("./backpack/accounts.js");
@@ -159,13 +160,35 @@ async function recordSettlementCycleMetrics(result: {
     await Promise.all(tasks);
 }
 
-function buildInactiveSessionPayload(reason: SessionInactiveReason): {
+function envelopePayload(envelope: RawEnvelope | null): Record<string, unknown> | undefined {
+    if (!envelope) return undefined;
+    let remainingWei = envelope.maxAmountWei;
+    try {
+        remainingWei = (BigInt(envelope.maxAmountWei) - BigInt(envelope.usedWei || "0")).toString();
+    } catch {
+        remainingWei = envelope.maxAmountWei;
+    }
+    return {
+        rootRunId: envelope.rootRunId,
+        chainId: envelope.chainId,
+        maxAmountWei: envelope.maxAmountWei,
+        usedWei: envelope.usedWei || "0",
+        remainingWei,
+        ...(envelope.createdAt ? { createdAt: envelope.createdAt } : {}),
+        ...(envelope.updatedAt ? { updatedAt: envelope.updatedAt } : {}),
+        ...(envelope.updatedAt ? { expiresAt: envelope.updatedAt + 15 * 60 * 1000 } : {}),
+    };
+}
+
+function buildInactiveSessionPayload(reason: SessionInactiveReason, rawEnvelope?: Record<string, unknown>): {
     hasSession: false;
     reason: SessionInactiveReason;
+    rawEnvelope?: Record<string, unknown>;
 } {
     return {
         hasSession: false,
         reason,
+        ...(rawEnvelope ? { rawEnvelope } : {}),
     };
 }
 
@@ -801,19 +824,28 @@ function assertNativeBatchSettlement(native: {
 
 async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const userAddress = requireUserAddressHeader(event);
-    const chainId = requireChainIdHeader(event);
+    const chainId = chainIdHeader(event);
 
     const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
     const session = sessionStatus.session;
+    const rawEnvelope = envelopePayload(await readActiveRawEnvelope({ payer: userAddress, chainId }));
 
     if (!session) {
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason)),
+            body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason, rawEnvelope)),
         };
     }
-    const liveBudget = await getSessionBudgetInfo(userAddress, chainId);
+    const sessionChainId = session.chainId ?? chainId;
+    if (!sessionChainId) {
+        return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify(buildInactiveSessionPayload("chain_mismatch", rawEnvelope)),
+        };
+    }
+    const liveBudget = await getSessionBudgetInfo(userAddress, sessionChainId);
     const budgetLimit = BigInt(liveBudget?.totalWei ?? session.budgetLimit);
     const budgetUsed = BigInt(liveBudget?.usedWei ?? session.budgetUsed);
     const budgetLocked = BigInt(liveBudget?.lockedWei ?? session.budgetLocked);
@@ -828,8 +860,9 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
         budgetLocked: budgetLocked.toString(),
         budgetRemaining: budgetRemaining.toString(),
         expiresAt: session.expiresAt,
-        chainId: session.chainId,
+        chainId: sessionChainId,
         name: session.name,
+        ...(rawEnvelope ? { rawEnvelope } : {}),
     };
 
     // Compute status warnings from real-time budget

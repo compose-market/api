@@ -34,6 +34,7 @@ import {
 import { buildCorsHeaders } from "../http/cors.js";
 import { buildError, statusForCode } from "../http/errors.js";
 import { initializeSessionBudget } from "../x402/session-budget.js";
+import { saveRawEnvelope } from "../x402/envelope.js";
 
 type HandlerEvent = {
     rawPath: string;
@@ -186,6 +187,20 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
         assert.equal(body.hasSession, true);
         assert.equal(body.keyId, seeded.keyId);
         assert.equal(body.token, seeded.token);
+
+        const globalResult = await handler(
+            createEvent("GET", "/api/session", {
+                headers: {
+                    "x-session-user-address": userAddress,
+                },
+            }),
+            {},
+        );
+        assert.equal(globalResult.statusCode, 200);
+        const globalBody = JSON.parse(globalResult.body) as Record<string, unknown>;
+        assert.equal(globalBody.hasSession, true);
+        assert.equal(globalBody.keyId, seeded.keyId);
+        assert.equal(globalBody.chainId, chainId);
     } finally {
         if (seededKeyId) {
             await redisDel(`compose-key:${seededKeyId}`);
@@ -194,6 +209,58 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
         // Clean any leftover state.
         await redisDel(userKeysIndex(userAddress));
         await redisDel(sessionBudgetKey(userAddress, chainId));
+    }
+});
+
+test("GET /api/session returns active raw x402 envelope metadata by payer", async () => {
+    const { handler } = await import("../handler.js");
+    const userAddress = randomWalletAddress();
+    const chainId = 43113;
+    const rootRunId = `raw-${randomUUID()}`;
+
+    try {
+        await saveRawEnvelope({
+            rootRunId,
+            chainId,
+            maxAmountWei: "2500",
+            payer: userAddress,
+            paymentPayload: {
+                x402Version: 2,
+                accepted: {
+                    scheme: "upto",
+                    network: `eip155:${chainId}`,
+                    amount: "2500",
+                    asset: "0x0000000000000000000000000000000000000001",
+                    payTo: "0x0000000000000000000000000000000000000002",
+                    maxTimeoutSeconds: 60,
+                },
+                payload: {},
+            } as any,
+        });
+
+        const result = await handler(
+            createEvent("GET", "/api/session", {
+                headers: {
+                    "x-session-user-address": userAddress,
+                },
+            }),
+            {},
+        );
+        assert.equal(result.statusCode, 200);
+        const body = JSON.parse(result.body) as {
+            hasSession: boolean;
+            rawEnvelope?: { rootRunId?: string; chainId?: number; maxAmountWei?: string; remainingWei?: string };
+        };
+        assert.equal(body.hasSession, false);
+        assert.equal(body.rawEnvelope?.rootRunId, rootRunId);
+        assert.equal(body.rawEnvelope?.chainId, chainId);
+        assert.equal(body.rawEnvelope?.maxAmountWei, "2500");
+        assert.equal(body.rawEnvelope?.remainingWei, "2500");
+    } finally {
+        await redisDel(`x402:envelope:${rootRunId}`);
+        await redisDel(`x402:envelope:payer:${userAddress.toLowerCase()}`);
+        await redisDel(`x402:envelope:payer:${userAddress.toLowerCase()}:${chainId}`);
+        await closeRedis();
     }
 });
 

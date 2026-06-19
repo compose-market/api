@@ -8,6 +8,9 @@ import {
   redisHGetAll,
   redisHIncrByAmount,
   redisHSet,
+  redisSAdd,
+  redisSMembers,
+  redisSRem,
   redisSetNXEX,
 } from "./keys/redis.js";
 
@@ -24,10 +27,18 @@ export interface RawEnvelope {
   chainId: number;
   paymentPayload: PaymentPayload;
   usedWei: string;
+  payer?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 function key(rootRunId: string): string {
   return `${PREFIX}:${rootRunId}`;
+}
+
+function payerKey(payer: string, chainId?: number): string {
+  const normalized = payer.trim().toLowerCase();
+  return chainId ? `${PREFIX}:payer:${normalized}:${chainId}` : `${PREFIX}:payer:${normalized}`;
 }
 
 function lockKey(rootRunId: string): string {
@@ -69,6 +80,9 @@ function parse(data: Record<string, string>): RawEnvelope | null {
     chainId: Number.parseInt(data.chainId, 10),
     paymentPayload: JSON.parse(data.paymentPayload) as PaymentPayload,
     usedWei: data.usedWei || "0",
+    ...(data.payer ? { payer: data.payer } : {}),
+    ...(data.createdAt ? { createdAt: Number.parseInt(data.createdAt, 10) } : {}),
+    ...(data.updatedAt ? { updatedAt: Number.parseInt(data.updatedAt, 10) } : {}),
   };
 }
 
@@ -77,27 +91,88 @@ export async function saveRawEnvelope(input: {
   maxAmountWei: string;
   chainId: number;
   paymentPayload: PaymentPayload;
+  payer?: string;
 }): Promise<void> {
   if (!input.rootRunId) return;
   const target = key(input.rootRunId);
   const existing = parse(await redisHGetAll(target));
   if (existing) {
     await redisExpire(target, TTL_SECONDS);
+    if (existing.payer) {
+      await index(input.rootRunId, existing.payer, existing.chainId);
+    }
     return;
   }
+  const current = Date.now();
+  const payer = input.payer?.trim().toLowerCase();
   await redisHSet(target, {
     rootRunId: input.rootRunId,
     maxAmountWei: input.maxAmountWei,
     chainId: String(input.chainId),
     paymentPayload: JSON.stringify(input.paymentPayload),
     usedWei: "0",
+    ...(payer ? { payer } : {}),
+    createdAt: String(current),
+    updatedAt: String(current),
   });
   await redisExpire(target, TTL_SECONDS);
+  if (payer) {
+    await index(input.rootRunId, payer, input.chainId);
+  }
 }
 
 export async function readRawEnvelope(rootRunId: string): Promise<RawEnvelope | null> {
   if (!rootRunId) return null;
   return parse(await redisHGetAll(key(rootRunId)));
+}
+
+async function index(rootRunId: string, payer: string, chainId: number): Promise<void> {
+  const normalized = payer.trim().toLowerCase();
+  await Promise.all([
+    redisSAdd(payerKey(normalized), rootRunId),
+    redisSAdd(payerKey(normalized, chainId), rootRunId),
+  ]);
+  await Promise.all([
+    redisExpire(payerKey(normalized), TTL_SECONDS),
+    redisExpire(payerKey(normalized, chainId), TTL_SECONDS),
+  ]);
+}
+
+function active(envelope: RawEnvelope): boolean {
+  try {
+    return BigInt(envelope.maxAmountWei) > BigInt(envelope.usedWei || "0");
+  } catch {
+    return false;
+  }
+}
+
+export async function readActiveRawEnvelope(input: {
+  payer: string;
+  chainId?: number;
+}): Promise<RawEnvelope | null> {
+  const normalized = input.payer.trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/u.test(normalized)) return null;
+  const setKey = payerKey(normalized, input.chainId);
+  const ids = await redisSMembers(setKey);
+  if (ids.length === 0) return null;
+
+  const envelopes = await Promise.all(ids.map(async (id) => [id, await readRawEnvelope(id)] as const));
+  const stale = envelopes.filter(([, envelope]) => !envelope).map(([id]) => id);
+  if (stale.length > 0) {
+    await redisSRem(setKey, ...stale);
+  }
+
+  const candidates = envelopes
+    .map(([, envelope]) => envelope)
+    .filter((envelope): envelope is RawEnvelope => Boolean(
+      envelope
+      && envelope.payer?.toLowerCase() === normalized
+      && (!input.chainId || envelope.chainId === input.chainId)
+      && active(envelope),
+    ))
+    .sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0));
+
+  return candidates[0] || null;
 }
 
 export async function reserveRawEnvelope(rootRunId: string, amountWei: string): Promise<RawEnvelope> {
@@ -114,7 +189,11 @@ export async function reserveRawEnvelope(rootRunId: string, amountWei: string): 
       throw new Error("Payment envelope budget exhausted");
     }
     const usedWei = await redisHIncrByAmount(target, "usedWei", amountWei);
+    await redisHSet(target, "updatedAt", String(Date.now()));
     await redisExpire(target, TTL_SECONDS);
+    if (envelope.payer) {
+      await index(rootRunId, envelope.payer, envelope.chainId);
+    }
     return { ...envelope, usedWei };
   });
 }
@@ -125,6 +204,10 @@ export async function releaseRawEnvelope(rootRunId: string, amountWei: string): 
     const envelope = parse(await redisHGetAll(target));
     if (!envelope) return;
     await redisHIncrByAmount(target, "usedWei", `-${amountWei}`);
+    await redisHSet(target, "updatedAt", String(Date.now()));
     await redisExpire(target, TTL_SECONDS);
+    if (envelope.payer) {
+      await index(rootRunId, envelope.payer, envelope.chainId);
+    }
   });
 }

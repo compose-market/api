@@ -1,29 +1,29 @@
 {
-  "lastUpdated": "2026-06-14T19:31:01.877Z",
-  "totalModels": 495,
+  "lastUpdated": "2026-06-18T15:33:41.906Z",
+  "totalModels": 498,
   "byProvider": {
     "openai": 22,
-    "azure": 27,
-    "alibaba": 205,
+    "azure": 29,
+    "alibaba": 206,
     "gemini": 43,
     "asicloud": 6,
-    "cloudflare": 61,
+    "cloudflare": 62,
     "deepgram": 8,
-    "elevenlabs": 10,
+    "elevenlabs": 11,
     "cartesia": 13,
     "roboflow": 84,
-    "fireworks": 16
+    "fireworks": 14
   },
   "byType": {
-    "image generation": 54,
+    "image generation": 56,
     "transcription": 3,
-    "text generation": 191,
+    "text generation": 190,
     "realtime": 29,
     "video generation": 37,
     "embeddings": 26,
     "text-classification": 4,
-    "speech": 72,
-    "music-generation": 3,
+    "speech": 73,
+    "music-generation": 4,
     "deep-research": 3,
     "translation": 2,
     "object-detection": 26,
@@ -1724,13 +1724,14 @@
             "unit": "Per 1M tokens",
             "unitKey": "per_1m_tokens_usd",
             "entries": {
-              "input": 2.75,
-              "cached_input": 0.275,
-              "output": 16.5
+              "input": 3,
+              "cached_input": 0.3,
+              "output": 18
             },
             "source": {
               "url": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/",
-              "row": "GPT-5.4 (<272k context length) Data Zone"
+              "row": "GPT-5.4 (<272k context length) Data Zone",
+              "region": "australia-east"
             }
           },
           {
@@ -3396,13 +3397,14 @@
             "unit": "Per 1M tokens",
             "unitKey": "per_1m_tokens_usd",
             "entries": {
-              "input": 5.5,
-              "cached_input": 0.55,
-              "output": 33
+              "input": 6,
+              "cached_input": 0.6,
+              "output": 36
             },
             "source": {
               "url": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/",
-              "row": "GPT-5.5 Data Zone"
+              "row": "GPT-5.5 Data Zone",
+              "region": "australia-east"
             }
           },
           {
@@ -6875,11 +6877,12 @@
             "unit": "Per 1K tokens",
             "unitKey": "per_1k_tokens_usd",
             "entries": {
-              "cost": 0.000143
+              "cost": 0.000156
             },
             "source": {
               "url": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/",
-              "row": "text-embedding-3-large DataZone"
+              "row": "text-embedding-3-large DataZone",
+              "region": "australia-east"
             }
           }
         ]
@@ -10922,6 +10925,412 @@
       }
     },
     {
+      "name": "MAI-Image-2.5",
+      "modelId": "MAI-Image-2.5",
+      "family": "microsoft",
+      "description": "Built for creatives, delivering enhanced photorealism at scale.",
+      "type": "image generation",
+      "modelType": "image-to-image",
+      "provider": "azure",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "image"
+      ],
+      "contextWindow": {
+        "inputTokens": 131072,
+        "outputTokens": 4096
+      },
+      "capabilities": {
+        "image_edits": true,
+        "image_generation": true,
+        "image_generations": true,
+        "image_to_image": true,
+        "text_to_image": true,
+        "vision": true
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "MAI-Image-2 Global",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 5,
+              "output": 33
+            },
+            "source": {
+              "url": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+              "row": "MAI-Image-2 Global"
+            },
+            "default": true
+          }
+        ]
+      },
+      "sourceMetadata": {
+        "accountModelsApi": "Microsoft.CognitiveServices/accounts/models",
+        "assetGalleryApi": "https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+        "azureDeployment": {
+          "resource": "Microsoft",
+          "deploymentName": "MAI-Image-2.5",
+          "modelName": "MAI-Image-2.5",
+          "modelVersion": "2026-06-02",
+          "modelFormat": "Microsoft",
+          "provisioningState": "Succeeded",
+          "sku": {
+            "name": "GlobalStandard",
+            "capacity": 12
+          }
+        },
+        "azureDataPlaneModelIds": [
+          "MAI-Image-2.5-2026-06-02",
+          "MAI-Image-2.5-2026-06-02",
+          "MAI-Image-2.5-2026-06-02"
+        ],
+        "pricingLinks": [
+          "https://aka.ms/MAIModelPricing"
+        ],
+        "pricingPages": [
+          "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+        ]
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "microsoft",
+        "modalities": [
+          "image"
+        ],
+        "operations": [
+          "image-to-image",
+          "text-to-image"
+        ],
+        "inputs": [
+          "image",
+          "text"
+        ],
+        "outputs": [
+          "image"
+        ],
+        "sourceTypes": [
+          "image-generation"
+        ],
+        "streamable": true,
+        "capabilityKeys": [
+          "image_edits",
+          "image_generation",
+          "image_generations",
+          "image_to_image",
+          "text_to_image",
+          "vision"
+        ],
+        "parameterKeys": [],
+        "parameters": [],
+        "metadata": [
+          "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
+          "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+          "azureDeployment.resource: Microsoft",
+          "azureDeployment.deploymentName: MAI-Image-2.5",
+          "azureDeployment.modelName: MAI-Image-2.5",
+          "azureDeployment.modelVersion: 2026-06-02",
+          "azureDeployment.modelFormat: Microsoft",
+          "azureDeployment.provisioningState: Succeeded",
+          "azureDeployment.sku.name: GlobalStandard",
+          "azureDeployment.sku.capacity: 12",
+          "azureDataPlaneModelIds: MAI-Image-2.5-2026-06-02",
+          "azureDataPlaneModelIds: MAI-Image-2.5-2026-06-02",
+          "azureDataPlaneModelIds: MAI-Image-2.5-2026-06-02",
+          "pricingLinks: https://aka.ms/MAIModelPricing",
+          "pricingPages: https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "image",
+            "operation": "text-to-image",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "image",
+            "operation": "image-to-image",
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
+          "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+          "azureDataPlaneModelIds: MAI-Image-2.5-2026-06-02",
+          "azureDeployment.deploymentName: MAI-Image-2.5",
+          "azureDeployment.modelFormat: Microsoft",
+          "azureDeployment.modelName: MAI-Image-2.5",
+          "azureDeployment.modelVersion: 2026-06-02",
+          "azureDeployment.provisioningState: Succeeded",
+          "azureDeployment.resource: Microsoft",
+          "azureDeployment.sku.capacity: 12",
+          "azureDeployment.sku.name: GlobalStandard",
+          "capability:image_edits",
+          "capability:image_generation",
+          "capability:image_generations",
+          "capability:image_to_image",
+          "capability:text_to_image",
+          "capability:vision",
+          "input:image",
+          "input:text",
+          "modality:image",
+          "operation:image-to-image",
+          "operation:text-to-image",
+          "output:image",
+          "pricingLinks: https://aka.ms/MAIModelPricing",
+          "pricingPages: https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b",
+          "source:image-generation"
+        ]
+      }
+    },
+    {
+      "name": "MAI-Image-2.5-Flash",
+      "modelId": "MAI-Image-2.5-Flash",
+      "family": "microsoft",
+      "description": "Built for creatives, delivering enhanced photorealism at scale.",
+      "type": "image generation",
+      "modelType": "image-to-image",
+      "provider": "azure",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "image"
+      ],
+      "contextWindow": {
+        "inputTokens": 131072,
+        "outputTokens": 4096
+      },
+      "capabilities": {
+        "image_edits": true,
+        "image_generation": true,
+        "image_generations": true,
+        "image_to_image": true,
+        "text_to_image": true,
+        "vision": true
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "MAI-Image-2 Global",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 5,
+              "output": 33
+            },
+            "source": {
+              "url": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+              "row": "MAI-Image-2 Global"
+            },
+            "default": true
+          }
+        ]
+      },
+      "sourceMetadata": {
+        "accountModelsApi": "Microsoft.CognitiveServices/accounts/models",
+        "assetGalleryApi": "https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+        "azureDeployment": {
+          "resource": "Microsoft",
+          "deploymentName": "MAI-Image-2.5-Flash",
+          "modelName": "MAI-Image-2.5-Flash",
+          "modelVersion": "2026-06-02",
+          "modelFormat": "Microsoft",
+          "provisioningState": "Succeeded",
+          "sku": {
+            "name": "GlobalStandard",
+            "capacity": 12
+          }
+        },
+        "azureDataPlaneModelIds": [
+          "MAI-Image-2.5-Flash-2026-06-02",
+          "MAI-Image-2.5-Flash-2026-06-02",
+          "MAI-Image-2.5-Flash-2026-06-02"
+        ],
+        "pricingLinks": [
+          "https://aka.ms/MAIModelPricing"
+        ],
+        "pricingPages": [
+          "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+        ]
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "microsoft",
+        "modalities": [
+          "image"
+        ],
+        "operations": [
+          "image-to-image",
+          "text-to-image"
+        ],
+        "inputs": [
+          "image",
+          "text"
+        ],
+        "outputs": [
+          "image"
+        ],
+        "sourceTypes": [
+          "image-generation"
+        ],
+        "streamable": true,
+        "capabilityKeys": [
+          "image_edits",
+          "image_generation",
+          "image_generations",
+          "image_to_image",
+          "text_to_image",
+          "vision"
+        ],
+        "parameterKeys": [],
+        "parameters": [],
+        "metadata": [
+          "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
+          "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+          "azureDeployment.resource: Microsoft",
+          "azureDeployment.deploymentName: MAI-Image-2.5-Flash",
+          "azureDeployment.modelName: MAI-Image-2.5-Flash",
+          "azureDeployment.modelVersion: 2026-06-02",
+          "azureDeployment.modelFormat: Microsoft",
+          "azureDeployment.provisioningState: Succeeded",
+          "azureDeployment.sku.name: GlobalStandard",
+          "azureDeployment.sku.capacity: 12",
+          "azureDataPlaneModelIds: MAI-Image-2.5-Flash-2026-06-02",
+          "azureDataPlaneModelIds: MAI-Image-2.5-Flash-2026-06-02",
+          "azureDataPlaneModelIds: MAI-Image-2.5-Flash-2026-06-02",
+          "pricingLinks: https://aka.ms/MAIModelPricing",
+          "pricingPages: https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "image",
+            "operation": "text-to-image",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "image",
+            "operation": "image-to-image",
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
+          "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+          "azureDataPlaneModelIds: MAI-Image-2.5-Flash-2026-06-02",
+          "azureDeployment.deploymentName: MAI-Image-2.5-Flash",
+          "azureDeployment.modelFormat: Microsoft",
+          "azureDeployment.modelName: MAI-Image-2.5-Flash",
+          "azureDeployment.modelVersion: 2026-06-02",
+          "azureDeployment.provisioningState: Succeeded",
+          "azureDeployment.resource: Microsoft",
+          "azureDeployment.sku.capacity: 12",
+          "azureDeployment.sku.name: GlobalStandard",
+          "capability:image_edits",
+          "capability:image_generation",
+          "capability:image_generations",
+          "capability:image_to_image",
+          "capability:text_to_image",
+          "capability:vision",
+          "input:image",
+          "input:text",
+          "modality:image",
+          "operation:image-to-image",
+          "operation:text-to-image",
+          "output:image",
+          "pricingLinks: https://aka.ms/MAIModelPricing",
+          "pricingPages: https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b",
+          "source:image-generation"
+        ]
+      }
+    },
+    {
       "name": "MAI-Image-2e",
       "modelId": "MAI-Image-2e",
       "family": "microsoft",
@@ -13704,6 +14113,195 @@
           "alibaba.openAICompatible: false",
           "alibaba.provider: qwen-domain-model",
           "alibaba.publishedTime: 2025-11-21 00:00:00",
+          "capability:audio_understanding",
+          "input:audio",
+          "modality:text",
+          "operation:speech-to-text",
+          "output:text",
+          "source:speech"
+        ]
+      }
+    },
+    {
+      "name": "Fun-ASR-Flash-2026-06-15",
+      "modelId": "fun-asr-flash-2026-06-15",
+      "family": "alibaba",
+      "description": "The Bailing ASR version, updated in June 2026, fully supports the seven major dialect systems of traditional Chinese (Mandarin/Wu/Xiang/Gan/Hakka/Min/Yue) and is compatible with over 20 regional Mandarin accents. It features specific optimizations for the rhythm, meter, and literary expression characteristics of classical Chinese poetry, improving the accuracy of poetry recognition and making it suitable for cultural heritage, educational explanations, and audiobooks. Improved punctuation prediction and text normalization capabilities make the output text more consistent with written expression habits; numbers, dates, and amounts are automatically converted to standard formats, enhancing readability and professionalism. The language support has been expanded to include English, Japanese, Korean, Vietnamese, Thai, Indonesian, Malay, Filipino, Hindi, Arabic, French, German, Spanish, Portuguese, Russian, Italian, Dutch, Swedish, Danish, Finnish, Norwegian, Greek, Polish, Czech, Hungarian, Romanian, Bulgarian, Croatian, and Slovak, totaling 30 languages. It supports contextualization capabilities and can transcribe audio up to 5 minutes in length.",
+      "type": "speech",
+      "modelType": "automatic-speech-recognition",
+      "provider": "alibaba",
+      "input": [
+        "audio"
+      ],
+      "output": [
+        "text"
+      ],
+      "contextWindow": {
+        "inputTokens": null,
+        "outputTokens": null
+      },
+      "capabilities": {
+        "audio_understanding": true,
+        "alibabaCapabilityCodes": [
+          "ASR"
+        ],
+        "alibabaFeatures": []
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Default",
+            "unit": "Per second",
+            "unitKey": "per_second_usd",
+            "entries": {
+              "second": 0.000035
+            },
+            "source": {
+              "api": "https://dashscope-intl.aliyuncs.com/api/v1/models",
+              "range": "Default",
+              "rows": [
+                {
+                  "type": "content_duration",
+                  "priceName": "Audio Duration",
+                  "rawUnit": "Per second",
+                  "rawPrice": "0.000035"
+                }
+              ]
+            },
+            "default": true
+          }
+        ]
+      },
+      "sourceMetadata": {
+        "alibaba": {
+          "catalogApi": "https://dashscope-intl.aliyuncs.com/api/v1/models",
+          "compatibleModelsApi": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+          "endpoint": {
+            "name": "international",
+            "origin": "https://dashscope-intl.aliyuncs.com",
+            "apiBase": "https://dashscope-intl.aliyuncs.com/api/v1",
+            "compatibleBase": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "compatibleApiBase": "https://dashscope-intl.aliyuncs.com/compatible-api/v1"
+          },
+          "openAICompatible": false,
+          "provider": "qwen-domain-model",
+          "features": [],
+          "capabilities": [
+            "ASR"
+          ],
+          "inferenceMetadata": {
+            "response_modality": [
+              "Text"
+            ],
+            "request_modality": [
+              "Audio"
+            ]
+          },
+          "modelInfo": {
+            "context_window": null,
+            "max_input_tokens": null,
+            "max_output_tokens": null,
+            "max_reasoning_tokens": null,
+            "reasoning_max_input_tokens": null,
+            "reasoning_max_output_tokens": null
+          },
+          "publishedTime": "2026-06-17 16:56:49",
+          "equivalentSnapshot": null,
+          "pricingGroups": [
+            {
+              "prices": [
+                {
+                  "type": "content_duration",
+                  "price": "0.000035",
+                  "price_unit": "Per second",
+                  "price_name": "Audio Duration "
+                }
+              ],
+              "range_name": "Default"
+            }
+          ],
+          "documentation": {
+            "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope"
+          }
+        }
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "alibaba",
+        "modalities": [
+          "text"
+        ],
+        "operations": [
+          "speech-to-text"
+        ],
+        "inputs": [
+          "audio"
+        ],
+        "outputs": [
+          "text"
+        ],
+        "sourceTypes": [
+          "speech"
+        ],
+        "streamable": false,
+        "capabilityKeys": [
+          "audio_understanding"
+        ],
+        "parameterKeys": [],
+        "parameters": [],
+        "metadata": [
+          "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
+          "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+          "alibaba.endpoint.name: international",
+          "alibaba.endpoint.origin: https://dashscope-intl.aliyuncs.com",
+          "alibaba.endpoint.apiBase: https://dashscope-intl.aliyuncs.com/api/v1",
+          "alibaba.endpoint.compatibleBase: https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+          "alibaba.endpoint.compatibleApiBase: https://dashscope-intl.aliyuncs.com/compatible-api/v1",
+          "alibaba.openAICompatible: false",
+          "alibaba.provider: qwen-domain-model",
+          "alibaba.capabilities: ASR",
+          "alibaba.publishedTime: 2026-06-17 16:56:49",
+          "alibaba.documentation.endpointDocs: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "text",
+            "operation": "speech-to-text",
+            "input": [
+              "audio"
+            ],
+            "output": [
+              "text"
+            ],
+            "sourceTypes": [
+              "speech"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "alibaba.capabilities: ASR",
+          "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
+          "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+          "alibaba.documentation.endpointDocs: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
+          "alibaba.endpoint.apiBase: https://dashscope-intl.aliyuncs.com/api/v1",
+          "alibaba.endpoint.compatibleApiBase: https://dashscope-intl.aliyuncs.com/compatible-api/v1",
+          "alibaba.endpoint.compatibleBase: https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+          "alibaba.endpoint.name: international",
+          "alibaba.endpoint.origin: https://dashscope-intl.aliyuncs.com",
+          "alibaba.openAICompatible: false",
+          "alibaba.provider: qwen-domain-model",
+          "alibaba.publishedTime: 2026-06-17 16:56:49",
           "capability:audio_understanding",
           "input:audio",
           "modality:text",
@@ -28255,7 +28853,8 @@
         "alibabaFeatures": [
           "prefix-completion",
           "model-experience",
-          "structured-outputs"
+          "structured-outputs",
+          "fine-tuning"
         ]
       },
       "pricing": {
@@ -28318,7 +28917,8 @@
           "features": [
             "prefix-completion",
             "model-experience",
-            "structured-outputs"
+            "structured-outputs",
+            "fine-tuning"
           ],
           "capabilities": [
             "Reasoning",
@@ -28421,6 +29021,7 @@
           "alibaba.features: prefix-completion",
           "alibaba.features: model-experience",
           "alibaba.features: structured-outputs",
+          "alibaba.features: fine-tuning",
           "alibaba.capabilities: Reasoning",
           "alibaba.capabilities: TG",
           "alibaba.modelInfo.context_window: 131072",
@@ -28471,6 +29072,7 @@
           "alibaba.endpoint.compatibleBase: https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
           "alibaba.endpoint.name: international",
           "alibaba.endpoint.origin: https://dashscope-intl.aliyuncs.com",
+          "alibaba.features: fine-tuning",
           "alibaba.features: model-experience",
           "alibaba.features: prefix-completion",
           "alibaba.features: structured-outputs",
@@ -65650,7 +66252,8 @@
           "VG"
         ],
         "alibabaFeatures": [
-          "model-experience"
+          "model-experience",
+          "fine-tuning"
         ]
       },
       "pricing": {
@@ -65698,7 +66301,8 @@
           "openAICompatible": false,
           "provider": "wan",
           "features": [
-            "model-experience"
+            "model-experience",
+            "fine-tuning"
           ],
           "capabilities": [
             "VG"
@@ -65784,6 +66388,7 @@
           "alibaba.openAICompatible: false",
           "alibaba.provider: wan",
           "alibaba.features: model-experience",
+          "alibaba.features: fine-tuning",
           "alibaba.capabilities: VG",
           "alibaba.publishedTime: 2026-04-03 11:21:36",
           "alibaba.documentation.endpointDocs: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope"
@@ -65825,6 +66430,7 @@
           "alibaba.endpoint.compatibleBase: https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
           "alibaba.endpoint.name: international",
           "alibaba.endpoint.origin: https://dashscope-intl.aliyuncs.com",
+          "alibaba.features: fine-tuning",
           "alibaba.features: model-experience",
           "alibaba.openAICompatible: false",
           "alibaba.provider: wan",
@@ -91222,6 +91828,388 @@
       }
     },
     {
+      "name": "glm-5.2",
+      "modelId": "@cf/zai-org/glm-5.2",
+      "family": "zai",
+      "description": "Z.ai's flagship agentic coding model",
+      "type": "text generation",
+      "modelType": "text-generation",
+      "provider": "cloudflare",
+      "input": [
+        "audio",
+        "text"
+      ],
+      "output": [
+        "audio",
+        "text"
+      ],
+      "contextWindow": {
+        "inputTokens": 262144,
+        "outputTokens": 0
+      },
+      "capabilities": {
+        "function_calling": true,
+        "reasoning": true
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Input/output tokens",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 1.4,
+              "output": 4.4,
+              "cached_input": 0.26
+            },
+            "source": {
+              "url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+              "section": "Cloudflare Workers AI API",
+              "row": "@cf/zai-org/glm-5.2",
+              "raw": "[{\"unit\":\"per M input tokens\",\"price\":1.4,\"currency\":\"USD\"},{\"unit\":\"per M output tokens\",\"price\":4.4,\"currency\":\"USD\"},{\"unit\":\"per M cached input tokens\",\"price\":0.26,\"currency\":\"USD\"}]"
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "input": [
+          "allowed_tools",
+          "approximate",
+          "arguments",
+          "audio",
+          "chat_template_kwargs",
+          "city",
+          "clear_thinking",
+          "content",
+          "country",
+          "custom",
+          "data",
+          "definition",
+          "description",
+          "detail",
+          "enable_thinking",
+          "file",
+          "file_data",
+          "file_id",
+          "filename",
+          "format",
+          "frequency_penalty",
+          "function",
+          "function_call",
+          "functions",
+          "grammar",
+          "id",
+          "image_url",
+          "include_obfuscation",
+          "include_usage",
+          "input",
+          "input_audio",
+          "json_schema",
+          "logit_bias",
+          "logprobs",
+          "max_completion_tokens",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "modalities",
+          "mode",
+          "model",
+          "n",
+          "name",
+          "parallel_tool_calls",
+          "parameters",
+          "prediction",
+          "presence_penalty",
+          "prompt",
+          "reasoning_effort",
+          "refusal",
+          "region",
+          "requests",
+          "response_format",
+          "role",
+          "schema",
+          "search_context_size",
+          "seed",
+          "service_tier",
+          "stop",
+          "store",
+          "stream",
+          "stream_options",
+          "strict",
+          "syntax",
+          "temperature",
+          "text",
+          "timezone",
+          "tool_call_id",
+          "tool_calls",
+          "tool_choice",
+          "tools",
+          "top_logprobs",
+          "top_p",
+          "type",
+          "url",
+          "user",
+          "user_location",
+          "video_url",
+          "voice",
+          "web_search_options"
+        ],
+        "output": [
+          "accepted_prediction_tokens",
+          "annotations",
+          "application/json",
+          "arguments",
+          "audio",
+          "audio_tokens",
+          "binary",
+          "bytes",
+          "cached_tokens",
+          "choices",
+          "completion_tokens",
+          "completion_tokens_details",
+          "content",
+          "created",
+          "custom",
+          "data",
+          "end_index",
+          "expires_at",
+          "finish_reason",
+          "function",
+          "function_call",
+          "id",
+          "index",
+          "input",
+          "logprob",
+          "logprobs",
+          "message",
+          "model",
+          "name",
+          "object",
+          "prompt_tokens",
+          "prompt_tokens_details",
+          "reasoning_tokens",
+          "refusal",
+          "rejected_prediction_tokens",
+          "role",
+          "service_tier",
+          "start_index",
+          "system_fingerprint",
+          "text/event-stream",
+          "title",
+          "token",
+          "tool_calls",
+          "top_logprobs",
+          "total_tokens",
+          "transcript",
+          "type",
+          "url",
+          "url_citation",
+          "usage"
+        ],
+        "schemaUrls": [
+          "https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-input.json",
+          "https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-output.json",
+          "https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-input.json",
+          "https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-output.json",
+          "https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-input.json",
+          "https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-output.json"
+        ]
+      },
+      "sourceMetadata": {
+        "cloudflareModelsApi": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+        "docs": {
+          "modelPage": "https://developers.cloudflare.com/workers-ai/models/glm-5.2/",
+          "markdownPage": "https://developers.cloudflare.com/workers-ai/models/glm-5.2/index.md",
+          "schemaUrls": [
+            "https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-input.json",
+            "https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-output.json",
+            "https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-input.json",
+            "https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-output.json",
+            "https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-input.json",
+            "https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-output.json"
+          ]
+        },
+        "pricing": [
+          {
+            "url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+            "section": "Cloudflare Workers AI API",
+            "row": "@cf/zai-org/glm-5.2",
+            "raw": "[{\"unit\":\"per M input tokens\",\"price\":1.4,\"currency\":\"USD\"},{\"unit\":\"per M output tokens\",\"price\":4.4,\"currency\":\"USD\"},{\"unit\":\"per M cached input tokens\",\"price\":0.26,\"currency\":\"USD\"}]"
+          }
+        ],
+        "cloudflare": {
+          "apiModel": {
+            "id": "4edc7dfe-de78-4156-890c-85b79227694e",
+            "source": 1,
+            "name": "@cf/zai-org/glm-5.2",
+            "description": "Z.ai's flagship agentic coding model",
+            "task": {
+              "id": "c329a1f9-323d-4e91-b2aa-582dd4188d34",
+              "name": "Text Generation",
+              "description": "Family of generative text models, such as large language models (LLM), that can be adapted for a variety of natural language tasks."
+            },
+            "created_at": "2026-06-15 09:51:05.921",
+            "tags": [],
+            "properties": [
+              {
+                "property_id": "context_window",
+                "value": "262144"
+              },
+              {
+                "property_id": "price",
+                "value": [
+                  {
+                    "unit": "per M input tokens",
+                    "price": 1.4,
+                    "currency": "USD"
+                  },
+                  {
+                    "unit": "per M output tokens",
+                    "price": 4.4,
+                    "currency": "USD"
+                  },
+                  {
+                    "unit": "per M cached input tokens",
+                    "price": 0.26,
+                    "currency": "USD"
+                  }
+                ]
+              },
+              {
+                "property_id": "function_calling",
+                "value": "true"
+              },
+              {
+                "property_id": "reasoning",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "zai",
+        "modalities": [
+          "text"
+        ],
+        "operations": [
+          "chat"
+        ],
+        "inputs": [
+          "audio",
+          "text"
+        ],
+        "outputs": [
+          "text"
+        ],
+        "sourceTypes": [
+          "text-generation"
+        ],
+        "streamable": true,
+        "capabilityKeys": [
+          "function_calling",
+          "reasoning"
+        ],
+        "parameterKeys": [
+          "input",
+          "output",
+          "schemaUrls"
+        ],
+        "parameters": [
+          {
+            "name": "input"
+          },
+          {
+            "name": "output"
+          },
+          {
+            "name": "schemaUrls"
+          }
+        ],
+        "metadata": [
+          "cloudflareModelsApi: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+          "docs.modelPage: https://developers.cloudflare.com/workers-ai/models/glm-5.2/",
+          "docs.markdownPage: https://developers.cloudflare.com/workers-ai/models/glm-5.2/index.md",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-input.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-output.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-input.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-output.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-input.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-output.json",
+          "pricing.url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+          "pricing.section: Cloudflare Workers AI API",
+          "pricing.row: @cf/zai-org/glm-5.2",
+          "pricing.raw: [{\"unit\":\"per M input tokens\",\"price\":1.4,\"currency\":\"USD\"},{\"unit\":\"per M output tokens\",\"price\":4.4,\"currency\":\"USD\"},{\"unit\":\"per M cached input tokens\",\"pri",
+          "cloudflare.apiModel.id: 4edc7dfe-de78-4156-890c-85b79227694e",
+          "cloudflare.apiModel.source: 1",
+          "cloudflare.apiModel.name: @cf/zai-org/glm-5.2",
+          "cloudflare.apiModel.description: Z.ai's flagship agentic coding model",
+          "cloudflare.apiModel.created_at: 2026-06-15 09:51:05.921"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "text",
+            "operation": "chat",
+            "input": [
+              "audio",
+              "text"
+            ],
+            "output": [
+              "text"
+            ],
+            "sourceTypes": [
+              "text-generation"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "capability:function_calling",
+          "capability:reasoning",
+          "cloudflare.apiModel.created_at: 2026-06-15 09:51:05.921",
+          "cloudflare.apiModel.description: Z.ai's flagship agentic coding model",
+          "cloudflare.apiModel.id: 4edc7dfe-de78-4156-890c-85b79227694e",
+          "cloudflare.apiModel.name: @cf/zai-org/glm-5.2",
+          "cloudflare.apiModel.source: 1",
+          "cloudflareModelsApi: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+          "docs.markdownPage: https://developers.cloudflare.com/workers-ai/models/glm-5.2/index.md",
+          "docs.modelPage: https://developers.cloudflare.com/workers-ai/models/glm-5.2/",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-input.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/batch-output.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-input.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/streaming-output.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-input.json",
+          "docs.schemaUrls: https://developers.cloudflare.com/workers-ai/models/glm-5.2/sync-output.json",
+          "input:audio",
+          "input:text",
+          "modality:text",
+          "operation:chat",
+          "output:text",
+          "param:input",
+          "param:output",
+          "param:schemaUrls",
+          "pricing.raw: [{\"unit\":\"per M input tokens\",\"price\":1.4,\"currency\":\"USD\"},{\"unit\":\"per M output tokens\",\"price\":4.4,\"currency\":\"USD\"},{\"unit\":\"per M cached input tokens\",\"pri",
+          "pricing.row: @cf/zai-org/glm-5.2",
+          "pricing.section: Cloudflare Workers AI API",
+          "pricing.url: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search",
+          "source:text-generation"
+        ]
+      }
+    },
+    {
       "name": "Aura-2 Andromeda (American)",
       "modelId": "deepgram/aura-2-andromeda-en",
       "family": "deepgram",
@@ -91299,7 +92287,7 @@
           "en-US"
         ],
         "versions": [
-          "2025-04-15.4"
+          "2025-04-15.3"
         ],
         "voiceMetadata": {
           "accent": "American",
@@ -91329,7 +92317,7 @@
                 "en",
                 "en-US"
               ],
-              "version": "2025-04-15.4",
+              "version": "2025-04-15.3",
               "uuid": "e65d4050-cbf1-4d9a-ab93-f6b399e37074",
               "metadata": {
                 "accent": "American",
@@ -91558,7 +92546,7 @@
           "en-US"
         ],
         "versions": [
-          "2025-04-15.4"
+          "2025-04-15.3"
         ],
         "voiceMetadata": {
           "accent": "American",
@@ -91587,7 +92575,7 @@
                 "en",
                 "en-US"
               ],
-              "version": "2025-04-15.4",
+              "version": "2025-04-15.3",
               "uuid": "3fdf6ff0-bc53-49bf-a444-2a36c4c83d14",
               "metadata": {
                 "accent": "American",
@@ -91815,7 +92803,7 @@
           "en-US"
         ],
         "versions": [
-          "2025-04-15.4"
+          "2025-04-15.3"
         ],
         "voiceMetadata": {
           "accent": "American",
@@ -91846,7 +92834,7 @@
                 "en",
                 "en-US"
               ],
-              "version": "2025-04-15.4",
+              "version": "2025-04-15.3",
               "uuid": "cc1b9a45-374c-4f59-b667-cbd292945d6f",
               "metadata": {
                 "accent": "American",
@@ -92076,7 +93064,7 @@
           "en-US"
         ],
         "versions": [
-          "2025-04-15.4"
+          "2025-04-15.3"
         ],
         "voiceMetadata": {
           "accent": "American",
@@ -92105,7 +93093,7 @@
                 "en",
                 "en-US"
               ],
-              "version": "2025-04-15.4",
+              "version": "2025-04-15.3",
               "uuid": "a04e73d5-f375-4288-80a0-3d481d204ea2",
               "metadata": {
                 "accent": "American",
@@ -92333,7 +93321,7 @@
           "en-US"
         ],
         "versions": [
-          "2025-04-15.4"
+          "2025-04-15.3"
         ],
         "voiceMetadata": {
           "accent": "American",
@@ -92365,7 +93353,7 @@
                 "en",
                 "en-US"
               ],
-              "version": "2025-04-15.4",
+              "version": "2025-04-15.3",
               "uuid": "4fa750e6-8ade-4394-849f-c104ced3741e",
               "metadata": {
                 "accent": "American",
@@ -92596,7 +93584,7 @@
           "en-US"
         ],
         "versions": [
-          "2025-04-15.4"
+          "2025-04-15.3"
         ],
         "voiceMetadata": {
           "accent": "American",
@@ -92628,7 +93616,7 @@
                 "en",
                 "en-US"
               ],
-              "version": "2025-04-15.4",
+              "version": "2025-04-15.3",
               "uuid": "245b8e7b-d1ae-4de5-92bc-570f6fec666b",
               "metadata": {
                 "accent": "American",
@@ -93265,7 +94253,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_english_sts_v2`      | English-only voice changer model (Speech to Speech)                  | `en`                                                                                                                                                                          |"
+            "row": "| `eleven_english_sts_v2`      | English-only voice changer model (Speech to Speech)                                               | `en`                                                                                                                                                                          |"
           }
         ],
         "endpointDocs": {
@@ -93349,7 +94337,7 @@
           "modelListApi.model.maximum_text_length_per_request: 5000",
           "modelListApi.model.concurrency_group: standard_eleven_english_sts_v2",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_english_sts_v2`      | English-only voice changer model (Speech to Speech)                  | `en`                                                    ",
+          "modelDetails.row: | `eleven_english_sts_v2`      | English-only voice changer model (Speech to Speech)                                               | `en`                       ",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -93410,7 +94398,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:audio",
           "modality:audio",
-          "modelDetails.row: | `eleven_english_sts_v2`      | English-only voice changer model (Speech to Speech)                  | `en`                                                    ",
+          "modelDetails.row: | `eleven_english_sts_v2`      | English-only voice changer model (Speech to Speech)                                               | `en`                       ",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "modelListApi.model.can_be_finetuned: false",
           "modelListApi.model.can_do_text_to_speech: false",
@@ -93594,7 +94582,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_flash_v2`            | Ultra-fast model optimized for real-time use (\\~75ms†)               | `en`                                                                                                                                                                          |"
+            "row": "| `eleven_flash_v2`            | Ultra-fast model optimized for real-time use (\\~75ms†)                                            | `en`                                                                                                                                                                          |"
           }
         ],
         "endpointDocs": {
@@ -93681,7 +94669,7 @@
           "modelListApi.model.maximum_text_length_per_request: 30000",
           "modelListApi.model.concurrency_group: turbo",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_flash_v2`            | Ultra-fast model optimized for real-time use (\\~75ms†)               | `en`                                                    ",
+          "modelDetails.row: | `eleven_flash_v2`            | Ultra-fast model optimized for real-time use (\\~75ms†)                                            | `en`                       ",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -93741,7 +94729,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:text",
           "modality:audio",
-          "modelDetails.row: | `eleven_flash_v2`            | Ultra-fast model optimized for real-time use (\\~75ms†)               | `en`                                                    ",
+          "modelDetails.row: | `eleven_flash_v2`            | Ultra-fast model optimized for real-time use (\\~75ms†)                                            | `en`                       ",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "modelListApi.model.can_be_finetuned: true",
           "modelListApi.model.can_do_text_to_speech: true",
@@ -94050,7 +95038,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_flash_v2_5`          | Ultra-fast model optimized for real-time use (\\~75ms†)               | All `eleven_multilingual_v2` languages plus: `hu`, `no`, `vi`                                                                                                                 |"
+            "row": "| `eleven_flash_v2_5`          | Ultra-fast model optimized for real-time use (\\~75ms†)                                            | All `eleven_multilingual_v2` languages plus: `hu`, `no`, `vi`                                                                                                                 |"
           }
         ],
         "endpointDocs": {
@@ -94137,7 +95125,7 @@
           "modelListApi.model.maximum_text_length_per_request: 40000",
           "modelListApi.model.concurrency_group: turbo",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_flash_v2_5`          | Ultra-fast model optimized for real-time use (\\~75ms†)               | All `eleven_multilingual_v2` languages plus: `hu`, `no`,",
+          "modelDetails.row: | `eleven_flash_v2_5`          | Ultra-fast model optimized for real-time use (\\~75ms†)                                            | All `eleven_multilingual_v2",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -94197,7 +95185,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:text",
           "modality:audio",
-          "modelDetails.row: | `eleven_flash_v2_5`          | Ultra-fast model optimized for real-time use (\\~75ms†)               | All `eleven_multilingual_v2` languages plus: `hu`, `no`,",
+          "modelDetails.row: | `eleven_flash_v2_5`          | Ultra-fast model optimized for real-time use (\\~75ms†)                                            | All `eleven_multilingual_v2",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "modelListApi.model.can_be_finetuned: true",
           "modelListApi.model.can_do_text_to_speech: true",
@@ -94441,7 +95429,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_multilingual_sts_v2` | State-of-the-art multilingual voice changer model (Speech to Speech) | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `es`, `id`, `nl`, `tr`, `fil`, `pl`, `sv`, `bg`, `ro`, `ar`, `cs`, `el`, `fi`, `hr`, `ms`, `sk`, `da`, `ta`, `uk`, `ru` |"
+            "row": "| `eleven_multilingual_sts_v2` | State-of-the-art multilingual voice changer model (Speech to Speech)                              | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `es`, `id`, `nl`, `tr`, `fil`, `pl`, `sv`, `bg`, `ro`, `ar`, `cs`, `el`, `fi`, `hr`, `ms`, `sk`, `da`, `ta`, `uk`, `ru` |"
           }
         ],
         "endpointDocs": {
@@ -94525,7 +95513,7 @@
           "modelListApi.model.maximum_text_length_per_request: 10000",
           "modelListApi.model.concurrency_group: standard_eleven_multilingual_sts_v2",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_multilingual_sts_v2` | State-of-the-art multilingual voice changer model (Speech to Speech) | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `e",
+          "modelDetails.row: | `eleven_multilingual_sts_v2` | State-of-the-art multilingual voice changer model (Speech to Speech)                              | `en`, `ja`, `zh`, `de`, `hi",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -94586,7 +95574,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:audio",
           "modality:audio",
-          "modelDetails.row: | `eleven_multilingual_sts_v2` | State-of-the-art multilingual voice changer model (Speech to Speech) | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `e",
+          "modelDetails.row: | `eleven_multilingual_sts_v2` | State-of-the-art multilingual voice changer model (Speech to Speech)                              | `en`, `ja`, `zh`, `de`, `hi",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "modelListApi.model.can_be_finetuned: true",
           "modelListApi.model.can_do_text_to_speech: false",
@@ -94882,7 +95870,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_multilingual_v2`     | Our most lifelike model with rich emotional expression               | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `es`, `id`, `nl`, `tr`, `fil`, `pl`, `sv`, `bg`, `ro`, `ar`, `cs`, `el`, `fi`, `hr`, `ms`, `sk`, `da`, `ta`, `uk`, `ru` |"
+            "row": "| `eleven_multilingual_v2`     | Our most lifelike model with rich emotional expression                                            | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `es`, `id`, `nl`, `tr`, `fil`, `pl`, `sv`, `bg`, `ro`, `ar`, `cs`, `el`, `fi`, `hr`, `ms`, `sk`, `da`, `ta`, `uk`, `ru` |"
           }
         ],
         "endpointDocs": {
@@ -94971,7 +95959,7 @@
           "modelListApi.model.maximum_text_length_per_request: 10000",
           "modelListApi.model.concurrency_group: standard",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_multilingual_v2`     | Our most lifelike model with rich emotional expression               | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `e",
+          "modelDetails.row: | `eleven_multilingual_v2`     | Our most lifelike model with rich emotional expression                                            | `en`, `ja`, `zh`, `de`, `hi",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -95033,7 +96021,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:text",
           "modality:audio",
-          "modelDetails.row: | `eleven_multilingual_v2`     | Our most lifelike model with rich emotional expression               | `en`, `ja`, `zh`, `de`, `hi`, `fr`, `ko`, `pt`, `it`, `e",
+          "modelDetails.row: | `eleven_multilingual_v2`     | Our most lifelike model with rich emotional expression                                            | `en`, `ja`, `zh`, `de`, `hi",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "modelListApi.model.can_be_finetuned: true",
           "modelListApi.model.can_do_text_to_speech: true",
@@ -95128,7 +96116,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                           | N/A                                                                                                                                                                           |"
+            "row": "| `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                                                        | N/A                                                                                                                                                                           |"
           }
         ],
         "endpointDocs": {
@@ -95193,7 +96181,7 @@
         ],
         "metadata": [
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                           | N/A                                                     ",
+          "modelDetails.row: | `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                                                        | N/A                        ",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -95251,7 +96239,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:text",
           "modality:audio",
-          "modelDetails.row: | `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                           | N/A                                                     ",
+          "modelDetails.row: | `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                                                        | N/A                        ",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "operation:text-to-audio",
           "output:audio",
@@ -95711,7 +96699,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `eleven_v3`                  | Human-like and expressive speech generation                          | [70+ languages](/docs/overview/models#supported-languages)                                                                                                                    |"
+            "row": "| `eleven_v3`                  | Human-like and expressive speech generation                                                       | [70+ languages](/docs/overview/models#supported-languages)                                                                                                                    |"
           }
         ],
         "endpointDocs": {
@@ -95799,7 +96787,7 @@
           "modelListApi.model.maximum_text_length_per_request: 5000",
           "modelListApi.model.concurrency_group: standard",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `eleven_v3`                  | Human-like and expressive speech generation                          | [70+ languages](/docs/overview/models#supported-language",
+          "modelDetails.row: | `eleven_v3`                  | Human-like and expressive speech generation                                                       | [70+ languages](/docs/overv",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -95860,7 +96848,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:text",
           "modality:audio",
-          "modelDetails.row: | `eleven_v3`                  | Human-like and expressive speech generation                          | [70+ languages](/docs/overview/models#supported-language",
+          "modelDetails.row: | `eleven_v3`                  | Human-like and expressive speech generation                                                       | [70+ languages](/docs/overv",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "modelListApi.model.can_be_finetuned: false",
           "modelListApi.model.can_do_text_to_speech: true",
@@ -95895,7 +96883,7 @@
       "name": "Music V1",
       "modelId": "music_v1",
       "family": "elevenlabs",
-      "description": "Studio-grade music generation from text prompts",
+      "description": "Studio-grade music generation from text prompts. Outclassed by music_v2",
       "type": "music-generation",
       "modelType": "music-generation",
       "provider": "elevenlabs",
@@ -95964,7 +96952,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `music_v1`                   | Studio-grade music generation from text prompts                      | `en`, `es`, `de`, `ja`, and more                                                                                                                                              |"
+            "row": "| `music_v1`                   | Studio-grade music generation from text prompts. Outclassed by `music_v2`                         | `en`, `es`, `de`, `ja`, and more                                                                                                                                              |"
           }
         ],
         "endpointDocs": {
@@ -96033,7 +97021,7 @@
         ],
         "metadata": [
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `music_v1`                   | Studio-grade music generation from text prompts                      | `en`, `es`, `de`, `ja`, and more                        ",
+          "modelDetails.row: | `music_v1`                   | Studio-grade music generation from text prompts. Outclassed by `music_v2`                         | `en`, `es`, `de`, `ja`, and",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -96091,7 +97079,222 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:text",
           "modality:audio",
-          "modelDetails.row: | `music_v1`                   | Studio-grade music generation from text prompts                      | `en`, `es`, `de`, `ja`, and more                        ",
+          "modelDetails.row: | `music_v1`                   | Studio-grade music generation from text prompts. Outclassed by `music_v2`                         | `en`, `es`, `de`, `ja`, and",
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "operation:text-to-audio",
+          "output:audio",
+          "param:endpoints",
+          "param:output_format",
+          "param:request",
+          "pricing.raw: Music Music Generation $0.15 Price per minute",
+          "pricing.row: Music",
+          "pricing.section: Music",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "source:music-generation"
+        ]
+      }
+    },
+    {
+      "name": "Music V2",
+      "modelId": "music_v2",
+      "family": "elevenlabs",
+      "description": "Studio-grade music generation from text prompts, composition plans and previously generated songs",
+      "type": "music-generation",
+      "modelType": "music-generation",
+      "provider": "elevenlabs",
+      "input": [
+        "text"
+      ],
+      "output": [
+        "audio"
+      ],
+      "contextWindow": {
+        "inputCharacters": 5000
+      },
+      "capabilities": {
+        "audio_generation": true,
+        "streaming": false,
+        "multilingual": false,
+        "text_to_dialogue": false
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Music generation",
+            "unit": "per generated audio minute",
+            "unitKey": "per_generated_audio_minute_usd",
+            "entries": {
+              "generated_audio_minute": 0.15
+            },
+            "source": {
+              "url": "https://elevenlabs.io/pricing/api",
+              "section": "Music",
+              "row": "Music",
+              "raw": "Music Music Generation $0.15 Price per minute"
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "endpoints": {
+          "composeMusic": {
+            "method": "POST",
+            "path": "/v1/music"
+          },
+          "streamMusic": {
+            "method": "POST",
+            "path": "/v1/music/stream"
+          },
+          "composeMusicWithDetails": {
+            "method": "POST",
+            "path": "/v1/music/detailed"
+          }
+        },
+        "request": {
+          "model_id": "music_v2",
+          "prompt": "string",
+          "composition_plan": "object"
+        },
+        "output_format": [
+          "mp3_44100_128",
+          "mp3_44100_192",
+          "pcm_44100",
+          "opus_48000_128"
+        ]
+      },
+      "sourceMetadata": {
+        "modelDetails": [
+          {
+            "url": "https://elevenlabs.io/docs/overview/models.mdx",
+            "row": "| `music_v2`                   | Studio-grade music generation from text prompts, composition plans and previously generated songs | `en`, `es`, `de`, `ja`, and more                                                                                                                                              |"
+          }
+        ],
+        "endpointDocs": {
+          "textToSpeech": [
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx"
+          ],
+          "speechToText": [
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx"
+          ],
+          "dialogue": "https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "music": "https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "voiceChanger": "https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "voiceDesign": "https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "soundEffects": "https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "audioIsolation": "https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx"
+        },
+        "pricing": [
+          {
+            "url": "https://elevenlabs.io/pricing/api",
+            "section": "Music",
+            "row": "Music",
+            "raw": "Music Music Generation $0.15 Price per minute"
+          }
+        ]
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "elevenlabs",
+        "modalities": [
+          "audio"
+        ],
+        "operations": [
+          "text-to-audio"
+        ],
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "audio"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [
+          "audio_generation"
+        ],
+        "parameterKeys": [
+          "endpoints",
+          "request",
+          "output_format"
+        ],
+        "parameters": [
+          {
+            "name": "endpoints"
+          },
+          {
+            "name": "request"
+          },
+          {
+            "name": "output_format"
+          }
+        ],
+        "metadata": [
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "modelDetails.row: | `music_v2`                   | Studio-grade music generation from text prompts, composition plans and previously generated songs | `en`, `es`, `de`, `ja`, and",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "pricing.section: Music",
+          "pricing.row: Music",
+          "pricing.raw: Music Music Generation $0.15 Price per minute"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_generated_audio_minute",
+                "unit": "per generated audio minute",
+                "valueKeys": [
+                  "generated_audio_minute"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "capability:audio_generation",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "input:text",
+          "modality:audio",
+          "modelDetails.row: | `music_v2`                   | Studio-grade music generation from text prompts, composition plans and previously generated songs | `en`, `es`, `de`, `ja`, and",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "operation:text-to-audio",
           "output:audio",
@@ -96203,7 +97406,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `scribe_v2`                  | State-of-the-art speech recognition model                            | [90+ languages](/docs/overview/capabilities/speech-to-text#supported-languages)                                                                                               |"
+            "row": "| `scribe_v2`                  | State-of-the-art speech recognition model                                                         | [90+ languages](/docs/overview/capabilities/speech-to-text#supported-languages)                                                                                               |"
           }
         ],
         "endpointDocs": {
@@ -96278,7 +97481,7 @@
         ],
         "metadata": [
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `scribe_v2`                  | State-of-the-art speech recognition model                            | [90+ languages](/docs/overview/capabilities/speech-to-te",
+          "modelDetails.row: | `scribe_v2`                  | State-of-the-art speech recognition model                                                         | [90+ languages](/docs/overv",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -96357,7 +97560,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:audio",
           "modality:text",
-          "modelDetails.row: | `scribe_v2`                  | State-of-the-art speech recognition model                            | [90+ languages](/docs/overview/capabilities/speech-to-te",
+          "modelDetails.row: | `scribe_v2`                  | State-of-the-art speech recognition model                                                         | [90+ languages](/docs/overv",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "operation:speech-to-text",
           "output:text",
@@ -96450,7 +97653,7 @@
         "modelDetails": [
           {
             "url": "https://elevenlabs.io/docs/overview/models.mdx",
-            "row": "| `scribe_v2_realtime`         | Real-time speech recognition model                                   | [90+ languages](/docs/overview/capabilities/speech-to-text#supported-languages)                                                                                               |"
+            "row": "| `scribe_v2_realtime`         | Real-time speech recognition model                                                                | [90+ languages](/docs/overview/capabilities/speech-to-text#supported-languages)                                                                                               |"
           }
         ],
         "endpointDocs": {
@@ -96515,7 +97718,7 @@
         ],
         "metadata": [
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
-          "modelDetails.row: | `scribe_v2_realtime`         | Real-time speech recognition model                                   | [90+ languages](/docs/overview/capabilities/speech-to-te",
+          "modelDetails.row: | `scribe_v2_realtime`         | Real-time speech recognition model                                                                | [90+ languages](/docs/overv",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
           "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
@@ -96573,7 +97776,7 @@
           "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
           "input:audio",
           "modality:realtime",
-          "modelDetails.row: | `scribe_v2_realtime`         | Real-time speech recognition model                                   | [90+ languages](/docs/overview/capabilities/speech-to-te",
+          "modelDetails.row: | `scribe_v2_realtime`         | Real-time speech recognition model                                                                | [90+ languages](/docs/overv",
           "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
           "operation:realtime-transcription",
           "output:text",
@@ -96638,7 +97841,7 @@
         "modelDetails": [
           {
             "url": "https://docs.cartesia.ai/build-with-cartesia/stt-models/latest.md",
-            "row": "| `ink-2` | May 22, 2026 | `en`      | <Badge color=\"blue\">Preview</Badge> |"
+            "row": "| `ink-2` | May 22, 2026 | `en`      | <Badge color=\"green\">Stable</Badge> |"
           }
         ],
         "endpointDocs": [
@@ -96687,7 +97890,7 @@
         ],
         "metadata": [
           "modelDetails.url: https://docs.cartesia.ai/build-with-cartesia/stt-models/latest.md",
-          "modelDetails.row: | `ink-2` | May 22, 2026 | `en`      | <Badge color=\"blue\">Preview</Badge> |",
+          "modelDetails.row: | `ink-2` | May 22, 2026 | `en`      | <Badge color=\"green\">Stable</Badge> |",
           "endpointDocs: https://docs.cartesia.ai/api-reference/stt/stt.md",
           "pricing.url: https://docs.cartesia.ai/pricing.md",
           "pricing.section: Speech-to-text",
@@ -96727,7 +97930,7 @@
           "endpointDocs: https://docs.cartesia.ai/api-reference/stt/stt.md",
           "input:audio",
           "modality:text",
-          "modelDetails.row: | `ink-2` | May 22, 2026 | `en`      | <Badge color=\"blue\">Preview</Badge> |",
+          "modelDetails.row: | `ink-2` | May 22, 2026 | `en`      | <Badge color=\"green\">Stable</Badge> |",
           "modelDetails.url: https://docs.cartesia.ai/build-with-cartesia/stt-models/latest.md",
           "operation:speech-to-text",
           "output:text",
@@ -129548,47 +130751,43 @@
       }
     },
     {
-      "name": "Kimi K2.5",
-      "modelId": "accounts/fireworks/models/kimi-k2p5",
-      "family": "moonshot",
-      "description": "Kimi K2.5 is Moonshot AI's flagship agentic model and a new SOTA open model. It unifies vision and text, thinking and non-thinking modes, and single-agent and multi-agent execution into one model. Fireworks enables users to control the reasoning behavior of the Kimi K2.5 model and inspect its reasoning history for greater transparency.",
+      "name": "GLM 5.2",
+      "modelId": "accounts/fireworks/models/glm-5p2",
+      "family": "zai",
+      "description": "GLM-5.2 introduces a robust 1M-token context and advanced, multi-effort coding capabilities to significantly enhance performance on long-horizon tasks. Its new IndexShare architecture and improved MTP layer simultaneously boost efficiency by reducing per-token FLOPs and increasing speculative decoding lengths.",
       "type": "text generation",
       "modelType": "text-generation",
       "provider": "fireworks",
       "input": [
-        "text",
-        "image"
+        "text"
       ],
       "output": [
         "text"
       ],
       "contextWindow": {
-        "inputTokens": 262144,
-        "outputTokens": 262144
+        "inputTokens": 1048576,
+        "outputTokens": 1048576
       },
       "capabilities": {
         "tool_usage": true,
-        "vision": true,
         "chat": true
       },
       "pricing": {
         "unit": "per_1M_tokens_usd",
-        "input": 0.6,
-        "output": 3,
-        "notes": "Cached input: $0.1/1M tokens"
+        "input": 1.4,
+        "output": 4.4,
+        "notes": "Cached input: $0.26/1M tokens"
       },
       "deprecated": false,
       "semantics": {
-        "family": "moonshot",
+        "family": "zai",
         "modalities": [
           "text"
         ],
         "operations": [
-          "chat",
-          "vision-chat"
+          "chat"
         ],
         "inputs": [
-          "image",
           "text"
         ],
         "outputs": [
@@ -129600,8 +130799,7 @@
         "streamable": true,
         "capabilityKeys": [
           "chat",
-          "tool_usage",
-          "vision"
+          "tool_usage"
         ],
         "parameterKeys": [],
         "parameters": [],
@@ -129611,33 +130809,6 @@
             "modality": "text",
             "operation": "chat",
             "input": [
-              "text",
-              "image"
-            ],
-            "output": [
-              "text"
-            ],
-            "sourceTypes": [
-              "text-generation"
-            ],
-            "streamable": true,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_1m_tokens",
-                "unit": "Per 1M tokens",
-                "valueKeys": [
-                  "input",
-                  "output"
-                ],
-                "default": true
-              }
-            ]
-          },
-          {
-            "modality": "text",
-            "operation": "vision-chat",
-            "input": [
-              "image",
               "text"
             ],
             "output": [
@@ -129663,12 +130834,9 @@
         "characteristics": [
           "capability:chat",
           "capability:tool_usage",
-          "capability:vision",
-          "input:image",
           "input:text",
           "modality:text",
           "operation:chat",
-          "operation:vision-chat",
           "output:text",
           "source:text-generation"
         ]
@@ -130148,98 +131316,6 @@
       }
     },
     {
-      "name": "MiniMax-M2.5",
-      "modelId": "accounts/fireworks/models/minimax-m2p5",
-      "family": "minimax",
-      "description": "MiniMax M2.5 is built for state-of-the-art coding, agentic tool use, search, and office work, extensively trained with reinforcement learning across hundreds of thousands of real-world environments to plan like an architect and generalize across unfamiliar scaffolding and tools. It delivers significantly faster task completion, improved token efficiency, and exceptional cost-effectiveness, making it well-suited for production-scale agentic applications and complex, multi-step workflows.",
-      "type": "text generation",
-      "modelType": "text-generation",
-      "provider": "fireworks",
-      "input": [
-        "text"
-      ],
-      "output": [
-        "text"
-      ],
-      "contextWindow": {
-        "inputTokens": 196608,
-        "outputTokens": 196608
-      },
-      "capabilities": {
-        "tool_usage": true,
-        "chat": true
-      },
-      "pricing": {
-        "unit": "per_1M_tokens_usd",
-        "input": 0.3,
-        "output": 1.2,
-        "notes": "Cached input: $0.029/1M tokens"
-      },
-      "deprecated": false,
-      "semantics": {
-        "family": "minimax",
-        "modalities": [
-          "text"
-        ],
-        "operations": [
-          "chat"
-        ],
-        "inputs": [
-          "text"
-        ],
-        "outputs": [
-          "text"
-        ],
-        "sourceTypes": [
-          "text-generation"
-        ],
-        "streamable": true,
-        "capabilityKeys": [
-          "chat",
-          "tool_usage"
-        ],
-        "parameterKeys": [],
-        "parameters": [],
-        "metadata": [],
-        "operationCapabilities": [
-          {
-            "modality": "text",
-            "operation": "chat",
-            "input": [
-              "text"
-            ],
-            "output": [
-              "text"
-            ],
-            "sourceTypes": [
-              "text-generation"
-            ],
-            "streamable": true,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_1m_tokens",
-                "unit": "Per 1M tokens",
-                "valueKeys": [
-                  "input",
-                  "output"
-                ],
-                "default": true
-              }
-            ]
-          }
-        ],
-        "characteristics": [
-          "capability:chat",
-          "capability:tool_usage",
-          "input:text",
-          "modality:text",
-          "operation:chat",
-          "output:text",
-          "source:text-generation"
-        ]
-      }
-    },
-    {
       "name": "NVIDIA Nemotron 3 Ultra NVFP4",
       "modelId": "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
       "family": "nvidia",
@@ -130692,133 +131768,6 @@
           "operation:text-to-embedding",
           "output:embedding",
           "source:embeddings"
-        ]
-      }
-    },
-    {
-      "name": "Qwen3.6 Plus",
-      "modelId": "accounts/fireworks/models/qwen3p6-plus",
-      "family": "alibaba",
-      "description": "Qwen 3.6 Plus is Alibaba's latest flagship closed model, available exclusively through Fireworks AI outside of Alibaba's own infrastructure. Please contact Fireworks AI to get dedicated instances for Qwen 3.6 Plus.",
-      "type": "text generation",
-      "modelType": "text-generation",
-      "provider": "fireworks",
-      "input": [
-        "text",
-        "image"
-      ],
-      "output": [
-        "text"
-      ],
-      "contextWindow": {
-        "inputTokens": 0,
-        "outputTokens": 0
-      },
-      "capabilities": {
-        "tool_usage": true,
-        "vision": true,
-        "chat": true
-      },
-      "pricing": {
-        "unit": "per_1M_tokens_usd",
-        "input": 0.5,
-        "output": 3,
-        "notes": "Cached input: $0.1/1M tokens"
-      },
-      "deprecated": false,
-      "semantics": {
-        "family": "alibaba",
-        "modalities": [
-          "text"
-        ],
-        "operations": [
-          "chat",
-          "vision-chat"
-        ],
-        "inputs": [
-          "image",
-          "text"
-        ],
-        "outputs": [
-          "text"
-        ],
-        "sourceTypes": [
-          "text-generation"
-        ],
-        "streamable": true,
-        "capabilityKeys": [
-          "chat",
-          "tool_usage",
-          "vision"
-        ],
-        "parameterKeys": [],
-        "parameters": [],
-        "metadata": [],
-        "operationCapabilities": [
-          {
-            "modality": "text",
-            "operation": "chat",
-            "input": [
-              "text",
-              "image"
-            ],
-            "output": [
-              "text"
-            ],
-            "sourceTypes": [
-              "text-generation"
-            ],
-            "streamable": true,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_1m_tokens",
-                "unit": "Per 1M tokens",
-                "valueKeys": [
-                  "input",
-                  "output"
-                ],
-                "default": true
-              }
-            ]
-          },
-          {
-            "modality": "text",
-            "operation": "vision-chat",
-            "input": [
-              "image",
-              "text"
-            ],
-            "output": [
-              "text"
-            ],
-            "sourceTypes": [
-              "text-generation"
-            ],
-            "streamable": true,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_1m_tokens",
-                "unit": "Per 1M tokens",
-                "valueKeys": [
-                  "input",
-                  "output"
-                ],
-                "default": true
-              }
-            ]
-          }
-        ],
-        "characteristics": [
-          "capability:chat",
-          "capability:tool_usage",
-          "capability:vision",
-          "input:image",
-          "input:text",
-          "modality:text",
-          "operation:chat",
-          "operation:vision-chat",
-          "output:text",
-          "source:text-generation"
         ]
       }
     },

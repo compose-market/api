@@ -27,7 +27,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "filecoin-pin": "^0.23.2",
+    "filecoin-pin": "^1.0.1",
     "puppeteer": "^25.1.0",
     "redis": "^6.0.0",
     "viem": "^2.52.2",

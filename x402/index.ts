@@ -689,6 +689,7 @@ async function prepareRawInferenceX402Payment(
             maxAmountWei: requirement.maxAmountWei,
             chainId: paymentChainId,
             paymentPayload,
+            payer: verifyResult.payer,
         });
     }
 
