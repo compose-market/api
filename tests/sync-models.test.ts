@@ -64,7 +64,7 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["qvq-max", "alibaba"],
         ["tongyi-embedding-vision-plus", "alibaba"],
         ["z-image-turbo", "alibaba"],
-        ["happyhorse-1.0-t2v", "happyhorse"],
+        ["happyhorse-1.0-t2v", "alibaba"],
         ["nemotron-ultra-253b-v1", "nvidia"],
         ["nv-embedqa-e5-v5", "nvidia"],
         ["grok-4.1", "xai"],
@@ -162,7 +162,7 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["asi1-mini", "asicloud"],
         ["lucid-origin", "leonardo"],
         ["phoenix-1.0", "leonardo"],
-        ["llava-1.5-7b-hf", "llava-hf"],
+        ["llava-1.5-7b-hf", "huggingface"],
         ["dreamshaper-8-lcm", "lykon"],
         ["plamo-embedding-1b", "pfnet"],
         ["playai-tts", "playht"],
@@ -173,7 +173,7 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["smolvlm2", "huggingface"],
         ["distilbert-sst-2-int8", "huggingface"],
         ["@cf/aisingapore/gemma-sea-lion-v4-27b-it", "aisingapore"],
-        ["pipecat-ai/smart-turn-v2", "pipecat"],
+        ["pipecat-ai/smart-turn-v2", "daily"],
         ["myshell-ai/melotts", "myshell"],
     ] as const;
 

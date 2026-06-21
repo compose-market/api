@@ -59,8 +59,8 @@ export interface AgentExtensions {
     /** Agent avatar (IPFS CID or gateway URL) */
     avatar?: string;
 
-    /** Bound plugins/MCPs */
-    plugins?: Array<{
+    /** Bound connectors/MCPs */
+    connectors?: Array<{
         registryId: string;
         name: string;
         origin: string;
@@ -120,7 +120,7 @@ export const AgentExtensionsSchema = z.object({
     agentId: z.number().int().optional(),
     creator: z.string().optional(),
     avatar: z.string().optional(),
-    plugins: z.array(z.object({
+    connectors: z.array(z.object({
         registryId: z.string(),
         name: z.string(),
         origin: z.string(),
@@ -222,7 +222,7 @@ export function toAgentManifest(
             model: string;
             framework?: string;
             chain: number;
-            plugins?: Array<{ registryId: string; name: string; origin: string }>;
+            connectors?: Array<{ registryId: string; name: string; origin: string }>;
             protocols?: Array<{ name: string; version: string }>;
         };
     },
@@ -258,7 +258,7 @@ export function toAgentManifest(
             agentId: onchain.id,
             creator: onchain.creator,
             avatar: metadata?.image,
-            plugins: metadata?.plugins,
+            connectors: metadata?.connectors,
             protocols: metadata?.protocols,
         },
         endpoints: buildAgentEndpoints(onchain.walletAddress, task),
