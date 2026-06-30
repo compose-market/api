@@ -347,22 +347,35 @@ function parseRole(role: unknown): Message["role"] {
 }
 
 const PASS = [
+  "candidate_labels",
+  "contexts",
+  "documents",
+  "examples",
   "frequency_penalty",
   "include",
+  "labels",
   "logit_bias",
   "metadata",
+  "multi_label",
   "parallel_tool_calls",
   "presence_penalty",
   "prompt_cache_key",
   "prompt_cache_retention",
+  "query",
   "reasoning",
   "reasoning_effort",
+  "return_documents",
   "seed",
   "service_tier",
   "store",
   "stream_options",
+  "texts",
+  "threshold",
   "text",
+  "top_k",
+  "top_n",
   "top_p",
+  "truncate",
   "user",
 ] as const;
 
@@ -947,6 +960,101 @@ function inputKindsFromRequest(body: Record<string, unknown>, messages: Message[
   return kinds;
 }
 
+function arrayParam(body: Record<string, unknown>, keys: readonly string[]): boolean {
+  const custom = asRecord(body.custom_params);
+  return keys.some((key) => Array.isArray(body[key]) || Array.isArray(custom?.[key]));
+}
+
+function rerankInput(body: Record<string, unknown>): boolean {
+  return arrayParam(body, ["documents", "contexts", "texts"]);
+}
+
+function classificationInput(body: Record<string, unknown>): boolean {
+  return arrayParam(body, ["candidate_labels", "labels", "examples"]);
+}
+
+interface PromptClassification {
+  candidateLabels: string[];
+  query?: string;
+}
+
+function cleanLabel(value: string): string {
+  return value
+    .trim()
+    .replace(/^[\s"'`[(\]-]+/u, "")
+    .replace(/[\s"'`\])]+$/u, "")
+    .trim();
+}
+
+function labelsFromSegment(segment: string): string[] {
+  const trimmed = segment.trim();
+  if (!trimmed) return [];
+
+  const arrayMatch = trimmed.match(/\[[\s\S]*?\]/u);
+  if (arrayMatch) {
+    try {
+      const parsed = JSON.parse(arrayMatch[0]) as unknown;
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed
+          .map((entry) => typeof entry === "string" ? cleanLabel(entry) : "")
+          .filter(Boolean))];
+      }
+    } catch {
+      // Fall through to delimiter parsing below.
+    }
+  }
+
+  return [...new Set(trimmed
+    .replace(/[\[\]]/gu, "")
+    .split(/[,;|\n]/u)
+    .map(cleanLabel)
+    .filter((label) => label.length > 0))];
+}
+
+function promptClassification(messages: Message[]): PromptClassification | null {
+  const source = getPrimaryText(messages);
+  if (!source) return null;
+
+  const jsonMatch = source.match(/\{[\s\S]*\}/u);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as unknown;
+      const record = asRecord(parsed);
+      const rawLabels = Array.isArray(record?.candidate_labels)
+        ? record.candidate_labels
+        : Array.isArray(record?.labels)
+          ? record.labels
+          : [];
+      const candidateLabels = [...new Set(rawLabels
+        .map((entry) => typeof entry === "string" ? cleanLabel(entry) : "")
+        .filter(Boolean))];
+      const query = pickStringValue(record?.message, record?.text, record?.input, record?.query);
+      if (candidateLabels.length >= 2) {
+        return { candidateLabels, ...(query ? { query } : {}) };
+      }
+    } catch {
+      // Fall through to label-field parsing below.
+    }
+  }
+
+  const labels = source.match(/\b(?:candidate\s+labels|labels)\s*:\s*/iu);
+  if (!labels?.index && labels?.index !== 0) return null;
+
+  const after = source.slice(labels.index + labels[0].length);
+  const target = after.match(/\b(?:message|text|input|utterance|content)\s*:\s*/iu);
+  if (!target?.index && target?.index !== 0) return null;
+
+  const labelSegment = after.slice(0, target.index).replace(/[.。]\s*$/u, "");
+  const query = after.slice(target.index + target[0].length).trim();
+  const candidateLabels = labelsFromSegment(labelSegment);
+  if (candidateLabels.length < 2) return null;
+
+  return {
+    candidateLabels,
+    ...(query ? { query } : {}),
+  };
+}
+
 function capabilityAcceptsInput(capability: ModelOperationCapability, inputKinds: Modality[]): boolean {
   const meaningfulInputs = inputKinds.filter((kind) => kind !== "text");
   const requestInputs = meaningfulInputs.length > 0 ? meaningfulInputs : inputKinds;
@@ -975,12 +1083,31 @@ function resolveCatalogCapability(
   }
 
   const inputKinds = inputKindsFromRequest(body, messages);
+  const promptLabels = promptClassification(messages);
   const candidates = capabilities
     .filter((capability) => explicitModalities.length === 0 || explicitModalities.includes(capability.modality))
     .filter((capability) => !explicitOperation || capability.operation === explicitOperation)
     .filter((capability) => capabilityAcceptsInput(capability, inputKinds));
-
   const nonTextInputs = inputKinds.filter((kind) => kind !== "text");
+
+  if (!explicitOperation && (classificationInput(body) || promptLabels)) {
+    const classification = candidates.find((capability) =>
+      capability.operation === "classification"
+      || capability.operation === "classify"
+      || capability.operation === "zero-shot-classification"
+    );
+    if (classification) {
+      return classification;
+    }
+  }
+
+  if (!explicitOperation && rerankInput(body)) {
+    const rerank = candidates.find((capability) => capability.operation === "rerank");
+    if (rerank) {
+      return rerank;
+    }
+  }
+
   if (!explicitOperation && nonTextInputs.length > 0) {
     const operationSpecific = candidates.find((capability) =>
       capability.operation !== "chat"
@@ -1106,6 +1233,15 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
   );
   const route = pickCatalogRoute(body, model, messages, "text");
   const modality = route.modality;
+  const derivedClassification = route.operation === "classification" && !classificationInput(body)
+    ? promptClassification(messages)
+    : null;
+  const derivedParams = derivedClassification
+    ? {
+      candidate_labels: derivedClassification.candidateLabels,
+      ...(derivedClassification.query ? { query: derivedClassification.query } : {}),
+    }
+    : {};
   const promptText = getPrimaryText(messages);
   const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
   const previousResponseId =
@@ -1121,16 +1257,19 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
     ? {
       ...(resolvedModelParams?.values ?? {}),
       ...inputParams,
+      ...derivedParams,
       ...(passParams || {}),
       ...(rawCustomParams || {}),
       ...(providedModelParams?.values ?? {}),
     }
     : {
+      ...derivedParams,
       ...(passParams || {}),
       ...(rawCustomParams || {}),
       ...(providedModelParams?.values ?? {}),
     };
   const billingParams = {
+    ...derivedParams,
     ...(passParams || {}),
     ...(rawCustomParams || {}),
     ...(resolvedModelParams?.values ?? {}),

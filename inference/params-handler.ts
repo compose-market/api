@@ -10,6 +10,7 @@
 import type { Request, Response } from "express";
 
 import { getModelById } from "./catalog/registry.js";
+import { getClassificationParameterCatalog } from "./catalog/modalities/classification.js";
 import { getEmbeddingParameterCatalog } from "./catalog/modalities/embeddings.js";
 import { getImageParameterCatalog } from "./catalog/modalities/image.js";
 import { getModelCapabilities, type CanonicalModality } from "./catalog/modalities/index.js";
@@ -169,8 +170,72 @@ function modalityParamCatalog(modality: CanonicalModality, card?: ModelCard | nu
     case "realtime":
       return normalizeDefinitions(getRealtimeParameterCatalog(card));
     case "text":
-      return {};
+      return textParamCatalog(card);
   }
+}
+
+function textParamCatalog(card?: ModelCard | null): Record<string, ParamDefinition> {
+  if (!card) return {};
+  const capabilities = getModelCapabilities(card);
+  const hasClassification = capabilities.some((capability) =>
+    capability.modality === "text"
+    && (
+      capability.operation === "classification"
+      || capability.operation === "classify"
+      || capability.operation === "zero-shot-classification"
+    )
+  );
+  const hasRerank = capabilities.some((capability) =>
+    capability.modality === "text" && capability.operation === "rerank"
+  );
+  return mergeDefinitions(
+    hasClassification ? normalizeDefinitions(getClassificationParameterCatalog()) : {},
+    hasRerank ? normalizeDefinitions({
+      query: {
+        type: "string",
+        required: false,
+        description: "Search query or question to rank candidate documents against.",
+      },
+      documents: {
+        type: "array",
+        required: false,
+        description: "Candidate documents for reranking.",
+      },
+      contexts: {
+        type: "array",
+        required: false,
+        description: "Provider alias for candidate documents.",
+      },
+      texts: {
+        type: "array",
+        required: false,
+        description: "Provider alias for candidate documents.",
+      },
+      top_n: {
+        type: "integer",
+        required: false,
+        minimum: 1,
+        description: "Maximum reranked documents to return.",
+      },
+      top_k: {
+        type: "integer",
+        required: false,
+        minimum: 1,
+        description: "Maximum reranked documents to return.",
+      },
+      return_documents: {
+        type: "boolean",
+        required: false,
+        description: "Return document payloads with rerank results when supported.",
+      },
+      max_tokens_per_doc: {
+        type: "integer",
+        required: false,
+        minimum: 1,
+        description: "Maximum tokens to read from each document.",
+      },
+    }) : {},
+  );
 }
 
 function canonicalDefinition(definition: ParamDefinition, canonicalKey: string): ParamDefinition {

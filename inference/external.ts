@@ -9,7 +9,7 @@ import {
   handleVideoGeneration,
 } from "./gateway.js";
 import { getCompiledModels, getModelById, resolveModel, type ModelCard, type ResolvedModel } from "./catalog/registry.js";
-import { extractComposeKeyFromHeader, validateComposeKey } from "../x402/keys/middleware.js";
+import { extractKeyFromHeader, validateKey } from "../x402/keys/middleware.js";
 
 const URLS = /\bhttps?:\/\/[^\s"'<>)]*/gi;
 const OPEN = "compose-market";
@@ -301,7 +301,7 @@ function body(res: Response, value: unknown): unknown {
   if (!source) return value;
 
   const next: Record<string, unknown> = { ...source };
-  const id = text(res.locals.composeExternalModelId);
+  const id = text(res.locals.externalModelId);
   if (id && typeof next.model === "string") {
     next.model = id;
   }
@@ -413,10 +413,10 @@ export function resolveExternalModel(): RequestHandler {
     const source = body as Record<string, unknown>;
     source.model = resolved.id;
     source.provider = resolved.resolved.provider;
-    res.locals.composeExternalModelId = resolved.id;
-    res.locals.composeUpstreamProvider = resolved.resolved.provider;
-    res.locals.composeUpstreamModel = resolved.upstreamModelId;
-    res.locals.composePublicModel = resolved.id;
+    res.locals.externalModelId = resolved.id;
+    res.locals.upstreamProvider = resolved.resolved.provider;
+    res.locals.upstreamModel = resolved.upstreamModelId;
+    res.locals.publicModel = resolved.id;
     if (!res.headersSent) {
       res.setHeader("x-upstream-provider", resolved.resolved.provider);
       res.setHeader("x-upstream-model", resolved.upstreamModelId);
@@ -430,24 +430,24 @@ function auth(): RequestHandler {
   return async (req, res, next) => {
     try {
       const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : undefined;
-      const token = extractComposeKeyFromHeader(authorization);
+      const token = extractKeyFromHeader(authorization);
       if (!token) {
         fail(
           res,
           401,
-          "ComposeKey authorization is required. Use Authorization: Bearer compose-...",
+          "Key authorization is required. Use Authorization: Bearer compose-...",
           "compose_key_required",
           "authentication_error",
         );
         return;
       }
 
-      const validation = await validateComposeKey(token, 0);
+      const validation = await validateKey(token, 0);
       if (!validation.valid || !validation.record) {
         fail(
           res,
           401,
-          validation.error || "Invalid ComposeKey",
+          validation.error || "Invalid Key",
           "invalid_compose_key",
           "authentication_error",
         );
@@ -458,7 +458,7 @@ function auth(): RequestHandler {
         fail(
           res,
           400,
-          "ComposeKey is missing a chainId and cannot be used from OpenAI-compatible external clients.",
+          "Key is missing a chainId and cannot be used from OpenAI-compatible external clients.",
           "compose_key_chain_required",
         );
         return;
@@ -470,7 +470,7 @@ function auth(): RequestHandler {
       fail(
         res,
         500,
-        error instanceof Error ? error.message : "ComposeKey validation failed",
+        error instanceof Error ? error.message : "Key validation failed",
         "compose_key_validation_failed",
       );
     }

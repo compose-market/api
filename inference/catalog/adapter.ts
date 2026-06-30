@@ -1028,6 +1028,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       toolChoice: request.toolChoice,
       responseFormat: request.responseFormat,
       customParams: request.customParams,
+      operation: request.operation,
     });
 
     return {
@@ -2331,6 +2332,7 @@ export async function* streamWithTools(
       toolChoice: request.toolChoice,
       responseFormat: request.responseFormat,
       customParams: request.customParams,
+      operation: request.operation,
     });
     if (result.text) {
       yield { type: "text-delta", text: result.text };

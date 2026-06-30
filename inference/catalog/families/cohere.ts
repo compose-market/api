@@ -301,11 +301,21 @@ export function buildClassifyBody(modelId: string, request: ClassificationReques
             throw new Error(`Cohere classify only accepts text inputs`);
         }
     }
+    const native = request.native?.cohere;
+    const custom = request.customParams || {};
+    const examples = Array.isArray(native?.examples)
+        ? native.examples
+        : Array.isArray(custom.examples)
+            ? custom.examples
+            : undefined;
+    const truncate = native?.truncate || clean(custom.truncate);
     return {
         inputCount: inputs.length,
         body: {
             model: modelId,
             inputs,
+            ...(examples ? { examples } : {}),
+            ...(truncate ? { truncate } : {}),
             ...(request.customParams ?? {}),
         },
     };

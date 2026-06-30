@@ -152,14 +152,20 @@ function deploymentNameForModel(modelId: string): string {
   return deploymentMetadata(modelId).deploymentName || modelId;
 }
 
-function routeForModel(modelId: string): AzureRoute {
+function routeForModel(modelId: string, operation?: string): AzureRoute {
   const card = getModelById(modelId, "azure");
   const deployment = deploymentMetadata(modelId);
   const format = (deployment.modelFormat || "").toLowerCase();
   const joined = `${modelId} ${deployment.deploymentName || ""} ${deployment.modelName || ""}`.toLowerCase();
   const capabilities = asRecord(card?.capabilities) || {};
   const type = clean(card?.type).toLowerCase();
-  if (format === "cohere" && joined.includes("rerank")) return "cohere_rerank";
+  if (
+    format === "cohere"
+    && joined.includes("rerank")
+    && (operation === "rerank" || operation === "classification" || operation === "classify")
+  ) {
+    return "cohere_rerank";
+  }
   if (format === "mistral ai" && joined.includes("mistral-document-ai")) return "mistral_ocr";
   if (format === "black forest labs" && joined.includes("flux.2")) return "blackforestlabs_image";
   if (joined.includes("mai-image-2")) return "mai_image";
@@ -424,24 +430,62 @@ async function generateAzureRerank(
   modelId: string,
   messages: Message[],
   customParams: Record<string, unknown> = {},
+  operation?: string,
 ): Promise<AzureChatResult> {
+  const labels = Array.isArray(customParams.candidate_labels)
+    ? customParams.candidate_labels
+    : Array.isArray(customParams.labels)
+      ? customParams.labels
+      : [];
+  const labelDocs = labels
+    .filter((label): label is string => typeof label === "string" && label.trim().length > 0)
+    .map((label) => ({ label, text: label }));
+  const query = clean(customParams.query) || primaryText(messages);
   const documents = Array.isArray(customParams.documents)
     ? customParams.documents
     : Array.isArray(customParams.texts)
       ? customParams.texts
-      : [];
+      : Array.isArray(customParams.contexts)
+        ? customParams.contexts
+        : labelDocs;
   if (documents.length === 0) {
-    throw new Error("Azure Cohere rerank requires custom_params.documents");
+    throw new Error(operation === "classification" || operation === "classify"
+      ? "Azure Cohere classification requires candidate_labels"
+      : "Azure Cohere rerank requires documents");
   }
   const credential = credentialForModel(modelId);
-  const query = clean(customParams.query) || primaryText(messages);
   const raw = await postAzure(credential, "/providers/cohere/v2/rerank", {
     model: deploymentNameForModel(modelId),
     query,
     documents,
     ...(typeof customParams.top_n === "number" ? { top_n: customParams.top_n } : {}),
+    ...(typeof customParams.top_k === "number" ? { top_n: customParams.top_k } : {}),
     ...(typeof customParams.max_chunks_per_doc === "number" ? { max_chunks_per_doc: customParams.max_chunks_per_doc } : {}),
   });
+  if (labelDocs.length > 0 && documents === labelDocs) {
+    const root = asRecord(raw) || {};
+    const results = Array.isArray(root.results) ? root.results : [];
+    const ranked = results
+      .map((entry) => {
+        const item = asRecord(entry);
+        const index = typeof item?.index === "number" ? item.index : -1;
+        const doc = index >= 0 ? labelDocs[index] : undefined;
+        const score = typeof item?.relevance_score === "number" ? item.relevance_score : 0;
+        return doc ? { label: doc.label, score } : null;
+      })
+      .filter((item): item is { label: string; score: number } => item !== null);
+    const total = ranked.reduce((sum, item) => sum + Math.max(0, item.score), 0);
+    const labels = ranked.map((item) => ({
+      label: item.label,
+      score: total > 0 ? item.score / total : item.score,
+    }));
+    return {
+      text: JSON.stringify({ labels, raw }),
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, billingMetrics: { request: 1, search: 1, document: documents.length } },
+      finishReason: "stop",
+      raw,
+    };
+  }
   return {
     text: JSON.stringify(raw),
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, billingMetrics: { request: 1, search: 1, document: documents.length } },
@@ -495,11 +539,12 @@ export async function generateAzureChat(
     toolChoice?: Choice;
     responseFormat?: Format;
     customParams?: Record<string, unknown>;
+    operation?: string;
   } = {},
 ): Promise<AzureChatResult> {
-  const route = routeForModel(modelId);
+  const route = routeForModel(modelId, options.operation);
   if (route === "openai_responses") return generateAzureResponses(modelId, messages, options);
-  if (route === "cohere_rerank") return generateAzureRerank(modelId, messages, options.customParams);
+  if (route === "cohere_rerank") return generateAzureRerank(modelId, messages, options.customParams, options.operation);
   if (route === "mistral_ocr") return generateAzureOcr(modelId, messages, options.customParams);
 
   const credential = credentialForModel(modelId);

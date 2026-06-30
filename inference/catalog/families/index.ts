@@ -69,7 +69,7 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "playht", patterns: ["playai", "playht"] },
   { family: "arcee", patterns: ["arcee-*"] },
   { family: "nousresearch", patterns: ["nous-*", "hermes-*"] },
-  { family: "huggingface", patterns: ["smol*", "llava-hf", "distilbert-*"] },
+  { family: "huggingface", patterns: ["smol*", "llava-*", "llava-hf", "distilbert-*"] },
   { family: "daily", patterns: ["pipecat-ai", "smart-turn-*", "smart-turn", "pipecat"] },
   { family: "myshell", patterns: ["myshell-ai/melotts"] },
 ];

@@ -1034,7 +1034,7 @@ function abortError(signal: AbortSignal): Error {
   return error;
 }
 
-function composeSignals(signals: Array<AbortSignal | undefined>): { signal: AbortSignal; cleanup: () => void } {
+function signals(signals: Array<AbortSignal | undefined>): { signal: AbortSignal; cleanup: () => void } {
   const live = signals.filter((signal): signal is AbortSignal => Boolean(signal));
   const controller = new AbortController();
   const listeners: Array<readonly [AbortSignal, () => void]> = [];
@@ -1068,7 +1068,7 @@ function withDirectDeadline(parent: AbortSignal): { signal: AbortSignal; cleanup
   const timeoutMs = directCallTimeoutMs();
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new UpstreamTimeoutError(timeoutMs)), timeoutMs);
-  const combined = composeSignals([parent, deadline.signal]);
+  const combined = signals([parent, deadline.signal]);
   return {
     signal: combined.signal,
     cleanup: () => {
@@ -1207,7 +1207,7 @@ async function settlePaidInference(args: {
         action,
         subject: settlementReceipt.meterSubject,
         providerAmountWei: settlementReceipt.providerAmountWei,
-        composeFeeWei: settlementReceipt.platformFeeWei || "0",
+        feeWei: settlementReceipt.platformFeeWei || "0",
         finalAmountWei: settlementReceipt.finalAmountWei,
         settlementStatus: settlementReceipt.settlementStatus || (settlementReceipt.txHash ? "settled" : "queued"),
         txHash: settlementReceipt.txHash,

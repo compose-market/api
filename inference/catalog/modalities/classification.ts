@@ -180,3 +180,41 @@ export interface ClassificationResult {
 export function classifyBillingMetrics(inputCount: number): Record<string, unknown> {
     return { request: 1, classification: Math.max(1, inputCount) };
 }
+
+export function getClassificationParameterCatalog(): Record<string, unknown> {
+    return {
+        candidate_labels: {
+            type: "array",
+            required: false,
+            description: "Zero-shot labels to score against the input.",
+        },
+        labels: {
+            type: "array",
+            required: false,
+            description: "Alias for candidate labels when a provider uses label terminology.",
+        },
+        examples: {
+            type: "array",
+            required: false,
+            description: "Few-shot text/label examples for classifiers that require examples.",
+        },
+        multi_label: {
+            type: "boolean",
+            required: false,
+            description: "Allow more than one label to apply to an input.",
+        },
+        threshold: {
+            type: "number",
+            required: false,
+            minimum: 0,
+            maximum: 1,
+            description: "Minimum score for returned labels.",
+        },
+        top_k: {
+            type: "integer",
+            required: false,
+            minimum: 1,
+            description: "Maximum labels to return for each input.",
+        },
+    };
+}
