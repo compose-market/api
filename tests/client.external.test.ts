@@ -224,7 +224,7 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
   });
 });
 
-test("external chat completions require ComposeKey bearer auth instead of raw x402 challenge", async () => {
+test("external chat completions require Key bearer auth instead of raw x402 challenge", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
   const { getCompiledModels } = await import("../inference/catalog/registry.js");
@@ -251,11 +251,11 @@ test("external chat completions require ComposeKey bearer auth instead of raw x4
     const body = await response.json() as { error: { message: string; type: string; code: string } };
     assert.equal(body.error.type, "authentication_error");
     assert.equal(body.error.code, "compose_key_required");
-    assert.match(body.error.message, /ComposeKey/i);
+    assert.match(body.error.message, /Key/i);
   });
 });
 
-test("external chat completions parse OpenCode-sized payloads before ComposeKey auth", async () => {
+test("external chat completions parse OpenCode-sized payloads before Key auth", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
   const { getCompiledModels } = await import("../inference/catalog/registry.js");
@@ -358,7 +358,7 @@ test("external resolver keeps public ids and reports provider/upstream diagnosti
   assert.equal(called, true);
   assert.equal((req.body as Record<string, unknown>).model, "openai/gpt-5.5");
   assert.equal((req.body as Record<string, unknown>).provider, "openai");
-  assert.equal(res.locals.composeExternalModelId, "openai/gpt-5.5");
+  assert.equal(res.locals.externalModelId, "openai/gpt-5.5");
   assert.equal(headers["x-upstream-provider"], "openai");
   assert.equal(headers["x-upstream-model"], "gpt-5.5");
   assert.equal(headers["x-public-model"], "openai/gpt-5.5");

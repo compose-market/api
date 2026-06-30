@@ -66,7 +66,7 @@ test("toPublicFeedback omits reviewer address but preserves verification kind", 
     rating: 2,
     message: "Tool call failed.",
     labels: ["tool-use"],
-    context: { composeRunId: "run_1" },
+    context: { runId: "run_1" },
     metadata: {},
     reviewer: {
       kind: "compose_key",

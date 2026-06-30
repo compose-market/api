@@ -22,7 +22,7 @@ import test from "node:test";
 import express from "express";
 
 import { closeRedis, redisDel, redisSRem } from "../x402/keys/redis.js";
-import { createComposeKey } from "../x402/keys/storage.js";
+import { createKey } from "../x402/keys/storage.js";
 import {
     encodeReceiptHeader,
     decodeReceiptHeader,
@@ -162,7 +162,7 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
     let seededKeyId: string | null = null;
 
     try {
-        const seeded = await createComposeKey(userAddress, {
+        const seeded = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
             chainId,
@@ -272,7 +272,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     try {
-        const seeded = await createComposeKey(userAddress, {
+        const seeded = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
             chainId,
@@ -295,7 +295,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
         assert.equal(unauthBody.error.code, "authentication_required");
 
         // Attempt 2: Authorization is a different wallet's JWT → 403
-        const attackerKey = await createComposeKey(attacker, {
+        const attackerKey = await createKey(attacker, {
             budgetLimit: 1_000_000,
             expiresAt,
             chainId,
@@ -332,14 +332,14 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
 
         // Attempt 4: same-owner relaxation — create two keys for the same
         // wallet, revoke the second using the first's JWT. 200.
-        const keyA = await createComposeKey(userAddress, {
+        const keyA = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
             chainId,
             purpose: "api",
             name: "key-a",
         });
-        const keyB = await createComposeKey(userAddress, {
+        const keyB = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
             chainId,
@@ -375,7 +375,7 @@ test("GET /api/keys/:keyId requires possession and returns key metadata without 
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     try {
-        const seeded = await createComposeKey(userAddress, {
+        const seeded = await createKey(userAddress, {
             budgetLimit: 2_500_000,
             expiresAt,
             chainId,
@@ -424,7 +424,7 @@ test("GET /api/x402/facilitator/chains returns CAIP-2 network ids + USDC address
     );
 
     // This endpoint is live only when RPC env vars are configured for at least
-    // one chain. Both live (200) and "no chains configured" (500 from getComposeFacilitator())
+    // one chain. Both live (200) and "no chains configured" (500 from getFacilitator())
     // are acceptable; the body shape only matters on 200.
     if (result.statusCode === 200) {
         const body = JSON.parse(result.body) as {

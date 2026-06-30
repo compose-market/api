@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
-import { createComposeKey, getActiveSessionStatus } from "../x402/keys/storage.js";
+import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
 import {
   redisDel,
   redisSRem,
@@ -36,11 +36,11 @@ function userKeysKey(userAddress: string): string {
   return `user-keys:${userAddress.toLowerCase()}`;
 }
 
-function composeKeyRecordKey(keyId: string): string {
+function keyRecordKey(keyId: string): string {
   return `compose-key:${keyId}`;
 }
 
-function revokedComposeKeyKey(keyId: string): string {
+function revokedKeyKey(keyId: string): string {
   return `compose-key:revoked:${keyId}`;
 }
 
@@ -60,7 +60,7 @@ test("getActiveSessionStatus reflects session-budget locks for active session to
   let intentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -106,8 +106,8 @@ test("getActiveSessionStatus reflects session-budget locks for active session to
     }
 
     if (keyId) {
-      await redisDel(composeKeyRecordKey(keyId));
-      await redisDel(revokedComposeKeyKey(keyId));
+      await redisDel(keyRecordKey(keyId));
+      await redisDel(revokedKeyKey(keyId));
       await redisSRem(userKeysKey(userAddress), keyId);
     }
 

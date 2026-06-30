@@ -26,14 +26,14 @@ test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requ
   const body = createPaymentRequired402Response({
     amountWei: 1122,
     chainId: 43113,
-    resourceUrl: "https://api.compose.market/agent/test/chat",
+    resourceUrl: "https://api.compose.market/agent/test/stream",
     errorMessage: "Payment required",
   });
 
   validatePaymentRequired(body);
 
   assert.equal(body.x402Version, 2);
-  assert.equal(body.resource.url, "https://api.compose.market/agent/test/chat");
+  assert.equal(body.resource.url, "https://api.compose.market/agent/test/stream");
   assert.equal(body.accepts[0]?.scheme, "exact");
   assert.equal(body.accepts[0]?.network, "eip155:43113");
   assert.equal(body.accepts[0]?.amount, "1122");
@@ -78,8 +78,8 @@ test("prepareInferencePayment emits PAYMENT-REQUIRED header that matches the spe
   const req = {
     headers,
     method: "POST",
-    originalUrl: "/agent/test/chat",
-    url: "/agent/test/chat",
+    originalUrl: "/agent/test/stream",
+    url: "/agent/test/stream",
     body: {},
     get(name: string) {
       return headers[name.toLowerCase()];
@@ -120,6 +120,29 @@ test("prepareInferencePayment emits PAYMENT-REQUIRED header that matches the spe
 
   const decoded = decodePaymentRequiredHeader(captured.headers["PAYMENT-REQUIRED"]!);
   assert.deepEqual(decoded, JSON.parse(JSON.stringify(captured.body)));
+});
+
+test("raw x402 admission has no fallbackChainId", () => {
+  assert.doesNotMatch(X402_SOURCE, /fallbackChainId/);
+  assert.match(X402_SOURCE, /const requiredChainId = getChainIdFromRequest\(req\) \?\? getActiveChainId\(\)/);
+});
+
+test("raw x402 rejects payment signatures whose chain differs from the required endpoint chain", () => {
+  const decode = X402_SOURCE.indexOf("paymentChainId = getChainIdFromPaymentPayload(paymentPayload)");
+  const reject = X402_SOURCE.indexOf("paymentChainId !== requiredChainId");
+  const verify = X402_SOURCE.indexOf("const verifyResult = await verifyPayment");
+
+  assert.ok(decode > 0);
+  assert.ok(reject > decode);
+  assert.ok(verify > reject);
+});
+
+test("raw x402 verification runtime envelope and settlement use requiredChainId", () => {
+  assert.match(X402_SOURCE, /chainId: requiredChainId,\s+scheme: requirement\.scheme/);
+  assert.match(X402_SOURCE, /runtimeHeaders: rawRuntimeHeaders\(requiredChainId, requirement\.maxAmountWei\)/);
+  assert.match(X402_SOURCE, /chainId: requiredChainId,\s+paymentPayload/);
+  assert.match(X402_SOURCE, /inherited\.chainId !== requiredChainId/);
+  assert.doesNotMatch(X402_SOURCE, /chainId: paymentChainId,\s+scheme: requirement\.scheme/);
 });
 
 test("settlePreparedInferencePayment preserves x402 payment-required negotiation details on settlement failures", async () => {
@@ -253,7 +276,7 @@ test("terminal batch settlement kicks require real backing and shared worker loc
   assert.doesNotMatch(X402_SOURCE, /SETTLEMENT_TRIGGER_URL/);
   assert.doesNotMatch(X402_SOURCE, /metadata\.google\.internal/);
   assert.doesNotMatch(X402_SOURCE, /export async function requirePayment/);
-  assert.doesNotMatch(X402_SOURCE, /export async function prepareComposePayment/);
+  assert.doesNotMatch(X402_SOURCE, /export async function preparePayment/);
   assert.doesNotMatch(X402_SOURCE, /export async function handleX402Payment/);
   assert.doesNotMatch(X402_SOURCE, /consumeKeyBudget\([^)]*\)[\s\S]{0,160}settlementStatus: "queued"/);
 });

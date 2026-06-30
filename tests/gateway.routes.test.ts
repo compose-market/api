@@ -545,7 +545,7 @@ test("registerInferenceRoutes exposes scalar family catalogs", async () => {
 test("adaptError preserves x402 payment-required negotiation metadata from settlement failures", async () => {
   const { adaptError } = await import("../inference/gateway.js");
   const { createPaymentRequired402Response } = await import("../x402/index.js");
-  const { encodeComposePaymentRequiredHeader } = await import("../x402/facilitator.js");
+  const { encodePaymentRequiredHeader } = await import("../x402/facilitator.js");
 
   const paymentRequired = createPaymentRequired402Response({
     chainId: 84532,
@@ -553,7 +553,7 @@ test("adaptError preserves x402 payment-required negotiation metadata from settl
     resourceUrl: "https://api.compose.market/v1/responses",
     errorMessage: "Session expired or insufficient allowance",
   });
-  const paymentRequiredHeader = encodeComposePaymentRequiredHeader(paymentRequired);
+  const paymentRequiredHeader = encodePaymentRequiredHeader(paymentRequired);
   const settledError = Object.assign(new Error("Session expired or insufficient allowance"), {
     statusCode: 402,
     paymentRequired,

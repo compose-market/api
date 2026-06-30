@@ -15,7 +15,7 @@ import {
   buildRuntimeSessionHeaders,
   registerManowarRoutes,
 } from "../routes.js";
-import { createComposeKey } from "../x402/keys/storage.js";
+import { createKey } from "../x402/keys/storage.js";
 import { closeRedis, redisDel, redisSRem } from "../x402/keys/redis.js";
 import { recordChargeEvidence } from "../x402/evidence.js";
 import { initializeSessionBudget } from "../x402/session-budget.js";
@@ -54,7 +54,7 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-function composeKeyRecordKey(keyId: string): string {
+function keyRecordKey(keyId: string): string {
   return `compose-key:${keyId}`;
 }
 
@@ -114,11 +114,13 @@ test("registerManowarRoutes registers the explicit public workflow surface", () 
 
   assert.equal(routeSet.has("post /agent/register"), false);
   assert.equal(routeSet.has("post /workflow/register"), false);
-  assert.equal(routeSet.has("post /agent/:walletAddress/chat"), true);
+  assert.equal(routeSet.has("post /agent/:walletAddress/chat"), false);
+  assert.equal(routeSet.has("post /agent/:walletAddress/stream"), true);
   assert.equal(routeSet.has("post /agent/:walletAddress/responses"), true);
   assert.equal(routeSet.has("post /agent/:walletAddress/multimodal"), false);
   assert.equal(routeSet.has("get /agent/:walletAddress/knowledge"), false);
-  assert.equal(routeSet.has("post /workflow/:walletAddress/chat"), true);
+  assert.equal(routeSet.has("post /workflow/:walletAddress/chat"), false);
+  assert.equal(routeSet.has("post /workflow/:walletAddress/stream"), true);
   assert.equal(routeSet.has("post /workflow/execute"), true);
   assert.equal(routeSet.has("get /workflow/prices"), true);
   assert.equal(routeSet.has("get /frameworks"), true);
@@ -171,8 +173,8 @@ test("GET /frameworks exposes other after manowar", async () => {
 test("buildRuntimeManowarUrl targets the embedded runtime route", () => {
   process.env.RUNTIME_URL = "https://runtime.compose.market/";
   assert.equal(
-    buildRuntimeManowarUrl("/agent/0xabc/chat"),
-    "https://runtime.compose.market/internal/manowar/agent/0xabc/chat",
+    buildRuntimeManowarUrl("/agent/0xabc/stream"),
+    "https://runtime.compose.market/internal/manowar/agent/0xabc/stream",
   );
   process.env.RUNTIME_URL = ORIGINAL_RUNTIME_URL;
 });
@@ -370,19 +372,31 @@ test("payable stream routes do not abort payments after successful terminal sett
   assert.match(catchBody, /await abortPreparedPayment/);
 });
 
-test("payable stream routes write an SSE open frame before waiting for runtime chunks", () => {
+test("payable stream routes write an SSE open frame before waiting for runtime headers", () => {
   const payableStart = ROUTES_SOURCE.indexOf("function payableStreamRoute");
-  const readerStart = ROUTES_SOURCE.indexOf("const reader = runtimeResponse.body.getReader()", payableStart);
-  const openStart = ROUTES_SOURCE.lastIndexOf("writeSseOpen(res);", readerStart);
-  const headersStart = ROUTES_SOURCE.lastIndexOf("applyRuntimeHeaders(res, runtimeResponse);", readerStart);
+  const paymentPrepared = ROUTES_SOURCE.indexOf('markTiming("payment_prepared")', payableStart);
+  const callRuntimeStart = ROUTES_SOURCE.indexOf("runtimeResponse = await callRuntime(", payableStart);
+  const openStart = ROUTES_SOURCE.indexOf("writeSseOpen(res);", paymentPrepared);
   const openMark = ROUTES_SOURCE.indexOf('markTiming("gateway_open_written")', openStart);
+  const readerStart = ROUTES_SOURCE.indexOf("const reader = runtimeResponse.body.getReader()", payableStart);
   const firstChunkMark = ROUTES_SOURCE.indexOf('markTiming("first_runtime_chunk")', readerStart);
 
-  assert.ok(headersStart > payableStart, "runtime headers must be applied before opening the gateway stream");
-  assert.ok(openStart > headersStart, "gateway must write an SSE open frame after headers");
+  assert.ok(paymentPrepared > payableStart, "payment preparation must be timed before opening the gateway stream");
+  assert.ok(openStart > paymentPrepared, "gateway must write an SSE open frame after payment preparation");
+  assert.ok(openStart < callRuntimeStart, "gateway open frame must be written before waiting for runtime headers");
   assert.ok(openStart < readerStart, "gateway open frame must be written before awaiting runtime chunks");
-  assert.ok(openMark > openStart && openMark < readerStart, "gateway open write must be timed before runtime chunks");
+  assert.ok(openMark > openStart && openMark < callRuntimeStart, "gateway open write must be timed before the runtime request");
   assert.ok(firstChunkMark > readerStart, "runtime chunk timing must remain inside the reader loop");
+});
+
+test("payable stream routes mark first upstream frame, runtime model start, and first runtime text", () => {
+  const payableStart = ROUTES_SOURCE.indexOf("function payableStreamRoute");
+  const readerStart = ROUTES_SOURCE.indexOf("const reader = runtimeResponse.body.getReader()", payableStart);
+  const loopBody = ROUTES_SOURCE.slice(readerStart, ROUTES_SOURCE.indexOf("if (sawTerminalAbort && !settlement)", readerStart));
+
+  assert.match(loopBody, /markTiming\("first_upstream_sse_frame"\)/);
+  assert.match(loopBody, /markTiming\("first_runtime_model_start"\)/);
+  assert.match(loopBody, /markTiming\("first_runtime_text_delta"\)/);
 });
 
 test("payable stream routes close already-flushed SSE errors in-band", () => {
@@ -470,10 +484,9 @@ test("payable resource routes emit 402 PAYMENT-REQUIRED with the expected raw x4
 
   try {
     const endpoints: Array<{ method: "POST"; path: string; scheme: string }> = [
-      { method: "POST", path: "/agent/0x0000000000000000000000000000000000000001/chat", scheme: "batch-settlement" },
       { method: "POST", path: "/agent/0x0000000000000000000000000000000000000001/stream", scheme: "batch-settlement" },
       { method: "POST", path: "/agent/0x0000000000000000000000000000000000000001/responses", scheme: "batch-settlement" },
-      { method: "POST", path: "/workflow/0x0000000000000000000000000000000000000001/chat", scheme: "upto" },
+      { method: "POST", path: "/workflow/0x0000000000000000000000000000000000000001/stream", scheme: "upto" },
       { method: "POST", path: "/workflow/execute", scheme: "upto" },
       { method: "POST", path: "/workflow/0x0000000000000000000000000000000000000001/run", scheme: "upto" },
       { method: "POST", path: "/api/memory/search", scheme: "upto" },
@@ -533,7 +546,7 @@ test("payable route receipts kick batch settlement after evidence-backed receipt
   );
 });
 
-test("agent route receipts expose a cumulative display bill without changing wrapper settlement", () => {
+test("agent route receipts keep child telemetry out of settled wrapper amounts", () => {
   const settleBody = ROUTES_SOURCE.slice(
     ROUTES_SOURCE.indexOf("async function resolveAgentEndpointSettlement"),
     ROUTES_SOURCE.indexOf("function resolveAgentTextSettlement"),
@@ -542,13 +555,10 @@ test("agent route receipts expose a cumulative display bill without changing wra
   assert.match(settleBody, /const childAgents = uniqueCharges\(await listChildEvidence/);
   assert.match(settleBody, /\.\.\.direct\.map\(evidenceBill\)/);
   assert.match(settleBody, /\.\.\.childAgents\.map\(evidenceBill\)/);
-  assert.match(settleBody, /const displayTotalWei = childBills\.reduce/);
   assert.match(settleBody, /finalAmountWei: wrapperFeeWei\.toString\(\)/);
+  assert.match(settleBody, /providerAmountWei: creatorFeeWei\.toString\(\)/);
   assert.match(settleBody, /agentBill\(\{/);
-  assert.ok(
-    settleBody.indexOf("agentBill({") < settleBody.indexOf("bill({"),
-    "the first bill must be the cumulative agent display bill",
-  );
+  assert.doesNotMatch(settleBody, /const displayTotalWei = childBills\.reduce/);
 });
 
 test("agent stream settlement charges only endpoint wrapper fees over direct model provider evidence", {
@@ -580,8 +590,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
       JSON.stringify({
         type: "done",
         runId: executionRunId,
-        composeRunId: executionRunId,
-        rootComposeRunId: rootRunId,
+        rootRunId: rootRunId,
         walletAddress,
         name: "Minimal Agent",
         model: "gpt-4.1-mini",
@@ -609,7 +618,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
   const { port } = listener.address() as AddressInfo;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: 1_000_000,
       expiresAt: Date.now() + 10 * 60 * 1000,
       purpose: "api",
@@ -626,7 +635,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
       action: "v1-responses",
       subject: "model:gpt-4.1-mini",
       providerAmountWei: "1000",
-      composeFeeWei: "10",
+      feeWei: "10",
       finalAmountWei: "1010",
       txHash: "0xmodel",
       chainId: 43113,
@@ -641,7 +650,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
       action: "v1-responses",
       subject: "model:child-agent-brain",
       providerAmountWei: "900000",
-      composeFeeWei: "9000",
+      feeWei: "9000",
       finalAmountWei: "909000",
       txHash: "0xchildmodel",
       chainId: 43113,
@@ -658,7 +667,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
       },
       body: JSON.stringify({
         message: "hi",
-        composeRunId: executionRunId,
+        runId: executionRunId,
       }),
     });
 
@@ -672,15 +681,24 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
       finalAmountWei: string;
       providerAmountWei: string;
       platformFeeWei: string;
+      bills?: Array<{
+        amountWei: string;
+        children?: unknown[];
+        lineItems?: unknown[];
+      }>;
       settlementStatus?: string;
       txHash?: string;
     };
 
     assert.equal(receipt.service, "agent");
     assert.equal(receipt.action, "agent-stream");
-    assert.equal(receipt.providerAmountWei, "1000");
+    assert.equal(receipt.providerAmountWei, "10");
     assert.equal(receipt.platformFeeWei, "10");
     assert.equal(receipt.finalAmountWei, "20");
+    assert.equal(receipt.bills?.length, 1);
+    assert.equal(receipt.bills?.[0]?.amountWei, "20");
+    assert.equal(receipt.bills?.[0]?.children?.length, 2);
+    assert.equal(receipt.bills?.[0]?.lineItems?.length, 2);
     assert.equal(receipt.settlementStatus, "settled");
     assert.equal(receipt.txHash, TEST_SETTLEMENT_TX_HASH);
   } finally {
@@ -691,7 +709,7 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
     restoreEnv("RUNTIME_URL", ORIGINAL_RUNTIME_URL);
     restoreEnv("COMPOSE_SESSION_SECRET", ORIGINAL_COMPOSE_SESSION_SECRET);
     if (keyId) {
-      await redisDel(composeKeyRecordKey(keyId));
+      await redisDel(keyRecordKey(keyId));
       await redisSRem(userKeysKey(userAddress), keyId);
     }
     await closeRedis();
@@ -727,8 +745,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       JSON.stringify({
         type: "done",
         runId: executionRunId,
-        composeRunId: executionRunId,
-        rootComposeRunId: rootRunId,
+        rootRunId: rootRunId,
         walletAddress,
         name: "Minimal Agent",
         model: "gpt-4.1-mini",
@@ -756,7 +773,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
   const { port } = listener.address() as AddressInfo;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: 1_000_000,
       expiresAt: Date.now() + 10 * 60 * 1000,
       purpose: "api",
@@ -773,7 +790,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       action: "v1-responses",
       subject: "model:gpt-4.1-mini",
       providerAmountWei: "1000",
-      composeFeeWei: "10",
+      feeWei: "10",
       finalAmountWei: "1010",
       chainId: 43113,
       settledAt: Date.now(),
@@ -789,7 +806,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       },
       body: JSON.stringify({
         message: "hi",
-        composeRunId: executionRunId,
+        runId: executionRunId,
       }),
     });
 
@@ -803,15 +820,24 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       finalAmountWei: string;
       providerAmountWei: string;
       platformFeeWei: string;
+      bills?: Array<{
+        amountWei: string;
+        children?: unknown[];
+        lineItems?: unknown[];
+      }>;
       settlementStatus?: string;
       txHash?: string;
     };
 
     assert.equal(receipt.service, "agent");
     assert.equal(receipt.action, "agent-stream");
-    assert.equal(receipt.providerAmountWei, "1000");
+    assert.equal(receipt.providerAmountWei, "10");
     assert.equal(receipt.platformFeeWei, "10");
     assert.equal(receipt.finalAmountWei, "20");
+    assert.equal(receipt.bills?.length, 1);
+    assert.equal(receipt.bills?.[0]?.amountWei, "20");
+    assert.equal(receipt.bills?.[0]?.children?.length, 1);
+    assert.equal(receipt.bills?.[0]?.lineItems?.length, 2);
     assert.equal(receipt.settlementStatus, "settled");
     assert.equal(receipt.txHash, TEST_SETTLEMENT_TX_HASH);
   } finally {
@@ -822,7 +848,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
     restoreEnv("RUNTIME_URL", ORIGINAL_RUNTIME_URL);
     restoreEnv("COMPOSE_SESSION_SECRET", ORIGINAL_COMPOSE_SESSION_SECRET);
     if (keyId) {
-      await redisDel(composeKeyRecordKey(keyId));
+      await redisDel(keyRecordKey(keyId));
       await redisSRem(userKeysKey(userAddress), keyId);
     }
     await closeRedis();

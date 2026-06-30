@@ -12,7 +12,7 @@ import {
   buildReceiptBills,
 } from "../x402/receipts.js";
 import { quoteMeteredSettlement } from "../x402/metering.js";
-import { createComposeKey } from "../x402/keys/storage.js";
+import { createKey } from "../x402/keys/storage.js";
 import { redisDel, redisSRem } from "../x402/keys/redis.js";
 import type { Receipt } from "../http/request-context.js";
 
@@ -22,7 +22,7 @@ function wallet(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
 }
 
-function composeKeyRecordKey(keyId: string): string {
+function keyRecordKey(keyId: string): string {
   return `compose-key:${keyId}`;
 }
 
@@ -61,7 +61,7 @@ test("agent settlement meters include granular nested models_call bills", () => 
   const quoted = quoteMeteredSettlement(settlement.meter);
   const receipt: Receipt = {
     service: "agent",
-    action: "agent-chat",
+    action: "agent-stream",
     subject: quoted.subject,
     lineItems: quoted.lineItems,
     providerAmountWei: quoted.providerAmountWei,
@@ -102,7 +102,7 @@ test("nested model meters fail closed without canonical modality evidence", () =
   );
 });
 
-test("receipt listing uses ComposeKey identity instead of userAddress query trust", {
+test("receipt listing uses Key identity instead of userAddress query trust", {
   skip: !process.env.REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT || !process.env.REDIS_KEYS_DEFAULT_PASSWORD,
 }, async () => {
   process.env.COMPOSE_SESSION_SECRET ||= "test-session-secret";
@@ -110,7 +110,7 @@ test("receipt listing uses ComposeKey identity instead of userAddress query trus
   const otherAddress = wallet();
   let keyId: string | undefined;
 
-  const created = await createComposeKey(userAddress, {
+  const created = await createKey(userAddress, {
     budgetLimit: 1_000_000,
     expiresAt: Date.now() + 10 * 60 * 1000,
     purpose: "api",
@@ -138,7 +138,7 @@ test("receipt listing uses ComposeKey identity instead of userAddress query trus
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     if (keyId) {
-      await redisDel(composeKeyRecordKey(keyId));
+      await redisDel(keyRecordKey(keyId));
       await redisSRem(userKeysKey(userAddress), keyId);
     }
     if (ORIGINAL_COMPOSE_SESSION_SECRET === undefined) {

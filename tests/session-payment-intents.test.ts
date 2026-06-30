@@ -8,7 +8,7 @@ import type { Request, Response } from "express";
 import { abortPaymentIntent, authorizePaymentIntent, settlePaymentIntent } from "../x402/intents.js";
 import { markIntentEvidenceSettled, recordChargeEvidence } from "../x402/evidence.js";
 import { prepareInferencePayment, settlePreparedInferencePayment } from "../x402/index.js";
-import { createComposeKey, getActiveSessionStatus } from "../x402/keys/storage.js";
+import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
 import { closeRedis, redisDel, redisGet, redisHGetAll, redisHSet, redisSRem } from "../x402/keys/redis.js";
 import { getBudgetInfo, initializeSessionBudget } from "../x402/session-budget.js";
 
@@ -36,11 +36,11 @@ function userKeysKey(userAddress: string): string {
   return `user-keys:${userAddress.toLowerCase()}`;
 }
 
-function composeKeyRecordKey(keyId: string): string {
+function keyRecordKey(keyId: string): string {
   return `compose-key:${keyId}`;
 }
 
-function revokedComposeKeyKey(keyId: string): string {
+function revokedKeyKey(keyId: string): string {
   return `compose-key:revoked:${keyId}`;
 }
 
@@ -153,8 +153,8 @@ async function cleanupTestState(input: {
   }
 
   if (input.keyId) {
-    await redisDel(composeKeyRecordKey(input.keyId));
-    await redisDel(revokedComposeKeyKey(input.keyId));
+    await redisDel(keyRecordKey(input.keyId));
+    await redisDel(revokedKeyKey(input.keyId));
     await redisSRem(userKeysKey(input.userAddress), input.keyId);
   }
 
@@ -174,7 +174,7 @@ test("session payment intents authorize against the live session ledger instead 
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -194,7 +194,7 @@ test("session payment intents authorize against the live session ledger instead 
       usedBudgetWei: String(TEST_SESSION_USED_WEI),
       lockedBudgetWei: "0",
     });
-    await redisHSet(composeKeyRecordKey(created.keyId), {
+    await redisHSet(keyRecordKey(created.keyId), {
       budgetUsed: String(TEST_STALE_KEY_USED_WEI),
       budgetReserved: "0",
     });
@@ -207,8 +207,8 @@ test("session payment intents authorize against the live session ledger instead 
       authorization: `Bearer ${created.token}`,
       chainId: TEST_CHAIN_ID,
       service: "agent",
-      action: "chat",
-      resource: "https://api.compose.market/agent/test/chat",
+      action: "stream",
+      resource: "https://api.compose.market/agent/test/stream",
       method: "POST",
       maxAmountWei: String(sessionStatus.session!.budgetRemaining),
     });
@@ -252,7 +252,7 @@ test("aborting a session payment intent releases the live reservation and keeps 
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -273,7 +273,7 @@ test("aborting a session payment intent releases the live reservation and keeps 
       chainId: TEST_CHAIN_ID,
       service: "workflow",
       action: "execute",
-      resource: "https://api.compose.market/workflow/test/chat",
+      resource: "https://api.compose.market/workflow/test/stream",
       method: "POST",
       maxAmountWei: String(TEST_REQUEST_WEI),
     });
@@ -321,7 +321,7 @@ test("session payment intents using budget caps do not lock the whole live sessi
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -385,7 +385,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
   const paymentIntentIds: string[] = [];
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "api",
@@ -422,7 +422,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     }
     paymentIntentIds.push(first.body.paymentIntentId, second.body.paymentIntentId);
 
-    const recordBeforeSettle = await redisHGetAll(composeKeyRecordKey(created.keyId));
+    const recordBeforeSettle = await redisHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordBeforeSettle.budgetReserved, "0");
     assert.equal(recordBeforeSettle.budgetUsed, "0");
 
@@ -438,7 +438,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     assert.equal(settled.body.finalAmountWei, String(TEST_REQUEST_WEI));
     assert.equal(settled.body.txHash, TEST_SETTLEMENT_TX_HASH);
 
-    const recordAfterSettle = await redisHGetAll(composeKeyRecordKey(created.keyId));
+    const recordAfterSettle = await redisHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordAfterSettle.budgetReserved, "0");
     assert.equal(recordAfterSettle.budgetUsed, String(TEST_REQUEST_WEI));
 
@@ -448,7 +448,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     });
     assert.equal(aborted.ok, true);
 
-    const recordAfterAbort = await redisHGetAll(composeKeyRecordKey(created.keyId));
+    const recordAfterAbort = await redisHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordAfterAbort.budgetReserved, "0");
     assert.equal(recordAfterAbort.budgetUsed, String(TEST_REQUEST_WEI));
   } finally {
@@ -469,7 +469,7 @@ test("native inference compose-key settlement creates and settles a payment inte
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "api",
@@ -517,7 +517,7 @@ test("native inference compose-key settlement creates and settles a payment inte
     assert.equal(intent.finalAmountWei, receipt.finalAmountWei);
     assert.equal(intent.txHash, TEST_SETTLEMENT_TX_HASH);
 
-    const record = await redisHGetAll(composeKeyRecordKey(created.keyId));
+    const record = await redisHGetAll(keyRecordKey(created.keyId));
     assert.equal(record.budgetReserved || "0", "0");
     assert.equal(record.budgetUsed, receipt.finalAmountWei);
   } finally {
@@ -542,7 +542,7 @@ test("native inference session compose-key locks only the final authoritative se
   const originalNow = Date.now;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -601,7 +601,7 @@ test("native inference session compose-key locks only the final authoritative se
       executionRunId: requestId,
       action: "v1-responses",
       providerAmountWei: "1000",
-      composeFeeWei: "10",
+      feeWei: "10",
       finalAmountWei: receipt.finalAmountWei,
       settlementStatus: "queued",
       sessionBudgetIntentId: receipt.sessionBudgetIntentId,
@@ -640,7 +640,7 @@ test("idempotent session payment intent authorization replays the same intent wi
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -718,7 +718,7 @@ test("settling a session payment intent cannot exceed the reserved amount", asyn
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -738,8 +738,8 @@ test("settling a session payment intent cannot exceed the reserved amount", asyn
       authorization: `Bearer ${created.token}`,
       chainId: TEST_CHAIN_ID,
       service: "agent",
-      action: "chat",
-      resource: "https://api.compose.market/agent/test/chat",
+      action: "stream",
+      resource: "https://api.compose.market/agent/test/stream",
       method: "POST",
       maxAmountWei: String(TEST_REQUEST_WEI),
     });
@@ -789,7 +789,7 @@ test("settling a session budget-cap intent charges on-chain before marking Redis
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -873,7 +873,7 @@ test("settled session payment intents replay without double-charging and cannot 
   let paymentIntentId: string | null = null;
 
   try {
-    const created = await createComposeKey(userAddress, {
+    const created = await createKey(userAddress, {
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
@@ -894,7 +894,7 @@ test("settled session payment intents replay without double-charging and cannot 
       chainId: TEST_CHAIN_ID,
       service: "workflow",
       action: "execute",
-      resource: "https://api.compose.market/workflow/test/chat",
+      resource: "https://api.compose.market/workflow/test/stream",
       method: "POST",
       maxAmountWei: String(TEST_REQUEST_WEI),
     });
