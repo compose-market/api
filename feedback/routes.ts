@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 
 import { buildError } from "../http/errors.js";
-import { extractComposeKeyFromHeader, validateComposeKey } from "../x402/keys/middleware.js";
+import { extractKeyFromHeader, validateKey } from "../x402/keys/middleware.js";
 import {
     FEEDBACK_TARGET_TYPES,
     type FeedbackReviewer,
@@ -40,9 +40,9 @@ function parseTargetFromQuery(req: Request): FeedbackTarget {
 
 async function resolveReviewer(req: Request): Promise<FeedbackReviewer> {
     const authorization = getHeader(req, "authorization") || "";
-    const token = extractComposeKeyFromHeader(authorization);
+    const token = extractKeyFromHeader(authorization);
     if (token) {
-        const validation = await validateComposeKey(token, 0);
+        const validation = await validateKey(token, 0);
         if (validation.valid && validation.payload) {
             return {
                 kind: "compose_key",

@@ -25,7 +25,7 @@ export interface FeedbackTarget {
 export interface FeedbackContext {
     requestId?: string;
     paymentIntentId?: string;
-    composeRunId?: string;
+    runId?: string;
     chainId?: number;
     modelId?: string;
     provider?: string;

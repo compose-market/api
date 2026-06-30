@@ -133,8 +133,8 @@ function readContext(value: unknown): FeedbackContext {
     const paymentIntentId = sanitizeString(value.paymentIntentId, 128);
     if (paymentIntentId) context.paymentIntentId = paymentIntentId;
 
-    const composeRunId = sanitizeString(value.composeRunId, 160);
-    if (composeRunId) context.composeRunId = composeRunId;
+    const runId = sanitizeString(value.runId, 160);
+    if (runId) context.runId = runId;
 
     const chainId = readPositiveInteger(value.chainId);
     if (chainId) context.chainId = chainId;
