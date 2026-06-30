@@ -12,7 +12,7 @@
  * be loaded from anywhere without circular dependencies.
  */
 
-export type ComposeErrorCode =
+export type ErrorCode =
     | "validation_error"
     | "authentication_required"
     | "authentication_failed"
@@ -39,19 +39,19 @@ export type ComposeErrorCode =
     | "settlement_failed"
     | "session_invalid";
 
-export interface ComposeError {
+export interface Error {
     error: {
-        code: ComposeErrorCode;
+        code: ErrorCode;
         message: string;
         details?: Record<string, unknown>;
     };
 }
 
 export function buildError(
-    code: ComposeErrorCode,
+    code: ErrorCode,
     message: string,
     details?: Record<string, unknown>,
-): ComposeError {
+): Error {
     return {
         error: {
             code,
@@ -61,7 +61,7 @@ export function buildError(
     };
 }
 
-export const STATUS_BY_CODE: Record<ComposeErrorCode, number> = {
+export const STATUS_BY_CODE: Record<ErrorCode, number> = {
     validation_error: 400,
     authentication_required: 401,
     authentication_failed: 401,
@@ -89,6 +89,6 @@ export const STATUS_BY_CODE: Record<ComposeErrorCode, number> = {
     session_invalid: 401,
 };
 
-export function statusForCode(code: ComposeErrorCode): number {
+export function statusForCode(code: ErrorCode): number {
     return STATUS_BY_CODE[code] ?? 500;
 }
