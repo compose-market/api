@@ -7,8 +7,8 @@ import { depositUSDFC } from "filecoin-pin/core/payments";
 import { z } from "zod";
 import { getActiveChainId } from "../x402/configs/chains.js";
 import { getActiveSessionStatus } from "../x402/keys/index.js";
-import { verifyComposeKey } from "../x402/keys/jwt.js";
-import { extractComposeKeyFromHeader } from "../x402/keys/middleware.js";
+import { verifyKey } from "../x402/keys/jwt.js";
+import { extractKeyFromHeader } from "../x402/keys/middleware.js";
 import { type LocalRouteEvent, type LocalRouteResult } from "./network.js";
 
 const walletPattern = /^0x[a-fA-F0-9]{40}$/;
@@ -287,12 +287,12 @@ async function validateProvisioningRequest(event: LocalRouteEvent): Promise<Vali
   const userAddress = normalizeWallet(getHeader(event, "x-session-user-address"), "x-session-user-address");
 
   const authHeader = getHeader(event, "authorization");
-  const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+  const composeKeyToken = extractKeyFromHeader(authHeader);
   if (!composeKeyToken) {
     throw new Error("Authorization header with Compose Key token is required");
   }
 
-  const payload = verifyComposeKey(composeKeyToken);
+  const payload = verifyKey(composeKeyToken);
   if (!payload) {
     throw new Error("Invalid or expired Compose Key token");
   }

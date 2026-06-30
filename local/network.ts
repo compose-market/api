@@ -10,8 +10,8 @@ import {
   redisTTL,
 } from "../x402/keys/redis.js";
 import { getActiveSessionStatus } from "../x402/keys/index.js";
-import { verifyComposeKey } from "../x402/keys/jwt.js";
-import { extractComposeKeyFromHeader } from "../x402/keys/middleware.js";
+import { verifyKey } from "../x402/keys/jwt.js";
+import { extractKeyFromHeader } from "../x402/keys/middleware.js";
 
 export interface LocalRouteEvent {
   rawPath: string;
@@ -62,7 +62,7 @@ interface LocalRedeemRequest {
 interface LocalDeploymentRegisterRequest {
   agentWallet: string;
   userAddress: string;
-  composeKeyId: string;
+  keyId: string;
   agentCardCid: string;
   localVersion: string;
   deployedAt: number;
@@ -80,7 +80,7 @@ interface LocalLinkTokenRecord {
   agentWallet: string;
   agentCardCid: string;
   userAddress: string;
-  composeKeyId: string;
+  keyId: string;
   sessionId: string;
   budget: string;
   duration: number;
@@ -123,7 +123,7 @@ interface LocalDeploymentRecord {
   deploymentId: string;
   agentWallet: string;
   userAddress: string;
-  composeKeyId: string;
+  keyId: string;
   agentCardCid: string;
   localVersion: string;
   deployedAt: number;
@@ -195,13 +195,13 @@ function normalizeDeviceId(value: unknown): string | null {
   return DEVICE_ID_REGEX.test(normalized) ? normalized : null;
 }
 
-async function authorizeComposeKeySession(event: LocalRouteEvent, userAddress: string, chainId: number) {
-  const composeKeyToken = extractComposeKeyFromHeader(getHeader(event, "authorization"));
+async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, chainId: number) {
+  const composeKeyToken = extractKeyFromHeader(getHeader(event, "authorization"));
   if (!composeKeyToken) {
     throw new Error("Authorization header with Compose Key token is required");
   }
 
-  const payload = verifyComposeKey(composeKeyToken);
+  const payload = verifyKey(composeKeyToken);
   if (!payload) {
     throw new Error("Invalid or expired Compose Key token");
   }
@@ -226,15 +226,15 @@ async function buildRedeemedContext(args: {
   agentWallet: string;
   agentCardCid: string;
   deviceId: string;
-  composeKeyId?: string;
+  keyId?: string;
   sessionId?: string;
   budget?: string;
   duration?: number;
 }) {
   const activeSession = (await getActiveSessionStatus(args.userAddress, args.chainId)).session;
-  const composeKey = activeSession && args.composeKeyId
+  const key = activeSession && args.keyId
     ? {
-      keyId: args.composeKeyId,
+      keyId: args.keyId,
       token: activeSession.token,
       expiresAt: activeSession.expiresAt,
     }
@@ -262,7 +262,7 @@ async function buildRedeemedContext(args: {
     agentWallet: args.agentWallet || args.userAddress,
     userAddress: args.userAddress,
     chainId: args.chainId,
-    composeKey,
+    key,
     session,
     market: {
       entry: "local",
@@ -301,8 +301,8 @@ async function validateLocalAuthorization(
     throw new Error("x-session-user-address must match userAddress");
   }
 
-  if (extractComposeKeyFromHeader(getHeader(event, "authorization"))) {
-    await authorizeComposeKeySession(event, userAddress, chainId);
+  if (extractKeyFromHeader(getHeader(event, "authorization"))) {
+    await authorizeKeySession(event, userAddress, chainId);
   }
 
   const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
@@ -353,7 +353,7 @@ async function handleCreateLocalLinkToken(
       agentWallet: auth.agentWallet || "",
       agentCardCid,
       userAddress: auth.userAddress,
-      composeKeyId: auth.activeSession?.keyId || "",
+      keyId: auth.activeSession?.keyId || "",
       sessionId: auth.activeSession?.keyId || "",
       budget: auth.activeSession ? String(auth.activeSession.budgetLimit - auth.activeSession.budgetUsed) : "0",
       duration: auth.activeSession ? Math.max(0, auth.activeSession.expiresAt - issuedAt) : 0,
@@ -454,7 +454,7 @@ async function handleRedeemLocalLinkToken(
     agentWallet: record.agentWallet || record.userAddress,
     agentCardCid: record.agentCardCid || "",
     deviceId: record.boundDeviceId || deviceId,
-    composeKeyId: record.composeKeyId,
+    keyId: record.keyId,
     sessionId: record.sessionId,
     budget: record.budget,
     duration: record.duration,
@@ -668,7 +668,7 @@ async function handleRegisterLocalDeployment(
     if (!agentWallet) throw new Error("agentWallet must be a valid wallet address");
     if (!userAddress) throw new Error("userAddress must be a valid wallet address");
 
-    const composeKeyId = parseRequiredString(body.composeKeyId, "composeKeyId");
+    const keyId = parseRequiredString(body.keyId, "keyId");
     const agentCardCid = parseRequiredString(body.agentCardCid, "agentCardCid");
     if (!CID_REGEX.test(agentCardCid)) throw new Error("agentCardCid format is invalid");
     const localVersion = parseRequiredString(body.localVersion, "localVersion");
@@ -681,24 +681,24 @@ async function handleRegisterLocalDeployment(
     }
 
     const authHeader = getHeader(event, "authorization");
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    const composeKeyToken = extractKeyFromHeader(authHeader);
     if (!composeKeyToken) throw new Error("Authorization header with Compose Key token is required");
 
-    const payload = verifyComposeKey(composeKeyToken);
+    const payload = verifyKey(composeKeyToken);
     if (!payload) throw new Error("Invalid or expired Compose Key token");
     if (payload.sub.toLowerCase() !== userAddress) {
       throw new Error("Compose Key token user does not match userAddress");
     }
-    if (payload.keyId !== composeKeyId) {
-      throw new Error("Compose Key token keyId does not match composeKeyId");
+    if (payload.keyId !== keyId) {
+      throw new Error("Compose Key token keyId does not match keyId");
     }
 
     const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
-    if (!activeSession || activeSession.keyId !== composeKeyId) {
-      throw new Error("composeKeyId does not match active session");
+    if (!activeSession || activeSession.keyId !== keyId) {
+      throw new Error("keyId does not match active session");
     }
 
-    const deploymentKey = `${LOCAL_DEPLOYMENT_PREFIX}${userAddress}:${agentWallet}:${composeKeyId}`;
+    const deploymentKey = `${LOCAL_DEPLOYMENT_PREFIX}${userAddress}:${agentWallet}:${keyId}`;
     const existing = await redisGet(deploymentKey);
     if (existing) {
       const existingRecord = JSON.parse(existing) as LocalDeploymentRecord;
@@ -715,7 +715,7 @@ async function handleRegisterLocalDeployment(
       deploymentId: randomUUID(),
       agentWallet,
       userAddress,
-      composeKeyId,
+      keyId,
       agentCardCid,
       localVersion,
       deployedAt,
