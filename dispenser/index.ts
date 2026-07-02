@@ -2,10 +2,10 @@
  * Dispenser Module
  *
  * Dispenser for distributing USDC to new accounts across multiple chains.
- * Uses Redis for global claim tracking to prevent duplicate claims across all chains.
+ * Uses ValKey for global claim tracking to prevent duplicate claims across all chains.
  *
  * Features:
- * - Cross-chain claim prevention (Redis global tracking)
+ * - Cross-chain claim prevention (ValKey global tracking)
  * - Atomic operations with SETNX to prevent race conditions
  * - Automatic rollback on transaction failure
  * - Multi-chain support (Avalanche, Arbitrum)
@@ -14,13 +14,13 @@
  */
 
 import {
-    redisGet,
-    redisSet,
-    redisDel,
-    redisSetNX,
-    redisIncr,
-    redisExists,
-} from "../x402/keys/redis.js";
+    valkeyGet,
+    valkeySet,
+    valkeyDel,
+    valkeySetNX,
+    valkeyIncr,
+    valkeyExists,
+} from "../x402/keys/valkey.js";
 import {
     CHAIN_IDS,
     CHAIN_CONFIG,
@@ -46,7 +46,7 @@ export const DISPENSER_CLAIM_AMOUNT = 1_000_000n;
 /** Maximum claims per chain */
 export const DISPENSER_MAX_CLAIMS = 1000;
 
-/** Redis key prefixes */
+/** ValKey key prefixes */
 const DISPENSER_PREFIX = "dispenser:";
 const CLAIMED_PREFIX = `${DISPENSER_PREFIX}claimed:`;
 const CHAIN_COUNT_PREFIX = `${DISPENSER_PREFIX}chain:`;
@@ -182,7 +182,7 @@ const VIEM_CHAINS: Record<number, typeof avalancheFuji | typeof arbitrumSepolia>
 };
 
 // =============================================================================
-// Redis Operations
+// ValKey Operations
 // =============================================================================
 
 /**
@@ -191,7 +191,7 @@ const VIEM_CHAINS: Record<number, typeof avalancheFuji | typeof arbitrumSepolia>
  */
 export async function getGlobalClaimStatus(address: string): Promise<GlobalClaimStatus> {
     const key = `${CLAIMED_PREFIX}${address.toLowerCase()}`;
-    const data = await redisGet(key);
+    const data = await valkeyGet(key);
 
     if (!data) {
         return { claimed: false };
@@ -212,7 +212,7 @@ export async function getGlobalClaimStatus(address: string): Promise<GlobalClaim
 }
 
 /**
- * Record a claim in Redis (global)
+ * Record a claim in ValKey (global)
  * Uses SETNX to prevent race conditions - atomic operation
  * Returns true if successfully recorded, false if already exists
  */
@@ -226,39 +226,39 @@ async function recordGlobalClaim(
         claimedAt: Date.now(),
     });
 
-    const didSet = await redisSetNX(key, value);
+    const didSet = await valkeySetNX(key, value);
 
     if (didSet) {
         const countKey = `${CHAIN_COUNT_PREFIX}${chainId}:count`;
-        await redisIncr(countKey);
+        await valkeyIncr(countKey);
     }
 
     return didSet;
 }
 
 /**
- * Rollback a Redis claim (on transaction failure)
+ * Rollback a ValKey claim (on transaction failure)
  */
 async function rollbackGlobalClaim(address: string, chainId: number): Promise<void> {
     const key = `${CLAIMED_PREFIX}${address.toLowerCase()}`;
-    await redisDel(key);
+    await valkeyDel(key);
 
     const countKey = `${CHAIN_COUNT_PREFIX}${chainId}:count`;
-    const currentCount = await redisGet(countKey);
+    const currentCount = await valkeyGet(countKey);
     if (currentCount && parseInt(currentCount, 10) > 0) {
         const newValue = parseInt(currentCount, 10) - 1;
-        await redisSet(countKey, newValue.toString());
+        await valkeySet(countKey, newValue.toString());
     }
 
     console.log(`[dispenser] Rolled back claim for ${address} on chain ${chainId}`);
 }
 
 /**
- * Get claim count for a chain from Redis
+ * Get claim count for a chain from ValKey
  */
 async function getChainClaimCount(chainId: number): Promise<number> {
     const countKey = `${CHAIN_COUNT_PREFIX}${chainId}:count`;
-    const count = await redisGet(countKey);
+    const count = await valkeyGet(countKey);
     return count ? parseInt(count, 10) : 0;
 }
 
@@ -416,7 +416,7 @@ async function executeDispenserClaim(
 }
 
 /**
- * Log transaction in Redis for audit trail
+ * Log transaction in ValKey for audit trail
  */
 async function logTransaction(
     txHash: string,
@@ -434,7 +434,7 @@ async function logTransaction(
         error,
         timestamp: Date.now(),
     });
-    await redisSet(key, value, 86400 * 30);
+    await valkeySet(key, value, 86400 * 30);
 }
 
 // =============================================================================
@@ -461,7 +461,7 @@ export async function checkDispenserAvailable(chainId: number): Promise<{
 
     try {
         const onchainStatus = await readDispenserStatus(chainId);
-        const redisClaimCount = await getChainClaimCount(chainId);
+        const valkeyClaimCount = await getChainClaimCount(chainId);
         const chainConfig = CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG];
 
         if (onchainStatus.isPaused) {
@@ -550,11 +550,11 @@ export async function checkDispenserAvailable(chainId: number): Promise<{
  * Claim USDC from dispenser
  *
  * Flow:
- * 1. Check if address has claimed on ANY chain (Redis global check)
+ * 1. Check if address has claimed on ANY chain (ValKey global check)
  * 2. Check if dispenser has remaining capacity
- * 3. Record claim in Redis atomically (SETNX)
+ * 3. Record claim in ValKey atomically (SETNX)
  * 4. Call dispenser contract to transfer USDC
- * 5. Rollback Redis on failure
+ * 5. Rollback ValKey on failure
  */
 export async function claimDispenserUSDC(
     request: DispenserClaimRequest
