@@ -1,42 +1,49 @@
-import { createClient, type RedisClientType } from "redis";
+import { Redis as ValkeyClient } from "ioredis";
 
-let client: RedisClientType | null = null;
-let pending: Promise<RedisClientType> | null = null;
+type ValkeyClientType = ValkeyClient;
+const VALKEY_COMMAND_TIMEOUT_MS = 500;
+const VALKEY_KEEP_ALIVE_MS = 10_000;
+
+let client: ValkeyClientType | null = null;
+let pending: Promise<ValkeyClientType> | null = null;
 
 function env(name: string): string {
     const value = process.env[name]?.trim();
     if (!value) {
-        throw new Error(`Backpack Redis configuration missing: ${name}`);
+        throw new Error(`Backpack ValKey configuration missing: ${name}`);
     }
     return value;
 }
 
-function endpoint(value: string): { host: string; port: number } {
-    const [host, raw] = value.split(":");
-    const port = Number.parseInt(raw || "", 10);
-    if (!host || !Number.isInteger(port) || port <= 0) {
-        throw new Error("REDIS_BACKPACK_DATABASE_PUBLIC_ENDPOINT must be host:port");
-    }
-    return { host, port };
-}
+async function connect(): Promise<ValkeyClientType> {
+    const uri = env("VALKEY_BACKPACK_SERVICE_URI");
+    const tls = process.env.VALKEY_TLS === "true";
 
-async function connect(): Promise<RedisClientType> {
-    const { host, port } = endpoint(env("REDIS_BACKPACK_DATABASE_PUBLIC_ENDPOINT"));
-    const password = env("REDIS_BACKPACK_DEFAULT_PASSWORD");
-    env("REDIS_BACKPACK_API_KEY");
-    const tls = process.env.REDIS_TLS === "true";
-
-    client = createClient({
-        password,
-        socket: tls ? { host, port, tls: true as const } : { host, port },
+    const instance = new ValkeyClient(uri, {
+        connectTimeout: 2000,
+        retryStrategy: (times: number) => Math.min(times * 50, 500),
+        maxRetriesPerRequest: 1,
+        commandTimeout: VALKEY_COMMAND_TIMEOUT_MS,
+        enableOfflineQueue: false,
+        enableAutoPipelining: true,
+        lazyConnect: true,
+        keepAlive: VALKEY_KEEP_ALIVE_MS,
+        ...(tls ? {} : {}),
     });
-    client.on("error", (error) => console.error("[backpack:redis] client error", error));
-    await client.connect();
-    return client;
+    instance.on("error", (error) => console.error("[backpack:valkey] client error", error));
+    instance.on("end", () => {
+        if (client === instance && instance.status !== "ready") {
+            client = null;
+        }
+    });
+    await instance.connect();
+    await instance.ping();
+    client = instance;
+    return instance;
 }
 
-export async function redis(): Promise<RedisClientType> {
-    if (client?.isOpen) return client;
+export async function valkey(): Promise<ValkeyClientType> {
+    if (client?.status === "ready") return client;
     if (!pending) {
         pending = connect().finally(() => {
             pending = null;
@@ -46,7 +53,7 @@ export async function redis(): Promise<RedisClientType> {
 }
 
 export async function close(): Promise<void> {
-    if (client?.isOpen) {
+    if (client) {
         await client.quit();
     }
     client = null;
@@ -56,23 +63,23 @@ export async function close(): Promise<void> {
 function part(value: string): string {
     const normalized = value.trim().toLowerCase();
     if (!normalized) {
-        throw new Error("Redis key part cannot be empty");
+        throw new Error("ValKey key part cannot be empty");
     }
     return encodeURIComponent(normalized);
 }
 
 export function key(...parts: string[]): string {
-    const prefix = process.env.BACKPACK_REDIS_PREFIX?.trim() || "backpack";
+    const prefix = process.env.BACKPACK_VALKEY_PREFIX?.trim() || "backpack";
     return [prefix, ...parts.map(part)].join(":");
 }
 
 export async function get(name: string): Promise<string | null> {
-    return (await redis()).get(name);
+    return (await valkey()).get(name);
 }
 
 export async function take(name: string): Promise<string | null> {
-    const db = await redis();
-    const getDel = (db as unknown as { getDel?: (key: string) => Promise<string | null> }).getDel;
+    const db = await valkey();
+    const getDel = (db as unknown as { getdel?: (key: string) => Promise<string | null> }).getdel;
     if (typeof getDel === "function") {
         return getDel.call(db, name);
     }
@@ -84,47 +91,49 @@ export async function take(name: string): Promise<string | null> {
 }
 
 export async function set(name: string, value: string, ttl?: number): Promise<void> {
-    const db = await redis();
+    const db = await valkey();
     if (ttl && ttl > 0) {
-        await db.setEx(name, ttl, value);
+        await db.setex(name, ttl, value);
         return;
     }
     await db.set(name, value);
 }
 
 export async function once(name: string, value: string, ttl: number): Promise<boolean> {
-    const result = await (await redis()).set(name, value, { NX: true, EX: ttl });
+    const result = await (await valkey()).set(name, value, "EX", ttl, "NX");
     return result === "OK";
 }
 
 export async function del(...names: string[]): Promise<number> {
     if (names.length === 0) return 0;
-    return (await redis()).del(names);
+    return (await valkey()).del(names);
 }
 
 export async function add(name: string, ...members: string[]): Promise<number> {
     if (members.length === 0) return 0;
-    return (await redis()).sAdd(name, members);
+    return (await valkey()).sadd(name, ...members);
 }
 
 export async function rem(name: string, ...members: string[]): Promise<number> {
     if (members.length === 0) return 0;
-    return (await redis()).sRem(name, members);
+    return (await valkey()).srem(name, ...members);
 }
 
 export async function members(name: string): Promise<string[]> {
-    return (await redis()).sMembers(name);
+    return (await valkey()).smembers(name);
 }
 
 export async function push(name: string, value: string, limit: number, ttl: number): Promise<void> {
-    const db = await redis();
-    await db.rPush(name, value);
-    await db.lTrim(name, -Math.max(1, limit), -1);
-    await db.expire(name, ttl);
+    const db = await valkey();
+    const pipeline = db.pipeline();
+    pipeline.rpush(name, value);
+    pipeline.ltrim(name, -Math.max(1, limit), -1);
+    pipeline.expire(name, ttl);
+    await pipeline.exec();
 }
 
 export async function range(name: string, start = 0, stop = -1): Promise<string[]> {
-    return (await redis()).lRange(name, start, stop);
+    return (await valkey()).lrange(name, start, stop);
 }
 
 export async function json<T>(name: string): Promise<T | null> {
