@@ -26,6 +26,7 @@ const abi = [transfer] as const;
 const MIN_CHUNK = 10n;
 const START_CHUNK = 50_000n;
 const MAX_CHUNK = 500_000n;
+const LIVE_CHUNK = 10_000n;
 const ALCHEMY_PAGE_SIZE = "0x3e8";
 
 export interface PaymentRecord {
@@ -326,7 +327,7 @@ async function scanAlchemyTransfers(chainId: ChainId, target: bigint, maxPages: 
     return { pages, transfers, transactions };
 }
 
-async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number): Promise<{
+async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number, startChunk?: bigint): Promise<{
     ranges: number;
     transfers: number;
     transactions: number;
@@ -337,7 +338,7 @@ async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number): Pr
     });
     let cursor = BigInt(await getState(`payments:cursor:${chainId}`) ?? "-1");
     let from = cursor + 1n;
-    let chunk = START_CHUNK;
+    let chunk = startChunk ?? START_CHUNK;
     let ranges = 0;
     let transfers = 0;
     let transactions = 0;
@@ -371,6 +372,57 @@ async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number): Pr
     return { ranges, transfers, transactions };
 }
 
+async function getLatestBlockNumber(chainId: ChainId): Promise<bigint> {
+    const client = createPublicClient({
+        chain: getViemChain(chainId),
+        transport: http(getRpcUrl(chainId)),
+    });
+    return await client.getBlockNumber();
+}
+
+async function syncLivePayments(chains: ChainId[], maxRanges: number): Promise<{
+    chains: number;
+    ranges: number;
+    transfers: number;
+    transactions: number;
+    complete: boolean;
+    cutoff?: string;
+}> {
+    let ranges = 0;
+    let transfers = 0;
+    let transactions = 0;
+
+    for (const chainId of chains) {
+        if (ranges >= maxRanges) break;
+
+        const latest = await getLatestBlockNumber(chainId);
+        const cursor = BigInt(await getState(`payments:cursor:${chainId}`) ?? "0");
+        if (cursor >= latest) continue;
+
+        if (isAlchemyRpc(getRpcUrl(chainId))) {
+            const result = await scanAlchemyTransfers(chainId, latest, maxRanges - ranges);
+            ranges += result.pages;
+            transfers += result.transfers;
+            transactions += result.transactions;
+        } else {
+            const result = await scanLogs(chainId, latest, maxRanges - ranges, LIVE_CHUNK);
+            ranges += result.ranges;
+            transfers += result.transfers;
+            transactions += result.transactions;
+        }
+    }
+
+    await setState("payments", new Date().toISOString());
+    return {
+        chains: chains.length,
+        ranges,
+        transfers,
+        transactions,
+        complete: true,
+        cutoff: await getState("payments:cutoff"),
+    };
+}
+
 export async function syncPayments(options: PaymentSyncOptions = {}): Promise<{
     chains: number;
     ranges: number;
@@ -384,14 +436,7 @@ export async function syncPayments(options: PaymentSyncOptions = {}): Promise<{
     await ensureCutoff(chains);
 
     if (await getState("payments:history:complete") === "true") {
-        return {
-            chains: chains.length,
-            ranges: 0,
-            transfers: 0,
-            transactions: 0,
-            complete: true,
-            cutoff: await getState("payments:cutoff"),
-        };
+        return await syncLivePayments(chains, options.maxRanges ?? 200);
     }
 
     let ranges = 0;

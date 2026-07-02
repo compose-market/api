@@ -83,6 +83,18 @@ async function migrate(): Promise<void> {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     `);
+
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS expenses (
+            provider    TEXT NOT NULL,
+            day         DATE NOT NULL,
+            cost_usd    NUMERIC(12,6) NOT NULL DEFAULT 0,
+            currency    TEXT NOT NULL DEFAULT 'USD',
+            details     JSONB,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (provider, day)
+        )
+    `);
 }
 
 export async function getState(name: string): Promise<string | undefined> {

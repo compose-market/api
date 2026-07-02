@@ -14,6 +14,7 @@ import { registerMetricsRoutes } from "./metrics/routes.js";
 import { syncDownloads } from "./metrics/downloads.js";
 import { syncPayments } from "./metrics/payments.js";
 import { syncSessionsFromValkey } from "./metrics/sessions.js";
+import { syncAllExpenses } from "./metrics/expenses/index.js";
 import { refreshMetricsSnapshot } from "./metrics/snapshot.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
@@ -40,6 +41,7 @@ async function runJob() {
         await syncDownloads();
         await syncSessionsFromValkey();
         await syncPayments();
+        await syncAllExpenses();
         await refreshMetricsSnapshot();
         break;
       case "metrics-payments":
@@ -52,6 +54,10 @@ async function runJob() {
         break;
       case "metrics-sessions":
         await syncSessionsFromValkey();
+        await refreshMetricsSnapshot();
+        break;
+      case "metrics-expenses":
+        await syncAllExpenses();
         await refreshMetricsSnapshot();
         break;
       default:

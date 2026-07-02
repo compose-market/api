@@ -187,6 +187,41 @@ steps:
           --member="serviceAccount:${_SERVICE_ACCOUNT}" \
           --role="roles/run.invoker" >/dev/null 2>&1 || true
         PROJECT_NUMBER="$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
+
+        METRICS_SECRETS="METRICS_DATABASE_URL=METRICS_DATABASE_URL:latest,MERCHANT_WALLET_ADDRESS=MERCHANT_WALLET_ADDRESS:latest,VALKEY_KEYS_SERVICE_URI=VALKEY_KEYS_SERVICE_URI:latest,VALKEY_TLS=VALKEY_TLS:latest,VALKEY_KEYS_PASSWORD=VALKEY_KEYS_PASSWORD:latest,AVALANCHE_FUJI_RPC=AVALANCHE_FUJI_RPC:latest,AVALANCHE_MAINNET_RPC=AVALANCHE_MAINNET_RPC:latest,ARBITRUM_SEPOLIA_RPC=ARBITRUM_SEPOLIA_RPC:latest,ARBITRUM_MAINNET_RPC=ARBITRUM_MAINNET_RPC:latest,BASE_SEPOLIA_RPC=BASE_SEPOLIA_RPC:latest,BASE_MAINNET_RPC=BASE_MAINNET_RPC:latest,OPENAI_ADMIN_KEY=OPENAI_ADMIN_KEY:latest,FIREWORKS_API_KEY=FIREWORKS_API_KEY:latest,FIREWORKS_ID=FIREWORKS_ID:latest,AZURE_SUBSCRIPTION_ID=AZURE_SUBSCRIPTION_ID:latest"
+
+        deploy_metric_job() {
+          local name="$1" task="$2" timeout="$3"
+          gcloud run jobs update "${name}" \
+            --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA \
+            --region ${_REGION} \
+            --tasks 1 \
+            --max-retries 0 \
+            --task-timeout "${timeout}" \
+            --service-account ${_SERVICE_ACCOUNT} \
+            --set-env-vars "JOB_TASK=${task},NODE_ENV=production" \
+            --set-secrets "${METRICS_SECRETS}" 2>/dev/null || \
+          gcloud run jobs create "${name}" \
+            --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA \
+            --region ${_REGION} \
+            --tasks 1 \
+            --max-retries 0 \
+            --task-timeout "${timeout}" \
+            --service-account ${_SERVICE_ACCOUNT} \
+            --set-env-vars "JOB_TASK=${task},NODE_ENV=production" \
+            --set-secrets "${METRICS_SECRETS}"
+        }
+
+        deploy_metric_scheduler() {
+          local name="$1" schedule="$2" job_name="$3"
+          local URI="https://${_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_NUMBER}/jobs/${job_name}:run"
+          if gcloud scheduler jobs describe "${name}" --location ${_REGION} --project $PROJECT_ID >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "${name}" --location ${_REGION} --project $PROJECT_ID --schedule "${schedule}" --time-zone "Etc/UTC" --uri "${URI}" --http-method POST --oauth-service-account-email ${_SERVICE_ACCOUNT} --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" --attempt-deadline 300s --quiet
+          else
+            gcloud scheduler jobs create http "${name}" --location ${_REGION} --project $PROJECT_ID --schedule "${schedule}" --time-zone "Etc/UTC" --uri "${URI}" --http-method POST --oauth-service-account-email ${_SERVICE_ACCOUNT} --oauth-token-scope "https://www.googleapis.com/auth/cloud-platform" --attempt-deadline 300s --quiet
+          fi
+        }
+
         SETTLEMENT_URI="https://${_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_NUMBER}/jobs/compose-market-settlement:run"
         if gcloud scheduler jobs describe compose-market-settlement-every-2-min \
           --location ${_REGION} \
@@ -215,6 +250,18 @@ steps:
             --attempt-deadline 180s \
             --quiet
         fi
+
+        deploy_metric_job "compose-market-metrics-payments" "metrics-payments" "120s"
+        deploy_metric_job "compose-market-metrics-sessions" "metrics-sessions" "120s"
+        deploy_metric_job "compose-market-metrics-downloads" "metrics-downloads" "120s"
+        deploy_metric_job "compose-market-metrics-sync" "metrics-sync" "300s"
+        deploy_metric_job "compose-market-metrics-expenses" "metrics-expenses" "300s"
+
+        deploy_metric_scheduler "compose-market-metrics-payments-every-2-min" "*/2 * * * *" "compose-market-metrics-payments"
+        deploy_metric_scheduler "compose-market-metrics-sessions-every-5-min" "*/5 * * * *" "compose-market-metrics-sessions"
+        deploy_metric_scheduler "compose-market-metrics-downloads-hourly" "0 * * * *" "compose-market-metrics-downloads"
+        deploy_metric_scheduler "compose-market-metrics-sync-every-15-min" "*/15 * * * *" "compose-market-metrics-sync"
+        deploy_metric_scheduler "compose-market-metrics-expenses-hourly" "0 * * * *" "compose-market-metrics-expenses"
     waitFor: ['deploy-service']
 
 # Output the service URL
