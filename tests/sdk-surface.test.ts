@@ -9,7 +9,7 @@
  *   - X-Receipt decode round-trip
  *   - The idempotency helper keys are stable
  *
- * Every test is self-contained; no mocks. Redis is hit through the real client
+ * Every test is self-contained; no mocks. ValKey is hit through the real client
  * so session-budget state is cleaned in the finally blocks.
  */
 
@@ -21,7 +21,7 @@ import test from "node:test";
 
 import express from "express";
 
-import { closeRedis, redisDel, redisSRem } from "../x402/keys/redis.js";
+import { closeValkey, valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
 import { createKey } from "../x402/keys/storage.js";
 import {
     encodeReceiptHeader,
@@ -71,7 +71,7 @@ function sessionBudgetKey(userAddress: string, chainId: number): string {
 }
 
 // ----------------------------------------------------------------------------
-// Pure unit tests — no Redis, no network.
+// Pure unit tests — no ValKey, no network.
 // ----------------------------------------------------------------------------
 
 test("generateRequestId produces a unique req_ prefixed id", () => {
@@ -203,12 +203,12 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
         assert.equal(globalBody.chainId, chainId);
     } finally {
         if (seededKeyId) {
-            await redisDel(`compose-key:${seededKeyId}`);
-            await redisSRem(userKeysIndex(userAddress), seededKeyId);
+            await valkeyDel(`compose-key:${seededKeyId}`);
+            await valkeySRem(userKeysIndex(userAddress), seededKeyId);
         }
         // Clean any leftover state.
-        await redisDel(userKeysIndex(userAddress));
-        await redisDel(sessionBudgetKey(userAddress, chainId));
+        await valkeyDel(userKeysIndex(userAddress));
+        await valkeyDel(sessionBudgetKey(userAddress, chainId));
     }
 });
 
@@ -257,10 +257,10 @@ test("GET /api/session returns active raw x402 envelope metadata by payer", asyn
         assert.equal(body.rawEnvelope?.maxAmountWei, "2500");
         assert.equal(body.rawEnvelope?.remainingWei, "2500");
     } finally {
-        await redisDel(`x402:envelope:${rootRunId}`);
-        await redisDel(`x402:envelope:payer:${userAddress.toLowerCase()}`);
-        await redisDel(`x402:envelope:payer:${userAddress.toLowerCase()}:${chainId}`);
-        await closeRedis();
+        await valkeyDel(`x402:envelope:${rootRunId}`);
+        await valkeyDel(`x402:envelope:payer:${userAddress.toLowerCase()}`);
+        await valkeyDel(`x402:envelope:payer:${userAddress.toLowerCase()}:${chainId}`);
+        await closeValkey();
     }
 });
 
@@ -363,8 +363,8 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
         );
         assert.equal(attackerCleanup.statusCode, 200);
     } finally {
-        await redisDel(userKeysIndex(userAddress));
-        await redisDel(userKeysIndex(attacker));
+        await valkeyDel(userKeysIndex(userAddress));
+        await valkeyDel(userKeysIndex(attacker));
     }
 });
 
@@ -412,7 +412,7 @@ test("GET /api/keys/:keyId requires possession and returns key metadata without 
             {},
         );
     } finally {
-        await redisDel(userKeysIndex(userAddress));
+        await valkeyDel(userKeysIndex(userAddress));
     }
 });
 
@@ -524,5 +524,5 @@ test("response carries X-Request-Id when the server is up behind the middleware"
 });
 
 test.after(async () => {
-    await closeRedis();
+    await closeValkey();
 });

@@ -6,10 +6,10 @@ import { randomUUID } from "node:crypto";
 
 import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
 import {
-  redisDel,
-  redisSRem,
-  closeRedis,
-} from "../x402/keys/redis.js";
+  valkeyDel,
+  valkeySRem,
+  closeValkey,
+} from "../x402/keys/valkey.js";
 import {
   initializeSessionBudget,
   lockBudget,
@@ -100,18 +100,18 @@ test("getActiveSessionStatus reflects session-budget locks for active session to
   } finally {
     if (intentId) {
       await cancelBudgetIntent(intentId, "test-cleanup");
-      await redisDel(intentKey(intentId));
-      await redisSRem("intents:pending", intentId);
-      await redisSRem(userIntentsKey(userAddress), intentId);
+      await valkeyDel(intentKey(intentId));
+      await valkeySRem("intents:pending", intentId);
+      await valkeySRem(userIntentsKey(userAddress), intentId);
     }
 
     if (keyId) {
-      await redisDel(keyRecordKey(keyId));
-      await redisDel(revokedKeyKey(keyId));
-      await redisSRem(userKeysKey(userAddress), keyId);
+      await valkeyDel(keyRecordKey(keyId));
+      await valkeyDel(revokedKeyKey(keyId));
+      await valkeySRem(userKeysKey(userAddress), keyId);
     }
 
-    await redisDel(sessionBudgetKey(userAddress, TEST_CHAIN_ID));
-    await closeRedis();
+    await valkeyDel(sessionBudgetKey(userAddress, TEST_CHAIN_ID));
+    await closeValkey();
   }
 });

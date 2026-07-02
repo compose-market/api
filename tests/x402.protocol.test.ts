@@ -262,8 +262,8 @@ test("terminal batch settlement kicks require real backing and shared worker loc
   assert.match(X402_SOURCE, /settlement\.paymentIntentId/);
   assert.match(X402_SOURCE, /settlement\.sessionBudgetIntentId/);
   assert.match(X402_SOURCE, /settlement\.paymentChannelId && settlement\.paymentCumulativeAmountWei/);
-  assert.match(X402_SOURCE, /redisSetNXEX\(\s*SETTLEMENT_KICK_LOCK_KEY/);
-  assert.match(X402_SOURCE, /redisSetNXEX\(\s*SETTLEMENT_RUN_LOCK_KEY/);
+  assert.match(X402_SOURCE, /valkeySetNXEX\(\s*SETTLEMENT_KICK_LOCK_KEY/);
+  assert.match(X402_SOURCE, /valkeySetNXEX\(\s*SETTLEMENT_RUN_LOCK_KEY/);
   assert.match(X402_SOURCE, /void \(async \(\) =>/);
   assert.match(X402_SOURCE, /SETTLEMENT_KICK_RETRY_ATTEMPTS/);
   assert.match(X402_SOURCE, /SETTLEMENT_KICK_RETRY_MS/);

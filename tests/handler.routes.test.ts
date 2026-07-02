@@ -6,9 +6,9 @@ import test, { after } from "node:test";
 
 import express from "express";
 import {
-  closeRedis,
-  redisDel,
-} from "../x402/keys/redis.js";
+  closeValkey,
+  valkeyDel,
+} from "../x402/keys/valkey.js";
 import {
   selectActiveSessionStatus,
   type ActiveSessionCandidate,
@@ -64,7 +64,7 @@ function sessionBudgetKey(userAddress: string, chainId: number): string {
 after(async () => {
   const backpack = await import("../backpack/storage.js");
   await backpack.close();
-  await closeRedis();
+  await closeValkey();
 });
 
 test("registerHandlerRoutes registers /health directly", async () => {
@@ -363,8 +363,8 @@ test("handler rejects session creation when the tied wallet lacks the required U
     assert.equal(sessionBody.hasSession, false);
     assert.equal(sessionBody.reason, "none");
   } finally {
-    await redisDel(sessionBudgetKey(userAddress, chainId));
-    await closeRedis();
+    await valkeyDel(sessionBudgetKey(userAddress, chainId));
+    await closeValkey();
   }
 });
 
@@ -453,7 +453,7 @@ test("handler rejects api key creation when the tied wallet lacks the required U
     assert.equal(sessionBody.hasSession, false);
     assert.equal(sessionBody.reason, "none");
   } finally {
-    await closeRedis();
+    await closeValkey();
   }
 });
 

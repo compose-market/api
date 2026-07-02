@@ -13,7 +13,7 @@ import {
 } from "../x402/receipts.js";
 import { quoteMeteredSettlement } from "../x402/metering.js";
 import { createKey } from "../x402/keys/storage.js";
-import { redisDel, redisSRem } from "../x402/keys/redis.js";
+import { valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
 import type { Receipt } from "../http/request-context.js";
 
 const ORIGINAL_COMPOSE_SESSION_SECRET = process.env.COMPOSE_SESSION_SECRET;
@@ -103,7 +103,7 @@ test("nested model meters fail closed without canonical modality evidence", () =
 });
 
 test("receipt listing uses Key identity instead of userAddress query trust", {
-  skip: !process.env.REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT || !process.env.REDIS_KEYS_DEFAULT_PASSWORD,
+  skip: !process.env.VALKEY_KEYS_SERVICE_URI || !process.env.VALKEY_KEYS_PASSWORD,
 }, async () => {
   process.env.COMPOSE_SESSION_SECRET ||= "test-session-secret";
   const userAddress = wallet();
@@ -138,8 +138,8 @@ test("receipt listing uses Key identity instead of userAddress query trust", {
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     if (keyId) {
-      await redisDel(keyRecordKey(keyId));
-      await redisSRem(userKeysKey(userAddress), keyId);
+      await valkeyDel(keyRecordKey(keyId));
+      await valkeySRem(userKeysKey(userAddress), keyId);
     }
     if (ORIGINAL_COMPOSE_SESSION_SECRET === undefined) {
       delete process.env.COMPOSE_SESSION_SECRET;

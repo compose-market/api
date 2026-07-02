@@ -16,7 +16,7 @@ import {
   registerManowarRoutes,
 } from "../routes.js";
 import { createKey } from "../x402/keys/storage.js";
-import { closeRedis, redisDel, redisSRem } from "../x402/keys/redis.js";
+import { closeValkey, valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
 import { recordChargeEvidence } from "../x402/evidence.js";
 import { initializeSessionBudget } from "../x402/session-budget.js";
 
@@ -546,23 +546,26 @@ test("payable route receipts kick batch settlement after evidence-backed receipt
   );
 });
 
-test("agent route receipts keep child telemetry out of settled wrapper amounts", () => {
+test("agent route receipts compute wrapper fees from the full internal activity basis", () => {
   const settleBody = ROUTES_SOURCE.slice(
     ROUTES_SOURCE.indexOf("async function resolveAgentEndpointSettlement"),
     ROUTES_SOURCE.indexOf("function resolveAgentTextSettlement"),
   );
 
   assert.match(settleBody, /const childAgents = uniqueCharges\(await listChildEvidence/);
+  assert.match(settleBody, /const directBaseWei = sumWei\(direct/);
+  assert.match(settleBody, /const childAgentBaseWei = sumWei\(childAgents/);
+  assert.match(settleBody, /const feeBase = directBaseWei \+ childAgentBaseWei/);
   assert.match(settleBody, /\.\.\.direct\.map\(evidenceBill\)/);
   assert.match(settleBody, /\.\.\.childAgents\.map\(evidenceBill\)/);
   assert.match(settleBody, /finalAmountWei: wrapperFeeWei\.toString\(\)/);
-  assert.match(settleBody, /providerAmountWei: creatorFeeWei\.toString\(\)/);
+  assert.match(settleBody, /providerAmountWei: feeBase\.toString\(\)/);
   assert.match(settleBody, /agentBill\(\{/);
-  assert.doesNotMatch(settleBody, /const displayTotalWei = childBills\.reduce/);
+  assert.match(settleBody, /const displayTotalWei = childBills\.reduce/);
 });
 
-test("agent stream settlement charges only endpoint wrapper fees over direct model provider evidence", {
-  skip: !process.env.REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT || !process.env.REDIS_KEYS_DEFAULT_PASSWORD,
+test("agent stream settlement charges parent wrapper fees over direct and child-agent activity", {
+  skip: !process.env.VALKEY_KEYS_SERVICE_URI || !process.env.VALKEY_KEYS_PASSWORD,
 }, async () => {
   const originalNodeEnv = process.env.NODE_ENV;
   const originalTxHash = process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH;
@@ -642,17 +645,34 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
       settledAt: Date.now(),
     });
     await recordChargeEvidence({
-      kind: "model",
+      kind: "memory",
+      rootRunId,
+      executionRunId,
+      service: "memory",
+      action: "fact-extraction",
+      subject: "memory:fact-extraction",
+      providerAmountWei: "500",
+      feeWei: "5",
+      finalAmountWei: "505",
+      txHash: "0xmemory",
+      chainId: 43113,
+      settledAt: Date.now(),
+    });
+    await recordChargeEvidence({
+      kind: "agent",
       rootRunId,
       executionRunId: `child-${randomUUID()}`,
       parentExecutionRunId: executionRunId,
-      service: "inference",
-      action: "v1-responses",
-      subject: "model:child-agent-brain",
-      providerAmountWei: "900000",
-      feeWei: "9000",
-      finalAmountWei: "909000",
-      txHash: "0xchildmodel",
+      service: "agent",
+      action: "stream",
+      subject: "agent:0x00000000000000000000000000000000000000c1",
+      walletAddress: "0x00000000000000000000000000000000000000c1",
+      name: "Child Agent",
+      providerAmountWei: "5000",
+      feeWei: "50",
+      creatorFeeWei: "50",
+      finalAmountWei: "100",
+      txHash: "0xchildagent",
       chainId: 43113,
       settledAt: Date.now(),
     });
@@ -691,14 +711,16 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
     };
 
     assert.equal(receipt.service, "agent");
-    assert.equal(receipt.action, "agent-stream");
-    assert.equal(receipt.providerAmountWei, "10");
-    assert.equal(receipt.platformFeeWei, "10");
-    assert.equal(receipt.finalAmountWei, "20");
-    assert.equal(receipt.bills?.length, 1);
-    assert.equal(receipt.bills?.[0]?.amountWei, "20");
-    assert.equal(receipt.bills?.[0]?.children?.length, 2);
-    assert.equal(receipt.bills?.[0]?.lineItems?.length, 2);
+    assert.equal(receipt.action, "stream");
+    assert.equal(receipt.providerAmountWei, "6500");
+    assert.equal(receipt.platformFeeWei, "65");
+    assert.equal(receipt.finalAmountWei, "130");
+    assert.equal(receipt.bills?.length, 2);
+    assert.equal(receipt.bills?.[0]?.amountWei, "1745");
+    assert.equal(receipt.bills?.[0]?.children?.length, 3);
+    assert.equal(receipt.bills?.[0]?.lineItems?.length, 9);
+    assert.equal(receipt.bills?.[1]?.amountWei, "130");
+    assert.equal(receipt.bills?.[1]?.lineItems?.length, 2);
     assert.equal(receipt.settlementStatus, "settled");
     assert.equal(receipt.txHash, TEST_SETTLEMENT_TX_HASH);
   } finally {
@@ -709,15 +731,15 @@ test("agent stream settlement charges only endpoint wrapper fees over direct mod
     restoreEnv("RUNTIME_URL", ORIGINAL_RUNTIME_URL);
     restoreEnv("COMPOSE_SESSION_SECRET", ORIGINAL_COMPOSE_SESSION_SECRET);
     if (keyId) {
-      await redisDel(keyRecordKey(keyId));
-      await redisSRem(userKeysKey(userAddress), keyId);
+      await valkeyDel(keyRecordKey(keyId));
+      await valkeySRem(userKeysKey(userAddress), keyId);
     }
-    await closeRedis();
+    await closeValkey();
   }
 });
 
 test("agent stream settlement does not fold direct model evidence into the wrapper payment", {
-  skip: !process.env.REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT || !process.env.REDIS_KEYS_DEFAULT_PASSWORD,
+  skip: !process.env.VALKEY_KEYS_SERVICE_URI || !process.env.VALKEY_KEYS_PASSWORD,
 }, async () => {
   const originalNodeEnv = process.env.NODE_ENV;
   const originalTxHash = process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH;
@@ -830,14 +852,16 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
     };
 
     assert.equal(receipt.service, "agent");
-    assert.equal(receipt.action, "agent-stream");
-    assert.equal(receipt.providerAmountWei, "10");
+    assert.equal(receipt.action, "stream");
+    assert.equal(receipt.providerAmountWei, "1000");
     assert.equal(receipt.platformFeeWei, "10");
     assert.equal(receipt.finalAmountWei, "20");
-    assert.equal(receipt.bills?.length, 1);
-    assert.equal(receipt.bills?.[0]?.amountWei, "20");
+    assert.equal(receipt.bills?.length, 2);
+    assert.equal(receipt.bills?.[0]?.amountWei, "1030");
     assert.equal(receipt.bills?.[0]?.children?.length, 1);
-    assert.equal(receipt.bills?.[0]?.lineItems?.length, 2);
+    assert.equal(receipt.bills?.[0]?.lineItems?.length, 4);
+    assert.equal(receipt.bills?.[1]?.amountWei, "20");
+    assert.equal(receipt.bills?.[1]?.lineItems?.length, 2);
     assert.equal(receipt.settlementStatus, "settled");
     assert.equal(receipt.txHash, TEST_SETTLEMENT_TX_HASH);
   } finally {
@@ -848,9 +872,9 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
     restoreEnv("RUNTIME_URL", ORIGINAL_RUNTIME_URL);
     restoreEnv("COMPOSE_SESSION_SECRET", ORIGINAL_COMPOSE_SESSION_SECRET);
     if (keyId) {
-      await redisDel(keyRecordKey(keyId));
-      await redisSRem(userKeysKey(userAddress), keyId);
+      await valkeyDel(keyRecordKey(keyId));
+      await valkeySRem(userKeysKey(userAddress), keyId);
     }
-    await closeRedis();
+    await closeValkey();
   }
 });

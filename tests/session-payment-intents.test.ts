@@ -9,7 +9,7 @@ import { abortPaymentIntent, authorizePaymentIntent, settlePaymentIntent } from 
 import { markIntentEvidenceSettled, recordChargeEvidence } from "../x402/evidence.js";
 import { prepareInferencePayment, settlePreparedInferencePayment } from "../x402/index.js";
 import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
-import { closeRedis, redisDel, redisGet, redisHGetAll, redisHSet, redisSRem } from "../x402/keys/redis.js";
+import { closeValkey, valkeyDel, valkeyGet, valkeyHGetAll, valkeyHSet, valkeySRem } from "../x402/keys/valkey.js";
 import { getBudgetInfo, initializeSessionBudget } from "../x402/session-budget.js";
 
 const TEST_CHAIN_ID = 43113;
@@ -142,28 +142,28 @@ async function cleanupTestState(input: {
   extraKeys?: string[];
 }): Promise<void> {
   for (const paymentIntentId of input.paymentIntentIds) {
-    const intent = await redisHGetAll(paymentIntentKey(paymentIntentId));
+    const intent = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
     const sessionBudgetIntentId = intent?.sessionBudgetIntentId;
     if (sessionBudgetIntentId) {
-      await redisDel(sessionIntentKey(sessionBudgetIntentId));
-      await redisSRem(PENDING_INTENTS_KEY, sessionBudgetIntentId);
-      await redisSRem(userIntentsKey(input.userAddress), sessionBudgetIntentId);
+      await valkeyDel(sessionIntentKey(sessionBudgetIntentId));
+      await valkeySRem(PENDING_INTENTS_KEY, sessionBudgetIntentId);
+      await valkeySRem(userIntentsKey(input.userAddress), sessionBudgetIntentId);
     }
-    await redisDel(paymentIntentKey(paymentIntentId));
+    await valkeyDel(paymentIntentKey(paymentIntentId));
   }
 
   if (input.keyId) {
-    await redisDel(keyRecordKey(input.keyId));
-    await redisDel(revokedKeyKey(input.keyId));
-    await redisSRem(userKeysKey(input.userAddress), input.keyId);
+    await valkeyDel(keyRecordKey(input.keyId));
+    await valkeyDel(revokedKeyKey(input.keyId));
+    await valkeySRem(userKeysKey(input.userAddress), input.keyId);
   }
 
   for (const key of input.extraKeys || []) {
-    await redisDel(key);
+    await valkeyDel(key);
   }
 
-  await redisDel(sessionBudgetKey(input.userAddress, TEST_CHAIN_ID));
-  await closeRedis();
+  await valkeyDel(sessionBudgetKey(input.userAddress, TEST_CHAIN_ID));
+  await closeValkey();
 }
 
 test("session payment intents authorize against the live session ledger instead of stale compose-key usage", async () => {
@@ -190,11 +190,11 @@ test("session payment intents authorize against the live session ledger instead 
       expiresAt,
     );
 
-    await redisHSet(sessionBudgetKey(userAddress, TEST_CHAIN_ID), {
+    await valkeyHSet(sessionBudgetKey(userAddress, TEST_CHAIN_ID), {
       usedBudgetWei: String(TEST_SESSION_USED_WEI),
       lockedBudgetWei: "0",
     });
-    await redisHSet(keyRecordKey(created.keyId), {
+    await valkeyHSet(keyRecordKey(created.keyId), {
       budgetUsed: String(TEST_STALE_KEY_USED_WEI),
       budgetReserved: "0",
     });
@@ -422,7 +422,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     }
     paymentIntentIds.push(first.body.paymentIntentId, second.body.paymentIntentId);
 
-    const recordBeforeSettle = await redisHGetAll(keyRecordKey(created.keyId));
+    const recordBeforeSettle = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordBeforeSettle.budgetReserved, "0");
     assert.equal(recordBeforeSettle.budgetUsed, "0");
 
@@ -438,7 +438,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     assert.equal(settled.body.finalAmountWei, String(TEST_REQUEST_WEI));
     assert.equal(settled.body.txHash, TEST_SETTLEMENT_TX_HASH);
 
-    const recordAfterSettle = await redisHGetAll(keyRecordKey(created.keyId));
+    const recordAfterSettle = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordAfterSettle.budgetReserved, "0");
     assert.equal(recordAfterSettle.budgetUsed, String(TEST_REQUEST_WEI));
 
@@ -448,7 +448,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     });
     assert.equal(aborted.ok, true);
 
-    const recordAfterAbort = await redisHGetAll(keyRecordKey(created.keyId));
+    const recordAfterAbort = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordAfterAbort.budgetReserved, "0");
     assert.equal(recordAfterAbort.budgetUsed, String(TEST_REQUEST_WEI));
   } finally {
@@ -487,7 +487,7 @@ test("native inference compose-key settlement creates and settles a payment inte
 
     assert.ok(payment, "native inference compose-key preparation should succeed");
     assert.equal(probe.statusCode, null);
-    paymentIntentId = await redisGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey));
+    paymentIntentId = await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey));
     assert.ok(paymentIntentId, "native inference compose-key preparation should create a payment intent");
     assert.equal(payment.runtimeHeaders.Authorization, `Bearer ${created.token}`);
     assert.equal(payment.runtimeHeaders["x-session-active"], "false");
@@ -510,14 +510,14 @@ test("native inference compose-key settlement creates and settles a payment inte
     assert.equal(probe.headers["x-key-tx-hash"], TEST_SETTLEMENT_TX_HASH);
     assert.equal(probe.headers["X-Transaction-Hash"], TEST_SETTLEMENT_TX_HASH);
     assert.equal(probe.headers["x-settlement"], "settled");
-    assert.equal(await redisGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), paymentIntentId);
+    assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), paymentIntentId);
 
-    const intent = await redisHGetAll(paymentIntentKey(paymentIntentId));
+    const intent = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
     assert.equal(intent.status, "settled");
     assert.equal(intent.finalAmountWei, receipt.finalAmountWei);
     assert.equal(intent.txHash, TEST_SETTLEMENT_TX_HASH);
 
-    const record = await redisHGetAll(keyRecordKey(created.keyId));
+    const record = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(record.budgetReserved || "0", "0");
     assert.equal(record.budgetUsed, receipt.finalAmountWei);
   } finally {
@@ -565,7 +565,7 @@ test("native inference session compose-key locks only the final authoritative se
 
     assert.ok(payment, "native inference session preparation should succeed");
     assert.equal(probe.statusCode, null);
-    assert.equal(await redisGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
+    assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
     assert.equal(payment.maxAmountWei, String(TEST_BUDGET_WEI));
     assert.equal(payment.runtimeHeaders.Authorization, `Bearer ${created.token}`);
     assert.equal(payment.runtimeHeaders["x-session-active"], "true");
@@ -593,7 +593,7 @@ test("native inference session compose-key locks only the final authoritative se
     const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
     assert.equal(budgetInfo?.lockedWei, receipt.finalAmountWei);
     assert.equal(budgetInfo?.usedWei, "0");
-    assert.equal(await redisGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
+    assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
 
     const evidence = await recordChargeEvidence({
       kind: "model",
@@ -615,7 +615,7 @@ test("native inference session compose-key locks only the final authoritative se
     });
     assert.equal(updated, 1);
 
-    const settledEvidence = await redisHGetAll(`x402:evidence:charge:${evidence.id}`);
+    const settledEvidence = await valkeyHGetAll(`x402:evidence:charge:${evidence.id}`);
     assert.equal(settledEvidence?.settlementStatus, "settled");
     assert.equal(settledEvidence?.txHash, TEST_SETTLEMENT_TX_HASH);
   } finally {
@@ -758,7 +758,7 @@ test("settling a session payment intent cannot exceed the reserved amount", asyn
     assert.equal(settled.ok, false);
     assert.equal(settled.status, 409);
 
-    const paymentIntent = await redisHGetAll(paymentIntentKey(paymentIntentId));
+    const paymentIntent = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
     assert.equal(paymentIntent.status, "authorized");
     assert.equal(paymentIntent.finalAmountWei, undefined);
 
@@ -781,7 +781,7 @@ test("settling a session payment intent cannot exceed the reserved amount", asyn
   }
 });
 
-test("settling a session budget-cap intent charges on-chain before marking Redis settled", async () => {
+test("settling a session budget-cap intent charges on-chain before marking ValKey settled", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
@@ -842,13 +842,13 @@ test("settling a session budget-cap intent charges on-chain before marking Redis
     assert.equal(settled.headers["x-key-final-amount-wei"], String(TEST_REQUEST_WEI));
     assert.equal(settled.headers["x-key-tx-hash"], TEST_SETTLEMENT_TX_HASH);
 
-    const paymentIntent = await redisHGetAll(paymentIntentKey(paymentIntentId));
+    const paymentIntent = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
     assert.ok(paymentIntent?.sessionBudgetIntentId, "settlement should create a session-budget intent");
     assert.equal(paymentIntent.status, "settled");
     assert.equal(paymentIntent.finalAmountWei, String(TEST_REQUEST_WEI));
     assert.equal(paymentIntent.txHash, TEST_SETTLEMENT_TX_HASH);
 
-    const sessionIntent = await redisHGetAll(sessionIntentKey(paymentIntent.sessionBudgetIntentId));
+    const sessionIntent = await valkeyHGetAll(sessionIntentKey(paymentIntent.sessionBudgetIntentId));
     assert.equal(sessionIntent?.status, "settled");
     assert.equal(sessionIntent?.txHash, TEST_SETTLEMENT_TX_HASH);
 
