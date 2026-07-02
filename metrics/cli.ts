@@ -2,12 +2,12 @@ import "dotenv/config";
 
 import { syncDownloads } from "./downloads.js";
 import { syncPayments } from "./payments.js";
-import { setSessionBaseline, syncSessionsFromRedis } from "./sessions.js";
+import { setSessionBaseline, syncSessionsFromValkey } from "./sessions.js";
 import { getMetricsSnapshot, refreshMetricsSnapshot } from "./snapshot.js";
 
 async function syncAll(): Promise<void> {
     const downloads = await syncDownloads();
-    const sessions = await syncSessionsFromRedis();
+    const sessions = await syncSessionsFromValkey();
     const payments = await syncPayments();
     const snapshot = await refreshMetricsSnapshot();
     console.log(JSON.stringify({ downloads, sessions, payments, snapshot }, null, 2));
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
             console.log(JSON.stringify({ payments: await syncPayments(), snapshot: await refreshMetricsSnapshot() }, null, 2));
             break;
         case "sessions":
-            console.log(JSON.stringify({ sessions: await syncSessionsFromRedis(), snapshot: await refreshMetricsSnapshot() }, null, 2));
+            console.log(JSON.stringify({ sessions: await syncSessionsFromValkey(), snapshot: await refreshMetricsSnapshot() }, null, 2));
             break;
         case "sessions-baseline": {
             const total = Number.parseInt(process.argv[3] ?? "", 10);

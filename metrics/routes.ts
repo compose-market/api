@@ -3,7 +3,7 @@ import type { Application } from "express";
 import { ensure, sql } from "./db.js";
 import { syncDownloads } from "./downloads.js";
 import { syncPayments } from "./payments.js";
-import { syncSessionsFromRedis } from "./sessions.js";
+import { syncSessionsFromValkey } from "./sessions.js";
 import { getMetricsSnapshot, refreshMetricsSnapshot } from "./snapshot.js";
 
 export function registerMetricsRoutes(app: Application): void {
@@ -11,7 +11,7 @@ export function registerMetricsRoutes(app: Application): void {
         try {
             if (req.query.refresh === "true" || req.query.refresh === "1") {
                 await syncDownloads();
-                await syncSessionsFromRedis();
+                await syncSessionsFromValkey();
                 await syncPayments();
                 res.json(await refreshMetricsSnapshot());
                 return;

@@ -1,4 +1,4 @@
-import { getRedisClient } from "../x402/keys/redis.js";
+import { getValkeyClient } from "../x402/keys/valkey.js";
 import { bumpSessionSnapshot } from "./cache.js";
 import { ensure, getState, rows, setState, stateUpdatedAt } from "./db.js";
 
@@ -68,17 +68,19 @@ function addressFromSessionSet(key: string): string | undefined {
     return match?.[1]?.toLowerCase();
 }
 
-export async function syncSessionsFromRedis(): Promise<{ scanned: number; inserted: number }> {
-    const redis = await getRedisClient();
+export async function syncSessionsFromValkey(): Promise<{ scanned: number; inserted: number }> {
+    const valkey = await getValkeyClient();
     let scanned = 0;
     let inserted = 0;
 
-    for await (const item of redis.scanIterator({ MATCH: "session:budget:*:intents", COUNT: 500 })) {
-        const keys = Array.isArray(item) ? item : [item];
+    let cursor = "0";
+    do {
+        const [nextCursor, keys] = await valkey.scan(cursor, "MATCH", "session:budget:*:intents", "COUNT", 500);
+        cursor = nextCursor;
         for (const raw of keys) {
             const key = String(raw);
             const userAddress = addressFromSessionSet(key);
-            const ids = await redis.sMembers(key);
+            const ids = await valkey.smembers(key);
 
             for (const keyId of ids) {
                 scanned += 1;
@@ -90,12 +92,14 @@ export async function syncSessionsFromRedis(): Promise<{ scanned: number; insert
                 }
             }
         }
-    }
+    } while (cursor !== "0");
 
-    for await (const item of redis.scanIterator({ MATCH: "payment-intent:*", COUNT: 500 })) {
-        const keys = Array.isArray(item) ? item : [item];
+    cursor = "0";
+    do {
+        const [nextCursor, keys] = await valkey.scan(cursor, "MATCH", "payment-intent:*", "COUNT", 500);
+        cursor = nextCursor;
         for (const raw of keys) {
-            const record = await redis.hGetAll(String(raw));
+            const record = await valkey.hgetall(String(raw));
             if (!record.paymentIntentId || purpose(record.purpose) !== "session") {
                 continue;
             }
@@ -110,7 +114,7 @@ export async function syncSessionsFromRedis(): Promise<{ scanned: number; insert
                 inserted += 1;
             }
         }
-    }
+    } while (cursor !== "0");
 
     await setState("sessions:seed", new Date().toISOString());
     return { scanned, inserted };
