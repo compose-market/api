@@ -609,11 +609,11 @@ async function deployJobs(image: string) {
                 "AVALANCHE_FUJI_RPC",
                 "AVALANCHE_FUJI_CHAIN_ID",
                 "MERCHANT_WALLET_ADDRESS",
-                "REDIS_TLS",
-                "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT",
+                "VALKEY_TLS",
+                "VALKEY_KEYS_SERVICE_URI",
                 "SERVER_WALLET_KEY",
                 "DEPLOYER_KEY",
-                "REDIS_KEYS_DEFAULT_PASSWORD",
+                "VALKEY_KEYS_PASSWORD",
             ],
         },
         {
@@ -621,9 +621,9 @@ async function deployJobs(image: string) {
             task: "expiry-scan",
             timeout: "300s",
             secretNames: [
-                "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT",
-                "REDIS_KEYS_DEFAULT_PASSWORD",
-                "REDIS_TLS",
+                "VALKEY_KEYS_SERVICE_URI",
+                "VALKEY_KEYS_PASSWORD",
+                "VALKEY_TLS",
             ],
         },
     ];

@@ -31,7 +31,7 @@ type Context = Record<string, unknown>;
 
 // Compose Keys
 import {
-    createComposeKey,
+    createKey,
     getKeyRecord,
     listUserKeys,
     revokeKey,
@@ -40,8 +40,8 @@ import {
 import type { SessionInactiveReason } from "./x402/keys/types.js";
 
 import {
-    extractComposeKeyFromHeader,
-    validateComposeKey,
+    extractKeyFromHeader,
+    validateKey,
     consumeKeyBudget,
     getKeyBudgetInfo,
 } from "./x402/keys/middleware.js";
@@ -67,13 +67,13 @@ import {
 } from "./x402/intents.js";
 import { getActiveChainId, CHAIN_CONFIG, USDC_ADDRESSES, type ChainId } from "./x402/configs/chains.js";
 import {
-    getComposeFacilitatorSupported,
-    getComposeFacilitatorChainMetadata,
+    getFacilitatorSupported,
+    getFacilitatorChainMetadata,
     getChainIdFromPaymentPayload,
-    parseComposeFacilitatorSettleRequest,
-    parseComposeFacilitatorVerifyRequest,
-    settleComposePayment,
-    verifyComposePayment,
+    parseFacilitatorSettleRequest,
+    parseFacilitatorVerifyRequest,
+    settlePayment,
+    verifyPayment,
 } from "./x402/facilitator.js";
 import { recordConfirmedPayment, triggerConfirmedPayment } from "./metrics/payments.js";
 import { readActiveRawEnvelope, type RawEnvelope } from "./x402/envelope.js";
@@ -490,19 +490,19 @@ export async function handler(
         }
 
         if (method === "GET" && path === "/api/x402/facilitator/supported") {
-            return handleComposeFacilitatorSupported();
+            return handleFacilitatorSupported();
         }
 
         if (method === "GET" && path === "/api/x402/facilitator/chains") {
-            return handleComposeFacilitatorChains();
+            return handleFacilitatorChains();
         }
 
         if (method === "POST" && path === "/api/x402/facilitator/verify") {
-            return handleComposeFacilitatorVerify(event);
+            return handleFacilitatorVerify(event);
         }
 
         if (method === "POST" && path === "/api/x402/facilitator/settle") {
-            return handleComposeFacilitatorSettle(event);
+            return handleFacilitatorSettle(event);
         }
 
         // ==========================================================================
@@ -931,7 +931,7 @@ type PaymentIntentPrepareBody = {
             unitPriceUsd?: number;
         }>;
     };
-    composeRunId?: string;
+    runId?: string;
     idempotencyKey?: string;
 };
 
@@ -960,7 +960,7 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
                 })),
             }
             : undefined,
-        composeRunId: body.composeRunId,
+        runId: body.runId,
         idempotencyKey: body.idempotencyKey,
     });
 
@@ -1185,7 +1185,7 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         }
     }
 
-    const result = await createComposeKey(userAddress, {
+    const result = await createKey(userAddress, {
         budgetLimit,
         expiresAt,
         purpose,
@@ -1264,7 +1264,7 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
     const keyId = event.rawPath.replace("/api/keys/", "");
 
     const authHeader = event.headers["authorization"] || event.headers["Authorization"];
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    const composeKeyToken = extractKeyFromHeader(authHeader);
     if (!composeKeyToken) {
         return {
             statusCode: 401,
@@ -1278,7 +1278,7 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
         };
     }
 
-    const validation = await validateComposeKey(composeKeyToken, 0);
+    const validation = await validateKey(composeKeyToken, 0);
     if (!validation.valid || !validation.payload) {
         return {
             statusCode: 401,
@@ -1349,7 +1349,7 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
 
 async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const authHeader = event.headers["authorization"];
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    const composeKeyToken = extractKeyFromHeader(authHeader);
 
     if (!composeKeyToken) {
         return {
@@ -1362,7 +1362,7 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
     const body = event.body ? JSON.parse(event.body) : {};
     const amountWei = parseInt(body.amount, 10);
 
-    const validation = await validateComposeKey(composeKeyToken, amountWei);
+    const validation = await validateKey(composeKeyToken, amountWei);
     if (!validation.valid) {
         return {
             statusCode: 401,
@@ -1381,8 +1381,8 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
     }
 
     const keyChainId = validation.record!.chainId!;
-    const { settleComposeKeyPayment } = await import("./x402/settlement.js");
-    const result = await settleComposeKeyPayment(validation.payload!.sub, amountWei, keyChainId);
+    const { settleKeyPayment } = await import("./x402/settlement.js");
+    const result = await settleKeyPayment(validation.payload!.sub, amountWei, keyChainId);
 
     if (!result.success) {
         return {
@@ -1418,7 +1418,7 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
     // The unsigned `x-session-user-address` header is never a trust input;
     // the JWT's signed `sub` is.
     const authHeader = event.headers["authorization"] || event.headers["Authorization"];
-    const composeKeyToken = extractComposeKeyFromHeader(authHeader);
+    const composeKeyToken = extractKeyFromHeader(authHeader);
     if (!composeKeyToken) {
         return {
             statusCode: 401,
@@ -1432,7 +1432,7 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         };
     }
 
-    const validation = await validateComposeKey(composeKeyToken, 0);
+    const validation = await validateKey(composeKeyToken, 0);
     if (!validation.valid || !validation.payload) {
         return {
             statusCode: 401,
@@ -1500,19 +1500,19 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
 // Compose Facilitator Handlers
 // =============================================================================
 
-async function handleComposeFacilitatorSupported(): Promise<APIGatewayProxyResultV2> {
+async function handleFacilitatorSupported(): Promise<APIGatewayProxyResultV2> {
     return {
         statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify(getComposeFacilitatorSupported()),
+        body: JSON.stringify(getFacilitatorSupported()),
     };
 }
 
-async function handleComposeFacilitatorChains(): Promise<APIGatewayProxyResultV2> {
+async function handleFacilitatorChains(): Promise<APIGatewayProxyResultV2> {
     // Enumerates the chains the facilitator is currently configured for,
     // including USDC contract + explorer + CAIP-2 network id, so SDK consumers
     // don't have to ship a duplicate chain table that can drift out of sync.
-    const base = getComposeFacilitatorChainMetadata();
+    const base = getFacilitatorChainMetadata();
     const enriched = base.map((entry) => {
         const cfg = CHAIN_CONFIG[entry.chainId as ChainId];
         const usdcAddress = USDC_ADDRESSES[entry.chainId as ChainId];
@@ -1536,11 +1536,11 @@ async function handleComposeFacilitatorChains(): Promise<APIGatewayProxyResultV2
     };
 }
 
-async function handleComposeFacilitatorVerify(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+async function handleFacilitatorVerify(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     try {
         const body = event.body ? JSON.parse(event.body) : {};
-        const { paymentPayload, paymentRequirements } = parseComposeFacilitatorVerifyRequest(body);
-        const result = await verifyComposePayment(paymentPayload, paymentRequirements);
+        const { paymentPayload, paymentRequirements } = parseFacilitatorVerifyRequest(body);
+        const result = await verifyPayment(paymentPayload, paymentRequirements);
 
         return {
             statusCode: 200,
@@ -1560,12 +1560,12 @@ async function handleComposeFacilitatorVerify(event: APIGatewayProxyEventV2): Pr
     }
 }
 
-async function handleComposeFacilitatorSettle(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+async function handleFacilitatorSettle(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     try {
         const body = event.body ? JSON.parse(event.body) : {};
-        const { paymentPayload, paymentRequirements } = parseComposeFacilitatorSettleRequest(body);
+        const { paymentPayload, paymentRequirements } = parseFacilitatorSettleRequest(body);
         const chainId = getChainIdFromPaymentPayload(paymentPayload);
-        const result = await settleComposePayment(paymentPayload, paymentRequirements);
+        const result = await settlePayment(paymentPayload, paymentRequirements);
         if (result.success) {
             triggerPaymentMetric(chainId, result.transaction, "facilitator");
         }

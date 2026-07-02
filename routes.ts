@@ -6,10 +6,10 @@ import {
   type UsageRecord,
 } from "./x402/metering.js";
 import {
-  extractComposeKeyFromHeader,
-  validateComposeKey,
+  extractKeyFromHeader,
+  validateKey,
 } from "./x402/keys/middleware.js";
-import { getActiveSessionStatus, verifyComposeKey } from "./x402/keys/index.js";
+import { getActiveSessionStatus, verifyKey } from "./x402/keys/index.js";
 import { getActiveChainId } from "./x402/configs/chains.js";
 import {
   kickBatchSettlement,
@@ -463,12 +463,12 @@ function setRequestHeader(req: Request, name: string, value: string): void {
   req.headers[name.toLowerCase()] = value;
 }
 
-function composeKeyUserAddress(req: Request): string | undefined {
-  const token = extractComposeKeyFromHeader(getHeader(req, "authorization"));
+function keyUserAddress(req: Request): string | undefined {
+  const token = extractKeyFromHeader(getHeader(req, "authorization"));
   if (!token) {
     return getHeader(req, "x-session-user-address")?.toLowerCase();
   }
-  const payload = verifyComposeKey(token);
+  const payload = verifyKey(token);
   return payload?.sub?.toLowerCase() || getHeader(req, "x-session-user-address")?.toLowerCase();
 }
 
@@ -484,8 +484,8 @@ function rootRunId(req: Request): string {
     return existing.trim();
   }
   const body = bodyRecord(req);
-  const fromBody = typeof body?.composeRunId === "string" && body.composeRunId.trim()
-    ? body.composeRunId.trim()
+  const fromBody = typeof body?.runId === "string" && body.runId.trim()
+    ? body.runId.trim()
     : undefined;
   return fromBody || randomUUID();
 }
@@ -703,7 +703,7 @@ async function prepareRoutePayment(
       // prepareInferencePayment.
       return null;
     }
-    const userAddress = composeKeyUserAddress(req);
+    const userAddress = keyUserAddress(req);
 
     return {
       mode: "x402",
@@ -838,12 +838,12 @@ function terminalAgentMetadata(body: Record<string, unknown>, req: Request): {
   const agent = body.agent && typeof body.agent === "object" && !Array.isArray(body.agent)
     ? body.agent as Record<string, unknown>
     : {};
-  const root = stringField(body.rootComposeRunId)
+  const root = stringField(body.rootRunId)
     || stringField(body.paymentRunId)
     || getHeader(req, "x-run-id")
     || rootRunId(req);
   const execution = stringField(body.runId)
-    || stringField(body.composeRunId)
+    || stringField(body.runId)
     || stringField(body.executionRunId)
     || getHeader(req, "x-execution-run-id")
     || root;
@@ -940,7 +940,7 @@ function evidenceBill(charge: ChargeEvidence): ReceiptBill {
   const subject = charge.subject || charge.walletAddress || charge.name || "unknown";
   const amountWei = charge.finalAmountWei || (
     BigInt(charge.providerAmountWei || "0")
-    + BigInt(charge.composeFeeWei || "0")
+    + BigInt(charge.feeWei || "0")
     + BigInt(charge.creatorFeeWei || "0")
   ).toString();
   const prefix = `${kind}.${source}.${subject}`;
@@ -953,7 +953,7 @@ function evidenceBill(charge: ChargeEvidence): ReceiptBill {
     amountWei,
     lineItems: [
       line(`${prefix}:provider`, charge.providerAmountWei),
-      line(`${prefix}:compose_fee`, charge.composeFeeWei),
+      line(`${prefix}:compose_fee`, charge.feeWei),
       line(`${prefix}:creator_fee`, charge.creatorFeeWei),
     ],
   });
@@ -975,7 +975,7 @@ function agentBill(input: {
   action: string;
   subject: string;
   amountWei: string;
-  composeFeeWei: string;
+  feeWei: string;
   creatorFeeWei: string;
   children: ReceiptBill[];
 }): ReceiptBill {
@@ -998,16 +998,16 @@ function agentBill(input: {
     fees: {
       total: {
         percent: "agent",
-        amount: total((BigInt(input.composeFeeWei) + BigInt(input.creatorFeeWei)).toString()),
+        amount: total((BigInt(input.feeWei) + BigInt(input.creatorFeeWei)).toString()),
       },
       distribution: {
-        Compose: total(input.composeFeeWei),
+        Compose: total(input.feeWei),
         Creator: total(input.creatorFeeWei),
       },
     },
     lineItems: [
       ...input.children.flatMap((child) => child.lineItems),
-      line(`${input.subject}:compose_fee`, input.composeFeeWei),
+      line(`${input.subject}:compose_fee`, input.feeWei),
       line(`${input.subject}:creator_fee`, input.creatorFeeWei),
     ].filter((item): item is ReceiptLineItem => Boolean(item)),
     children: input.children,
@@ -1025,12 +1025,13 @@ async function resolveAgentEndpointSettlement(
     .filter((charge) => charge.kind !== "agent");
   const childAgents = uniqueCharges(await listChildEvidence(meta.rootRunId, meta.executionRunId))
     .filter((charge) => charge.kind === "agent");
-  const directProvider = sumWei(direct, (charge) => charge.providerAmountWei);
-  const feeBase = directProvider;
+  const directBaseWei = sumWei(direct, (charge) => charge.providerAmountWei);
+  const childAgentBaseWei = sumWei(childAgents, (charge) => charge.providerAmountWei);
+  const feeBase = directBaseWei + childAgentBaseWei;
 
-  const composeFeeWei = ceilPercent(feeBase, 1);
+  const feeWei = ceilPercent(feeBase, 1);
   const creatorFeeWei = ceilPercent(feeBase, meta.creatorFee);
-  const wrapperFeeWei = composeFeeWei + creatorFeeWei;
+  const wrapperFeeWei = feeWei + creatorFeeWei;
   const childBills = [
     ...direct.map(evidenceBill),
     ...childAgents.map(evidenceBill),
@@ -1045,7 +1046,7 @@ async function resolveAgentEndpointSettlement(
   return {
     finalAmountWei: wrapperFeeWei.toString(),
     providerAmountWei: feeBase.toString(),
-    platformFeeWei: composeFeeWei.toString(),
+    platformFeeWei: feeWei.toString(),
     meterSubject: subject,
     bills: [
       agentBill({
@@ -1054,7 +1055,7 @@ async function resolveAgentEndpointSettlement(
         action,
         subject,
         amountWei: displayTotalWei.toString(),
-        composeFeeWei: composeFeeWei.toString(),
+        feeWei: feeWei.toString(),
         creatorFeeWei: creatorFeeWei.toString(),
         children: childBills,
       }),
@@ -1066,7 +1067,7 @@ async function resolveAgentEndpointSettlement(
         name: meta.name,
         amountWei: wrapperFeeWei.toString(),
         lineItems: [
-          line(`${wrapperPrefix}:compose_fee`, composeFeeWei.toString()),
+          line(`${wrapperPrefix}:compose_fee`, feeWei.toString()),
           line(`${wrapperPrefix}:creator_fee`, creatorFeeWei.toString()),
         ],
       }),
@@ -1082,7 +1083,7 @@ async function resolveAgentEndpointSettlement(
       action,
       subject,
       providerAmountWei: feeBase.toString(),
-      composeFeeWei: composeFeeWei.toString(),
+      feeWei: feeWei.toString(),
       creatorFeeWei: creatorFeeWei.toString(),
     },
   };
@@ -1091,13 +1092,13 @@ async function resolveAgentEndpointSettlement(
 function resolveAgentTextSettlement(
   body: Record<string, unknown>,
   req: Request,
-  action = "agent-chat",
+  action = "stream",
 ): Promise<RouteSettlement> {
   return resolveAgentEndpointSettlement(body, req, action);
 }
 
 function resolveAgentResponsesSettlement(body: Record<string, unknown>, req: Request): Promise<RouteSettlement> {
-  return resolveAgentEndpointSettlement(body, req, "agent-responses");
+  return resolveAgentEndpointSettlement(body, req, "responses");
 }
 
 function resolveWorkflowSettlement(body: Record<string, unknown>, subject: string): RouteSettlement {
@@ -1180,6 +1181,19 @@ function terminal(data: Record<string, unknown>): boolean {
   return data.type === "done" || data.type === "stopped" || data.type === "error";
 }
 
+function sseDataHasTextDelta(data: Record<string, unknown>): boolean {
+  const choices = data.choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return false;
+  }
+  const first = choices[0];
+  if (!first || typeof first !== "object") {
+    return false;
+  }
+  const delta = (first as { delta?: unknown }).delta;
+  return Boolean(delta && typeof delta === "object" && typeof (delta as { content?: unknown }).content === "string");
+}
+
 function usageful(data: Record<string, unknown>): boolean {
   const usage = data.usage && typeof data.usage === "object" && !Array.isArray(data.usage)
     ? data.usage as Record<string, unknown>
@@ -1239,7 +1253,7 @@ function passthroughJsonRoute(pathAndQuery?: (req: Request) => string) {
   };
 }
 
-function actionName(path: string): string {
+function command(path: string): string {
   return path
     .replace(/^\/api\//u, "")
     .replace(/[:]/gu, "")
@@ -1251,7 +1265,7 @@ function zeroResourceSettlement(req: Request, kind: "memory", action: string): R
   const root = getHeader(req, "x-run-id") || rootRunId(req);
   const body = bodyRecord(req);
   const execution = getHeader(req, "x-execution-run-id")
-    || stringField(body?.composeRunId)
+    || stringField(body?.runId)
     || root;
   const parent = getHeader(req, "x-parent-run-id")
     || stringField(body?.parentExecutionRunId);
@@ -1270,13 +1284,13 @@ function zeroResourceSettlement(req: Request, kind: "memory", action: string): R
       action,
       subject,
       providerAmountWei: "0",
-      composeFeeWei: "0",
+      feeWei: "0",
     },
   };
 }
 
 function memoryRoute(path: string) {
-  const action = actionName(path);
+  const action = command(path);
   return payableJsonRoute({
     service: "memory",
     action,
@@ -1361,12 +1375,12 @@ function receiptLimit(req: Request): number {
 }
 
 async function receiptIdentity(req: Request): Promise<{ userAddress: string; chainId: number } | { error: string; status: number }> {
-  const token = extractComposeKeyFromHeader(getHeader(req, "authorization"));
+  const token = extractKeyFromHeader(getHeader(req, "authorization"));
   if (!token) {
     return { error: "Compose key authorization is required", status: 401 };
   }
 
-  const validation = await validateComposeKey(token, 0);
+  const validation = await validateKey(token, 0);
   if (!validation.valid || !validation.payload || !validation.record) {
     return { error: validation.error || "Invalid Compose key", status: 401 };
   }
@@ -1581,6 +1595,20 @@ function payableStreamRoute(config: {
         return;
       }
 
+      writeSseOpen(res);
+      markTiming("gateway_headers_flushed");
+      markTiming("gateway_open_written");
+      res.on("close", () => markTiming("close"));
+
+      const writeGatewayError = (status: number, error: string) => {
+        if (!res.writableEnded) {
+          res.write(`event: error\ndata: ${JSON.stringify({ error, status })}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }
+        lifecycle.done();
+      };
+
       let runtimeResponse: globalThis.Response;
       try {
         runtimeResponse = await callRuntime(
@@ -1595,32 +1623,26 @@ function payableStreamRoute(config: {
           lifecycle.cleanup();
           return;
         }
-        lifecycle.cleanup();
-        throw error;
+        const message = error instanceof Error ? error.message : "runtime_stream_unavailable";
+        await abortPreparedPayment(prepared, message);
+        writeGatewayError(502, message);
+        return;
       }
       markTiming("runtime_response_headers");
       if (!runtimeResponse.ok) {
         const { text } = await readRuntimeJson(runtimeResponse);
         await abortPreparedPayment(prepared, `runtime_${runtimeResponse.status}`);
-        applyRuntimeHeaders(res, runtimeResponse);
-        res.status(runtimeResponse.status).send(text);
-        lifecycle.done();
+        writeGatewayError(runtimeResponse.status, text || `runtime_${runtimeResponse.status}`);
         return;
       }
 
       if (!runtimeResponse.body) {
         await abortPreparedPayment(prepared, "runtime_stream_missing_body");
-        res.status(502).json({ error: "Runtime stream body is missing" });
-        lifecycle.done();
+        writeGatewayError(502, "Runtime stream body is missing");
         return;
       }
 
       applyRuntimeHeaders(res, runtimeResponse);
-      res.status(runtimeResponse.status);
-      writeSseOpen(res);
-      markTiming("gateway_headers_flushed");
-      markTiming("gateway_open_written");
-      res.on("close", () => markTiming("close"));
 
       const reader = runtimeResponse.body.getReader();
       const cancelReader = () => {
@@ -1709,6 +1731,19 @@ function payableStreamRoute(config: {
             const parsed = parseSseEventBlock(rawEvent);
             if (!parsed) {
               continue;
+            }
+            markTiming("first_upstream_sse_frame");
+            if (
+              parsed.data.type === "model_start"
+              || (parsed.data.type === "timing" && parsed.data.mark === "model_start")
+            ) {
+              markTiming("first_runtime_model_start");
+            }
+            if (
+              sseDataHasTextDelta(parsed.data)
+              || (parsed.data.type === "timing" && parsed.data.mark === "first_text_delta")
+            ) {
+              markTiming("first_runtime_text_delta");
             }
 
             if (parsed.eventName === "error" || parsed.data.type === "error") {
@@ -1907,18 +1942,10 @@ export function registerManowarRoutes(app: Application): void {
   app.get("/api/receipts", receiptsRoute());
 
   app.post(
-    "/agent/:walletAddress/chat",
-    payableJsonRoute({
-      service: "agent",
-      action: "agent-chat",
-      resolveSettlement: (body, req) => resolveAgentTextSettlement(body, req, "agent-chat"),
-    }),
-  );
-  app.post(
     "/agent/:walletAddress/stream",
     payableStreamRoute({
       service: "agent",
-      action: "agent-stream",
+      action: "stream",
       resolveSettlement: (_eventName, data, req) => {
         // Settle on any terminal event that carries usage metering. `done` is the
         // normal path; `stopped` (user-issued abort via /runs/:id/stop) and
@@ -1928,7 +1955,7 @@ export function registerManowarRoutes(app: Application): void {
         if (data.type !== "done" && data.type !== "stopped" && data.type !== "error") {
           return null;
         }
-        return resolveAgentTextSettlement(data, req, "agent-stream");
+        return resolveAgentTextSettlement(data, req, "stream");
       },
     }),
   );
@@ -1936,7 +1963,7 @@ export function registerManowarRoutes(app: Application): void {
     "/agent/:walletAddress/responses",
     payableJsonRoute({
       service: "agent",
-      action: "agent-responses",
+      action: "responses",
       resolveSettlement: (body, req) => resolveAgentResponsesSettlement(body, req),
     }),
   );
@@ -1965,10 +1992,10 @@ export function registerManowarRoutes(app: Application): void {
   mount(app, memory);
 
   app.post(
-    "/workflow/:walletAddress/chat",
+    "/workflow/:walletAddress/stream",
     payableStreamRoute({
       service: "workflow",
-      action: "workflow-chat",
+      action: "workflow-stream",
       resolveSettlement: (eventName, data, req) => (
         eventName === "result"
           ? resolveWorkflowSettlement(data, workflowSettlementSubject(req))
@@ -1983,7 +2010,7 @@ export function registerManowarRoutes(app: Application): void {
     "/workflow/:id/run",
     payableStreamRoute({
       service: "workflow",
-      action: "workflow-chat",
+      action: "workflow-stream",
       resolveSettlement: (eventName, data, req) => (
         eventName === "result"
           ? resolveWorkflowSettlement(data, workflowSettlementSubject(req))

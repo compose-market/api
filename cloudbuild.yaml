@@ -66,8 +66,8 @@ steps:
           PINATA_GATEWAY_URL=PINATA_GATEWAY_URL:latest,
           TEMPORAL_ADDRESS=TEMPORAL_ADDRESS:latest,
           TEMPORAL_NAMESPACE=TEMPORAL_NAMESPACE:latest,
-          REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
-          REDIS_TLS=REDIS_TLS:latest,
+          VALKEY_KEYS_SERVICE_URI=VALKEY_KEYS_SERVICE_URI:latest,
+          VALKEY_TLS=VALKEY_TLS:latest,
           IP_ACCESS=IP_ACCESS:latest,
           THIRDWEB_CLIENT_ID=THIRDWEB_CLIENT_ID:latest,
           MERCHANT_WALLET_ADDRESS=MERCHANT_WALLET_ADDRESS:latest,
@@ -104,7 +104,7 @@ steps:
           COMPOSE_BOT_HTTP_API=COMPOSE_BOT_HTTP_API:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
+          VALKEY_KEYS_PASSWORD=VALKEY_KEYS_PASSWORD:latest,
           COMPOSE_SESSION_SECRET=COMPOSE_SESSION_SECRET:latest,
           CF_API_TOKEN=CF_API_TOKEN:latest,
           TEMPORAL_ALEX_API_KEY=TEMPORAL_ALEX_API_KEY:latest"
@@ -132,11 +132,11 @@ steps:
           AVALANCHE_FUJI_RPC=AVALANCHE_FUJI_RPC:latest,
           AVALANCHE_FUJI_CHAIN_ID=AVALANCHE_FUJI_CHAIN_ID:latest,
           MERCHANT_WALLET_ADDRESS=MERCHANT_WALLET_ADDRESS:latest,
-          REDIS_TLS=REDIS_TLS:latest,
-          REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
+          VALKEY_TLS=VALKEY_TLS:latest,
+          VALKEY_KEYS_SERVICE_URI=VALKEY_KEYS_SERVICE_URI:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest" 2>/dev/null || \
+          VALKEY_KEYS_PASSWORD=VALKEY_KEYS_PASSWORD:latest" 2>/dev/null || \
         gcloud run jobs create compose-market-settlement \
           --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA \
           --region ${_REGION} \
@@ -151,11 +151,11 @@ steps:
           AVALANCHE_FUJI_RPC=AVALANCHE_FUJI_RPC:latest,
           AVALANCHE_FUJI_CHAIN_ID=AVALANCHE_FUJI_CHAIN_ID:latest,
           MERCHANT_WALLET_ADDRESS=MERCHANT_WALLET_ADDRESS:latest,
-          REDIS_TLS=REDIS_TLS:latest,
-          REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
+          VALKEY_TLS=VALKEY_TLS:latest,
+          VALKEY_KEYS_SERVICE_URI=VALKEY_KEYS_SERVICE_URI:latest,
           SERVER_WALLET_KEY=SERVER_WALLET_KEY:latest,
           DEPLOYER_KEY=DEPLOYER_KEY:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest"
+          VALKEY_KEYS_PASSWORD=VALKEY_KEYS_PASSWORD:latest"
 
         # Expiry Scan Job
         gcloud run jobs update compose-market-expiry \
@@ -166,9 +166,9 @@ steps:
           --task-timeout 300s \
           --service-account ${_SERVICE_ACCOUNT} \
           --set-env-vars "JOB_TASK=expiry-scan,NODE_ENV=production" \
-          --set-secrets "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
-          REDIS_TLS=REDIS_TLS:latest" 2>/dev/null || \
+          --set-secrets "VALKEY_KEYS_SERVICE_URI=VALKEY_KEYS_SERVICE_URI:latest,
+          VALKEY_KEYS_PASSWORD=VALKEY_KEYS_PASSWORD:latest,
+          VALKEY_TLS=VALKEY_TLS:latest" 2>/dev/null || \
         gcloud run jobs create compose-market-expiry \
           --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/${_SERVICE_NAME}:$SHORT_SHA \
           --region ${_REGION} \
@@ -177,9 +177,9 @@ steps:
           --task-timeout 300s \
           --service-account ${_SERVICE_ACCOUNT} \
           --set-env-vars "JOB_TASK=expiry-scan,NODE_ENV=production" \
-          --set-secrets "REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT=REDIS_KEYS_DATABASE_PUBLIC_ENDPOINT:latest,
-          REDIS_KEYS_DEFAULT_PASSWORD=REDIS_KEYS_DEFAULT_PASSWORD:latest,
-          REDIS_TLS=REDIS_TLS:latest"
+          --set-secrets "VALKEY_KEYS_SERVICE_URI=VALKEY_KEYS_SERVICE_URI:latest,
+          VALKEY_KEYS_PASSWORD=VALKEY_KEYS_PASSWORD:latest,
+          VALKEY_TLS=VALKEY_TLS:latest"
 
         # Batch settlement scheduler: every 2 minutes, triggers the existing Cloud Run Job.
         gcloud services enable cloudscheduler.googleapis.com --project $PROJECT_ID --quiet

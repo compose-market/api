@@ -13,7 +13,7 @@ import { errors as bodyErrors, form, json } from "./http/body.js";
 import { registerMetricsRoutes } from "./metrics/routes.js";
 import { syncDownloads } from "./metrics/downloads.js";
 import { syncPayments } from "./metrics/payments.js";
-import { syncSessionsFromRedis } from "./metrics/sessions.js";
+import { syncSessionsFromValkey } from "./metrics/sessions.js";
 import { refreshMetricsSnapshot } from "./metrics/snapshot.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
@@ -38,7 +38,7 @@ async function runJob() {
         break;
       case "metrics-sync":
         await syncDownloads();
-        await syncSessionsFromRedis();
+        await syncSessionsFromValkey();
         await syncPayments();
         await refreshMetricsSnapshot();
         break;
@@ -51,7 +51,7 @@ async function runJob() {
         await refreshMetricsSnapshot();
         break;
       case "metrics-sessions":
-        await syncSessionsFromRedis();
+        await syncSessionsFromValkey();
         await refreshMetricsSnapshot();
         break;
       default:
