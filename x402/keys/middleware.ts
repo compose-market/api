@@ -7,9 +7,9 @@
  * @module shared/keys/middleware
  */
 
-import { verifyComposeKey } from "./jwt.js";
+import { verifyKey } from "./jwt.js";
 import { getKeyRecord, isKeyRevoked, recordKeyUsage, getKeyBudgetRemaining } from "./storage.js";
-import type { KeyValidationResult, ComposeKeyPayload } from "./types.js";
+import type { KeyValidationResult, KeyPayload } from "./types.js";
 
 // =============================================================================
 // Constants
@@ -28,7 +28,7 @@ const BEARER_PREFIX = "Bearer ";
  * @param authHeader - Authorization header value
  * @returns Token string or null
  */
-export function extractComposeKeyFromHeader(authHeader: string | undefined): string | null {
+export function extractKeyFromHeader(authHeader: string | undefined): string | null {
     if (!authHeader) return null;
 
     // Handle "Bearer compose-..."
@@ -60,12 +60,12 @@ export function extractComposeKeyFromHeader(authHeader: string | undefined): str
  * @param requiredBudget - Minimum budget required in USDC wei
  * @returns Validation result
  */
-export async function validateComposeKey(
+export async function validateKey(
     token: string,
     requiredBudget: number = 0
 ): Promise<KeyValidationResult> {
     // Step 1: Verify JWT
-    const payload = verifyComposeKey(token);
+    const payload = verifyKey(token);
     if (!payload) {
         return { valid: false, error: "Invalid or expired token" };
     }
@@ -116,8 +116,8 @@ export async function consumeKeyBudget(keyId: string, amountWei: number): Promis
 /**
  * Check if request has Compose Key authentication
  */
-export function hasComposeKeyAuth(authHeader: string | undefined): boolean {
-    return extractComposeKeyFromHeader(authHeader) !== null;
+export function hasKeyAuth(authHeader: string | undefined): boolean {
+    return extractKeyFromHeader(authHeader) !== null;
 }
 
 /**

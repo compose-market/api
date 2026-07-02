@@ -1,31 +1,31 @@
 /**
  * Session Budget Management
  * 
- * Atomic Redis operations for the Compose session-budget extension.
+ * Atomic ValKey operations for the Compose session-budget extension.
  * Enables instant inference by tracking and locking budget off-chain,
  * with Compose-managed on-chain settlement after usage is known.
  * 
  * ARCHITECTURE:
  * - User creates session with on-chain approval (USDC.approve to TREASURY_WALLET)
- * - Session budget is tracked in Redis for instant authorization
- * - Each request "locks" budget atomically in Redis
+ * - Session budget is tracked in ValKey for instant authorization
+ * - Each request "locks" budget atomically in ValKey
  * - Batch worker settles locked amounts on-chain every 2 minutes
  * 
  * @module shared/x402/sessionBudget
  */
 
 import {
-    redisGet,
-    redisSet,
-    redisHGetAll,
-    redisHSet,
-    redisHIncrByAmount,
-    redisExpire,
-    redisSAdd,
-    redisSMembers,
-    redisSRem,
-    redisExists,
-} from "./keys/redis.js";
+    valkeyGet,
+    valkeySet,
+    valkeyHGetAll,
+    valkeyHSet,
+    valkeyHIncrByAmount,
+    valkeyExpire,
+    valkeySAdd,
+    valkeySMembers,
+    valkeySRem,
+    valkeyExists,
+} from "./keys/valkey.js";
 import {
     getSpendableSessionBudgetWei,
     readSessionAllowanceWei,
@@ -159,7 +159,7 @@ export async function initializeSessionBudget(
     };
 
     // Store as hash for efficient field access
-    await redisHSet(key, {
+    await valkeyHSet(key, {
         userAddress: budget.userAddress,
         chainId: String(budget.chainId),
         totalBudgetWei: budget.totalBudgetWei,
@@ -171,7 +171,7 @@ export async function initializeSessionBudget(
 
     // Set TTL based on session expiry
     const ttlSeconds = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000));
-    await redisExpire(key, ttlSeconds);
+    await valkeyExpire(key, ttlSeconds);
 
     console.log(`[sessionBudget] Initialized budget for ${userAddress} chain ${chainId}: ${totalBudgetWei} wei, expires in ${ttlSeconds}s`);
 }
@@ -184,7 +184,7 @@ export async function getSessionBudget(
     chainId: number,
 ): Promise<SessionBudget | null> {
     const key = getSessionKey(userAddress, chainId);
-    const data = await redisHGetAll(key);
+    const data = await valkeyHGetAll(key);
 
     if (!data || Object.keys(data).length === 0) {
         return null;
@@ -368,14 +368,14 @@ export async function lockBudget(
     }
 
     // Atomically increment locked amount
-    // HINCRBY is atomic in Redis
-    const newLockedStr = await redisHIncrByAmount(key, "lockedBudgetWei", requestAmount);
+    // HINCRBY is atomic in ValKey
+    const newLockedStr = await valkeyHIncrByAmount(key, "lockedBudgetWei", requestAmount);
     const newLocked = BigInt(newLockedStr);
 
     // Double-check we didn't over-allocate (race condition protection)
     if (newLocked + used > total) {
         // Rollback the increment
-        await redisHIncrByAmount(key, "lockedBudgetWei", -requestAmount);
+        await valkeyHIncrByAmount(key, "lockedBudgetWei", -requestAmount);
         return {
             success: false,
             availableWei: availableWei.toString(),
@@ -431,7 +431,7 @@ export async function unlockBudget(
     const key = getSessionKey(userAddress, chainId);
 
     // Atomically decrement locked amount
-    await redisHIncrByAmount(key, "lockedBudgetWei", -BigInt(amountWei));
+    await valkeyHIncrByAmount(key, "lockedBudgetWei", -BigInt(amountWei));
 
     // Mark intent as failed if provided
     if (intentId) {
@@ -475,8 +475,8 @@ export async function markSettled(
     const amount = BigInt(amountWei);
 
     // Atomically: decrement locked, increment used
-    await redisHIncrByAmount(key, "lockedBudgetWei", -amount);
-    await redisHIncrByAmount(key, "usedBudgetWei", amount);
+    await valkeyHIncrByAmount(key, "lockedBudgetWei", -amount);
+    await valkeyHIncrByAmount(key, "usedBudgetWei", amount);
 
     console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userAddress} chain ${chainId}`);
 }
@@ -506,7 +506,7 @@ export async function getBudgetInfo(
     });
 
     // Get pending intent count
-    const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
+    const intentIds = await valkeySMembers(getUserIntentsKey(userAddress));
     const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
     const pendingCount = intents.filter((intent) => intent && intent.status === "locked").length;
 
@@ -530,7 +530,7 @@ export async function storePaymentIntent(intent: PaymentIntent): Promise<void> {
     const intentKey = getIntentKey(intent.id);
 
     // Store intent data
-    await redisHSet(intentKey, {
+    await valkeyHSet(intentKey, {
         id: intent.id,
         userAddress: intent.userAddress,
         merchantWallet: intent.merchantWallet,
@@ -546,13 +546,13 @@ export async function storePaymentIntent(intent: PaymentIntent): Promise<void> {
     });
 
     // Set TTL (24 hours for intents)
-    await redisExpire(intentKey, 86400);
+    await valkeyExpire(intentKey, 86400);
 
     // Add to pending set for batch worker
-    await redisSAdd(PENDING_INTENTS_KEY, intent.id);
+    await valkeySAdd(PENDING_INTENTS_KEY, intent.id);
 
     // Add to user's intent set
-    await redisSAdd(getUserIntentsKey(intent.userAddress), intent.id);
+    await valkeySAdd(getUserIntentsKey(intent.userAddress), intent.id);
 
     console.log(`[sessionBudget] Stored intent ${intent.id} for ${intent.userAddress}`);
 }
@@ -561,7 +561,7 @@ export async function storePaymentIntent(intent: PaymentIntent): Promise<void> {
  * Get a payment intent by ID
  */
 export async function getPaymentIntent(intentId: string): Promise<PaymentIntent | null> {
-    const data = await redisHGetAll(getIntentKey(intentId));
+    const data = await valkeyHGetAll(getIntentKey(intentId));
 
     if (!data || Object.keys(data).length === 0) {
         return null;
@@ -587,7 +587,7 @@ export async function getPaymentIntent(intentId: string): Promise<PaymentIntent 
  * Get all pending intents (for batch worker)
  */
 export async function getPendingIntents(): Promise<PaymentIntent[]> {
-    const intentIds = await redisSMembers(PENDING_INTENTS_KEY);
+    const intentIds = await valkeySMembers(PENDING_INTENTS_KEY);
     const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
     return intents.filter((intent): intent is PaymentIntent => Boolean(intent && intent.status === "locked"));
 }
@@ -613,7 +613,7 @@ export async function getPendingIntentsGrouped(): Promise<Map<string, PaymentInt
  * Get total pending amount for a user on a chain
  */
 export async function getPendingTotal(userAddress: string, chainId: number): Promise<bigint> {
-    const intentIds = await redisSMembers(getUserIntentsKey(userAddress));
+    const intentIds = await valkeySMembers(getUserIntentsKey(userAddress));
     const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
     return intents.reduce((total, intent) => {
         if (!intent || intent.status !== "locked" || intent.chainId !== chainId) {
@@ -635,18 +635,18 @@ export async function markIntentsSettled(intentIds: string[], txHash: string): P
         const intent = await getPaymentIntent(id);
 
         // Update intent status
-        await redisHSet(intentKey, {
+        await valkeyHSet(intentKey, {
             status: "settled",
             txHash,
             settledAt: String(now),
         });
 
         // Remove from pending set
-        await redisSRem(PENDING_INTENTS_KEY, id);
+        await valkeySRem(PENDING_INTENTS_KEY, id);
 
         // Remove from user's pending set
         if (intent) {
-            await redisSRem(getUserIntentsKey(intent.userAddress), id);
+            await valkeySRem(getUserIntentsKey(intent.userAddress), id);
         }
     }
 
@@ -660,15 +660,15 @@ export async function markIntentFailed(intentId: string, error: string): Promise
     const intentKey = getIntentKey(intentId);
     const intent = await getPaymentIntent(intentId);
 
-    await redisHSet(intentKey, {
+    await valkeyHSet(intentKey, {
         status: "failed",
         error,
     });
 
     // Failed intents should not remain pending.
-    await redisSRem(PENDING_INTENTS_KEY, intentId);
+    await valkeySRem(PENDING_INTENTS_KEY, intentId);
     if (intent) {
-        await redisSRem(getUserIntentsKey(intent.userAddress), intentId);
+        await valkeySRem(getUserIntentsKey(intent.userAddress), intentId);
     }
 
     console.log(`[sessionBudget] Marked intent ${intentId} as failed: ${error}`);

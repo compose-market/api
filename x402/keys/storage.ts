@@ -1,7 +1,7 @@
 /**
  * Compose Keys - Storage Operations
  * 
- * Redis-backed storage for Compose Key records.
+ * ValKey-backed storage for Compose Key records.
  * Handles key creation, lookup, usage tracking, and revocation.
  * 
  * @module shared/keys/storage
@@ -9,24 +9,24 @@
 
 import { randomUUID } from "crypto";
 import {
-    redisHGetAll,
-    redisHGet,
-    redisHSet,
-    redisSAdd,
-    redisSMembers,
-    redisExists,
-    redisHIncrBy,
-    redisExpire,
-    redisSet,
-    redisGet,
-    redisSRem,
-    redisTTL,
-} from "./redis.js";
-import { signComposeKey } from "./jwt.js";
+    valkeyHGetAll,
+    valkeyHGet,
+    valkeyHSet,
+    valkeySAdd,
+    valkeySMembers,
+    valkeyExists,
+    valkeyHIncrBy,
+    valkeyExpire,
+    valkeySet,
+    valkeyGet,
+    valkeySRem,
+    valkeyTTL,
+} from "./valkey.js";
+import { signKey } from "./jwt.js";
 import { getSessionBudget } from "../session-budget.js";
 import type {
-    ComposeKeyRecord,
-    ComposeKeyPurpose,
+    KeyRecord,
+    KeyPurpose,
     CreateKeyRequest,
     CreateKeyResponse,
     ActiveSessionStatus,
@@ -34,7 +34,7 @@ import type {
 } from "./types.js";
 
 // =============================================================================
-// Redis Key Patterns
+// ValKey Key Patterns
 // =============================================================================
 
 const KEY_PREFIX = "compose-key:";
@@ -53,7 +53,7 @@ function revokedKey(keyId: string): string {
     return `${REVOKED_PREFIX}${keyId}`;
 }
 
-function parseComposeKeyPurpose(value: string | undefined): ComposeKeyPurpose | null {
+function parseKeyPurpose(value: string | undefined): KeyPurpose | null {
     if (value === "session" || value === "api") {
         return value;
     }
@@ -61,13 +61,13 @@ function parseComposeKeyPurpose(value: string | undefined): ComposeKeyPurpose | 
     return null;
 }
 
-export function getBudgetRemaining(record: Pick<ComposeKeyRecord, "budgetLimit" | "budgetUsed" | "budgetReserved">): number {
+export function getBudgetRemaining(record: Pick<KeyRecord, "budgetLimit" | "budgetUsed" | "budgetReserved">): number {
     return Math.max(0, record.budgetLimit - record.budgetUsed - (record.budgetReserved || 0));
 }
 
 export interface ActiveSessionCandidate {
     keyId: string;
-    purpose: ComposeKeyPurpose;
+    purpose: KeyPurpose;
     token?: string;
     budgetLimit: number;
     budgetUsed: number;
@@ -132,7 +132,7 @@ function buildActiveSessionCandidate(
     keyId: string,
     data: Record<string, string>,
 ): ActiveSessionCandidate | null {
-    const purpose = parseComposeKeyPurpose(data.purpose);
+    const purpose = parseKeyPurpose(data.purpose);
     const budgetLimit = parseStoredInteger(data.budgetLimit);
     const budgetUsed = parseStoredInteger(data.budgetUsed);
     const budgetLocked = parseStoredInteger(data.budgetReserved) ?? 0;
@@ -282,7 +282,7 @@ export function selectActiveSessionStatus(
  * @param request - Key creation parameters
  * @returns Created key with token
  */
-export async function createComposeKey(
+export async function createKey(
     userAddress: string,
     request: CreateKeyRequest
 ): Promise<CreateKeyResponse> {
@@ -290,7 +290,7 @@ export async function createComposeKey(
     const now = Date.now();
     const normalizedAddress = userAddress.toLowerCase();
 
-    const record: ComposeKeyRecord = {
+    const record: KeyRecord = {
         keyId,
         userAddress: normalizedAddress,
         purpose: request.purpose,
@@ -304,7 +304,7 @@ export async function createComposeKey(
     };
 
     // Generate token
-    const token = signComposeKey({
+    const token = signKey({
         sub: normalizedAddress,
         keyId,
         budgetLimit: request.budgetLimit,
@@ -313,7 +313,7 @@ export async function createComposeKey(
     });
 
     const recordKey = keyRecordKey(keyId);
-    await redisHSet(recordKey, {
+    await valkeyHSet(recordKey, {
         keyId: record.keyId,
         userAddress: record.userAddress,
         purpose: record.purpose,
@@ -330,14 +330,14 @@ export async function createComposeKey(
     // Set TTL based on expiration
     const ttlSeconds = Math.ceil((request.expiresAt - now) / 1000);
     if (ttlSeconds > 0) {
-        await redisExpire(recordKey, ttlSeconds);
+        await valkeyExpire(recordKey, ttlSeconds);
     }
 
     // Add to user's key set
-    await redisSAdd(userKeysKey(normalizedAddress), keyId);
-    const indexTtlSeconds = await redisTTL(userKeysKey(normalizedAddress));
+    await valkeySAdd(userKeysKey(normalizedAddress), keyId);
+    const indexTtlSeconds = await valkeyTTL(userKeysKey(normalizedAddress));
     if (ttlSeconds > 0 && (indexTtlSeconds < 0 || indexTtlSeconds < ttlSeconds)) {
-        await redisExpire(userKeysKey(normalizedAddress), ttlSeconds);
+        await valkeyExpire(userKeysKey(normalizedAddress), ttlSeconds);
     }
 
     return {
@@ -353,14 +353,14 @@ export async function createComposeKey(
 /**
  * Get a key record by ID
  */
-export async function getKeyRecord(keyId: string): Promise<ComposeKeyRecord | null> {
-    const data = await redisHGetAll(keyRecordKey(keyId));
+export async function getKeyRecord(keyId: string): Promise<KeyRecord | null> {
+    const data = await valkeyHGetAll(keyRecordKey(keyId));
 
     if (!data || Object.keys(data).length === 0) {
         return null;
     }
 
-    const purpose = parseComposeKeyPurpose(data.purpose);
+    const purpose = parseKeyPurpose(data.purpose);
     if (!purpose) {
         return null;
     }
@@ -384,11 +384,11 @@ export async function getKeyRecord(keyId: string): Promise<ComposeKeyRecord | nu
 /**
  * List all keys for a user
  */
-export async function listUserKeys(userAddress: string): Promise<ComposeKeyRecord[]> {
+export async function listUserKeys(userAddress: string): Promise<KeyRecord[]> {
     const normalizedAddress = userAddress.toLowerCase();
-    const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
+    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress));
     const records = (await Promise.all(keyIds.map((keyId) => getKeyRecord(keyId))))
-        .filter((record): record is ComposeKeyRecord => record !== null);
+        .filter((record): record is KeyRecord => record !== null);
 
     // Sort by creation date, newest first
     records.sort((a, b) => b.createdAt - a.createdAt);
@@ -419,10 +419,10 @@ export async function recordKeyUsage(keyId: string, amountWei: number): Promise<
     }
 
     // Atomically increment usage
-    const updatedUsed = await redisHIncrBy(recordKey, "budgetUsed", amountWei);
+    const updatedUsed = await valkeyHIncrBy(recordKey, "budgetUsed", amountWei);
 
     // Update last used timestamp
-    await redisHSet(recordKey, "lastUsedAt", String(Date.now()));
+    await valkeyHSet(recordKey, "lastUsedAt", String(Date.now()));
 
     return updatedUsed;
 }
@@ -442,13 +442,13 @@ export async function syncBudgetAfterSettlement(
     totalUsedWei: string,
 ): Promise<void> {
     const addr = userAddress.toLowerCase();
-    const keyIds = await redisSMembers(userKeysKey(addr));
+    const keyIds = await valkeySMembers(userKeysKey(addr));
 
     for (const keyId of keyIds) {
         const record = await getKeyRecord(keyId);
         if (record && record.chainId === chainId) {
             const recordKey = keyRecordKey(keyId);
-            await redisHSet(recordKey, "budgetUsed", totalUsedWei);
+            await valkeyHSet(recordKey, "budgetUsed", totalUsedWei);
             return;
         }
     }
@@ -458,7 +458,7 @@ export async function syncBudgetAfterSettlement(
  * Check if a key is revoked
  */
 export async function isKeyRevoked(keyId: string): Promise<boolean> {
-    return redisExists(revokedKey(keyId));
+    return valkeyExists(revokedKey(keyId));
 }
 
 /**
@@ -480,13 +480,13 @@ export async function revokeKey(keyId: string, userAddress: string): Promise<boo
     }
 
     // Mark as revoked in hash
-    await redisHSet(keyRecordKey(keyId), "revokedAt", String(Date.now()));
+    await valkeyHSet(keyRecordKey(keyId), "revokedAt", String(Date.now()));
 
     // Also set a revoked marker (for fast lookup without fetching full record)
     // TTL matches key expiration
     const ttlSeconds = Math.ceil((record.expiresAt - Date.now()) / 1000);
     if (ttlSeconds > 0) {
-        await redisSet(revokedKey(keyId), "1", ttlSeconds);
+        await valkeySet(revokedKey(keyId), "1", ttlSeconds);
     }
 
     return true;
@@ -502,7 +502,7 @@ export async function getKeyBudgetRemaining(keyId: string): Promise<number> {
 }
 
 export async function getKeyReservedBudget(keyId: string): Promise<number> {
-    const value = await redisHGet(keyRecordKey(keyId), "budgetReserved");
+    const value = await valkeyHGet(keyRecordKey(keyId), "budgetReserved");
     if (!value) {
         return 0;
     }
@@ -523,10 +523,10 @@ export async function getActiveSessionStatus(
     chainId?: number,
 ): Promise<ActiveSessionStatus> {
     const normalizedAddress = userAddress.toLowerCase();
-    const keyIds = await redisSMembers(userKeysKey(normalizedAddress));
+    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress));
     const userKeyIndex = userKeysKey(normalizedAddress);
     const loadedRecords = await Promise.all(
-        keyIds.map(async (keyId) => [keyId, await redisHGetAll(keyRecordKey(keyId))] as const),
+        keyIds.map(async (keyId) => [keyId, await valkeyHGetAll(keyRecordKey(keyId))] as const),
     );
 
     const staleKeyIds = loadedRecords
@@ -534,7 +534,7 @@ export async function getActiveSessionStatus(
         .map(([keyId]) => keyId);
 
     if (staleKeyIds.length > 0) {
-        await Promise.all(staleKeyIds.map((keyId) => redisSRem(userKeyIndex, keyId)));
+        await Promise.all(staleKeyIds.map((keyId) => valkeySRem(userKeyIndex, keyId)));
     }
 
     const candidates = loadedRecords

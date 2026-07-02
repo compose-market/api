@@ -9,8 +9,8 @@
 
 // Types
 export type {
-    ComposeKeyPayload,
-    ComposeKeyRecord,
+    KeyPayload,
+    KeyRecord,
     CreateKeyRequest,
     CreateKeyResponse,
     KeyValidationResult,
@@ -20,11 +20,11 @@ export type {
 } from "./types.js";
 
 // JWT operations
-export { signComposeKey, verifyComposeKey, extractKeyId } from "./jwt.js";
+export { signKey, verifyKey, extractKeyId } from "./jwt.js";
 
 // Storage operations
 export {
-    createComposeKey,
+    createKey,
     getKeyRecord,
     listUserKeys,
     recordKeyUsage,
@@ -37,10 +37,10 @@ export {
 
 // Middleware
 export {
-    extractComposeKeyFromHeader,
-    validateComposeKey,
+    extractKeyFromHeader,
+    validateKey,
     consumeKeyBudget,
-    hasComposeKeyAuth,
+    hasKeyAuth,
     getKeyBudgetInfo,
 } from "./middleware.js";
 

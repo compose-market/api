@@ -1,10 +1,10 @@
 import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { BATCH_SETTLEMENT_ADDRESS, DEFAULT_STABLECOINS, getDefaultAsset } from "@x402/evm";
 import type { Channel } from "@x402/evm/batch-settlement/server";
-import { RedisChannelStorage } from "@x402/evm/batch-settlement/server/redis-storage";
+import { RedisChannelStorage as ValkeyChannelStorage } from "@x402/evm/batch-settlement/server/redis-storage";
 
 import { getUsdcAddress } from "./configs/chains.js";
-import { getRedisClient } from "./keys/redis.js";
+import { getValkeyClient } from "./keys/valkey.js";
 
 const WITHDRAW_DELAY_SECONDS = 900;
 
@@ -43,37 +43,42 @@ type StoredChannel = Channel & {
     lastRequestTimestamp: number;
 };
 
-let storage: RedisChannelStorage | null = null;
+let storage: ValkeyChannelStorage | null = null;
 
 export type BatchCommit = {
     channelId: string;
     cumulativeAmountWei: string;
 };
 
-function redis() {
+function valkey() {
     return {
-        get: async (key: string) => (await getRedisClient()).get(key),
+        get: async (key: string) => (await getValkeyClient()).get(key),
         set: async (key: string, value: string, options?: { NX?: true; PX?: number }) =>
-            (await getRedisClient()).set(key, value, options as never) as Promise<string | null>,
-        del: async (key: string) => (await getRedisClient()).del(key),
+            options?.NX
+                ? (await getValkeyClient()).set(key, value, "PX", options.PX ?? 0, "NX") as Promise<string | null>
+                : (await getValkeyClient()).set(key, value) as Promise<string | null>,
+        del: async (key: string) => (await getValkeyClient()).del(key),
         eval: async (script: string, options: { keys: string[]; arguments: string[] }) =>
-            (await getRedisClient()).eval(script, options as never),
+            (await getValkeyClient()).eval(script, options.keys.length, ...options.keys, ...options.arguments),
         scanIterator(options: { MATCH?: string; COUNT?: number }) {
             async function* iterate() {
-                const client = await getRedisClient();
-                for await (const key of client.scanIterator(options as never)) {
-                    yield key as string | string[];
-                }
+                const client = await getValkeyClient();
+                let cursor = "0";
+                do {
+                    const [nextCursor, keys] = await client.scan(cursor, "MATCH", options.MATCH ?? "*", "COUNT", options.COUNT ?? 100);
+                    cursor = nextCursor;
+                    yield keys as string | string[];
+                } while (cursor !== "0");
             }
             return iterate();
         },
     };
 }
 
-export function getBatchChannelStorage(): RedisChannelStorage {
+export function getBatchChannelStorage(): ValkeyChannelStorage {
     if (!storage) {
-        storage = new RedisChannelStorage({
-            client: redis(),
+        storage = new ValkeyChannelStorage({
+            client: valkey(),
             keyPrefix: "x402:batch-settlement",
         });
     }

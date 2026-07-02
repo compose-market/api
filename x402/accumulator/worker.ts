@@ -5,7 +5,7 @@
  * Triggered by CloudWatch Events (every 2 minutes) or $1 threshold.
  * 
  * SETTLEMENT FLOW:
- * 1. Read all pending intents from Redis (grouped by user + chain)
+ * 1. Read all pending intents from ValKey (grouped by user + chain)
  * 2. For each user, calculate total amount to settle
  * 3. Execute single USDC.transferFrom per user (from locked allowance)
  * 4. Mark intents as settled on success
@@ -22,7 +22,7 @@ import {
     unlockBudget,
     type PaymentIntent,
 } from "../session-budget.js";
-import { settleComposeKeyPayment } from "../settlement.js";
+import { settleKeyPayment } from "../settlement.js";
 import { syncBudgetAfterSettlement } from "../keys/index.js";
 import { markIntentEvidenceSettled } from "../evidence.js";
 import { markIntentReceiptsSettled } from "../receipts.js";
@@ -152,7 +152,7 @@ export async function settleUserBatch(
 
     try {
         // Execute single on-chain settlement for all intents
-        const settlementResult = await settleComposeKeyPayment(
+        const settlementResult = await settleKeyPayment(
             userAddress,
             totalAmount.toString(),
             chainId,

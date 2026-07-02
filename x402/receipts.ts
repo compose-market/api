@@ -11,15 +11,15 @@ import {
 } from "../http/request-context.js";
 import type { InferenceSettlementReceipt } from "./index.js";
 import {
-  redisExpire,
-  redisGet,
-  redisHGetAll,
-  redisHIncrByAmount,
-  redisHSet,
-  redisSAdd,
-  redisSMembers,
-  redisSet,
-} from "./keys/redis.js";
+  valkeyExpire,
+  valkeyGet,
+  valkeyHGetAll,
+  valkeyHIncrByAmount,
+  valkeyHSet,
+  valkeySAdd,
+  valkeySMembers,
+  valkeySet,
+} from "./keys/valkey.js";
 import {
   buildResolvedSettlementMeter,
   meterSubject,
@@ -49,7 +49,7 @@ export type RouteSettlement =
       action?: string;
       subject?: string;
       providerAmountWei: string;
-      composeFeeWei: string;
+      feeWei: string;
       creatorFeeWei?: string;
     };
   };
@@ -205,7 +205,7 @@ export function buildReceiptBills(receipt: Receipt): ReceiptBill[] {
 }
 
 async function cumulativeFor(userAddress: string, chainId: number): Promise<Receipt["cumulative"]> {
-  const aggregate = await redisHGetAll(userAggregateKey(userAddress, chainId));
+  const aggregate = await valkeyHGetAll(userAggregateKey(userAddress, chainId));
   return {
     totalAmountWei: aggregate.totalAmountWei || "0",
     providerAmountWei: aggregate.providerAmountWei || "0",
@@ -234,36 +234,36 @@ export async function storeReceipt(receipt: Receipt): Promise<Receipt> {
     bills: receipt.bills && receipt.bills.length > 0 ? receipt.bills : buildReceiptBills(receipt),
   };
 
-  await redisSet(receiptKey(id), JSON.stringify(full), RECEIPT_TTL_SECONDS);
-  await redisSAdd(userReceiptsKey(userAddress, chainId), id);
-  await redisExpire(userReceiptsKey(userAddress, chainId), RECEIPT_TTL_SECONDS);
+  await valkeySet(receiptKey(id), JSON.stringify(full), RECEIPT_TTL_SECONDS);
+  await valkeySAdd(userReceiptsKey(userAddress, chainId), id);
+  await valkeyExpire(userReceiptsKey(userAddress, chainId), RECEIPT_TTL_SECONDS);
   if (full.paymentChannelId) {
-    await redisSAdd(batchReceiptsKey(full.paymentChannelId), id);
-    await redisExpire(batchReceiptsKey(full.paymentChannelId), RECEIPT_TTL_SECONDS);
+    await valkeySAdd(batchReceiptsKey(full.paymentChannelId), id);
+    await valkeyExpire(batchReceiptsKey(full.paymentChannelId), RECEIPT_TTL_SECONDS);
   }
   if (full.paymentIntentId) {
-    await redisSAdd(intentReceiptsKey(full.paymentIntentId), id);
-    await redisExpire(intentReceiptsKey(full.paymentIntentId), RECEIPT_TTL_SECONDS);
+    await valkeySAdd(intentReceiptsKey(full.paymentIntentId), id);
+    await valkeyExpire(intentReceiptsKey(full.paymentIntentId), RECEIPT_TTL_SECONDS);
   }
   if (full.sessionBudgetIntentId) {
-    await redisSAdd(sessionReceiptsKey(full.sessionBudgetIntentId), id);
-    await redisExpire(sessionReceiptsKey(full.sessionBudgetIntentId), RECEIPT_TTL_SECONDS);
+    await valkeySAdd(sessionReceiptsKey(full.sessionBudgetIntentId), id);
+    await valkeyExpire(sessionReceiptsKey(full.sessionBudgetIntentId), RECEIPT_TTL_SECONDS);
   }
 
   const aggregateKey = userAggregateKey(userAddress, chainId);
-  await redisHIncrByAmount(aggregateKey, "totalAmountWei", full.finalAmountWei);
+  await valkeyHIncrByAmount(aggregateKey, "totalAmountWei", full.finalAmountWei);
   if (full.providerAmountWei) {
-    await redisHIncrByAmount(aggregateKey, "providerAmountWei", full.providerAmountWei);
+    await valkeyHIncrByAmount(aggregateKey, "providerAmountWei", full.providerAmountWei);
   }
   if (full.platformFeeWei) {
-    await redisHIncrByAmount(aggregateKey, "platformFeeWei", full.platformFeeWei);
+    await valkeyHIncrByAmount(aggregateKey, "platformFeeWei", full.platformFeeWei);
   }
-  await redisHIncrByAmount(aggregateKey, "receiptCount", "1");
-  await redisHSet(aggregateKey, {
+  await valkeyHIncrByAmount(aggregateKey, "receiptCount", "1");
+  await valkeyHSet(aggregateKey, {
     lastReceiptId: id,
     lastReceiptAt: String(full.settledAt),
   });
-  await redisExpire(aggregateKey, RECEIPT_TTL_SECONDS);
+  await valkeyExpire(aggregateKey, RECEIPT_TTL_SECONDS);
 
   return {
     ...full,
@@ -297,10 +297,10 @@ export async function listReceipts(input: {
 }): Promise<ReceiptListResult> {
   const userAddress = input.userAddress.toLowerCase();
   const cumulative = await cumulativeFor(userAddress, input.chainId);
-  const ids = await redisSMembers(userReceiptsKey(userAddress, input.chainId));
+  const ids = await valkeySMembers(userReceiptsKey(userAddress, input.chainId));
   const receipts = (await Promise.all(
     ids.map(async (id) => {
-      const raw = await redisGet(receiptKey(id));
+      const raw = await valkeyGet(receiptKey(id));
       return raw ? JSON.parse(raw) as Receipt : null;
     }),
   ))
@@ -327,10 +327,10 @@ export async function markBatchReceiptsSettled(input: {
   claimTxHash?: string;
   settleTxHash?: string;
 }): Promise<number> {
-  const ids = await redisSMembers(batchReceiptsKey(input.channelId));
+  const ids = await valkeySMembers(batchReceiptsKey(input.channelId));
   let updated = 0;
   for (const id of ids) {
-    const raw = await redisGet(receiptKey(id));
+    const raw = await valkeyGet(receiptKey(id));
     if (!raw) continue;
     const receipt = JSON.parse(raw) as Receipt;
     if (receipt.settlementStatus === "settled") continue;
@@ -345,7 +345,7 @@ export async function markBatchReceiptsSettled(input: {
       ...(input.settleTxHash ? { settleTxHash: input.settleTxHash, txHash: input.settleTxHash } : {}),
       settledAt: Date.now(),
     };
-    await redisSet(receiptKey(id), JSON.stringify(next), RECEIPT_TTL_SECONDS);
+    await valkeySet(receiptKey(id), JSON.stringify(next), RECEIPT_TTL_SECONDS);
     updated += 1;
   }
   return updated;
@@ -358,19 +358,19 @@ export async function markIntentReceiptsSettled(input: {
 }): Promise<number> {
   const ids = new Set<string>();
   if (input.paymentIntentId) {
-    for (const id of await redisSMembers(intentReceiptsKey(input.paymentIntentId))) {
+    for (const id of await valkeySMembers(intentReceiptsKey(input.paymentIntentId))) {
       ids.add(id);
     }
   }
   if (input.sessionBudgetIntentId) {
-    for (const id of await redisSMembers(sessionReceiptsKey(input.sessionBudgetIntentId))) {
+    for (const id of await valkeySMembers(sessionReceiptsKey(input.sessionBudgetIntentId))) {
       ids.add(id);
     }
   }
 
   let updated = 0;
   for (const id of ids) {
-    const raw = await redisGet(receiptKey(id));
+    const raw = await valkeyGet(receiptKey(id));
     if (!raw) continue;
     const receipt = JSON.parse(raw) as Receipt;
     if (receipt.settlementStatus === "settled") continue;
@@ -380,7 +380,7 @@ export async function markIntentReceiptsSettled(input: {
       txHash: input.txHash,
       settledAt: Date.now(),
     };
-    await redisSet(receiptKey(id), JSON.stringify(next), RECEIPT_TTL_SECONDS);
+    await valkeySet(receiptKey(id), JSON.stringify(next), RECEIPT_TTL_SECONDS);
     updated += 1;
   }
   return updated;

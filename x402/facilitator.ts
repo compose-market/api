@@ -1,8 +1,8 @@
 import { x402Facilitator } from "@x402/core/facilitator";
 import {
-    decodePaymentSignatureHeader,
-    encodePaymentRequiredHeader,
-    encodePaymentResponseHeader,
+    decodePaymentSignatureHeader as decodePaymentSignatureHeader_x402,
+    encodePaymentRequiredHeader as encodePaymentRequiredHeader_x402,
+    encodePaymentResponseHeader as encodePaymentResponseHeader_x402,
 } from "@x402/core/http";
 import {
     PaymentPayloadSchema,
@@ -51,7 +51,7 @@ const FACILITATOR_VERIFY_REQUEST_SCHEMA = z.object({
 
 const FACILITATOR_SETTLE_REQUEST_SCHEMA = FACILITATOR_VERIFY_REQUEST_SCHEMA;
 
-const composeFacilitatorExtensions: FacilitatorExtension[] = [
+const facilitatorExtensions: FacilitatorExtension[] = [
     { key: COMPOSE_METERING_EXTENSION_KEY },
     { key: COMPOSE_PAYMENT_INTENT_EXTENSION_KEY },
 ];
@@ -225,14 +225,14 @@ function createBatchSchemeForChain(chainId: ChainId) {
     return scheme;
 }
 
-function createComposeFacilitator(): x402Facilitator {
+function createFacilitator(): x402Facilitator {
     const chainIds = getConfiguredFacilitatorChainIds();
     if (chainIds.length === 0) {
         throw new Error("Compose facilitator has no configured EVM chains");
     }
 
     const facilitator = new x402Facilitator();
-    for (const extension of composeFacilitatorExtensions) {
+    for (const extension of facilitatorExtensions) {
         facilitator.registerExtension(extension);
     }
 
@@ -245,15 +245,15 @@ function createComposeFacilitator(): x402Facilitator {
     return facilitator;
 }
 
-export function getComposeFacilitator(): x402Facilitator {
+export function getFacilitator(): x402Facilitator {
     if (!facilitatorSingleton) {
-        facilitatorSingleton = createComposeFacilitator();
+        facilitatorSingleton = createFacilitator();
     }
     return facilitatorSingleton;
 }
 
-export function getComposeFacilitatorSupported(): SupportedResponse {
-    const supported = getComposeFacilitator().getSupported();
+export function getFacilitatorSupported(): SupportedResponse {
+    const supported = getFacilitator().getSupported();
     return {
         kinds: supported.kinds.map((kind) => ({
             x402Version: kind.x402Version,
@@ -266,7 +266,7 @@ export function getComposeFacilitatorSupported(): SupportedResponse {
     };
 }
 
-export function createComposePaymentExtensions(): Record<string, unknown> {
+export function createPaymentExtensions(): Record<string, unknown> {
     return {
         [COMPOSE_METERING_EXTENSION_KEY]: {
             mode: "authoritative_usage",
@@ -280,7 +280,7 @@ export function createComposePaymentExtensions(): Record<string, unknown> {
     };
 }
 
-export function createComposePaymentRequirement(input: {
+export function createPaymentRequirement(input: {
     amountWei: number | string;
     chainId: number;
     scheme?: "exact" | "upto" | "batch-settlement";
@@ -314,7 +314,7 @@ export function createComposePaymentRequirement(input: {
     });
 }
 
-export function createComposePaymentRequired(input: {
+export function createPaymentRequired(input: {
     amountWei: number | string;
     chainId: number;
     scheme?: "exact" | "upto" | "batch-settlement";
@@ -331,25 +331,25 @@ export function createComposePaymentRequired(input: {
             description: input.description,
             mimeType: input.mimeType,
         },
-        accepts: [createComposePaymentRequirement({
+        accepts: [createPaymentRequirement({
             amountWei: input.amountWei,
             chainId: input.chainId,
             scheme: input.scheme,
         })],
-        extensions: createComposePaymentExtensions(),
+        extensions: createPaymentExtensions(),
     });
 }
 
-export function encodeComposePaymentRequiredHeader(paymentRequired: PaymentRequired): string {
-    return encodePaymentRequiredHeader(paymentRequired);
+export function encodePaymentRequiredHeader(paymentRequired: PaymentRequired): string {
+    return encodePaymentRequiredHeader_x402(paymentRequired);
 }
 
-export function encodeComposePaymentResponseHeader(settleResponse: SettleResponse): string {
-    return encodePaymentResponseHeader(settleResponse);
+export function encodePaymentResponseHeader(settleResponse: SettleResponse): string {
+    return encodePaymentResponseHeader_x402(settleResponse);
 }
 
-export function decodeComposePaymentSignatureHeader(paymentData: string): PaymentPayload {
-    return parseV2PaymentPayload(decodePaymentSignatureHeader(paymentData));
+export function decodePaymentSignatureHeader(paymentData: string): PaymentPayload {
+    return parseV2PaymentPayload(decodePaymentSignatureHeader_x402(paymentData));
 }
 
 export function getChainIdFromPaymentPayload(paymentPayload: PaymentPayload): number {
@@ -366,21 +366,21 @@ export function getChainIdFromPaymentPayload(paymentPayload: PaymentPayload): nu
     return chainId;
 }
 
-export async function verifyComposePayment(
+export async function verifyPayment(
     paymentPayload: PaymentPayload,
     paymentRequirements: PaymentRequirements,
 ): Promise<VerifyResponse> {
-    return getComposeFacilitator().verify(paymentPayload, paymentRequirements);
+    return getFacilitator().verify(paymentPayload, paymentRequirements);
 }
 
-export async function settleComposePayment(
+export async function settlePayment(
     paymentPayload: PaymentPayload,
     paymentRequirements: PaymentRequirements,
 ): Promise<SettleResponse> {
-    return getComposeFacilitator().settle(paymentPayload, paymentRequirements);
+    return getFacilitator().settle(paymentPayload, paymentRequirements);
 }
 
-export function parseComposeFacilitatorVerifyRequest(body: unknown): {
+export function parseFacilitatorVerifyRequest(body: unknown): {
     paymentPayload: PaymentPayload;
     paymentRequirements: PaymentRequirements;
 } {
@@ -391,7 +391,7 @@ export function parseComposeFacilitatorVerifyRequest(body: unknown): {
     };
 }
 
-export function parseComposeFacilitatorSettleRequest(body: unknown): {
+export function parseFacilitatorSettleRequest(body: unknown): {
     paymentPayload: PaymentPayload;
     paymentRequirements: PaymentRequirements;
 } {
@@ -402,7 +402,7 @@ export function parseComposeFacilitatorSettleRequest(body: unknown): {
     };
 }
 
-export function getComposeFacilitatorChainMetadata(): Array<{
+export function getFacilitatorChainMetadata(): Array<{
     chainId: number;
     name: string;
     network: `eip155:${number}`;

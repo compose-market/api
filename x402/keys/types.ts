@@ -15,7 +15,7 @@
  * Compose Key JWT payload
  * This is encoded in the `compose-...` token
  */
-export interface ComposeKeyPayload {
+export interface KeyPayload {
     /** User's wallet address (subject) */
     sub: string;
     /** Key ID (UUID) */
@@ -35,17 +35,17 @@ export interface ComposeKeyPayload {
 // =============================================================================
 
 /**
- * Compose Key record stored in Redis
+ * Compose Key record stored in ValKey
  */
-export type ComposeKeyPurpose = "session" | "api";
+export type KeyPurpose = "session" | "api";
 
-export interface ComposeKeyRecord {
+export interface KeyRecord {
     /** Unique key identifier */
     keyId: string;
     /** User's wallet address */
     userAddress: string;
     /** Whether the key powers the first-party session or an external API client */
-    purpose: ComposeKeyPurpose;
+    purpose: KeyPurpose;
     /** Budget allowed for this key in USDC wei */
     budgetLimit: number;
     /** Budget used so far in USDC wei */
@@ -79,7 +79,7 @@ export interface CreateKeyRequest {
     /** Expiration timestamp */
     expiresAt: number;
     /** Required key purpose */
-    purpose: ComposeKeyPurpose;
+    purpose: KeyPurpose;
     /** Optional name */
     name?: string;
     /** Optional chain ID */
@@ -95,7 +95,7 @@ export interface CreateKeyResponse {
     /** Full token (compose-...) */
     token: string;
     /** Key purpose */
-    purpose: ComposeKeyPurpose;
+    purpose: KeyPurpose;
     /** Budget limit */
     budgetLimit: number;
     /** Expiration */
@@ -113,9 +113,9 @@ export interface KeyValidationResult {
     /** Error message if invalid */
     error?: string;
     /** Key payload if valid */
-    payload?: ComposeKeyPayload;
+    payload?: KeyPayload;
     /** Key record if valid */
-    record?: ComposeKeyRecord;
+    record?: KeyRecord;
 }
 
 

@@ -17,20 +17,20 @@ import {
     getActiveChainId,
 } from "./configs/chains.js";
 import {
-    createComposePaymentRequired,
-    createComposePaymentRequirement,
-    decodeComposePaymentSignatureHeader,
-    encodeComposePaymentRequiredHeader,
-    encodeComposePaymentResponseHeader,
+    createPaymentRequired,
+    createPaymentRequirement,
+    decodePaymentSignatureHeader,
+    encodePaymentRequiredHeader,
+    encodePaymentResponseHeader,
     getChainIdFromPaymentPayload,
-    settleComposePayment,
-    verifyComposePayment,
+    settlePayment,
+    verifyPayment,
 } from "./facilitator.js";
 
 // Compose Keys integration (session record for UI/token)
 import {
-    extractComposeKeyFromHeader,
-    validateComposeKey,
+    extractKeyFromHeader,
+    validateKey,
     getActiveSessionStatus,
 } from "./keys/index.js";
 
@@ -63,10 +63,10 @@ import {
     settlePaymentIntent,
 } from "./intents.js";
 import {
-    redisDel,
-    redisGet,
-    redisSetNXEX,
-} from "./keys/redis.js";
+    valkeyDel,
+    valkeyGet,
+    valkeySetNXEX,
+} from "./keys/valkey.js";
 
 // Re-export types
 export type { X402SettlementResult, PaymentInfo, X402PaymentMethod, SkillPricing } from "./types.js";
@@ -120,7 +120,7 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
 
     activeSettlementCycle = (async () => {
         const owner = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-        const locked = await redisSetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 600));
+        const locked = await valkeySetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 600));
         if (!locked) {
             console.log("[batch-settlement] skipped; another settlement cycle is active", { reason });
             return {
@@ -146,9 +146,9 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
             });
             return { reason, native, intents };
         } finally {
-            const current = await redisGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
+            const current = await valkeyGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
             if (current === owner) {
-                await redisDel(SETTLEMENT_RUN_LOCK_KEY).catch(() => false);
+                await valkeyDel(SETTLEMENT_RUN_LOCK_KEY).catch(() => false);
             }
             activeSettlementCycle = null;
         }
@@ -194,7 +194,7 @@ export async function kickBatchSettlement(
             });
         };
 
-        const locked = await redisSetNXEX(
+        const locked = await valkeySetNXEX(
             SETTLEMENT_KICK_LOCK_KEY,
             `${reason}:${Date.now()}`,
             intEnv("SETTLEMENT_KICK_DEDUPE_SECONDS", 2),
@@ -228,7 +228,7 @@ export async function kickBatchSettlement(
     }
 }
 
-function setComposeSessionInvalidHeader(
+function setSessionInvalidHeader(
     target: Pick<Response, "setHeader"> | Record<string, string>,
     reason: string,
 ): void {
@@ -240,7 +240,7 @@ function setComposeSessionInvalidHeader(
     (target as Record<string, string>)["x-session-invalid"] = reason;
 }
 
-function getComposeSessionInvalidReason(error: string | undefined): string {
+function getSessionInvalidReason(error: string | undefined): string {
     const normalized = String(error || "").toLowerCase();
     if (normalized.includes("revoked")) return "revoked";
     if (normalized.includes("expired")) return "expired";
@@ -266,7 +266,7 @@ export function createPaymentRequired402Response(params: {
 }): PaymentRequired {
     const chainId = params.chainId || getActiveChainId();
 
-    return createComposePaymentRequired({
+    return createPaymentRequired({
         amountWei: params.amountWei,
         chainId,
         resourceUrl: params.resourceUrl || "",
@@ -276,10 +276,10 @@ export function createPaymentRequired402Response(params: {
     });
 }
 
-type ComposePaymentScheme = "exact" | "upto" | "batch-settlement";
+type PaymentScheme = "exact" | "upto" | "batch-settlement";
 
 export type InferenceAuthorizationInput =
-    | { useBudgetCap: true; scheme?: ComposePaymentScheme }
+    | { useBudgetCap: true; scheme?: PaymentScheme }
     | { maxAmountWei: string }
     | { meter: MeteredAuthorizationInput };
 
@@ -382,7 +382,7 @@ export function getRawInferenceMaxAmount(req: Request): string | null {
     return parsePositiveIntegerHeader(bodyValue);
 }
 
-function getComposeRunIdFromRequest(req: Request): string | null {
+function getRunIdFromRequest(req: Request): string | null {
     const value = req.get?.("x-run-id")
         || req.get?.("X-Run-Id")
         || req.headers["x-run-id"]
@@ -407,7 +407,7 @@ function rawRuntimeHeaders(chainId: number, maxAmountWei: string): Record<string
     };
 }
 
-function composeRuntimeHeaders(input: {
+function runtimeHeaders(input: {
     authorization: string;
     chainId: number;
     userAddress: string;
@@ -489,7 +489,7 @@ function getDefaultUptoEnvelopeWei(): string {
 function resolveInferenceAuthorizationRequirement(
     req: Request,
     authorizationInput: InferenceAuthorizationInput,
-): { scheme: ComposePaymentScheme; maxAmountWei: string } {
+): { scheme: PaymentScheme; maxAmountWei: string } {
     if ("maxAmountWei" in authorizationInput) {
         return {
             scheme: "exact",
@@ -527,11 +527,11 @@ async function prepareRawInferenceX402Payment(
     authorizationInput: InferenceAuthorizationInput,
 ): Promise<PreparedInferencePayment | null> {
     const requirement = resolveInferenceAuthorizationRequirement(req, authorizationInput);
-    const fallbackChainId = getChainIdFromRequest(req) ?? getActiveChainId();
+    const requiredChainId = getChainIdFromRequest(req) ?? getActiveChainId();
     const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
-    const composeRunId = getComposeRunIdFromRequest(req);
+    const runId = getRunIdFromRequest(req);
 
-    const buildPaymentRequired = (chainId: number, error?: string) => createComposePaymentRequired({
+    const buildPaymentRequired = (chainId: number, error?: string) => createPaymentRequired({
         amountWei: requirement.maxAmountWei,
         chainId,
         scheme: requirement.scheme,
@@ -547,12 +547,21 @@ async function prepareRawInferenceX402Payment(
             || req.headers["x-execution-run-id"]
             || req.get?.("x-parent-run-id")
             || req.headers["x-parent-run-id"];
-        if (composeRunId && inheritedExecutionId) {
-            const inherited = await readRawEnvelope(composeRunId);
+        if (runId && inheritedExecutionId) {
+            const inherited = await readRawEnvelope(runId);
+            if (inherited && inherited.chainId !== requiredChainId) {
+                const paymentRequired = buildPaymentRequired(
+                    requiredChainId,
+                    `Inherited x402 envelope chain ${inherited.chainId} does not match required chain ${requiredChainId}`,
+                );
+                res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+                res.status(402).json(paymentRequired);
+                return null;
+            }
             if (inherited) {
                 return {
                     maxAmountWei: inherited.maxAmountWei,
-                    runtimeHeaders: rawRuntimeHeaders(inherited.chainId, inherited.maxAmountWei),
+                    runtimeHeaders: rawRuntimeHeaders(requiredChainId, inherited.maxAmountWei),
                     settle: async (settlementInput) => {
                         let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
                         let finalAmountWei: string;
@@ -583,7 +592,7 @@ async function prepareRawInferenceX402Payment(
                             };
                         }
 
-                        await reserveRawEnvelope(composeRunId, finalAmountWei);
+                        await reserveRawEnvelope(runId, finalAmountWei);
                         if (isBatchSettlementScheme(inherited.paymentPayload.accepted.scheme)) {
                             try {
                                 const batch = await commitBatchCharge(inherited.paymentPayload, finalAmountWei);
@@ -594,14 +603,14 @@ async function prepareRawInferenceX402Payment(
                                     platformFeeWei,
                                     meterSubject,
                                     lineItems,
-                                    chainId: inherited.chainId,
+                                    chainId: requiredChainId,
                                     settledAt: Date.now(),
                                     settlementStatus: "queued",
                                     paymentChannelId: batch.channelId,
                                     paymentCumulativeAmountWei: batch.cumulativeAmountWei,
                                 };
                             } catch (error) {
-                                await releaseRawEnvelope(composeRunId, finalAmountWei);
+                                await releaseRawEnvelope(runId, finalAmountWei);
                                 return {
                                     success: false,
                                     error: error instanceof Error ? error.message : "Batch settlement commit failed",
@@ -609,16 +618,16 @@ async function prepareRawInferenceX402Payment(
                                 };
                             }
                         }
-                        const settled = await settleComposePayment(
+                        const settled = await settlePayment(
                             inherited.paymentPayload,
-                            createComposePaymentRequirement({
+                            createPaymentRequirement({
                                 amountWei: finalAmountWei,
-                                chainId: inherited.chainId,
+                                chainId: requiredChainId,
                                 scheme: inherited.paymentPayload.accepted.scheme === "upto" ? "upto" : "exact",
                             }),
                         );
                         if (!settled.success) {
-                            await releaseRawEnvelope(composeRunId, finalAmountWei);
+                            await releaseRawEnvelope(runId, finalAmountWei);
                             return {
                                 success: false,
                                 error: settled.errorMessage || settled.errorReason || "Payment settlement failed",
@@ -633,7 +642,7 @@ async function prepareRawInferenceX402Payment(
                             platformFeeWei,
                             meterSubject,
                             lineItems,
-                            chainId: inherited.chainId,
+                            chainId: requiredChainId,
                             settledAt: Date.now(),
                             settlementStatus: settled.transaction ? "settled" : "queued",
                         };
@@ -643,39 +652,49 @@ async function prepareRawInferenceX402Payment(
                 };
             }
         }
-        const paymentRequired = buildPaymentRequired(fallbackChainId);
-        res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
+        const paymentRequired = buildPaymentRequired(requiredChainId);
+        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
         return null;
     }
 
     let paymentPayload;
-    let paymentChainId = fallbackChainId;
+    let paymentChainId: number;
     try {
-        paymentPayload = decodeComposePaymentSignatureHeader(paymentSignature);
+        paymentPayload = decodePaymentSignatureHeader(paymentSignature);
         paymentChainId = getChainIdFromPaymentPayload(paymentPayload);
     } catch (error) {
         const paymentRequired = buildPaymentRequired(
-            fallbackChainId,
+            requiredChainId,
             error instanceof Error ? error.message : "Invalid payment payload",
         );
-        res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
+        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
         return null;
     }
 
-    const verificationRequirement = createComposePaymentRequirement({
+    if (paymentChainId !== requiredChainId) {
+        const paymentRequired = buildPaymentRequired(
+            requiredChainId,
+            `Payment chain ${paymentChainId} does not match required chain ${requiredChainId}`,
+        );
+        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+        res.status(402).json(paymentRequired);
+        return null;
+    }
+
+    const verificationRequirement = createPaymentRequirement({
         amountWei: requirement.maxAmountWei,
-        chainId: paymentChainId,
+        chainId: requiredChainId,
         scheme: requirement.scheme,
     });
-    const verifyResult = await verifyComposePayment(paymentPayload, verificationRequirement);
+    const verifyResult = await verifyPayment(paymentPayload, verificationRequirement);
     if (!verifyResult.isValid) {
         const paymentRequired = buildPaymentRequired(
-            paymentChainId,
+            requiredChainId,
             verifyResult.invalidMessage || verifyResult.invalidReason || "Payment verification failed",
         );
-        res.setHeader("PAYMENT-REQUIRED", encodeComposePaymentRequiredHeader(paymentRequired));
+        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
         return null;
     }
@@ -683,11 +702,11 @@ async function prepareRawInferenceX402Payment(
         await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
     }
 
-    if (composeRunId) {
+    if (runId) {
         await saveRawEnvelope({
-            rootRunId: composeRunId,
+            rootRunId: runId,
             maxAmountWei: requirement.maxAmountWei,
-            chainId: paymentChainId,
+            chainId: requiredChainId,
             paymentPayload,
             payer: verifyResult.payer,
         });
@@ -697,7 +716,7 @@ async function prepareRawInferenceX402Payment(
 
     return {
         maxAmountWei: requirement.maxAmountWei,
-        runtimeHeaders: rawRuntimeHeaders(paymentChainId, requirement.maxAmountWei),
+        runtimeHeaders: rawRuntimeHeaders(requiredChainId, requirement.maxAmountWei),
         settle: async (settlementInput) => {
             let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
             let finalAmountWei: string;
@@ -744,14 +763,14 @@ async function prepareRawInferenceX402Payment(
                     platformFeeWei,
                     meterSubject,
                     lineItems,
-                    chainId: paymentChainId,
+                    chainId: requiredChainId,
                     settledAt: Date.now(),
                 };
             }
 
-            if (composeRunId) {
+            if (runId) {
                 try {
-                    await reserveRawEnvelope(composeRunId, finalAmountWei);
+                    await reserveRawEnvelope(runId, finalAmountWei);
                 } catch (error) {
                     return {
                         success: false,
@@ -761,9 +780,9 @@ async function prepareRawInferenceX402Payment(
                 }
             }
 
-            const settlementRequirement = createComposePaymentRequirement({
+            const settlementRequirement = createPaymentRequirement({
                 amountWei: finalAmountWei,
-                chainId: paymentChainId,
+                chainId: requiredChainId,
                 scheme: requirement.scheme,
             });
             let settled;
@@ -773,8 +792,8 @@ async function prepareRawInferenceX402Payment(
                     batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
                     settled = queuedBatchSettlement(finalAmountWei, settlementRequirement.network);
                 } catch (error) {
-                    if (composeRunId) {
-                        await releaseRawEnvelope(composeRunId, finalAmountWei);
+                    if (runId) {
+                        await releaseRawEnvelope(runId, finalAmountWei);
                     }
                     return {
                         success: false,
@@ -782,7 +801,7 @@ async function prepareRawInferenceX402Payment(
                     };
                 }
             } else {
-                settled = await settleComposePayment(
+                settled = await settlePayment(
                     paymentPayload,
                     settlementRequirement,
                 );
@@ -792,15 +811,15 @@ async function prepareRawInferenceX402Payment(
             }
 
             currentHeaders = {
-                "PAYMENT-RESPONSE": encodeComposePaymentResponseHeader(settled),
+                "PAYMENT-RESPONSE": encodePaymentResponseHeader(settled),
             };
             if (settled.transaction) {
                 currentHeaders["X-Transaction-Hash"] = settled.transaction;
             }
 
             if (!settled.success) {
-                if (composeRunId) {
-                    await releaseRawEnvelope(composeRunId, finalAmountWei);
+                if (runId) {
+                    await releaseRawEnvelope(runId, finalAmountWei);
                 }
                 return {
                     success: false,
@@ -816,7 +835,7 @@ async function prepareRawInferenceX402Payment(
                 platformFeeWei,
                 meterSubject,
                 lineItems,
-                chainId: paymentChainId,
+                chainId: requiredChainId,
                 settledAt: Date.now(),
                 settlementStatus: isBatchSettlementScheme(paymentPayload.accepted.scheme)
                     ? "queued"
@@ -843,21 +862,21 @@ export async function prepareInferencePayment(
     authorizationInput: InferenceAuthorizationInput,
 ): Promise<PreparedInferencePayment | null> {
     const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-    const composeKeyToken = extractComposeKeyFromHeader(authorization);
+    const composeKeyToken = extractKeyFromHeader(authorization);
     if (!composeKeyToken) {
         return prepareRawInferenceX402Payment(req, res, authorizationInput);
     }
 
-    const validation = await validateComposeKey(composeKeyToken, 0);
+    const validation = await validateKey(composeKeyToken, 0);
     if (!validation.valid || !validation.payload || !validation.record) {
-        setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(validation.error));
+        setSessionInvalidHeader(res, getSessionInvalidReason(validation.error));
         res.status(401).json({ error: validation.error || "Invalid Compose key" });
         return null;
     }
 
     const chainId = getChainIdFromRequest(req) ?? validation.record.chainId ?? getActiveChainId();
     if (validation.record.chainId && validation.record.chainId !== chainId) {
-        setComposeSessionInvalidHeader(res, "invalid_key");
+        setSessionInvalidHeader(res, "invalid_key");
         res.status(409).json({ error: "Compose key chainId does not match request chainId" });
         return null;
     }
@@ -871,7 +890,7 @@ export async function prepareInferencePayment(
         const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
         const session = sessionStatus.session;
         if (!session || session.keyId !== keyId) {
-            setComposeSessionInvalidHeader(res, session ? "invalid_key" : sessionStatus.reason);
+            setSessionInvalidHeader(res, session ? "invalid_key" : sessionStatus.reason);
             res.status(401).json({ error: "The compose-key session is inactive or expired." });
             return null;
         }
@@ -894,7 +913,7 @@ export async function prepareInferencePayment(
             resource: publicResourceUrl(req),
             method: req.method || "POST",
             useBudgetCap: true,
-            composeRunId: getComposeRunIdFromRequest(req) || undefined,
+            runId: getRunIdFromRequest(req) || undefined,
             idempotencyKey,
         });
 
@@ -906,7 +925,7 @@ export async function prepareInferencePayment(
             for (const [key, value] of Object.entries(authorizationResult.headers)) {
                 res.setHeader(key, value);
             }
-            setComposeSessionInvalidHeader(res, getComposeSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
+            setSessionInvalidHeader(res, getSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
             res.status(authorizationResult.status).json(authorizationResult.body);
             return null;
         }
@@ -915,7 +934,7 @@ export async function prepareInferencePayment(
         maxAmountWei = authorizationResult.body.maxAmountWei;
     }
 
-    const runtimeHeaders = composeRuntimeHeaders({
+    const resolvedRuntimeHeaders = runtimeHeaders({
         authorization,
         chainId,
         userAddress,
@@ -927,7 +946,7 @@ export async function prepareInferencePayment(
 
     return {
         maxAmountWei,
-        runtimeHeaders,
+        runtimeHeaders: resolvedRuntimeHeaders,
         settle: async (settlementInput) => {
             const {
                 finalAmountWei,
@@ -981,7 +1000,7 @@ export async function prepareInferencePayment(
                 );
 
                 if (!lock.success || !lock.intentId) {
-                    setComposeSessionInvalidHeader(currentHeaders, "budget_exhausted");
+                    setSessionInvalidHeader(currentHeaders, "budget_exhausted");
                     return {
                         success: false,
                         error: lock.error || "Session budget exhausted",
@@ -1030,7 +1049,7 @@ export async function prepareInferencePayment(
                     resource: publicResourceUrl(req),
                     method: req.method || "POST",
                     useBudgetCap: true,
-                    composeRunId: getComposeRunIdFromRequest(req) || undefined,
+                    runId: getRunIdFromRequest(req) || undefined,
                     idempotencyKey: idempotencyKey ? `${idempotencyKey}:settlement:${paymentIntentSequence}` : undefined,
                 });
 
@@ -1039,7 +1058,7 @@ export async function prepareInferencePayment(
                 };
 
                 if (!authorizationResult.ok) {
-                    setComposeSessionInvalidHeader(currentHeaders, getComposeSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
+                    setSessionInvalidHeader(currentHeaders, getSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
                     return {
                         success: false,
                         error: typeof authorizationResult.body.error === "string"

@@ -5,7 +5,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { getBatchAsset, getBatchChannelStorage } from "./batch.js";
 import { CHAIN_CONFIG, getActiveChainId, type ChainId } from "./configs/chains.js";
-import { getComposeFacilitator } from "./facilitator.js";
+import { getFacilitator } from "./facilitator.js";
 import { markBatchEvidenceSettled } from "./evidence.js";
 import { markBatchReceiptsSettled } from "./receipts.js";
 import { merchantWalletAddress } from "./wallets.js";
@@ -72,7 +72,7 @@ function facilitatorClient(): FacilitatorClient {
     return client;
   }
 
-  const facilitator = getComposeFacilitator();
+  const facilitator = getFacilitator();
   const created: FacilitatorClient = {
     verify: (paymentPayload, paymentRequirements) =>
       facilitator.verify(paymentPayload, paymentRequirements),

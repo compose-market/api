@@ -8,7 +8,7 @@
  */
 
 import { createHmac } from "crypto";
-import type { ComposeKeyPayload } from "./types.js";
+import type { KeyPayload } from "./types.js";
 
 // =============================================================================
 // Constants
@@ -22,9 +22,9 @@ const ALGORITHM = "HS256";
 // =============================================================================
 
 function getSecret(): string {
-    const composeSecret = process.env.COMPOSE_SESSION_SECRET;
-    if (composeSecret) {
-        return composeSecret;
+    const secret = process.env.COMPOSE_SESSION_SECRET;
+    if (secret) {
+        return secret;
     }
     throw new Error("COMPOSE_SESSION_SECRET environment variable required");
 }
@@ -68,11 +68,11 @@ function sign(data: string, secret: string): string {
  * @param payload - Key payload to encode
  * @returns Full token with `compose-` prefix
  */
-export function signComposeKey(payload: Omit<ComposeKeyPayload, "iat">): string {
+export function signKey(payload: Omit<KeyPayload, "iat">): string {
     const secret = getSecret();
 
     const header = { alg: ALGORITHM, typ: "JWT" };
-    const fullPayload: ComposeKeyPayload = {
+    const fullPayload: KeyPayload = {
         ...payload,
         iat: Math.floor(Date.now() / 1000),
     };
@@ -91,7 +91,7 @@ export function signComposeKey(payload: Omit<ComposeKeyPayload, "iat">): string 
  * @param token - Full token including `compose-` prefix
  * @returns Decoded payload or null if invalid
  */
-export function verifyComposeKey(token: string): ComposeKeyPayload | null {
+export function verifyKey(token: string): KeyPayload | null {
     // Check prefix
     if (!token.startsWith(COMPOSE_KEY_PREFIX)) {
         return null;
@@ -117,7 +117,7 @@ export function verifyComposeKey(token: string): ComposeKeyPayload | null {
         }
 
         // Decode payload
-        const payload: ComposeKeyPayload = JSON.parse(base64urlDecode(payloadB64));
+        const payload: KeyPayload = JSON.parse(base64urlDecode(payloadB64));
 
         // Check expiration
         const now = Math.floor(Date.now() / 1000);

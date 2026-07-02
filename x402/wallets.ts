@@ -12,7 +12,7 @@ import {
     getUsdcAddress,
     VIEM_CHAIN_MAP,
 } from "./configs/chains.js";
-import { decodeComposePaymentSignatureHeader, getChainIdFromPaymentPayload } from "./facilitator.js";
+import { decodePaymentSignatureHeader, getChainIdFromPaymentPayload } from "./facilitator.js";
 
 // =============================================================================
 // Wallet Addresses
@@ -65,7 +65,7 @@ export function getChainIdFromPaymentData(paymentData: string | null): number {
     }
 
     try {
-        const paymentPayload = decodeComposePaymentSignatureHeader(paymentData);
+        const paymentPayload = decodePaymentSignatureHeader(paymentData);
         return getChainIdFromPaymentPayload(paymentPayload);
     } catch {
         return getActiveChainId();

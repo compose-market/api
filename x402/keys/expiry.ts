@@ -10,11 +10,11 @@ type ScheduledEvent = { source?: string };
 type Context = Record<string, unknown>;
 
 import {
-    redisHGetAll,
-    redisSMembers,
-    redisSRem,
-    getRedisClient,
-} from "./redis.js";
+    valkeyHGetAll,
+    valkeySMembers,
+    valkeySRem,
+    getValkeyClient,
+} from "./valkey.js";
 
 const USER_KEYS_PREFIX = "user-keys:";
 const KEY_PREFIX = "compose-key:";
@@ -30,11 +30,11 @@ export async function expiryWorker(
     try {
         const userKeyIndexes = await scanKeys(USER_KEYS_PREFIX);
         for (const userKeyIndex of userKeyIndexes) {
-            const keyIds = await redisSMembers(userKeyIndex);
+            const keyIds = await valkeySMembers(userKeyIndex);
             for (const keyId of keyIds) {
-                const record = await redisHGetAll(`${KEY_PREFIX}${keyId}`);
+                const record = await valkeyHGetAll(`${KEY_PREFIX}${keyId}`);
                 if (!record || Object.keys(record).length === 0) {
-                    await redisSRem(userKeyIndex, keyId);
+                    await valkeySRem(userKeyIndex, keyId);
                     staleRefsRemoved += 1;
                 }
             }
@@ -50,14 +50,14 @@ export async function expiryWorker(
 }
 
 async function scanKeys(prefix: string): Promise<string[]> {
-    const redis = await getRedisClient();
+    const valkey = await getValkeyClient();
     const keys: string[] = [];
     let cursor = "0";
 
     do {
-        const result = await redis.scan(cursor, { MATCH: `${prefix}*`, COUNT: 100 });
-        cursor = result.cursor;
-        keys.push(...result.keys);
+        const [nextCursor, keys2] = await valkey.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 100);
+        cursor = nextCursor;
+        keys.push(...keys2);
     } while (cursor !== "0");
 
     return keys;

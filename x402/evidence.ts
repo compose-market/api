@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 
 import {
-  redisExpire,
-  redisHGetAll,
-  redisHSet,
-  redisSAdd,
-  redisSMembers,
-  redisSet,
-} from "./keys/redis.js";
+  valkeyExpire,
+  valkeyHGetAll,
+  valkeyHSet,
+  valkeySAdd,
+  valkeySMembers,
+  valkeySet,
+} from "./keys/valkey.js";
 
 const TTL_SECONDS = 60 * 60 * 24;
 const PREFIX = "x402:evidence";
@@ -28,7 +28,7 @@ export interface ChargeEvidence {
   walletAddress?: string;
   name?: string;
   providerAmountWei: string;
-  composeFeeWei: string;
+  feeWei: string;
   creatorFeeWei?: string;
   finalAmountWei: string;
   settlementStatus?: SettlementStatus;
@@ -89,7 +89,7 @@ function fields(input: Required<Pick<ChargeEvidence, "id">> & ChargeEvidence): R
     walletAddress: clean(input.walletAddress),
     name: clean(input.name),
     providerAmountWei: input.providerAmountWei,
-    composeFeeWei: input.composeFeeWei,
+    feeWei: input.feeWei,
     creatorFeeWei: clean(input.creatorFeeWei),
     finalAmountWei: input.finalAmountWei,
     settlementStatus: input.settlementStatus || (input.txHash ? "settled" : "queued"),
@@ -122,7 +122,7 @@ function parse(data: Record<string, string>): ChargeEvidence | null {
     ...(data.walletAddress ? { walletAddress: data.walletAddress } : {}),
     ...(data.name ? { name: data.name } : {}),
     providerAmountWei: data.providerAmountWei || "0",
-    composeFeeWei: data.composeFeeWei || "0",
+    feeWei: data.feeWei || "0",
     ...(data.creatorFeeWei ? { creatorFeeWei: data.creatorFeeWei } : {}),
     finalAmountWei: data.finalAmountWei || "0",
     settlementStatus: (data.settlementStatus || (data.txHash ? "settled" : "queued")) as SettlementStatus,
@@ -145,35 +145,35 @@ export async function recordChargeEvidence(input: ChargeEvidence): Promise<Charg
 
   const id = input.id || `chg_${randomUUID().replace(/-/g, "")}`;
   const full = { ...input, id, chargeId: input.chargeId || id };
-  await redisHSet(key(id), fields(full));
-  await redisExpire(key(id), TTL_SECONDS);
+  await valkeyHSet(key(id), fields(full));
+  await valkeyExpire(key(id), TTL_SECONDS);
 
-  await redisSAdd(executionKey(input.rootRunId, input.executionRunId), id);
-  await redisExpire(executionKey(input.rootRunId, input.executionRunId), TTL_SECONDS);
-  await redisSAdd(rootKey(input.rootRunId), id);
-  await redisExpire(rootKey(input.rootRunId), TTL_SECONDS);
+  await valkeySAdd(executionKey(input.rootRunId, input.executionRunId), id);
+  await valkeyExpire(executionKey(input.rootRunId, input.executionRunId), TTL_SECONDS);
+  await valkeySAdd(rootKey(input.rootRunId), id);
+  await valkeyExpire(rootKey(input.rootRunId), TTL_SECONDS);
   if (input.parentExecutionRunId) {
-    await redisSAdd(parentKey(input.rootRunId, input.parentExecutionRunId), id);
-    await redisExpire(parentKey(input.rootRunId, input.parentExecutionRunId), TTL_SECONDS);
+    await valkeySAdd(parentKey(input.rootRunId, input.parentExecutionRunId), id);
+    await valkeyExpire(parentKey(input.rootRunId, input.parentExecutionRunId), TTL_SECONDS);
   }
   if (input.paymentChannelId) {
-    await redisSAdd(channelKey(input.paymentChannelId), id);
-    await redisExpire(channelKey(input.paymentChannelId), TTL_SECONDS);
+    await valkeySAdd(channelKey(input.paymentChannelId), id);
+    await valkeyExpire(channelKey(input.paymentChannelId), TTL_SECONDS);
   }
   if (input.paymentIntentId) {
-    await redisSAdd(intentKey(input.paymentIntentId), id);
-    await redisExpire(intentKey(input.paymentIntentId), TTL_SECONDS);
+    await valkeySAdd(intentKey(input.paymentIntentId), id);
+    await valkeyExpire(intentKey(input.paymentIntentId), TTL_SECONDS);
   }
   if (input.sessionBudgetIntentId) {
-    await redisSAdd(sessionKey(input.sessionBudgetIntentId), id);
-    await redisExpire(sessionKey(input.sessionBudgetIntentId), TTL_SECONDS);
+    await valkeySAdd(sessionKey(input.sessionBudgetIntentId), id);
+    await valkeyExpire(sessionKey(input.sessionBudgetIntentId), TTL_SECONDS);
   }
 
   return full;
 }
 
 async function list(ids: string[]): Promise<ChargeEvidence[]> {
-  const charges = await Promise.all(ids.map(async (id) => parse(await redisHGetAll(key(id)))));
+  const charges = await Promise.all(ids.map(async (id) => parse(await valkeyHGetAll(key(id)))));
   return charges.filter((charge): charge is ChargeEvidence => Boolean(charge));
 }
 
@@ -181,14 +181,14 @@ export async function listExecutionEvidence(rootRunId: string, executionRunId: s
   if (!rootRunId || !executionRunId) {
     return [];
   }
-  return list(await redisSMembers(executionKey(rootRunId, executionRunId)));
+  return list(await valkeySMembers(executionKey(rootRunId, executionRunId)));
 }
 
 export async function listChildEvidence(rootRunId: string, parentExecutionRunId: string): Promise<ChargeEvidence[]> {
   if (!rootRunId || !parentExecutionRunId) {
     return [];
   }
-  return list(await redisSMembers(parentKey(rootRunId, parentExecutionRunId)));
+  return list(await valkeySMembers(parentKey(rootRunId, parentExecutionRunId)));
 }
 
 export async function markBatchEvidenceSettled(input: {
@@ -198,10 +198,10 @@ export async function markBatchEvidenceSettled(input: {
   settleTxHash?: string;
   chainId?: number;
 }): Promise<number> {
-  const ids = await redisSMembers(channelKey(input.channelId));
+  const ids = await valkeySMembers(channelKey(input.channelId));
   let updated = 0;
   for (const id of ids) {
-    const current = parse(await redisHGetAll(key(id)));
+    const current = parse(await valkeyHGetAll(key(id)));
     if (!current || current.settlementStatus === "settled") {
       continue;
     }
@@ -209,7 +209,7 @@ export async function markBatchEvidenceSettled(input: {
     if (!cumulative || BigInt(cumulative) > BigInt(input.claimedAmountWei)) {
       continue;
     }
-    await redisHSet(key(id), {
+    await valkeyHSet(key(id), {
       settlementStatus: input.settleTxHash ? "settled" : "claimed",
       ...(input.claimTxHash ? { claimTxHash: input.claimTxHash } : {}),
       ...(input.settleTxHash ? { settleTxHash: input.settleTxHash, txHash: input.settleTxHash } : {}),
@@ -229,23 +229,23 @@ export async function markIntentEvidenceSettled(input: {
 }): Promise<number> {
   const ids = new Set<string>();
   if (input.paymentIntentId) {
-    for (const id of await redisSMembers(intentKey(input.paymentIntentId))) {
+    for (const id of await valkeySMembers(intentKey(input.paymentIntentId))) {
       ids.add(id);
     }
   }
   if (input.sessionBudgetIntentId) {
-    for (const id of await redisSMembers(sessionKey(input.sessionBudgetIntentId))) {
+    for (const id of await valkeySMembers(sessionKey(input.sessionBudgetIntentId))) {
       ids.add(id);
     }
   }
 
   let updated = 0;
   for (const id of ids) {
-    const current = parse(await redisHGetAll(key(id)));
+    const current = parse(await valkeyHGetAll(key(id)));
     if (!current || current.settlementStatus === "settled") {
       continue;
     }
-    await redisHSet(key(id), {
+    await valkeyHSet(key(id), {
       settlementStatus: "settled",
       txHash: input.txHash,
       ...(input.chainId ? { chainId: String(input.chainId) } : {}),

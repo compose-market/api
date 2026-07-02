@@ -53,7 +53,7 @@ interface SessionLeaseEvent {
     retryAfterMs: number;
 }
 
-interface ComposeAlert {
+interface Alert {
     type: "compose.alert";
     code: "session_events_lease_rotate";
     severity: "info" | "warning" | "error";
@@ -169,7 +169,7 @@ function writeAlertEvent(
     leaseMs: number,
     retryAfterMs: number,
 ): void {
-    const payload: ComposeAlert = {
+    const payload: Alert = {
         type: "compose.alert",
         code: "session_events_lease_rotate",
         severity: "info",

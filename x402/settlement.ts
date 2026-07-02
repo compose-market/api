@@ -83,7 +83,7 @@ function getTreasuryAccount() {
  * @param chainId - Chain ID (match user's session chain)
  * @returns Settlement result with tx hash or error
  */
-export async function settleComposeKeyPayment(
+export async function settleKeyPayment(
     userAddress: string,
     amountWei: number | string,
     chainId: number,
