@@ -1,14 +1,14 @@
 import { randomUUID } from "crypto";
 import { getActiveChainId } from "../x402/configs/chains.js";
 import {
-  redisDel,
-  redisGet,
-  getRedisClient,
-  redisIncr,
-  redisSet,
-  redisSetNXEX,
-  redisTTL,
-} from "../x402/keys/redis.js";
+  valkeyDel,
+  valkeyGet,
+  getValkeyClient,
+  valkeyIncr,
+  valkeySet,
+  valkeySetNXEX,
+  valkeyTTL,
+} from "../x402/keys/valkey.js";
 import { getActiveSessionStatus } from "../x402/keys/index.js";
 import { verifyKey } from "../x402/keys/jwt.js";
 import { extractKeyFromHeader } from "../x402/keys/middleware.js";
@@ -359,7 +359,7 @@ async function handleCreateLocalLinkToken(
       duration: auth.activeSession ? Math.max(0, auth.activeSession.expiresAt - issuedAt) : 0,
     };
 
-    await redisSet(
+    await valkeySet(
       `${LOCAL_LINK_TOKEN_PREFIX}${token}`,
       JSON.stringify(record),
       LOCAL_LINK_TOKEN_TTL_SECONDS,
@@ -423,7 +423,7 @@ async function handleRedeemLocalLinkToken(
   const linkTokenKey = `${LOCAL_LINK_TOKEN_PREFIX}${token}`;
   const consumedKey = `${LOCAL_LINK_CONSUMED_PREFIX}${token}`;
 
-  const stored = await redisGet(linkTokenKey);
+  const stored = await valkeyGet(linkTokenKey);
   if (!stored) {
     return json(404, { error: "Local link token not found or expired" }, corsHeaders);
   }
@@ -442,12 +442,12 @@ async function handleRedeemLocalLinkToken(
     return json(403, { error: "Deep-link userAddress does not match the connected Mesh wallet" }, corsHeaders);
   }
 
-  const consumed = await redisSetNXEX(consumedKey, deviceId, LOCAL_LINK_CONSUMED_TTL_SECONDS);
+  const consumed = await valkeySetNXEX(consumedKey, deviceId, LOCAL_LINK_CONSUMED_TTL_SECONDS);
   if (!consumed) {
     return json(409, { error: "Local link token already redeemed" }, corsHeaders);
   }
 
-  await redisDel(linkTokenKey);
+  await valkeyDel(linkTokenKey);
   const context = await buildRedeemedContext({
     userAddress: record.userAddress,
     chainId: record.chainId,
@@ -497,15 +497,15 @@ function uniqueNormalizedStrings(values: unknown): string[] {
 
 async function enforcePeerUpsertRateLimit(userAddress: string, chainId: number): Promise<void> {
   const key = `${LOCAL_NETWORK_UPSERT_RATE_PREFIX}${userAddress}:${chainId}`;
-  const count = await redisIncr(key);
+  const count = await valkeyIncr(key);
   if (count === 1) {
-    await redisSet(key, String(count), LOCAL_NETWORK_UPSERT_RATE_WINDOW_SECONDS);
+    await valkeySet(key, String(count), LOCAL_NETWORK_UPSERT_RATE_WINDOW_SECONDS);
   } else {
-    const ttl = await redisTTL(key);
+    const ttl = await valkeyTTL(key);
     if (ttl < 0) {
-      await redisSet(key, String(count), LOCAL_NETWORK_UPSERT_RATE_WINDOW_SECONDS);
+      await valkeySet(key, String(count), LOCAL_NETWORK_UPSERT_RATE_WINDOW_SECONDS);
     } else {
-      await redisSet(key, String(count), ttl);
+      await valkeySet(key, String(count), ttl);
     }
   }
   if (count > LOCAL_NETWORK_UPSERT_RATE_LIMIT) {
@@ -553,7 +553,7 @@ async function handleUpsertLocalNetworkPeers(
     const agentWallet = normalizeWallet(body.agentWallet || null);
     const deviceId = normalizeDeviceId(body.deviceId || null);
     const updatedAt = Date.now();
-    const redis = await getRedisClient();
+    const valkey = await getValkeyClient();
 
     for (const peer of safePeers) {
       const key = peerRecordKey(userAddress, chainId, peer.peerId);
@@ -570,11 +570,11 @@ async function handleUpsertLocalNetworkPeers(
         listenMultiaddrs: peer.listenMultiaddrs,
         updatedAt,
       };
-      await redis.setEx(key, LOCAL_NETWORK_PEER_TTL_SECONDS, JSON.stringify(record));
-      await redis.sAdd(setKey, peer.peerId);
+      await valkey.setex(key, LOCAL_NETWORK_PEER_TTL_SECONDS, JSON.stringify(record));
+      await valkey.sadd(setKey, peer.peerId);
     }
 
-    await redis.expire(setKey, LOCAL_NETWORK_PEER_TTL_SECONDS);
+    await valkey.expire(setKey, LOCAL_NETWORK_PEER_TTL_SECONDS);
     return json(200, {
       success: true,
       upserted: safePeers.length,
@@ -603,14 +603,14 @@ async function handleListLocalNetworkPeers(
     const chainId = chainIdRaw ? parsePositiveInt(chainIdRaw, "chainId") : getActiveChainId();
     const filterWallet = normalizeWallet(event.queryStringParameters?.agentWallet || null);
     const setKey = peerSetKey(userAddress, chainId);
-    const redis = await getRedisClient();
-    const peerIds = await redis.sMembers(setKey);
+    const valkey = await getValkeyClient();
+    const peerIds = await valkey.smembers(setKey);
     const peers: StoredLocalPeerRecord[] = [];
     const stalePeerIds: string[] = [];
 
     for (const peerId of peerIds) {
       const key = peerRecordKey(userAddress, chainId, peerId);
-      const raw = await redis.get(key);
+      const raw = await valkey.get(key);
       if (!raw) {
         stalePeerIds.push(peerId);
         continue;
@@ -627,7 +627,7 @@ async function handleListLocalNetworkPeers(
     }
 
     if (stalePeerIds.length > 0) {
-      await redis.sRem(setKey, stalePeerIds);
+      await valkey.srem(setKey, stalePeerIds);
     }
 
     peers.sort((a, b) => b.lastSeenAt - a.lastSeenAt);
@@ -699,7 +699,7 @@ async function handleRegisterLocalDeployment(
     }
 
     const deploymentKey = `${LOCAL_DEPLOYMENT_PREFIX}${userAddress}:${agentWallet}:${keyId}`;
-    const existing = await redisGet(deploymentKey);
+    const existing = await valkeyGet(deploymentKey);
     if (existing) {
       const existingRecord = JSON.parse(existing) as LocalDeploymentRecord;
       return json(200, {
@@ -724,7 +724,7 @@ async function handleRegisterLocalDeployment(
       updatedAt: now,
     };
 
-    await redisSet(deploymentKey, JSON.stringify(record));
+    await valkeySet(deploymentKey, JSON.stringify(record));
 
     return json(201, {
       success: true,
