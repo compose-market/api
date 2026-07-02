@@ -82,7 +82,7 @@ import {
   retrieve as retrieveEngine,
   stream as streamEngine,
 } from "./engine.js";
-import { redisGet, redisSet } from "../x402/keys/redis.js";
+import { valkeyGet, valkeySet } from "../x402/keys/valkey.js";
 
 export { attachReceiptToJsonBody, receiptForJsonBody };
 
@@ -1098,9 +1098,9 @@ function responseRecordKey(id: string): string {
 async function saveResponseRecord(record: StoredResponseRecord): Promise<void> {
   responseRecordMemory.set(record.id, record);
   try {
-    await redisSet(responseRecordKey(record.id), JSON.stringify(record), RESPONSE_RECORD_TTL_SECONDS);
+    await valkeySet(responseRecordKey(record.id), JSON.stringify(record), RESPONSE_RECORD_TTL_SECONDS);
   } catch (error) {
-    console.warn("[gateway] Failed to persist response record to Redis:", error instanceof Error ? error.message : String(error));
+    console.warn("[gateway] Failed to persist response record to ValKey:", error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -1111,7 +1111,7 @@ async function getResponseRecord(id: string): Promise<StoredResponseRecord | nul
   }
 
   try {
-    const raw = await redisGet(responseRecordKey(id));
+    const raw = await valkeyGet(responseRecordKey(id));
     if (!raw) {
       return null;
     }
@@ -1119,7 +1119,7 @@ async function getResponseRecord(id: string): Promise<StoredResponseRecord | nul
     responseRecordMemory.set(id, parsed);
     return parsed;
   } catch (error) {
-    console.warn("[gateway] Failed to read response record from Redis:", error instanceof Error ? error.message : String(error));
+    console.warn("[gateway] Failed to read response record from ValKey:", error instanceof Error ? error.message : String(error));
     return null;
   }
 }
