@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
-    redisHGetAll,
-    redisHSet,
-    redisSAdd,
-    redisSMembers,
-} from "../x402/keys/redis.js";
+    valkeyHGetAll,
+    valkeyHSet,
+    valkeySAdd,
+    valkeySMembers,
+} from "../x402/keys/valkey.js";
 import {
     FEEDBACK_CATEGORIES,
     type FeedbackCategory,
@@ -89,7 +89,7 @@ function parseRecord(data: Record<string, string>): FeedbackRecord | null {
 }
 
 async function readRecord(id: string): Promise<FeedbackRecord | null> {
-    const data = await redisHGetAll(recordKey(id));
+    const data = await valkeyHGetAll(recordKey(id));
     if (!data || Object.keys(data).length === 0) {
         return null;
     }
@@ -114,8 +114,8 @@ export async function createFeedbackRecord(
         createdAt: now,
     };
 
-    await redisHSet(recordKey(record.id), serializeRecord(record));
-    await redisSAdd(targetKey(record.target), record.id);
+    await valkeyHSet(recordKey(record.id), serializeRecord(record));
+    await valkeySAdd(targetKey(record.target), record.id);
     return record;
 }
 
@@ -123,7 +123,7 @@ export async function listFeedbackRecords(
     target: FeedbackTarget,
     limit: number,
 ): Promise<FeedbackRecord[]> {
-    const ids = await redisSMembers(targetKey(target));
+    const ids = await valkeySMembers(targetKey(target));
     const records = (await Promise.all(ids.map((id) => readRecord(id))))
         .filter((record): record is FeedbackRecord => Boolean(record))
         .sort((a, b) => b.createdAt - a.createdAt);
@@ -135,7 +135,7 @@ export async function summarizeFeedback(
     target: FeedbackTarget,
     recentLimit: number,
 ): Promise<FeedbackSummary> {
-    const ids = await redisSMembers(targetKey(target));
+    const ids = await valkeySMembers(targetKey(target));
     const records = (await Promise.all(ids.map((id) => readRecord(id))))
         .filter((record): record is FeedbackRecord => Boolean(record))
         .sort((a, b) => b.createdAt - a.createdAt);
