@@ -31,6 +31,7 @@ export interface ServiceConfig {
     maxInstances: string;
     concurrency: string;
     timeout: string;
+    ingress: string;
 }
 
 export interface SecretManifest {
@@ -61,6 +62,7 @@ export function resolveServiceConfig(source: NodeJS.ProcessEnv = process.env): S
         maxInstances: env(source, "API_CLOUD_RUN_MAX_INSTANCES", "30"),
         concurrency: env(source, "API_CLOUD_RUN_CONCURRENCY", "80"),
         timeout: env(source, "API_CLOUD_RUN_TIMEOUT", "1800"),
+        ingress: env(source, "API_CLOUD_RUN_INGRESS", "all"),
     };
 }
 
@@ -515,6 +517,7 @@ async function deployService(image: string, secrets: string[], includeSecrets: b
         `--project ${projectId}`,
         `--service-account ${serviceAccount}`,
         `--allow-unauthenticated`,
+        `--ingress ${config.ingress}`,
         `--port ${config.port}`,
         `--cpu ${config.cpu}`,
         `--no-cpu-throttling`,
@@ -609,10 +612,12 @@ async function deployJobs(image: string) {
                 "AVALANCHE_FUJI_RPC",
                 "AVALANCHE_FUJI_CHAIN_ID",
                 "MERCHANT_WALLET_ADDRESS",
+                "SVM_MERCHANT_WALLET_ADDRESS",
                 "VALKEY_TLS",
                 "VALKEY_KEYS_SERVICE_URI",
                 "SERVER_WALLET_KEY",
-                "DEPLOYER_KEY",
+                "FACILITATOR_KEY",
+                "SVM_FACILITATOR_KEY",
                 "VALKEY_KEYS_PASSWORD",
             ],
         },
