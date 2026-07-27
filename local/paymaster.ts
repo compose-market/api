@@ -5,7 +5,7 @@ import * as SessionKey from "@filoz/synapse-core/session-key";
 import { METADATA_KEYS, Synapse, calibration, mainnet, type Chain } from "@filoz/synapse-sdk";
 import { depositUSDFC } from "filecoin-pin/core/payments";
 import { z } from "zod";
-import { getActiveChainId } from "../x402/configs/chains.js";
+import { evmChainId, isEvmNetwork, isNetworkId, type EvmNetworkId } from "../x402/configs/chains.js";
 import { getActiveSessionStatus } from "../x402/keys/index.js";
 import { verifyKey } from "../x402/keys/jwt.js";
 import { extractKeyFromHeader } from "../x402/keys/middleware.js";
@@ -71,7 +71,7 @@ interface SynapseRouteConfig {
 }
 
 interface ValidatedProvisioningRequest {
-  chainId: number;
+  network: EvmNetworkId;
   userAddress: `0x${string}`;
   activeSessionExpiresAt: number;
 }
@@ -281,32 +281,34 @@ async function runPaymasterWrite<T>(input: {
 }
 
 async function validateProvisioningRequest(event: LocalRouteEvent): Promise<ValidatedProvisioningRequest> {
-  const chainId = getHeader(event, "x-chain-id")
-    ? parsePositiveInt(getHeader(event, "x-chain-id"), "x-chain-id")
-    : getActiveChainId();
+  const networkValue = getHeader(event, "x-network-id");
+  if (!networkValue || !isNetworkId(networkValue) || !isEvmNetwork(networkValue)) {
+    throw new Error("x-network-id must identify an EVM network for local provisioning");
+  }
+  const network = networkValue;
   const userAddress = normalizeWallet(getHeader(event, "x-session-user-address"), "x-session-user-address");
 
   const authHeader = getHeader(event, "authorization");
-  const composeKeyToken = extractKeyFromHeader(authHeader);
-  if (!composeKeyToken) {
+  const keyToken = extractKeyFromHeader(authHeader);
+  if (!keyToken) {
     throw new Error("Authorization header with Compose Key token is required");
   }
 
-  const payload = verifyKey(composeKeyToken);
+  const payload = verifyKey(keyToken);
   if (!payload) {
     throw new Error("Invalid or expired Compose Key token");
   }
-  if (payload.sub.toLowerCase() !== userAddress) {
+  if (payload.sub.toLowerCase() !== userAddress || payload.network !== network) {
     throw new Error("Compose Key token user does not match x-session-user-address");
   }
 
-  const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
+  const activeSession = (await getActiveSessionStatus(userAddress, network)).session;
   if (!activeSession || activeSession.keyId !== payload.keyId) {
     throw new Error("Compose Key token does not match the active session");
   }
 
   return {
-    chainId,
+    network,
     userAddress,
     activeSessionExpiresAt: activeSession.expiresAt,
   };
@@ -339,13 +341,13 @@ function createPaymasterClients(config: SynapseRouteConfig): PaymasterClients {
 async function authorizeSessionKey(input: {
   walletClient: Parameters<typeof SessionKey.loginSync>[0];
   accountAddress: `0x${string}`;
-  chainId: number;
+  network: EvmNetworkId;
   sessionKeyAddress: `0x${string}`;
   expiresAt: number;
 }): Promise<void> {
   await runPaymasterWrite({
     accountAddress: input.accountAddress,
-    chainId: input.chainId,
+    chainId: evmChainId(input.network),
     task: async () => SessionKey.loginSync(input.walletClient, {
       address: input.sessionKeyAddress,
       expiresAt: BigInt(Math.floor(input.expiresAt / 1000)),
@@ -379,7 +381,7 @@ async function handleEnsureLocalSynapseSession(
     await authorizeSessionKey({
       walletClient: clients.walletClient,
       accountAddress: clients.account.address,
-      chainId: clients.chain.id,
+      network: validated.network,
       sessionKeyAddress,
       expiresAt,
     });
@@ -440,7 +442,7 @@ async function handleEnsureLocalFilecoinPinSession(
     await authorizeSessionKey({
       walletClient: clients.walletClient,
       accountAddress: clients.account.address,
-      chainId: clients.chain.id,
+      network: validated.network,
       sessionKeyAddress,
       expiresAt,
     });

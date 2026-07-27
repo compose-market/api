@@ -9,6 +9,7 @@ import {
     type FeedbackTarget,
     type FeedbackTargetType,
 } from "./types.js";
+import { isNetworkId } from "../x402/configs/chains.js";
 
 const SAFE_ID = /^[A-Za-z0-9_.:/@#?&=%+-]{1,512}$/;
 const SAFE_LABEL = /^[A-Za-z0-9_.:/@#+-]{1,64}$/;
@@ -136,8 +137,11 @@ function readContext(value: unknown): FeedbackContext {
     const runId = sanitizeString(value.runId, 160);
     if (runId) context.runId = runId;
 
-    const chainId = readPositiveInteger(value.chainId);
-    if (chainId) context.chainId = chainId;
+    const network = sanitizeString(value.network, 128);
+    if (network) {
+        if (!isNetworkId(network)) throw new Error("context.network is invalid");
+        context.network = network;
+    }
 
     const modelId = sanitizeString(value.modelId, 256);
     if (modelId) context.modelId = modelId;

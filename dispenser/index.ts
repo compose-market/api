@@ -19,13 +19,28 @@ import {
     valkeyDel,
     valkeySetNX,
     valkeyIncr,
-    valkeyExists,
 } from "../x402/keys/valkey.js";
 import {
-    CHAIN_IDS,
-    CHAIN_CONFIG,
-    USDC_ADDRESSES,
+    NETWORK_IDS,
+    getNetwork,
+    isEvmNetwork,
+    type EvmNetworkId,
+    type NetworkId,
 } from "../x402/configs/chains.js";
+
+const DISPENSER_NETWORKS = [
+    NETWORK_IDS.arcTestnet,
+    // NETWORK_IDS.arbitrumSepolia,
+] as const satisfies readonly EvmNetworkId[];
+type DispenserNetwork = typeof DISPENSER_NETWORKS[number];
+const NETWORK_CONFIG = {
+    [NETWORK_IDS.arcTestnet]: getNetwork(NETWORK_IDS.arcTestnet),
+    // [NETWORK_IDS.arbitrumSepolia]: getNetwork(NETWORK_IDS.arbitrumSepolia),
+} as const;
+const USDC_ADDRESSES = {
+    [NETWORK_IDS.arcTestnet]: getNetwork(NETWORK_IDS.arcTestnet).asset.address,
+    // [NETWORK_IDS.arbitrumSepolia]: getNetwork(NETWORK_IDS.arbitrumSepolia).asset.address,
+} as const;
 import {
     createPublicClient,
     createWalletClient,
@@ -34,7 +49,7 @@ import {
     type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { avalancheFuji, arbitrumSepolia } from "viem/chains";
+import { arcTestnet } from "viem/chains";
 
 // =============================================================================
 // Constants
@@ -56,11 +71,12 @@ const TX_LOG_PREFIX = `${DISPENSER_PREFIX}tx:`;
 // Deterministic deployment keeps the dispenser address identical across chains.
 const SHARED_DISPENSER_ADDRESS = process.env.DISPENSER_CONTRACT as Address;
 
-/** Supported dispenser chains */
-export const DISPENSER_CHAINS = [
-    CHAIN_IDS.avalancheFuji,
-    CHAIN_IDS.arbitrumSepolia,
-] as const;
+/** Supported dispenser EVM networks */
+export const DISPENSER_CHAINS = DISPENSER_NETWORKS;
+
+function isDispenserNetwork(network: EvmNetworkId): network is DispenserNetwork {
+    return (DISPENSER_NETWORKS as readonly EvmNetworkId[]).includes(network);
+}
 
 // =============================================================================
 // Types
@@ -68,7 +84,7 @@ export const DISPENSER_CHAINS = [
 
 export interface DispenserClaimRequest {
     address: string;
-    chainId: number;
+    network: NetworkId;
 }
 
 export interface DispenserClaimResult {
@@ -77,15 +93,15 @@ export interface DispenserClaimResult {
     error?: string;
     alreadyClaimed?: boolean;
     globalClaimStatus?: {
-        claimedOnChain?: number;
-        claimedOnChainName?: string;
+        claimedOnNetwork?: NetworkId;
+        claimedOnNetworkName?: string;
         claimedAt?: number;
     };
 }
 
 export interface DispenserStatus {
-    chainId: number;
-    chainName: string;
+    network: NetworkId;
+    networkName: string;
     totalClaims: number;
     maxClaims: number;
     remainingClaims: number;
@@ -99,8 +115,8 @@ export interface DispenserStatus {
 
 export interface GlobalClaimStatus {
     claimed: boolean;
-    chainId?: number;
-    chainName?: string;
+    network?: NetworkId;
+    networkName?: string;
     claimedAt?: number;
 }
 
@@ -171,14 +187,14 @@ const DISPENSER_ABI = [
 // Chain Configuration for Viem
 // =============================================================================
 
-const CHAIN_RPC_URLS: Record<number, string> = {
-    [CHAIN_IDS.avalancheFuji]: process.env.AVALANCHE_FUJI_RPC as string,
-    [CHAIN_IDS.arbitrumSepolia]: process.env.ARBITRUM_SEPOLIA_RPC as string,
+const NETWORK_RPC_URLS: Record<EvmNetworkId, string> = {
+    [NETWORK_IDS.arcTestnet]: process.env.ARC_TESTNET_RPC as string,
+    // [NETWORK_IDS.arbitrumSepolia]: process.env.ARBITRUM_SEPOLIA_RPC as string,
 };
 
-const VIEM_CHAINS: Record<number, typeof avalancheFuji | typeof arbitrumSepolia> = {
-    [CHAIN_IDS.avalancheFuji]: avalancheFuji,
-    [CHAIN_IDS.arbitrumSepolia]: arbitrumSepolia,
+const VIEM_CHAINS: Record<EvmNetworkId, typeof arcTestnet> = {
+    [NETWORK_IDS.arcTestnet]: arcTestnet,
+    // [NETWORK_IDS.arbitrumSepolia]: arbitrumSepolia,
 };
 
 // =============================================================================
@@ -199,11 +215,14 @@ export async function getGlobalClaimStatus(address: string): Promise<GlobalClaim
 
     try {
         const parsed = JSON.parse(data);
-        const chainName = parsed.chainId ? CHAIN_CONFIG[parsed.chainId as keyof typeof CHAIN_CONFIG]?.name : undefined;
+        const network = typeof parsed.network === "string" ? parsed.network as NetworkId : undefined;
+        const networkName = network && isEvmNetwork(network)
+            ? NETWORK_CONFIG[network as keyof typeof NETWORK_CONFIG]?.name
+            : undefined;
         return {
             claimed: true,
-            chainId: parsed.chainId,
-            chainName,
+            network,
+            networkName,
             claimedAt: parsed.claimedAt,
         };
     } catch {
@@ -218,18 +237,18 @@ export async function getGlobalClaimStatus(address: string): Promise<GlobalClaim
  */
 async function recordGlobalClaim(
     address: string,
-    chainId: number
+    network: EvmNetworkId,
 ): Promise<boolean> {
     const key = `${CLAIMED_PREFIX}${address.toLowerCase()}`;
     const value = JSON.stringify({
-        chainId,
+        network,
         claimedAt: Date.now(),
     });
 
     const didSet = await valkeySetNX(key, value);
 
     if (didSet) {
-        const countKey = `${CHAIN_COUNT_PREFIX}${chainId}:count`;
+        const countKey = `${CHAIN_COUNT_PREFIX}${network}:count`;
         await valkeyIncr(countKey);
     }
 
@@ -239,25 +258,25 @@ async function recordGlobalClaim(
 /**
  * Rollback a ValKey claim (on transaction failure)
  */
-async function rollbackGlobalClaim(address: string, chainId: number): Promise<void> {
+async function rollbackGlobalClaim(address: string, network: EvmNetworkId): Promise<void> {
     const key = `${CLAIMED_PREFIX}${address.toLowerCase()}`;
     await valkeyDel(key);
 
-    const countKey = `${CHAIN_COUNT_PREFIX}${chainId}:count`;
+    const countKey = `${CHAIN_COUNT_PREFIX}${network}:count`;
     const currentCount = await valkeyGet(countKey);
     if (currentCount && parseInt(currentCount, 10) > 0) {
         const newValue = parseInt(currentCount, 10) - 1;
         await valkeySet(countKey, newValue.toString());
     }
 
-    console.log(`[dispenser] Rolled back claim for ${address} on chain ${chainId}`);
+    console.log(`[dispenser] Rolled back claim for ${address} on network ${network}`);
 }
 
 /**
  * Get claim count for a chain from ValKey
  */
-async function getChainClaimCount(chainId: number): Promise<number> {
-    const countKey = `${CHAIN_COUNT_PREFIX}${chainId}:count`;
+async function getNetworkClaimCount(network: EvmNetworkId): Promise<number> {
+    const countKey = `${CHAIN_COUNT_PREFIX}${network}:count`;
     const count = await valkeyGet(countKey);
     return count ? parseInt(count, 10) : 0;
 }
@@ -269,12 +288,12 @@ async function getChainClaimCount(chainId: number): Promise<number> {
 /**
  * Get Viem public client for a chain
  */
-function getPublicClient(chainId: number) {
-    const chain = VIEM_CHAINS[chainId];
-    const rpcUrl = CHAIN_RPC_URLS[chainId];
+function getPublicClient(network: EvmNetworkId) {
+    const chain = VIEM_CHAINS[network];
+    const rpcUrl = NETWORK_RPC_URLS[network];
 
     if (!chain || !rpcUrl) {
-        throw new Error(`Unsupported chain: ${chainId}`);
+        throw new Error(`Unsupported dispenser network: ${network}`);
     }
 
     return createPublicClient({
@@ -286,17 +305,17 @@ function getPublicClient(chainId: number) {
 /**
  * Get Viem wallet client for signing transactions
  */
-function getWalletClient(chainId: number) {
-    const chain = VIEM_CHAINS[chainId];
-    const rpcUrl = CHAIN_RPC_URLS[chainId];
-    const deployerKey = process.env.DEPLOYER_KEY;
+function getWalletClient(network: EvmNetworkId) {
+    const chain = VIEM_CHAINS[network];
+    const rpcUrl = NETWORK_RPC_URLS[network];
+    const deployerKey = process.env.FACILITATOR_KEY;
 
     if (!chain || !rpcUrl) {
-        throw new Error(`Unsupported chain: ${chainId}`);
+        throw new Error(`Unsupported dispenser network: ${network}`);
     }
 
     if (!deployerKey) {
-        throw new Error("DEPLOYER_KEY not configured");
+        throw new Error("FACILITATOR_KEY not configured");
     }
 
     const account = privateKeyToAccount((deployerKey.startsWith("0x") ? deployerKey : `0x${deployerKey}`) as Hex);
@@ -314,7 +333,7 @@ function getWalletClient(chainId: number) {
 /**
  * Read dispenser status from blockchain
  */
-async function readDispenserStatus(chainId: number): Promise<{
+async function readDispenserStatus(network: EvmNetworkId): Promise<{
     balance: bigint;
     remainingClaims: bigint;
     isPaused: boolean;
@@ -324,7 +343,7 @@ async function readDispenserStatus(chainId: number): Promise<{
 }> {
     const dispenserAddress = SHARED_DISPENSER_ADDRESS;
 
-    const client = getPublicClient(chainId);
+    const client = getPublicClient(network);
 
     const [balance, remainingClaims, isPaused, claimAmount, maxClaims, totalClaims] = await client.readContract({
         address: dispenserAddress,
@@ -345,11 +364,11 @@ async function readDispenserStatus(chainId: number): Promise<{
 /**
  * Check if address has claimed on-chain
  */
-async function hasOnchainClaim(address: Address, chainId: number): Promise<boolean> {
+async function hasOnchainClaim(address: Address, network: EvmNetworkId): Promise<boolean> {
     const dispenserAddress = SHARED_DISPENSER_ADDRESS;
 
     try {
-        const client = getPublicClient(chainId);
+        const client = getPublicClient(network);
         const claimed = await client.readContract({
             address: dispenserAddress,
             abi: DISPENSER_ABI,
@@ -368,15 +387,15 @@ async function hasOnchainClaim(address: Address, chainId: number): Promise<boole
  */
 async function executeDispenserClaim(
     recipient: Address,
-    chainId: number
+    network: EvmNetworkId,
 ): Promise<{ success: boolean; txHash?: string; error?: string }> {
     const dispenserAddress = SHARED_DISPENSER_ADDRESS;
 
     try {
-        const { wallet, account } = getWalletClient(chainId);
-        const client = getPublicClient(chainId);
+        const { wallet, account } = getWalletClient(network);
+        const client = getPublicClient(network);
 
-        console.log(`[dispenser] Executing claim for ${recipient} on chain ${chainId}`);
+        console.log(`[dispenser] Executing claim for ${recipient} on network ${network}`);
         console.log(`[dispenser] Dispenser: ${dispenserAddress}`);
         console.log(`[dispenser] Caller: ${account.address}`);
 
@@ -402,14 +421,14 @@ async function executeDispenserClaim(
             return { success: false, error: "Transaction reverted on-chain" };
         }
 
-        await logTransaction(txHash, recipient, chainId, "success");
+        await logTransaction(txHash, recipient, network, "success");
 
         return { success: true, txHash };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`[dispenser] Transaction failed:`, errorMessage);
 
-        await logTransaction("failed", recipient, chainId, "failed", errorMessage);
+        await logTransaction("failed", recipient, network, "failed", errorMessage);
 
         return { success: false, error: errorMessage };
     }
@@ -421,7 +440,7 @@ async function executeDispenserClaim(
 async function logTransaction(
     txHash: string,
     recipient: Address,
-    chainId: number,
+    network: EvmNetworkId,
     status: "success" | "failed",
     error?: string
 ): Promise<void> {
@@ -429,7 +448,7 @@ async function logTransaction(
     const value = JSON.stringify({
         txHash,
         recipient,
-        chainId,
+        network,
         status,
         error,
         timestamp: Date.now(),
@@ -441,66 +460,70 @@ async function logTransaction(
 // Main Dispenser Operations
 // =============================================================================
 
+function buildStatus(input: {
+    network: DispenserNetwork;
+    onchain?: Awaited<ReturnType<typeof readDispenserStatus>>;
+    isPaused: boolean;
+    isConfigured: boolean;
+    remainingClaims?: number;
+}): DispenserStatus {
+    const networkConfig = getNetwork(input.network);
+    const onchain = input.onchain;
+    return {
+        network: input.network,
+        networkName: networkConfig?.name || input.network,
+        totalClaims: onchain ? Number(onchain.totalClaims) : 0,
+        maxClaims: onchain ? Number(onchain.maxClaims) : DISPENSER_MAX_CLAIMS,
+        remainingClaims: input.remainingClaims ?? (onchain ? Number(onchain.remainingClaims) : DISPENSER_MAX_CLAIMS),
+        dispenserBalance: onchain ? onchain.balance.toString() : "0",
+        dispenserBalanceFormatted: onchain ? `${Number(onchain.balance) / 1e6} USDC` : "0 USDC",
+        isPaused: input.isPaused,
+        dispenserAddress: SHARED_DISPENSER_ADDRESS,
+        usdcAddress: getNetwork(input.network).asset.address,
+        isConfigured: input.isConfigured,
+    };
+}
+
 /**
- * Check if dispenser is available for a chain
+ * Check if dispenser is available for a network.
  */
-export async function checkDispenserAvailable(chainId: number): Promise<{
+export async function checkDispenserAvailable(network: NetworkId): Promise<{
     available: boolean;
     reason?: string;
     status?: DispenserStatus;
 }> {
     const dispenserAddress = SHARED_DISPENSER_ADDRESS;
 
-    if (!dispenserAddress || dispenserAddress === "0x0000000000000000000000000000000000000000") {
-        return { available: false, reason: "Dispenser not deployed on this chain" };
+    if (!isEvmNetwork(network)) {
+        return { available: false, reason: "Dispenser is not configured for this network" };
     }
 
-    if (!DISPENSER_CHAINS.includes(chainId as any)) {
-        return { available: false, reason: "Unsupported chain for dispenser" };
+    if (!dispenserAddress || dispenserAddress === "0x0000000000000000000000000000000000000000") {
+        return { available: false, reason: "Dispenser not deployed on this network" };
+    }
+
+    if (!isDispenserNetwork(network)) {
+        return { available: false, reason: "Unsupported network for dispenser" };
     }
 
     try {
-        const onchainStatus = await readDispenserStatus(chainId);
-        const valkeyClaimCount = await getChainClaimCount(chainId);
-        const chainConfig = CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG];
+        const onchainStatus = await readDispenserStatus(network);
+        const valkeyClaimCount = await getNetworkClaimCount(network);
+        void valkeyClaimCount;
 
         if (onchainStatus.isPaused) {
             return {
                 available: false,
                 reason: "Dispenser is paused",
-                status: {
-                    chainId,
-                    chainName: chainConfig?.name || `Chain ${chainId}`,
-                    totalClaims: Number(onchainStatus.totalClaims),
-                    maxClaims: Number(onchainStatus.maxClaims),
-                    remainingClaims: Number(onchainStatus.remainingClaims),
-                    dispenserBalance: onchainStatus.balance.toString(),
-                    dispenserBalanceFormatted: `${Number(onchainStatus.balance) / 1e6} USDC`,
-                    isPaused: true,
-                    dispenserAddress,
-                    usdcAddress: USDC_ADDRESSES[chainId as keyof typeof USDC_ADDRESSES] || "0x",
-                    isConfigured: true,
-                },
+                status: buildStatus({ network, onchain: onchainStatus, isPaused: true, isConfigured: true }),
             };
         }
 
         if (onchainStatus.totalClaims >= onchainStatus.maxClaims) {
             return {
                 available: false,
-                reason: "Maximum claims reached on this chain",
-                status: {
-                    chainId,
-                    chainName: chainConfig?.name || `Chain ${chainId}`,
-                    totalClaims: Number(onchainStatus.totalClaims),
-                    maxClaims: Number(onchainStatus.maxClaims),
-                    remainingClaims: 0,
-                    dispenserBalance: onchainStatus.balance.toString(),
-                    dispenserBalanceFormatted: `${Number(onchainStatus.balance) / 1e6} USDC`,
-                    isPaused: false,
-                    dispenserAddress,
-                    usdcAddress: USDC_ADDRESSES[chainId as keyof typeof USDC_ADDRESSES] || "0x",
-                    isConfigured: true,
-                },
+                reason: "Maximum claims reached on this network",
+                status: buildStatus({ network, onchain: onchainStatus, isPaused: false, isConfigured: true, remainingClaims: 0 }),
             };
         }
 
@@ -508,37 +531,13 @@ export async function checkDispenserAvailable(chainId: number): Promise<{
             return {
                 available: false,
                 reason: "Dispenser has insufficient balance",
-                status: {
-                    chainId,
-                    chainName: chainConfig?.name || `Chain ${chainId}`,
-                    totalClaims: Number(onchainStatus.totalClaims),
-                    maxClaims: Number(onchainStatus.maxClaims),
-                    remainingClaims: Number(onchainStatus.remainingClaims),
-                    dispenserBalance: onchainStatus.balance.toString(),
-                    dispenserBalanceFormatted: `${Number(onchainStatus.balance) / 1e6} USDC`,
-                    isPaused: false,
-                    dispenserAddress,
-                    usdcAddress: USDC_ADDRESSES[chainId as keyof typeof USDC_ADDRESSES] || "0x",
-                    isConfigured: true,
-                },
+                status: buildStatus({ network, onchain: onchainStatus, isPaused: false, isConfigured: true }),
             };
         }
 
         return {
             available: true,
-            status: {
-                chainId,
-                chainName: chainConfig?.name || `Chain ${chainId}`,
-                totalClaims: Number(onchainStatus.totalClaims),
-                maxClaims: Number(onchainStatus.maxClaims),
-                remainingClaims: Number(onchainStatus.remainingClaims),
-                dispenserBalance: onchainStatus.balance.toString(),
-                dispenserBalanceFormatted: `${Number(onchainStatus.balance) / 1e6} USDC`,
-                isPaused: false,
-                dispenserAddress,
-                usdcAddress: USDC_ADDRESSES[chainId as keyof typeof USDC_ADDRESSES] || "0x",
-                isConfigured: true,
-            },
+            status: buildStatus({ network, onchain: onchainStatus, isPaused: false, isConfigured: true }),
         };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -559,9 +558,16 @@ export async function checkDispenserAvailable(chainId: number): Promise<{
 export async function claimDispenserUSDC(
     request: DispenserClaimRequest
 ): Promise<DispenserClaimResult> {
-    const { address, chainId } = request;
+    const { address, network } = request;
 
-    console.log(`[dispenser] Claim request: ${address} on chain ${chainId}`);
+    console.log(`[dispenser] Claim request: ${address} on network ${network}`);
+
+    if (!isEvmNetwork(network)) {
+        return {
+            success: false,
+            error: "Dispenser is not configured for this network",
+        };
+    }
 
     const normalizedAddress = address.toLowerCase() as Address;
 
@@ -572,46 +578,46 @@ export async function claimDispenserUSDC(
         };
     }
 
-    if (!DISPENSER_CHAINS.includes(chainId as any)) {
+    if (!isDispenserNetwork(network)) {
         return {
             success: false,
-            error: `Unsupported chain. Supported chains: ${DISPENSER_CHAINS.map(id => CHAIN_CONFIG[id as keyof typeof CHAIN_CONFIG]?.name || id).join(", ")}`,
+            error: `Unsupported network. Supported networks: ${DISPENSER_NETWORKS.map(id => NETWORK_CONFIG[id]?.name || id).join(", ")}`,
         };
     }
 
     const globalStatus = await getGlobalClaimStatus(normalizedAddress);
 
     if (globalStatus.claimed) {
-        console.log(`[dispenser] Address ${address} already claimed on chain ${globalStatus.chainId}`);
+        console.log(`[dispenser] Address ${address} already claimed on network ${globalStatus.network}`);
         return {
             success: false,
             alreadyClaimed: true,
             globalClaimStatus: {
-                claimedOnChain: globalStatus.chainId,
-                claimedOnChainName: globalStatus.chainName,
+                claimedOnNetwork: globalStatus.network,
+                claimedOnNetworkName: globalStatus.networkName,
                 claimedAt: globalStatus.claimedAt,
             },
-            error: `Already claimed on ${globalStatus.chainName || `chain ${globalStatus.chainId}`}`,
+            error: `Already claimed on ${globalStatus.networkName || globalStatus.network || "another network"}`,
         };
     }
 
-    const onchainAlreadyClaimed = await hasOnchainClaim(normalizedAddress, chainId);
+    const onchainAlreadyClaimed = await hasOnchainClaim(normalizedAddress, network);
     if (onchainAlreadyClaimed) {
         console.log(`[dispenser] Address ${address} already claimed on-chain`);
-        await recordGlobalClaim(normalizedAddress, chainId);
+        await recordGlobalClaim(normalizedAddress, network);
         return {
             success: false,
             alreadyClaimed: true,
             globalClaimStatus: {
-                claimedOnChain: chainId,
-                claimedOnChainName: CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG]?.name,
+                claimedOnNetwork: network,
+                claimedOnNetworkName: getNetwork(network).name,
                 claimedAt: Date.now(),
             },
-            error: `Already claimed on ${CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG]?.name || `chain ${chainId}`}`,
+            error: `Already claimed on ${getNetwork(network).name || network}`,
         };
     }
 
-    const availability = await checkDispenserAvailable(chainId);
+    const availability = await checkDispenserAvailable(network);
     if (!availability.available) {
         console.log(`[dispenser] Dispenser unavailable: ${availability.reason}`);
         return {
@@ -620,7 +626,7 @@ export async function claimDispenserUSDC(
         };
     }
 
-    const recorded = await recordGlobalClaim(normalizedAddress, chainId);
+    const recorded = await recordGlobalClaim(normalizedAddress, network);
     if (!recorded) {
         console.log(`[dispenser] Race condition - another claim recorded first`);
         const raceStatus = await getGlobalClaimStatus(normalizedAddress);
@@ -628,18 +634,18 @@ export async function claimDispenserUSDC(
             success: false,
             alreadyClaimed: true,
             globalClaimStatus: {
-                claimedOnChain: raceStatus.chainId,
-                claimedOnChainName: raceStatus.chainName,
+                claimedOnNetwork: raceStatus.network,
+                claimedOnNetworkName: raceStatus.networkName,
                 claimedAt: raceStatus.claimedAt,
             },
             error: "Claim already processed by another request",
         };
     }
 
-    const txResult = await executeDispenserClaim(normalizedAddress, chainId);
+    const txResult = await executeDispenserClaim(normalizedAddress, network);
 
     if (!txResult.success) {
-        await rollbackGlobalClaim(normalizedAddress, chainId);
+        await rollbackGlobalClaim(normalizedAddress, network);
         return {
             success: false,
             error: txResult.error,
@@ -653,33 +659,21 @@ export async function claimDispenserUSDC(
 }
 
 /**
- * Get dispenser status for all supported chains
+ * Get dispenser status for all supported networks
  */
 export async function getAllDispenserStatuses(): Promise<DispenserStatus[]> {
     const statuses: DispenserStatus[] = [];
 
-    for (const chainId of DISPENSER_CHAINS) {
+    for (const network of DISPENSER_NETWORKS) {
         try {
-            const result = await checkDispenserAvailable(chainId);
+            const result = await checkDispenserAvailable(network);
             if (result.status) {
                 statuses.push(result.status);
             } else {
-                statuses.push({
-                    chainId,
-                    chainName: CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG]?.name || `Chain ${chainId}`,
-                    totalClaims: 0,
-                    maxClaims: DISPENSER_MAX_CLAIMS,
-                    remainingClaims: DISPENSER_MAX_CLAIMS,
-                    dispenserBalance: "0",
-                    dispenserBalanceFormatted: "0 USDC",
-                    isPaused: true,
-                    dispenserAddress: SHARED_DISPENSER_ADDRESS,
-                    usdcAddress: USDC_ADDRESSES[chainId as keyof typeof USDC_ADDRESSES] || "0x",
-                    isConfigured: false,
-                });
+                statuses.push(buildStatus({ network, isPaused: true, isConfigured: false }));
             }
         } catch (error) {
-            console.error(`[dispenser] Error getting status for chain ${chainId}:`, error);
+            console.error(`[dispenser] Error getting status for network ${network}:`, error);
         }
     }
 
@@ -689,8 +683,8 @@ export async function getAllDispenserStatuses(): Promise<DispenserStatus[]> {
 /**
  * Get explorer URL for a transaction
  */
-export function getExplorerTxUrl(txHash: string, chainId: number): string {
-    const chainConfig = CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG];
-    if (!chainConfig) return "#";
-    return `${chainConfig.explorer}/tx/${txHash}`;
+export function getExplorerTxUrl(txHash: string, network: EvmNetworkId): string {
+    const networkConfig = getNetwork(network);
+    if (!networkConfig) return "#";
+    return `${networkConfig.explorer}/tx/${txHash}`;
 }

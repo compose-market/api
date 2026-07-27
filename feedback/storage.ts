@@ -46,7 +46,7 @@ function serializeRecord(record: FeedbackRecord): Record<string, string> {
         metadata: JSON.stringify(record.metadata),
         reviewerKind: record.reviewer.kind,
         reviewerAddress: record.reviewer.address || "",
-        reviewerChainId: record.reviewer.chainId === undefined ? "" : String(record.reviewer.chainId),
+        reviewerNetwork: record.reviewer.network || "",
         createdAt: String(record.createdAt),
     };
 }
@@ -68,7 +68,7 @@ function parseRecord(data: Record<string, string>): FeedbackRecord | null {
     const reviewer: FeedbackReviewer = {
         kind: (data.reviewerKind || "anonymous") as FeedbackVerificationKind,
         ...(data.reviewerAddress ? { address: data.reviewerAddress } : {}),
-        ...(data.reviewerChainId ? { chainId: parseInt(data.reviewerChainId, 10) } : {}),
+        ...(data.reviewerNetwork ? { network: data.reviewerNetwork as FeedbackRecord["reviewer"]["network"] } : {}),
     };
 
     return {

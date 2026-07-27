@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { getActiveChainId } from "../x402/configs/chains.js";
+import { isNetworkId, type NetworkId } from "../x402/configs/chains.js";
 import {
   valkeyDel,
   valkeyGet,
@@ -49,7 +49,7 @@ interface LocalLinkTokenRequest {
   agentWallet?: string;
   agentCardCid?: string;
   userAddress: string;
-  chainId?: number;
+  network: NetworkId;
   deviceId?: string;
 }
 
@@ -66,7 +66,7 @@ interface LocalDeploymentRegisterRequest {
   agentCardCid: string;
   localVersion: string;
   deployedAt: number;
-  chainId?: number;
+  network: NetworkId;
 }
 
 interface LocalLinkTokenRecord {
@@ -76,7 +76,7 @@ interface LocalLinkTokenRecord {
   issuedAt: number;
   expiresAt: number;
   boundDeviceId: string | null;
-  chainId: number;
+  network: NetworkId;
   agentWallet: string;
   agentCardCid: string;
   userAddress: string;
@@ -98,7 +98,7 @@ interface LocalPeerSummary {
 
 interface LocalPeerUpsertRequest {
   userAddress: string;
-  chainId?: number;
+  network: NetworkId;
   agentWallet?: string;
   deviceId?: string;
   peers: LocalPeerSummary[];
@@ -107,7 +107,7 @@ interface LocalPeerUpsertRequest {
 interface StoredLocalPeerRecord {
   version: number;
   userAddress: string;
-  chainId: number;
+  network: NetworkId;
   peerId: string;
   agentWallet: string | null;
   deviceId: string | null;
@@ -127,7 +127,7 @@ interface LocalDeploymentRecord {
   agentCardCid: string;
   localVersion: string;
   deployedAt: number;
-  chainId: number;
+  network: NetworkId;
   registeredAt: number;
   updatedAt: number;
 }
@@ -182,6 +182,13 @@ function parsePositiveInt(value: unknown, field: string): number {
   return number;
 }
 
+function parseNetwork(value: unknown): NetworkId {
+  if (typeof value !== "string" || !isNetworkId(value)) {
+    throw Object.assign(new Error("network must be a supported CAIP-2 network"), { statusCode: 400 });
+  }
+  return value;
+}
+
 function parseRequiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${field} is required`);
@@ -195,13 +202,13 @@ function normalizeDeviceId(value: unknown): string | null {
   return DEVICE_ID_REGEX.test(normalized) ? normalized : null;
 }
 
-async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, chainId: number) {
-  const composeKeyToken = extractKeyFromHeader(getHeader(event, "authorization"));
-  if (!composeKeyToken) {
+async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, network: NetworkId) {
+  const keyToken = extractKeyFromHeader(getHeader(event, "authorization"));
+  if (!keyToken) {
     throw new Error("Authorization header with Compose Key token is required");
   }
 
-  const payload = verifyKey(composeKeyToken);
+  const payload = verifyKey(keyToken);
   if (!payload) {
     throw new Error("Invalid or expired Compose Key token");
   }
@@ -209,7 +216,7 @@ async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, 
     throw new Error("Compose Key token user does not match x-session-user-address");
   }
 
-  const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
+  const activeSession = (await getActiveSessionStatus(userAddress, network)).session;
   if (!activeSession || activeSession.keyId !== payload.keyId) {
     throw new Error("Compose Key token does not match the active session");
   }
@@ -222,7 +229,7 @@ async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, 
 
 async function buildRedeemedContext(args: {
   userAddress: string;
-  chainId: number;
+  network: NetworkId;
   agentWallet: string;
   agentCardCid: string;
   deviceId: string;
@@ -231,7 +238,7 @@ async function buildRedeemedContext(args: {
   budget?: string;
   duration?: number;
 }) {
-  const activeSession = (await getActiveSessionStatus(args.userAddress, args.chainId)).session;
+  const activeSession = (await getActiveSessionStatus(args.userAddress, args.network)).session;
   const key = activeSession && args.keyId
     ? {
       keyId: args.keyId,
@@ -261,7 +268,7 @@ async function buildRedeemedContext(args: {
   return {
     agentWallet: args.agentWallet || args.userAddress,
     userAddress: args.userAddress,
-    chainId: args.chainId,
+    network: args.network,
     key,
     session,
     market: {
@@ -280,13 +287,13 @@ async function validateLocalAuthorization(
 ): Promise<{
   userAddress: string;
   agentWallet: string | null;
-  chainId: number;
+  network: NetworkId;
   activeSession: {
     keyId: string;
     expiresAt: number;
     budgetLimit: number;
     budgetUsed: number;
-    chainId: number;
+    network: NetworkId;
   } | null;
 }> {
   const userAddress = normalizeWallet(body.userAddress);
@@ -295,28 +302,28 @@ async function validateLocalAuthorization(
   }
 
   const agentWallet = normalizeWallet(body.agentWallet || null);
-  const chainId = body.chainId ? parsePositiveInt(body.chainId, "chainId") : getActiveChainId();
+  const network = parseNetwork(body.network);
   const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
   if (!headerUserAddress || headerUserAddress !== userAddress) {
     throw new Error("x-session-user-address must match userAddress");
   }
 
   if (extractKeyFromHeader(getHeader(event, "authorization"))) {
-    await authorizeKeySession(event, userAddress, chainId);
+    await authorizeKeySession(event, userAddress, network);
   }
 
-  const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
+  const activeSession = (await getActiveSessionStatus(userAddress, network)).session;
   return {
     userAddress,
     agentWallet,
-    chainId,
+    network,
     activeSession: activeSession
       ? {
         keyId: activeSession.keyId,
         expiresAt: activeSession.expiresAt,
         budgetLimit: activeSession.budgetLimit,
         budgetUsed: activeSession.budgetUsed,
-        chainId: activeSession.chainId ?? chainId,
+        network: activeSession.network ?? network,
       }
       : null,
   };
@@ -349,7 +356,7 @@ async function handleCreateLocalLinkToken(
       issuedAt,
       expiresAt,
       boundDeviceId: parsedDeviceId,
-      chainId: auth.chainId,
+      network: auth.network,
       agentWallet: auth.agentWallet || "",
       agentCardCid,
       userAddress: auth.userAddress,
@@ -450,7 +457,7 @@ async function handleRedeemLocalLinkToken(
   await valkeyDel(linkTokenKey);
   const context = await buildRedeemedContext({
     userAddress: record.userAddress,
-    chainId: record.chainId,
+    network: record.network,
     agentWallet: record.agentWallet || record.userAddress,
     agentCardCid: record.agentCardCid || "",
     deviceId: record.boundDeviceId || deviceId,
@@ -473,12 +480,12 @@ async function handleRedeemLocalLinkToken(
   );
 }
 
-function peerSetKey(userAddress: string, chainId: number): string {
-  return `${LOCAL_NETWORK_PEER_SET_PREFIX}${userAddress}:${chainId}`;
+function peerSetKey(userAddress: string, network: NetworkId): string {
+  return `${LOCAL_NETWORK_PEER_SET_PREFIX}${userAddress}:${network}`;
 }
 
-function peerRecordKey(userAddress: string, chainId: number, peerId: string): string {
-  return `${LOCAL_NETWORK_PEER_PREFIX}${userAddress}:${chainId}:${peerId}`;
+function peerRecordKey(userAddress: string, network: NetworkId, peerId: string): string {
+  return `${LOCAL_NETWORK_PEER_PREFIX}${userAddress}:${network}:${peerId}`;
 }
 
 function uniqueNormalizedStrings(values: unknown): string[] {
@@ -495,8 +502,8 @@ function uniqueNormalizedStrings(values: unknown): string[] {
   return Array.from(dedup);
 }
 
-async function enforcePeerUpsertRateLimit(userAddress: string, chainId: number): Promise<void> {
-  const key = `${LOCAL_NETWORK_UPSERT_RATE_PREFIX}${userAddress}:${chainId}`;
+async function enforcePeerUpsertRateLimit(userAddress: string, network: NetworkId): Promise<void> {
+  const key = `${LOCAL_NETWORK_UPSERT_RATE_PREFIX}${userAddress}:${network}`;
   const count = await valkeyIncr(key);
   if (count === 1) {
     await valkeySet(key, String(count), LOCAL_NETWORK_UPSERT_RATE_WINDOW_SECONDS);
@@ -529,13 +536,13 @@ async function handleUpsertLocalNetworkPeers(
     if (!userAddress) {
       throw new Error("userAddress must be a valid wallet address");
     }
-    const chainId = body.chainId ? parsePositiveInt(body.chainId, "chainId") : getActiveChainId();
+    const network = parseNetwork(body.network);
     const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
     if (!headerUserAddress || headerUserAddress !== userAddress) {
       throw new Error("x-session-user-address must match userAddress");
     }
 
-    await enforcePeerUpsertRateLimit(userAddress, chainId);
+    await enforcePeerUpsertRateLimit(userAddress, network);
 
     const peers = Array.isArray(body.peers) ? body.peers : [];
     const safePeers = peers
@@ -549,18 +556,18 @@ async function handleUpsertLocalNetworkPeers(
       .filter((peer) => peer.peerId.length > 0)
       .slice(0, 512);
 
-    const setKey = peerSetKey(userAddress, chainId);
+    const setKey = peerSetKey(userAddress, network);
     const agentWallet = normalizeWallet(body.agentWallet || null);
     const deviceId = normalizeDeviceId(body.deviceId || null);
     const updatedAt = Date.now();
     const valkey = await getValkeyClient();
 
     for (const peer of safePeers) {
-      const key = peerRecordKey(userAddress, chainId, peer.peerId);
+      const key = peerRecordKey(userAddress, network, peer.peerId);
       const record: StoredLocalPeerRecord = {
         version: 1,
         userAddress,
-        chainId,
+        network,
         peerId: peer.peerId,
         agentWallet,
         deviceId,
@@ -578,7 +585,7 @@ async function handleUpsertLocalNetworkPeers(
     return json(200, {
       success: true,
       upserted: safePeers.length,
-      chainId,
+      network,
     }, corsHeaders);
   } catch (error) {
     return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
@@ -599,17 +606,17 @@ async function handleListLocalNetworkPeers(
     if (!headerUserAddress || headerUserAddress !== userAddress) {
       throw new Error("x-session-user-address must match userAddress");
     }
-    const chainIdRaw = event.queryStringParameters?.chainId;
-    const chainId = chainIdRaw ? parsePositiveInt(chainIdRaw, "chainId") : getActiveChainId();
+    const networkRaw = event.queryStringParameters?.network;
+    const network = parseNetwork(networkRaw);
     const filterWallet = normalizeWallet(event.queryStringParameters?.agentWallet || null);
-    const setKey = peerSetKey(userAddress, chainId);
+    const setKey = peerSetKey(userAddress, network);
     const valkey = await getValkeyClient();
     const peerIds = await valkey.smembers(setKey);
     const peers: StoredLocalPeerRecord[] = [];
     const stalePeerIds: string[] = [];
 
     for (const peerId of peerIds) {
-      const key = peerRecordKey(userAddress, chainId, peerId);
+      const key = peerRecordKey(userAddress, network, peerId);
       const raw = await valkey.get(key);
       if (!raw) {
         stalePeerIds.push(peerId);
@@ -634,7 +641,7 @@ async function handleListLocalNetworkPeers(
 
     return json(200, {
       success: true,
-      chainId,
+      network,
       userAddress,
       peers: peers.map((peer) => ({
         peerId: peer.peerId,
@@ -673,7 +680,7 @@ async function handleRegisterLocalDeployment(
     if (!CID_REGEX.test(agentCardCid)) throw new Error("agentCardCid format is invalid");
     const localVersion = parseRequiredString(body.localVersion, "localVersion");
     const deployedAt = parsePositiveInt(body.deployedAt, "deployedAt");
-    const chainId = body.chainId ? parsePositiveInt(body.chainId, "chainId") : getActiveChainId();
+    const network = parseNetwork(body.network);
 
     const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
     if (!headerUserAddress || headerUserAddress !== userAddress) {
@@ -681,10 +688,10 @@ async function handleRegisterLocalDeployment(
     }
 
     const authHeader = getHeader(event, "authorization");
-    const composeKeyToken = extractKeyFromHeader(authHeader);
-    if (!composeKeyToken) throw new Error("Authorization header with Compose Key token is required");
+    const keyToken = extractKeyFromHeader(authHeader);
+    if (!keyToken) throw new Error("Authorization header with Compose Key token is required");
 
-    const payload = verifyKey(composeKeyToken);
+    const payload = verifyKey(keyToken);
     if (!payload) throw new Error("Invalid or expired Compose Key token");
     if (payload.sub.toLowerCase() !== userAddress) {
       throw new Error("Compose Key token user does not match userAddress");
@@ -693,7 +700,7 @@ async function handleRegisterLocalDeployment(
       throw new Error("Compose Key token keyId does not match keyId");
     }
 
-    const activeSession = (await getActiveSessionStatus(userAddress, chainId)).session;
+    const activeSession = (await getActiveSessionStatus(userAddress, network)).session;
     if (!activeSession || activeSession.keyId !== keyId) {
       throw new Error("keyId does not match active session");
     }
@@ -719,7 +726,7 @@ async function handleRegisterLocalDeployment(
       agentCardCid,
       localVersion,
       deployedAt,
-      chainId,
+      network,
       registeredAt: now,
       updatedAt: now,
     };

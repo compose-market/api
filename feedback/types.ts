@@ -26,7 +26,7 @@ export interface FeedbackContext {
     requestId?: string;
     paymentIntentId?: string;
     runId?: string;
-    chainId?: number;
+    network?: NetworkId;
     modelId?: string;
     provider?: string;
     agentWallet?: string;
@@ -60,7 +60,7 @@ export interface FeedbackSubmitInput {
 export interface FeedbackReviewer {
     kind: FeedbackVerificationKind;
     address?: string;
-    chainId?: number;
+    network?: NetworkId;
 }
 
 export interface FeedbackRecord {
@@ -106,3 +106,4 @@ export interface FeedbackSummary {
     verification: Record<FeedbackVerificationKind, number>;
     recent: FeedbackPublicRecord[];
 }
+import type { NetworkId } from "../x402/configs/chains.js";

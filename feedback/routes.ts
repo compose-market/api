@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 
 import { buildError } from "../http/errors.js";
 import { extractKeyFromHeader, validateKey } from "../x402/keys/middleware.js";
+import { isNetworkId } from "../x402/configs/chains.js";
 import {
     FEEDBACK_TARGET_TYPES,
     type FeedbackReviewer,
@@ -10,8 +11,6 @@ import {
 } from "./types.js";
 import { createFeedbackRecord, listFeedbackRecords, summarizeFeedback } from "./storage.js";
 import { normalizeFeedbackInput, toPublicFeedback } from "./validation.js";
-
-const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 
 function getHeader(req: Request, name: string): string | undefined {
     const value = req.headers[name.toLowerCase()];
@@ -46,21 +45,19 @@ async function resolveReviewer(req: Request): Promise<FeedbackReviewer> {
         if (validation.valid && validation.payload) {
             return {
                 kind: "compose_key",
-                address: validation.payload.sub.toLowerCase(),
-                ...(validation.record?.chainId ? { chainId: validation.record.chainId } : {}),
+                address: validation.payload.sub,
+                ...(validation.record?.network ? { network: validation.record.network } : {}),
             };
         }
     }
 
     const address = getHeader(req, "x-session-user-address");
-    const chainIdRaw = getHeader(req, "x-chain-id");
-    const chainId = chainIdRaw ? parseInt(chainIdRaw, 10) : undefined;
-    if (address && EVM_ADDRESS.test(address)) {
-        const hasValidChainId = typeof chainId === "number" && Number.isInteger(chainId) && chainId > 0;
+    const network = getHeader(req, "x-network-id");
+    if (address && network && isNetworkId(network)) {
         return {
             kind: "wallet_header",
-            address: address.toLowerCase(),
-            ...(hasValidChainId ? { chainId } : {}),
+            address,
+            network,
         };
     }
 
