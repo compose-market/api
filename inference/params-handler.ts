@@ -4,19 +4,13 @@
  * Single responsibility: every inference call must succeed. When a third-
  * party request omits a required-by-the-vendor parameter (count, duration,
  * quality, resolution, …), this module fills the lowest-cost default
- * taken from the modality/family catalog already used by the router. No
+ * taken from the per-model parameter schema in models.json. No
  * network calls happen here.
  */
 import type { Request, Response } from "express";
 
 import { getModelById } from "./catalog/registry.js";
-import { getClassificationParameterCatalog } from "./catalog/modalities/classification.js";
-import { getEmbeddingParameterCatalog } from "./catalog/modalities/embeddings.js";
-import { getImageParameterCatalog } from "./catalog/modalities/image.js";
 import { getModelCapabilities, type CanonicalModality } from "./catalog/modalities/index.js";
-import { getRealtimeParameterCatalog } from "./catalog/modalities/realtime.js";
-import { getSpeechParameterCatalog } from "./catalog/modalities/speech.js";
-import { getVideoParameterCatalog } from "./catalog/modalities/video.js";
 import type { ModelCard } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -48,7 +42,7 @@ export interface ResolvedModelParams {
 }
 
 // ---------------------------------------------------------------------------
-// Public helpers
+// Public helpers — kept for telemetry.ts compatibility.
 // ---------------------------------------------------------------------------
 
 /**
@@ -71,7 +65,7 @@ export function rankOptionValue(value: string | number): number | null {
   const numeric = Number(trimmed);
   if (Number.isFinite(numeric)) return numeric;
 
-  const dim = trimmed.match(/^(\d+)\s*x\s*(\d+)$/);
+  const dim = trimmed.match(/^(\d+)\s*[x*]\s*(\d+)$/);
   if (dim) return Number(dim[1]) * Number(dim[2]);
 
   const res = trimmed.match(/^(\d+)\s*p$/);
@@ -83,28 +77,9 @@ export function rankOptionValue(value: string | number): number | null {
   return null;
 }
 
-const PARAM_ALIASES: Record<string, string[]> = {
-  duration: ["seconds", "duration_seconds", "durationSeconds"],
-  n: ["num_images", "sample_count", "sampleCount"],
-  aspect_ratio: ["aspectRatio", "size_ratio", "sizeRatio", "ratio"],
-  output_format: ["format", "response_format", "responseFormat"],
-};
-
-const LOWEST_DEFAULT_KEYS = new Set([
-  "duration",
-  "aspect_ratio",
-  "output_format",
-  "n",
-  "music_length_ms",
-  "prompt_extend",
-  "eot_threshold",
-  "eot_timeout_ms",
-  "include_timestamps",
-]);
-
-const ALIAS_TO_CANONICAL = Object.fromEntries(
-  Object.entries(PARAM_ALIASES).flatMap(([canonical, aliases]) => aliases.map((alias) => [alias, canonical])),
-) as Record<string, string>;
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
 
 function isAllowedOption(value: unknown): value is string | number {
   return typeof value === "string" || typeof value === "number";
@@ -114,25 +89,33 @@ function isDefaultValue(value: unknown): value is string | number | boolean {
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
-function inferParamType(value: unknown): ParamDefinition["type"] {
-  if (typeof value === "boolean") return "boolean";
-  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
-  if (Array.isArray(value)) return "array";
-  if (value && typeof value === "object") return "object";
-  return "string";
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/**
+ * Check if a raw value looks like a valid ParamDefinition (has a `type` field).
+ * This rejects structured metadata containers like { endpoint: ..., query: ... }
+ * that some providers store alongside real param definitions.
+ */
+function isParamDefinition(raw: unknown): boolean {
+  const record = asRecord(raw);
+  if (!record) return false;
+  const type = typeof record.type === "string" ? record.type : "";
+  return ["string", "integer", "number", "boolean", "array", "object"].includes(type);
 }
 
 function normalizeParamDefinition(raw: unknown): ParamDefinition | null {
   const record = asRecord(raw);
   if (!record) return null;
+  if (!isParamDefinition(record)) return null;
 
   const rawType = typeof record.type === "string" ? record.type : "";
   const options = Array.isArray(record.options) ? record.options.filter(isAllowedOption) : undefined;
   const defaultValue = isDefaultValue(record.default) ? record.default : undefined;
-  const sample = options?.[0] ?? defaultValue;
-  const type = ["string", "integer", "number", "boolean", "array", "object"].includes(rawType)
-    ? rawType as ParamDefinition["type"]
-    : inferParamType(sample);
+  const type = rawType as ParamDefinition["type"];
 
   return {
     type,
@@ -157,183 +140,59 @@ function normalizeDefinitions(raw: unknown): Record<string, ParamDefinition> {
   return out;
 }
 
-function modalityParamCatalog(modality: CanonicalModality, card?: ModelCard | null): Record<string, ParamDefinition> {
-  switch (modality) {
-    case "image":
-      return normalizeDefinitions(getImageParameterCatalog());
-    case "video":
-      return normalizeDefinitions(getVideoParameterCatalog(card?.provider));
-    case "audio":
-      return normalizeDefinitions(getSpeechParameterCatalog(card));
-    case "embedding":
-      return normalizeDefinitions(getEmbeddingParameterCatalog());
-    case "realtime":
-      return normalizeDefinitions(getRealtimeParameterCatalog(card));
-    case "text":
-      return textParamCatalog(card);
-  }
-}
+/**
+ * Extract the lowest value from a set of options.
+ * For numeric options: return the minimum.
+ * For string options: try to extract a numeric component for ranking
+ * (e.g. "512x512" → 512*512, "720P" → 720, "5" → 5).
+ * If no numeric component can be extracted, return the first option
+ * (provider's declared order).
+ */
+function lowestOption(options: Array<string | number>): string | number | undefined {
+  if (options.length === 0) return undefined;
 
-function textParamCatalog(card?: ModelCard | null): Record<string, ParamDefinition> {
-  if (!card) return {};
-  const capabilities = getModelCapabilities(card);
-  const hasClassification = capabilities.some((capability) =>
-    capability.modality === "text"
-    && (
-      capability.operation === "classification"
-      || capability.operation === "classify"
-      || capability.operation === "zero-shot-classification"
-    )
-  );
-  const hasRerank = capabilities.some((capability) =>
-    capability.modality === "text" && capability.operation === "rerank"
-  );
-  return mergeDefinitions(
-    hasClassification ? normalizeDefinitions(getClassificationParameterCatalog()) : {},
-    hasRerank ? normalizeDefinitions({
-      query: {
-        type: "string",
-        required: false,
-        description: "Search query or question to rank candidate documents against.",
-      },
-      documents: {
-        type: "array",
-        required: false,
-        description: "Candidate documents for reranking.",
-      },
-      contexts: {
-        type: "array",
-        required: false,
-        description: "Provider alias for candidate documents.",
-      },
-      texts: {
-        type: "array",
-        required: false,
-        description: "Provider alias for candidate documents.",
-      },
-      top_n: {
-        type: "integer",
-        required: false,
-        minimum: 1,
-        description: "Maximum reranked documents to return.",
-      },
-      top_k: {
-        type: "integer",
-        required: false,
-        minimum: 1,
-        description: "Maximum reranked documents to return.",
-      },
-      return_documents: {
-        type: "boolean",
-        required: false,
-        description: "Return document payloads with rerank results when supported.",
-      },
-      max_tokens_per_doc: {
-        type: "integer",
-        required: false,
-        minimum: 1,
-        description: "Maximum tokens to read from each document.",
-      },
-    }) : {},
-  );
-}
+  const numeric = options.filter((o): o is number => typeof o === "number" && Number.isFinite(o));
+  if (numeric.length > 0) return Math.min(...numeric);
 
-function canonicalDefinition(definition: ParamDefinition, canonicalKey: string): ParamDefinition {
-  if (canonicalKey === "duration" || canonicalKey === "n") {
-    const options = definition.options
-      ?.map((value) => typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN)
-      .filter((value) => Number.isFinite(value));
-    const defaultValue = typeof definition.default === "number"
-      ? definition.default
-      : typeof definition.default === "string"
-        ? Number(definition.default)
-        : undefined;
-    return {
-      ...definition,
-      type: Number.isInteger(options?.[0] ?? defaultValue) ? "integer" : "number",
-      ...(options && options.length > 0 ? { options } : {}),
-      ...(typeof defaultValue === "number" && Number.isFinite(defaultValue) ? { default: defaultValue } : {}),
-    };
-  }
-
-  return { ...definition };
-}
-
-function addCanonicalAliases(params: Record<string, ParamDefinition>): Record<string, ParamDefinition> {
-  const out = { ...params };
-  for (const [canonicalKey, aliases] of Object.entries(PARAM_ALIASES)) {
-    if (canonicalKey === "duration") continue;
-    if (out[canonicalKey]) continue;
-    const alias = aliases.find((candidate) => out[candidate]);
-    if (alias) {
-      out[canonicalKey] = canonicalDefinition(out[alias], canonicalKey);
-    }
-  }
-  return out;
-}
-
-function mergeDefinitions(...sources: Array<Record<string, ParamDefinition>>): Record<string, ParamDefinition> {
-  const out: Record<string, ParamDefinition> = {};
-  for (const source of sources) {
-    for (const [key, value] of Object.entries(addCanonicalAliases(source))) {
-      if (!out[key]) out[key] = { ...value, ...(value.options ? { options: [...value.options] } : {}) };
-    }
-  }
-  return addCanonicalAliases(out);
-}
-
-function definitionsForModel(card: ModelCard | null, modality: CanonicalModality): Record<string, ParamDefinition> {
-  return mergeDefinitions(modalityParamCatalog(modality, card));
-}
-
-function optionRankForParam(key: string, value: string | number): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-
-  const normalizedKey = key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`).toLowerCase();
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.toLowerCase() === "auto") return null;
-
-  if (normalizedKey === "size") {
-    const dim = trimmed.toLowerCase().match(/^(\d+)\s*x\s*(\d+)$/);
-    return dim ? Number(dim[1]) * Number(dim[2]) : null;
-  }
-
-  if (normalizedKey === "resolution") {
-    const res = trimmed.toLowerCase().match(/^(\d+)\s*p$/);
-    return res ? Number(res[1]) : null;
-  }
-
-  return rankOptionValue(trimmed);
-}
-
-function lowestOptionForParam(key: string, options: Array<string | number>): string | number | undefined {
   const ranked = options
-    .map((option, index) => ({ option, index, rank: optionRankForParam(key, option) }))
-    .filter((entry): entry is { option: string | number; index: number; rank: number } => entry.rank !== null);
-  if (ranked.length === 0) return options[0];
-  ranked.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
-  return ranked[0].option;
+    .map((opt, index) => ({ opt, index, rank: rankOptionValue(opt) }))
+    .filter((entry): entry is { opt: string | number; index: number; rank: number } => entry.rank !== null);
+  if (ranked.length > 0) {
+    ranked.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
+    return ranked[0].opt;
+  }
+
+  return options[0];
 }
 
-function lowestDefaultForParam(key: string, def: ParamDefinition): unknown {
-  if (LOWEST_DEFAULT_KEYS.has(key) && Array.isArray(def.options) && def.options.length > 0) {
-    return lowestOptionForParam(key, def.options);
-  }
-  if ((LOWEST_DEFAULT_KEYS.has(key) || key === "resolution" || key === "size") && def.default !== undefined) {
+/**
+ * Compute the lowest-cost default for a single parameter.
+ * Only generates a default for params that have options or min/max ranges
+ * but no explicit provider default.
+ */
+function lowestDefaultForParam(def: ParamDefinition): unknown {
+  if (def.default !== undefined) {
     if (typeof def.default === "string" && def.default.trim().toLowerCase() === "auto") {
       return undefined;
     }
     return def.default;
   }
+
+  if (def.options && def.options.length > 0) {
+    return lowestOption(def.options);
+  }
+
+  if (typeof def.minimum === "number" && Number.isFinite(def.minimum)) {
+    return def.minimum;
+  }
+
   return undefined;
 }
 
 export function buildModelParamDefaults(params: Record<string, ParamDefinition>): Record<string, unknown> {
   const defaults: Record<string, unknown> = {};
   for (const [key, def] of Object.entries(params)) {
-    const canonical = ALIAS_TO_CANONICAL[key];
-    if (canonical && params[canonical]) continue;
-    const value = lowestDefaultForParam(key, def);
+    const value = lowestDefaultForParam(def);
     if (value !== undefined) defaults[key] = value;
   }
   return defaults;
@@ -348,9 +207,6 @@ function pickModalityFromCard(modelId: string, preferred?: CanonicalModality): {
   provider: string;
 } {
   const card = getModelById(modelId);
-  // When the caller declares the modality at the route level
-  // (`POST /v1/images/...`, `POST /v1/videos/...`), trust it. The card's
-  // classified capabilities are advisory; route intent is authoritative.
   if (preferred) return { modality: preferred, provider: card?.provider ?? "" };
   if (!card) return { modality: null, provider: "" };
   const caps = getModelCapabilities(card);
@@ -361,12 +217,6 @@ function pickModalityFromCard(modelId: string, preferred?: CanonicalModality): {
     }
   }
   return { modality: null, provider: card.provider };
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }
 
 function coerce(def: ParamDefinition, value: unknown): unknown {
@@ -401,8 +251,7 @@ function extractProvided(
   const custom = asRecord(body.custom_params);
   const out: Record<string, unknown> = {};
   for (const [key, def] of Object.entries(params)) {
-    const aliases = PARAM_ALIASES[key] ?? [];
-    const raw = [key, ...aliases]
+    const raw = [key]
       .map((candidate) => custom?.[candidate] ?? body[candidate])
       .find((value) => value !== undefined);
     const coerced = coerce(def, raw);
@@ -416,11 +265,11 @@ function extractProvided(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the optional-param schema for a model.
+ * Resolve the per-model parameter schema from card.params.
  *
- * Given a model id (and optionally a preferred modality hint), returns the
- * universal ladder-derived schema for that modality, with lowest-cost
- * defaults pre-computed.
+ * Given a model id (and optionally a preferred modality hint), returns
+ * the schema from that model's own params field in models.json, with
+ * lowest-cost defaults pre-computed.
  */
 export function resolveModelParams(
   modelId: string,
@@ -436,7 +285,7 @@ export function resolveModelParams(
   );
   if (!modality) return null;
 
-  const params = definitionsForModel(card, modality);
+  const params = normalizeDefinitions(card?.params);
   return {
     modelId: decoded,
     type: modality,
