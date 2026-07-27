@@ -7,6 +7,7 @@ inference/data/huggingface
 inference/data/providers
 inference/data/reports
 inference/scripts
+metrics/expenses
 
 .DS_Store
 **/.DS_Store

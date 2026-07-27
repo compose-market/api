@@ -8,7 +8,7 @@ Two modules do the heavy lifting and have their own READMEs:
 
 | Module | What it does |
 | --- | --- |
-| [`inference/`](./inference/README.md) | Multi-provider, multi-modality inference gateway. 504 models across 11 providers, 6 modalities, OpenAI-compatible plus Responses API surfaces, WebSocket realtime, async video. Authoritative metering and x402 settlement on the same HTTP request. |
+| [`inference/`](./inference/README.md) | Multi-provider, multi-modality inference gateway. OpenAI-compatible plus Responses API surfaces, WebSocket realtime, async video. Authoritative metering and x402 settlement on the same HTTP request. |
 | [`x402/`](./x402/README.md) | x402 v2 payment facilitator plus Compose Keys, session budgets, payment intents, deferred batch settlement, evidence, and receipts. Settles USDC on Avalanche. |
 
 Everything else is glue or supporting surface.
@@ -57,7 +57,7 @@ The API reads secrets from env. The names that matter:
 
 | Variable | Purpose |
 | --- | --- |
-| `DEPLOYER_KEY` | Facilitator signer private key. Drives on-chain USDC settlement. |
+| `FACILITATOR_KEY` | Facilitator signer private key. Drives on-chain USDC settlement. |
 | `MERCHANT_WALLET_ADDRESS` | Where settled USDC lands. |
 | `TREASURY_SERVER_WALLET_PUBLIC` | Compose Key settlement spender. |
 | `COMPOSE_SESSION_SECRET` | HMAC secret for Compose Key JWTs. |
