@@ -18,11 +18,11 @@ import {
 import { createKey } from "../x402/keys/storage.js";
 import { closeValkey, valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
 import { recordChargeEvidence } from "../x402/evidence.js";
-import { initializeSessionBudget } from "../x402/session-budget.js";
+import { initializeSessionBudget } from "../x402/session/budget.js";
 
 const ORIGINAL_RUNTIME_URL = process.env.RUNTIME_URL;
 const ORIGINAL_AGENTS_URL = process.env.AGENTS_URL;
-const ORIGINAL_DEPLOYER_KEY = process.env.DEPLOYER_KEY;
+const ORIGINAL_FACILITATOR_KEY = process.env.FACILITATOR_KEY;
 const ORIGINAL_MERCHANT_WALLET_ADDRESS = process.env.MERCHANT_WALLET_ADDRESS;
 const ORIGINAL_THIRDWEB_SERVER_WALLET_ADDRESS = process.env.THIRDWEB_SERVER_WALLET_ADDRESS;
 const ORIGINAL_AVALANCHE_MAINNET_RPC = process.env.AVALANCHE_MAINNET_RPC;
@@ -55,7 +55,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 function keyRecordKey(keyId: string): string {
-  return `compose-key:${keyId}`;
+  return `key:${keyId}`;
 }
 
 function userKeysKey(userAddress: string): string {
@@ -284,6 +284,28 @@ test("handlePublicRoute redirects exact agent cards directly to the agents Worke
   }
 });
 
+test("handlePublicRoute redirects Solana agent cards directly to the agents Worker", async () => {
+  process.env.AGENTS_URL = "https://agents.worker.test";
+  const wallet = "139ckThCRxYDDFXgfRjH4TCiaTJETbb1UMLwACvWJ1fq";
+  globalThis.fetch = async () => { throw new Error("API must not fetch the agents catalog"); };
+
+  try {
+    const result = await handlePublicRoute(
+      {
+        rawPath: "/agent/" + wallet,
+        requestContext: { http: { method: "GET" } },
+      },
+      {},
+    );
+
+    assert.equal(result?.statusCode, 307);
+    assert.equal(result?.headers?.Location, "https://agents.worker.test/agent/" + wallet);
+  } finally {
+    globalThis.fetch = NATIVE_FETCH;
+    restoreEnv("AGENTS_URL", ORIGINAL_AGENTS_URL);
+  }
+});
+
 test("GET /agent/:wallet/avatar redirects directly to the agents Worker", async () => {
   process.env.AGENTS_URL = "https://agents.worker.test";
   const wallet = "0x4444444444444444444444444444444444444444";
@@ -465,9 +487,9 @@ test("payable stream routes write receipt before DONE when both arrive in one ch
 // response that locked the route to Compose-Key consumers only.
 // ─────────────────────────────────────────────────────────────────────────────
 test("payable resource routes emit 402 PAYMENT-REQUIRED with the expected raw x402 scheme when no Authorization is present", async () => {
-  // The raw x402 upto challenge requires DEPLOYER_KEY (for facilitator address)
+  // The raw x402 upto challenge requires FACILITATOR_KEY (for facilitator address)
   // and MERCHANT_WALLET_ADDRESS (for payTo). Set them if not already present.
-  process.env.DEPLOYER_KEY = ORIGINAL_DEPLOYER_KEY || `0x${"11".repeat(32)}`;
+  process.env.FACILITATOR_KEY = ORIGINAL_FACILITATOR_KEY || `0x${"11".repeat(32)}`;
   process.env.MERCHANT_WALLET_ADDRESS =
     ORIGINAL_MERCHANT_WALLET_ADDRESS || "0x2222222222222222222222222222222222222222";
   process.env.THIRDWEB_SERVER_WALLET_ADDRESS =
@@ -497,7 +519,7 @@ test("payable resource routes emit 402 PAYMENT-REQUIRED with the expected raw x4
         method: ep.method,
         headers: {
           "content-type": "application/json",
-          "x-chain-id": "43114",
+          "x-network-id": "eip155:43114",
           // `x-x402-max-amount-wei` is required for the upto scheme; without
           // it the server returns 400 (the shared inference contract). The
           // test asserts the happy path where a sincere caller supplies both
@@ -520,7 +542,7 @@ test("payable resource routes emit 402 PAYMENT-REQUIRED with the expected raw x4
     }
   } finally {
     server.close();
-    process.env.DEPLOYER_KEY = ORIGINAL_DEPLOYER_KEY;
+    process.env.FACILITATOR_KEY = ORIGINAL_FACILITATOR_KEY;
     process.env.MERCHANT_WALLET_ADDRESS = ORIGINAL_MERCHANT_WALLET_ADDRESS;
     process.env.THIRDWEB_SERVER_WALLET_ADDRESS = ORIGINAL_THIRDWEB_SERVER_WALLET_ADDRESS;
     process.env.AVALANCHE_MAINNET_RPC = ORIGINAL_AVALANCHE_MAINNET_RPC;
@@ -625,7 +647,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       budgetLimit: 1_000_000,
       expiresAt: Date.now() + 10 * 60 * 1000,
       purpose: "api",
-      chainId: 43113,
+      network: "eip155:43113",
       name: "agent-wrapper-fee-test",
     });
     keyId = created.keyId;
@@ -641,7 +663,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       feeWei: "10",
       finalAmountWei: "1010",
       txHash: "0xmodel",
-      chainId: 43113,
+      network: "eip155:43113",
       settledAt: Date.now(),
     });
     await recordChargeEvidence({
@@ -655,7 +677,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       feeWei: "5",
       finalAmountWei: "505",
       txHash: "0xmemory",
-      chainId: 43113,
+      network: "eip155:43113",
       settledAt: Date.now(),
     });
     await recordChargeEvidence({
@@ -673,7 +695,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       creatorFeeWei: "50",
       finalAmountWei: "100",
       txHash: "0xchildagent",
-      chainId: 43113,
+      network: "eip155:43113",
       settledAt: Date.now(),
     });
 
@@ -682,7 +704,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       headers: {
         authorization: `Bearer ${created.token}`,
         "content-type": "application/json",
-        "x-chain-id": "43113",
+        "x-network-id": "eip155:43113",
         "x-run-id": rootRunId,
       },
       body: JSON.stringify({
@@ -799,7 +821,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       budgetLimit: 1_000_000,
       expiresAt: Date.now() + 10 * 60 * 1000,
       purpose: "api",
-      chainId: 43113,
+      network: "eip155:43113",
       name: "agent-unpaid-evidence-test",
     });
     keyId = created.keyId;
@@ -814,7 +836,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       providerAmountWei: "1000",
       feeWei: "10",
       finalAmountWei: "1010",
-      chainId: 43113,
+      network: "eip155:43113",
       settledAt: Date.now(),
     });
 
@@ -823,7 +845,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       headers: {
         authorization: `Bearer ${created.token}`,
         "content-type": "application/json",
-        "x-chain-id": "43113",
+        "x-network-id": "eip155:43113",
         "x-run-id": rootRunId,
       },
       body: JSON.stringify({

@@ -26,14 +26,14 @@ const EMBEDDING_MODEL_ID = "text-embedding-3-small";
 const IMAGE_EMBEDDING_MODEL_ID = "roboflow/clip/embed-image";
 const AUDIO_MODEL_ID = "@cf/deepgram/aura-1";
 const STT_MODEL_ID = "qwen3-asr-flash";
-const IMAGE_ANALYSIS_MODEL_ID = "roboflow/rfdetr-base";
+const IMAGE_ANALYSIS_MODEL_ID = "roboflow/rfdetr-small";
 const RERANK_MODEL_ID = "qwen3-rerank";
 
 const ORIGINAL_ENV = {
   THIRDWEB_SECRET_KEY: process.env.THIRDWEB_SECRET_KEY,
   THIRDWEB_SERVER_WALLET_ADDRESS: process.env.THIRDWEB_SERVER_WALLET_ADDRESS,
   MERCHANT_WALLET_ADDRESS: process.env.MERCHANT_WALLET_ADDRESS,
-  DEPLOYER_KEY: process.env.DEPLOYER_KEY,
+  FACILITATOR_KEY: process.env.FACILITATOR_KEY,
 };
 
 async function withInferenceServer<T>(run: (baseUrl: string) => Promise<T>): Promise<T> {
@@ -42,7 +42,7 @@ async function withInferenceServer<T>(run: (baseUrl: string) => Promise<T>): Pro
     ORIGINAL_ENV.THIRDWEB_SERVER_WALLET_ADDRESS || "0x1111111111111111111111111111111111111111";
   process.env.MERCHANT_WALLET_ADDRESS =
     ORIGINAL_ENV.MERCHANT_WALLET_ADDRESS || "0x2222222222222222222222222222222222222222";
-  process.env.DEPLOYER_KEY = ORIGINAL_ENV.DEPLOYER_KEY || `0x${"11".repeat(32)}`;
+  process.env.FACILITATOR_KEY = ORIGINAL_ENV.FACILITATOR_KEY || `0x${"11".repeat(32)}`;
   const { registerInferenceRoutes } = await import("../inference/gateway.js");
   const app = express();
   app.use(express.json());
@@ -65,7 +65,7 @@ async function withInferenceServer<T>(run: (baseUrl: string) => Promise<T>): Pro
     process.env.THIRDWEB_SECRET_KEY = ORIGINAL_ENV.THIRDWEB_SECRET_KEY;
     process.env.THIRDWEB_SERVER_WALLET_ADDRESS = ORIGINAL_ENV.THIRDWEB_SERVER_WALLET_ADDRESS;
     process.env.MERCHANT_WALLET_ADDRESS = ORIGINAL_ENV.MERCHANT_WALLET_ADDRESS;
-    process.env.DEPLOYER_KEY = ORIGINAL_ENV.DEPLOYER_KEY;
+    process.env.FACILITATOR_KEY = ORIGINAL_ENV.FACILITATOR_KEY;
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -123,7 +123,7 @@ test("registerInferenceRoutes serves /v1 models directly", async () => {
   }
 
   assert.equal(
-    warnings.some((warning) => warning.includes("[genai]") || warning.includes("[openai]") || warning.includes("[huggingface]") || warning.includes("[vertex]") || warning.includes("[fireworks]") || warning.includes("[cloudflare]")),
+    warnings.some((warning) => warning.includes("[genai]") || warning.includes("[openai]") || warning.includes("[huggingface]") || warning.includes("[vertex]") || warning.includes("[fireworks]") || warning.includes("[cloudflare]") || warning.includes("[deepinfra]")),
     false,
   );
 });
@@ -182,7 +182,7 @@ test("registerInferenceRoutes issues a 402 upto challenge with default envelope 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Chain-ID": "421614",
+        "X-Network-ID": "eip155:421614",
       },
       body: JSON.stringify({
         model: TEXT_MODEL_ID,
@@ -216,7 +216,7 @@ test("registerInferenceRoutes challenges chat completions before provider execut
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Chain-ID": "421614",
+          "X-Network-ID": "eip155:421614",
         },
         body: JSON.stringify({
           model: TEXT_MODEL_ID,
@@ -238,7 +238,7 @@ test("registerInferenceRoutes challenges chat completions before provider execut
   }
 
   assert.equal(
-    warnings.some((warning) => warning.includes("[genai]") || warning.includes("[openai]") || warning.includes("[huggingface]") || warning.includes("[vertex]") || warning.includes("[fireworks]") || warning.includes("[cloudflare]")),
+    warnings.some((warning) => warning.includes("[genai]") || warning.includes("[openai]") || warning.includes("[huggingface]") || warning.includes("[vertex]") || warning.includes("[fireworks]") || warning.includes("[cloudflare]") || warning.includes("[deepinfra]")),
     false,
   );
 });
@@ -249,7 +249,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for deterministic
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Chain-ID": "43113",
+        "X-Network-ID": "eip155:43113",
       },
       body: JSON.stringify({
         model: AUDIO_MODEL_ID,
@@ -289,7 +289,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for token-metered
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Chain-ID": "43113",
+        "X-Network-ID": "eip155:43113",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -315,7 +315,7 @@ test("registerInferenceRoutes accepts image-only universal embedding requests be
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Chain-ID": "43113",
+        "X-Network-ID": "eip155:43113",
       },
       body: JSON.stringify({
         model: IMAGE_EMBEDDING_MODEL_ID,
@@ -366,11 +366,11 @@ test("catalog classifiers emit operation-specific input and output shapes", () =
     && capability.output.includes("video")
   ));
 
-  const elevenLabsScribe = capabilitiesFor("scribe_v2");
+  const elevenLabsScribe = capabilitiesFor("scribe_v2_realtime");
   assert.equal(elevenLabsScribe.some((capability) => capability.operation === "chat"), false);
   assert.ok(elevenLabsScribe.some((capability) =>
-    capability.modality === "text"
-    && capability.operation === "speech-to-text"
+    capability.modality === "realtime"
+    && capability.operation === "realtime-transcription"
     && capability.input.includes("audio")
     && capability.output.includes("text")
   ));
@@ -476,7 +476,7 @@ test("realtime-only REST calls enter paid inference instead of legacy websocket 
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-network-id": "eip155:43113" },
       body: JSON.stringify({
         model: "gpt-realtime-2",
         input: [{ type: "input_text", text: "Start a voice session." }],
@@ -548,7 +548,7 @@ test("adaptError preserves x402 payment-required negotiation metadata from settl
   const { encodePaymentRequiredHeader } = await import("../x402/facilitator.js");
 
   const paymentRequired = createPaymentRequired402Response({
-    chainId: 84532,
+    network: "eip155:43113",
     amountWei: 25_000_000,
     resourceUrl: "https://api.compose.market/v1/responses",
     errorMessage: "Session expired or insufficient allowance",
@@ -672,7 +672,7 @@ test("registerInferenceRoutes rejects non-boolean stream flags before payment ne
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Chain-ID": "43113",
+        "X-Network-ID": "eip155:43113",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -700,7 +700,7 @@ test("registerInferenceRoutes exposes universal response streams to payment nego
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Chain-ID": "43113",
+        "X-Network-ID": "eip155:43113",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -722,10 +722,17 @@ test("registerInferenceRoutes exposes universal response streams to payment nego
 });
 
 test("response output item mapper exposes every native output family", () => {
-  assert.deepEqual(toResponsesOutputItems({
+  const textItems = toResponsesOutputItems({
     modality: "text",
     content: "hello",
-  }), [{ type: "output_text", role: "assistant", text: "hello" }]);
+  });
+  assert.match(String(textItems[0]?.id), /^msg_/);
+  assert.deepEqual(textItems.map(({ id: _id, ...item }) => item), [{
+    type: "message",
+    status: "completed",
+    role: "assistant",
+    content: [{ type: "output_text", text: "hello", annotations: [] }],
+  }]);
 
   assert.deepEqual(toResponsesOutputItems({
     modality: "image",
@@ -788,9 +795,8 @@ test("responses stream mapper emits typed output and video status events", () =>
       mime_type: "audio/mpeg",
     },
   }), {
-    type: "response.output_item.completed",
+    type: "response.output_item.done",
     response_id: "resp_123",
-    model: "video-model",
     output_index: 0,
     item: {
       type: "output_audio",
@@ -896,35 +902,28 @@ test("normalizeResponsesRequest injects lowest-cost video defaults into generati
   assert.equal(pricedWan.billingMetrics?.duration, 4);
   assert.equal(pricedWan.billingMetrics?.second, 4);
 
-  const veo2 = normalizeResponsesRequest({
-    model: "veo-2.0-generate-001",
+  const veo = normalizeResponsesRequest({
+    model: "veo-3.1-generate-preview",
     modalities: ["video"],
     input: [{ type: "input_text", text: "A quiet product reveal on a studio table." }],
   });
 
-  assert.equal(veo2.videoOptions?.duration, undefined);
-  assert.equal(veo2.billingMetrics?.duration, 5);
-  assert.equal(veo2.billingMetrics?.second, 5);
+  assert.equal(veo.videoOptions?.duration, undefined);
+  assert.equal(veo.billingMetrics?.duration, 5);
+  assert.equal(veo.billingMetrics?.second, 5);
 });
 
-test("resolveModelParams uses modality catalogs, not model-card request schemas", () => {
+test("resolveModelParams uses per-model card.params, not modality catalogs", () => {
   const transcription = resolveModelParams("gpt-4o-mini-transcribe");
   assert.ok(transcription);
   assert.equal(transcription.type, "text");
-  assert.equal(transcription.params.file, undefined);
-  assert.equal(transcription.params.input, undefined);
-  assert.deepEqual(transcription.params, {});
+  assert.ok(transcription.params.file);
+  assert.equal(transcription.params.file.type, "string");
 
-  const text = resolveModelParams("gpt-4o");
-  assert.ok(text);
-  assert.equal(text.type, "text");
-  assert.deepEqual(text.params, {});
-
-  const wan = resolveModelParams("wan2.1-i2v-turbo", "video");
+  const wan = resolveModelParams("wan2.1-i2v-plus", "video");
   assert.ok(wan);
   assert.equal(wan.provider, "alibaba");
-  assert.equal(wan.params.prompt_extend?.type, "boolean");
-  assert.equal(wan.defaults.prompt_extend, false);
+  assert.ok(wan.params.prompt_extend || wan.params.watermark || wan.params.shot_type);
 });
 
 test("normalizeResponsesRequest coerces model param numeric strings before billing", () => {
@@ -944,15 +943,15 @@ test("normalizeResponsesRequest coerces model param numeric strings before billi
 });
 
 
-test("registerInferenceRoutes exposes response input items on the canonical /v1 path", async () => {
+test("response state routes fail explicitly when durable state is unavailable", async () => {
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/responses/resp_missing/input_items`);
-    assert.equal(response.status, 404);
+    assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), {
       error: {
-        message: "Response 'resp_missing' not found",
-        type: "invalid_request_error",
-        code: "response_not_found",
+        message: "Response state is unavailable during read",
+        type: "server_error",
+        code: "response_state_unavailable",
       },
     });
   });
@@ -1031,4 +1030,45 @@ test("chat completion helpers preserve OpenAI-compatible streamed tool-call sema
   assert.equal(response.choices[0].finish_reason, "tool_calls");
   assert.equal(response.choices[0].message.tool_calls?.[0]?.function.name, "get_price");
   assert.deepEqual((response.choices[0].message.tool_calls?.[0] as any)?.providerMetadata, { google: { thoughtSignature: "sig_123" } });
+});
+
+test("registerInferenceRoutes correctly resolves and serves newly-added DeepInfra models", () => {
+  const textModel = getModelById("google/gemma-3-27b-it");
+  assert.ok(textModel);
+  assert.equal(textModel.provider, "deepinfra");
+  assert.equal(textModel.type, "text generation");
+
+  const embedModel = getModelById("thenlper/gte-base");
+  assert.ok(embedModel);
+  assert.equal(embedModel.provider, "deepinfra");
+  assert.equal(embedModel.type, "embeddings");
+
+  const imageModel = getModelById("black-forest-labs/FLUX-1-dev");
+  assert.ok(imageModel);
+  assert.equal(imageModel.provider, "deepinfra");
+  assert.equal(imageModel.type, "image generation");
+
+  const speechModel = getModelById("hexgrad/Kokoro-82M");
+  assert.ok(speechModel);
+  assert.equal(speechModel.provider, "deepinfra");
+  assert.equal(speechModel.type, "speech");
+
+  const sttModel = getModelById("openai/whisper-large-v3");
+  assert.ok(sttModel);
+  assert.equal(sttModel.provider, "deepinfra");
+  assert.equal(sttModel.type, "speech");
+
+  const videoModel = getModelById("Pixverse/Pixverse-6-T2V");
+  assert.ok(videoModel);
+  assert.equal(videoModel.provider, "deepinfra");
+  assert.equal(videoModel.type, "video generation");
+
+  const rerankModel = getModelById("Qwen/Qwen3-Reranker-4B");
+  assert.ok(rerankModel);
+  assert.equal(rerankModel.provider, "deepinfra");
+  assert.equal(rerankModel.type, "reranker");
+
+  const musicModel = getModelById("ACE-Step/acestep-v15-xl-sft");
+  assert.ok(musicModel);
+  assert.equal(musicModel.provider, "deepinfra");
 });

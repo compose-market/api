@@ -46,11 +46,9 @@ const schema: Schema = {
 
 const tool: Tool = {
   type: "function",
-  function: {
-    name: "delegate",
-    description: "Delegate work.",
-    parameters: schema,
-  },
+  name: "delegate",
+  description: "Delegate work.",
+  parameters: schema,
 };
 
 const messages: Message[] = [{ role: "user", content: "Use the tool." }];
@@ -65,10 +63,17 @@ test("canonical chat request preserves rich tool schema before provider lowering
     model: "gpt-5.2",
     stream: false,
     messages,
-    tools: [tool],
+    tools: [{
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }],
   });
 
-  const params = request.tools?.[0]?.function.parameters as Record<string, unknown>;
+  const params = request.tools?.[0]?.parameters as Record<string, unknown>;
   const properties = params.properties as Record<string, Record<string, unknown>>;
 
   assert.equal(params.additionalProperties, false);

@@ -4,9 +4,7 @@ import test from "node:test";
 import { getCompiledModels, resolveModel } from "../inference/catalog/registry.js";
 import { isProvider, PROVIDERS } from "../inference/types.js";
 
-test("provider registry covers compiled catalog providers and aiml", () => {
-  assert.equal(isProvider("aiml"), true);
-
+test("provider registry covers every compiled catalog provider", () => {
   const providers = new Set(PROVIDERS);
   const unknown = new Set(
     getCompiledModels().models
@@ -50,7 +48,7 @@ test("compiled Roboflow catalog excludes volatile registry-only rows", () => {
 
   assert.equal(ids.has("roboflow/cacao-woord/6"), false);
   assert.equal(ids.has("roboflow/infer/lmm"), false);
-  assert.equal(ids.has("roboflow/rfdetr-base"), true);
+  assert.equal(ids.has("roboflow/rfdetr-small"), true);
 });
 
 test("compiled Roboflow SAM2 follows OpenAPI image-id response shape", () => {

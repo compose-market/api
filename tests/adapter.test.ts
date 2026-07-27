@@ -73,6 +73,9 @@ before(async () => {
   process.env.CF_ACCOUNT_ID = "test-account";
   process.env.ALIBABA_CLOUD_API_KEY = "test-alibaba";
   process.env.OPENAI_API_KEY = "test-openai";
+  process.env.VERTEX_AI_API_KEY = "test-vertex";
+  process.env.VERTEX_PROJECT_ID = "test-project";
+  process.env.VERTEX_LOCATION = "us-central1";
 
   originalFetch = globalThis.fetch;
   ({ generateWithTools, streamWithTools, retrieveJob, downloadGoogleFileDataUrl, normalizeUsage } = await import("../inference/catalog/adapter.js"));
@@ -184,7 +187,7 @@ test("generateWithTools routes Roboflow image operations through the vision fami
       });
     }
 
-    if (url.startsWith("https://serverless.roboflow.com/coco/36")) {
+    if (url.startsWith("https://detect.roboflow.com/rfdetr-base")) {
       return Response.json({
         predictions: [
           { class: "person", confidence: 0.98, x: 100, y: 120, width: 40, height: 180 },
@@ -220,7 +223,7 @@ test("generateWithTools routes Roboflow image operations through the vision fami
   assert.match(result.output.content, /bicycle/i);
   assert.deepEqual(calls, [
     "https://example.com/street.jpg",
-    "https://serverless.roboflow.com/coco/36?api_key=test-roboflow",
+    "https://detect.roboflow.com/rfdetr-base?api_key=test-roboflow",
   ]);
 });
 
@@ -318,7 +321,7 @@ test("streamWithTools routes Roboflow text analysis through the vision family", 
       });
     }
 
-    if (url.startsWith("https://serverless.roboflow.com/coco/36")) {
+    if (url.startsWith("https://detect.roboflow.com/rfdetr-base")) {
       assert.equal(init?.body, Buffer.from("image-bytes").toString("base64"));
       return Response.json({ detections: [{ class: "car", confidence: 0.91 }] });
     }
@@ -355,7 +358,7 @@ test("streamWithTools routes Roboflow text analysis through the vision family", 
   assert.equal(events.at(-1)?.type, "done");
   assert.deepEqual(calls, [
     "https://example.com/stream.jpg",
-    "https://serverless.roboflow.com/coco/36?api_key=test-roboflow",
+    "https://detect.roboflow.com/rfdetr-base?api_key=test-roboflow",
   ]);
 });
 
@@ -395,35 +398,33 @@ test("streamWithTools cleans Gemini tool schemas to the wire subset", async () =
     }],
     tools: [{
       type: "function",
-      function: {
-        name: "task",
-        description: "Delegate work",
-        parameters: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            prompt: { type: "string", minLength: 1 },
-            budget: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                maxDepth: { type: "integer", exclusiveMinimum: 0, maximum: 10 },
-              },
-            },
-            value: {
-              anyOf: [
-                { type: "string" },
-                { type: "number" },
-              ],
-            },
-            meta: {
-              type: "object",
-              propertyNames: { type: "string" },
-              additionalProperties: {},
+      name: "task",
+      description: "Delegate work",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          prompt: { type: "string", minLength: 1 },
+          budget: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              maxDepth: { type: "integer", exclusiveMinimum: 0, maximum: 10 },
             },
           },
-          required: ["prompt"],
+          value: {
+            anyOf: [
+              { type: "string" },
+              { type: "number" },
+            ],
+          },
+          meta: {
+            type: "object",
+            propertyNames: { type: "string" },
+            additionalProperties: {},
+          },
         },
+        required: ["prompt"],
       },
     }],
   };
@@ -450,6 +451,128 @@ test("streamWithTools cleans Gemini tool schemas to the wire subset", async () =
   assert.equal(parts[1].inlineData.mimeType, "image/jpeg");
   assert.equal(parts[1].inlineData.data, png(16, 16).toString("base64"));
   assert.equal(events.at(-1)?.type, "done");
+});
+
+test("Alibaba chat forwards parallel tool parameters and returns every tool call", async () => {
+  let requestBody: Record<string, any> = {};
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body || "{}"));
+    return Response.json({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          content: "",
+          tool_calls: [
+            {
+              id: "call_weather",
+              type: "function",
+              function: { name: "weather", arguments: "{\"city\":\"Rome\"}" },
+            },
+            {
+              id: "call_time",
+              type: "function",
+              function: { name: "time", arguments: "{\"city\":\"Tokyo\"}" },
+            },
+          ],
+        },
+      }],
+      usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 },
+    });
+  }) as FetchImpl;
+
+  const result = await generateWithTools({
+    mode: "responses",
+    model: "qwen-plus",
+    stream: false,
+    modality: "text",
+    responseId: "resp_alibaba_parallel",
+    messages: [{ role: "user", content: "Compare both cities." }],
+    tools: [
+      {
+        type: "function",
+        name: "weather",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
+      },
+      {
+        type: "function",
+        name: "time",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
+      },
+    ],
+    toolChoice: { type: "function", name: "weather" },
+    customParams: { parallel_tool_calls: true },
+  }, {
+    modelId: "qwen-plus",
+    provider: "alibaba",
+  });
+
+  assert.equal(requestBody.parallel_tool_calls, true);
+  assert.equal(requestBody.tools[0].function.name, "weather");
+  assert.deepEqual(requestBody.tool_choice, {
+    type: "function",
+    function: { name: "weather" },
+  });
+  assert.deepEqual(result.output.toolCalls?.map((call: any) => call.id), [
+    "call_weather",
+    "call_time",
+  ]);
+  assert.equal(result.output.finishReason, "tool-calls");
+});
+
+test("Vertex text generation forwards tools and returns parallel function calls", async () => {
+  let requestUrl = "";
+  let requestBody: Record<string, any> = {};
+  globalThis.fetch = (async (input, init) => {
+    requestUrl = String(input);
+    requestBody = JSON.parse(String(init?.body || "{}"));
+    return Response.json({
+      candidates: [{
+        content: {
+          role: "model",
+          parts: [
+            { functionCall: { name: "weather", args: { city: "Rome" } }, thoughtSignature: "sig-weather" },
+            { functionCall: { name: "time", args: { city: "Tokyo" } }, thoughtSignature: "sig-time" },
+          ],
+        },
+        finishReason: "STOP",
+      }],
+      usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 4, totalTokenCount: 9 },
+    });
+  }) as FetchImpl;
+
+  const result = await generateWithTools({
+    mode: "responses",
+    model: "gemini-2.5-pro",
+    stream: false,
+    modality: "text",
+    responseId: "resp_vertex_parallel",
+    messages: [{ role: "user", content: "Compare both cities." }],
+    tools: [
+      {
+        type: "function",
+        name: "weather",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
+      },
+      {
+        type: "function",
+        name: "time",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
+      },
+    ],
+    toolChoice: "required",
+  }, {
+    modelId: "gemini-2.5-pro",
+    provider: "vertex",
+  });
+
+  assert.match(requestUrl, /projects\/test-project\/locations\/us-central1\/publishers\/google/);
+  assert.equal(requestBody.tools[0].functionDeclarations[0].name, "weather");
+  assert.deepEqual(requestBody.toolConfig, { functionCallingConfig: { mode: "ANY" } });
+  assert.deepEqual(result.output.toolCalls?.map((call: any) => call.name), ["weather", "time"]);
+  assert.deepEqual(result.output.toolCalls?.map((call: any) => call.providerMetadata), [
+    { google: { thoughtSignature: "sig-weather" } },
+    { google: { thoughtSignature: "sig-time" } },
+  ]);
 });
 
 test("generateWithTools routes speech recognition through Deepgram", async () => {
@@ -1335,6 +1458,7 @@ test("Azure responses lowers chat-style tools to Responses tool schema", async (
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: [{
+          id: "fc_1",
           type: "function_call",
           call_id: "call_1",
           name: "lookup",
@@ -1358,14 +1482,12 @@ test("Azure responses lowers chat-style tools to Responses tool schema", async (
     messages: [{ role: "user", content: "look up ETH" }],
     tools: [{
       type: "function",
-      function: {
-        name: "lookup",
-        description: "Lookup a symbol",
-        parameters: {
-          type: "object",
-          properties: { symbol: { type: "string" } },
-          required: ["symbol"],
-        },
+      name: "lookup",
+      description: "Lookup a symbol",
+      parameters: {
+        type: "object",
+        properties: { symbol: { type: "string" } },
+        required: ["symbol"],
       },
     }],
     toolChoice: "auto",
@@ -1379,6 +1501,16 @@ test("Azure responses lowers chat-style tools to Responses tool schema", async (
   assert.equal(requestBody.tools[0].function, undefined);
   assert.equal(requestBody.tool_choice, "auto");
   assert.equal(result.output.toolCalls[0].name, "lookup");
+  assert.equal(result.output.toolCalls[0].itemId, "fc_1");
+  assert.equal(result.output.toolCalls[0].callId, "call_1");
+  assert.equal(result.output.toolCalls[0].outputIndex, 0);
+  assert.deepEqual(result.output.outputItems, [{
+    id: "fc_1",
+    type: "function_call",
+    call_id: "call_1",
+    name: "lookup",
+    arguments: "{\"symbol\":\"ETH\"}",
+  }]);
 });
 
 test("OpenAI diarized transcription omits unsupported prompt field from catalog params", async () => {

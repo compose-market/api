@@ -33,7 +33,7 @@ import {
 } from "../http/request-context.js";
 import { buildCorsHeaders } from "../http/cors.js";
 import { buildError, statusForCode } from "../http/errors.js";
-import { initializeSessionBudget } from "../x402/session-budget.js";
+import { initializeSessionBudget } from "../x402/session/budget.js";
 import { saveRawEnvelope } from "../x402/envelope.js";
 
 type HandlerEvent = {
@@ -66,8 +66,8 @@ function userKeysIndex(address: string): string {
     return `user-keys:${address.toLowerCase()}`;
 }
 
-function sessionBudgetKey(userAddress: string, chainId: number): string {
-    return `session:budget:${userAddress.toLowerCase()}:${chainId}`;
+function sessionBudgetKey(userAddress: string, network: string): string {
+    return `session:budget:${network}:${userAddress}`;
 }
 
 // ----------------------------------------------------------------------------
@@ -126,6 +126,10 @@ test("buildCorsHeaders echoes credentialed first-party origins and sends '*' for
     assert.equal(localhost["Access-Control-Allow-Origin"], "http://localhost:3000");
     assert.equal(localhost["Access-Control-Allow-Credentials"], "true");
 
+    const inference = buildCorsHeaders("https://api.inference.diy");
+    assert.equal(inference["Access-Control-Allow-Origin"], "https://api.inference.diy");
+    assert.equal(inference["Access-Control-Allow-Credentials"], "true");
+
     const anonymous = buildCorsHeaders("https://evil.example.com");
     assert.equal(anonymous["Access-Control-Allow-Origin"], "*");
     assert.equal(anonymous["Access-Control-Allow-Credentials"], undefined);
@@ -157,7 +161,7 @@ test("buildError + statusForCode produce the canonical envelope", () => {
 test("GET /api/session returns the active compose-<jwt> token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const chainId = 43113;
+    const network = "eip155:43113" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
     let seededKeyId: string | null = null;
 
@@ -165,19 +169,19 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
         const seeded = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
-            chainId,
+            network,
             purpose: "session",
             name: "test-session-key",
         });
         seededKeyId = seeded.keyId;
-        await initializeSessionBudget(userAddress, chainId, "1000000", expiresAt);
+        await initializeSessionBudget(userAddress, network, "1000000", expiresAt);
         assert.ok(seeded.token.startsWith("compose-"));
 
         const result = await handler(
             createEvent("GET", "/api/session", {
                 headers: {
                     "x-session-user-address": userAddress,
-                    "x-chain-id": String(chainId),
+                    "x-network-id": network,
                 },
             }),
             {},
@@ -192,6 +196,7 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
             createEvent("GET", "/api/session", {
                 headers: {
                     "x-session-user-address": userAddress,
+                    "x-network-id": network,
                 },
             }),
             {},
@@ -200,35 +205,35 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
         const globalBody = JSON.parse(globalResult.body) as Record<string, unknown>;
         assert.equal(globalBody.hasSession, true);
         assert.equal(globalBody.keyId, seeded.keyId);
-        assert.equal(globalBody.chainId, chainId);
+        assert.equal(globalBody.network, network);
     } finally {
         if (seededKeyId) {
-            await valkeyDel(`compose-key:${seededKeyId}`);
+            await valkeyDel(`key:${seededKeyId}`);
             await valkeySRem(userKeysIndex(userAddress), seededKeyId);
         }
         // Clean any leftover state.
         await valkeyDel(userKeysIndex(userAddress));
-        await valkeyDel(sessionBudgetKey(userAddress, chainId));
+        await valkeyDel(sessionBudgetKey(userAddress, network));
     }
 });
 
 test("GET /api/session returns active raw x402 envelope metadata by payer", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const chainId = 43113;
+    const network = "eip155:43113" as const;
     const rootRunId = `raw-${randomUUID()}`;
 
     try {
         await saveRawEnvelope({
             rootRunId,
-            chainId,
+            network,
             maxAmountWei: "2500",
             payer: userAddress,
             paymentPayload: {
                 x402Version: 2,
                 accepted: {
                     scheme: "upto",
-                    network: `eip155:${chainId}`,
+                    network,
                     amount: "2500",
                     asset: "0x0000000000000000000000000000000000000001",
                     payTo: "0x0000000000000000000000000000000000000002",
@@ -242,6 +247,7 @@ test("GET /api/session returns active raw x402 envelope metadata by payer", asyn
             createEvent("GET", "/api/session", {
                 headers: {
                     "x-session-user-address": userAddress,
+                    "x-network-id": network,
                 },
             }),
             {},
@@ -249,17 +255,17 @@ test("GET /api/session returns active raw x402 envelope metadata by payer", asyn
         assert.equal(result.statusCode, 200);
         const body = JSON.parse(result.body) as {
             hasSession: boolean;
-            rawEnvelope?: { rootRunId?: string; chainId?: number; maxAmountWei?: string; remainingWei?: string };
+            rawEnvelope?: { rootRunId?: string; network?: string; maxAmountWei?: string; remainingWei?: string };
         };
         assert.equal(body.hasSession, false);
         assert.equal(body.rawEnvelope?.rootRunId, rootRunId);
-        assert.equal(body.rawEnvelope?.chainId, chainId);
+        assert.equal(body.rawEnvelope?.network, network);
         assert.equal(body.rawEnvelope?.maxAmountWei, "2500");
         assert.equal(body.rawEnvelope?.remainingWei, "2500");
     } finally {
         await valkeyDel(`x402:envelope:${rootRunId}`);
         await valkeyDel(`x402:envelope:payer:${userAddress.toLowerCase()}`);
-        await valkeyDel(`x402:envelope:payer:${userAddress.toLowerCase()}:${chainId}`);
+        await valkeyDel(`x402:envelope:payer:${userAddress.toLowerCase()}:${network}`);
         await closeValkey();
     }
 });
@@ -268,14 +274,14 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
     const attacker = randomWalletAddress();
-    const chainId = 43113;
+    const network = "eip155:43113" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     try {
         const seeded = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
-            chainId,
+            network,
             purpose: "api",
             name: "revoke-target",
         });
@@ -285,7 +291,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
             createEvent("DELETE", `/api/keys/${seeded.keyId}`, {
                 headers: {
                     "x-session-user-address": userAddress,
-                    "x-chain-id": String(chainId),
+                    "x-network-id": network,
                 },
             }),
             {},
@@ -298,7 +304,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
         const attackerKey = await createKey(attacker, {
             budgetLimit: 1_000_000,
             expiresAt,
-            chainId,
+            network,
             purpose: "api",
             name: "attacker-key",
         });
@@ -306,7 +312,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
             createEvent("DELETE", `/api/keys/${seeded.keyId}`, {
                 headers: {
                     "x-session-user-address": userAddress,
-                    "x-chain-id": String(chainId),
+                    "x-network-id": network,
                     authorization: `Bearer ${attackerKey.token}`,
                 },
             }),
@@ -335,14 +341,14 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
         const keyA = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
-            chainId,
+            network,
             purpose: "api",
             name: "key-a",
         });
         const keyB = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
-            chainId,
+            network,
             purpose: "api",
             name: "key-b",
         });
@@ -371,14 +377,14 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
 test("GET /api/keys/:keyId requires possession and returns key metadata without the token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const chainId = 43113;
+    const network = "eip155:43113" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     try {
         const seeded = await createKey(userAddress, {
             budgetLimit: 2_500_000,
             expiresAt,
-            chainId,
+            network,
             purpose: "api",
             name: "inspect-me",
         });
@@ -400,7 +406,7 @@ test("GET /api/keys/:keyId requires possession and returns key metadata without 
         assert.equal(body.keyId, seeded.keyId);
         assert.equal(body.budgetLimit, 2_500_000);
         assert.equal(body.purpose, "api");
-        assert.equal(body.chainId, chainId);
+        assert.equal(body.network, network);
         assert.equal(body.name, "inspect-me");
         assert.equal(body.token, undefined, "GET /api/keys/:id must not leak the token");
 
@@ -428,18 +434,18 @@ test("GET /api/x402/facilitator/chains returns CAIP-2 network ids + USDC address
     // are acceptable; the body shape only matters on 200.
     if (result.statusCode === 200) {
         const body = JSON.parse(result.body) as {
-            chains: Array<{ chainId: number; network: string; usdcAddress: string; schemes: string[]; decimals: number }>;
-            defaultChainId: number;
+            chains: Array<{ network: string; assetAddress: string; schemes: string[]; decimals: number }>;
+            defaultNetwork: string;
         };
         assert.ok(Array.isArray(body.chains));
         assert.ok(body.chains.length > 0);
         for (const chain of body.chains) {
-            assert.match(chain.network, /^eip155:\d+$/);
-            assert.match(chain.usdcAddress, /^0x[a-fA-F0-9]{40}$/);
-            assert.deepEqual(chain.schemes, ["exact", "upto"]);
+            assert.match(chain.network, /^(eip155|solana):.+$/);
+            assert.ok(chain.assetAddress.length > 0);
+            assert.deepEqual(chain.schemes, ["exact", "upto", "batch-settlement"]);
             assert.equal(chain.decimals, 6);
         }
-        assert.equal(typeof body.defaultChainId, "number");
+        assert.match(body.defaultNetwork, /^(eip155|solana):.+$/);
     }
 });
 

@@ -57,8 +57,8 @@ function randomWalletAddress(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
 }
 
-function sessionBudgetKey(userAddress: string, chainId: number): string {
-  return `session:budget:${userAddress.toLowerCase()}:${chainId}`;
+function sessionBudgetKey(userAddress: string, network: string): string {
+  return `session:budget:${network}:${userAddress}`;
 }
 
 after(async () => {
@@ -203,6 +203,36 @@ test("handler serves compose facilitator supported response without cronos or v1
   );
 });
 
+test("handler rejects legacy numeric dispenser inputs", async () => {
+  const { handler } = await import("../handler.js");
+
+  const claim = await handler(
+    createEvent("POST", "/api/dispenser/claim", {
+      address: "0x1111111111111111111111111111111111111111",
+      chainId: 43113,
+    }),
+    {},
+  );
+  assert.equal(claim.statusCode, 400);
+  assert.match(JSON.parse(claim.body).error, /chainId is not supported/i);
+
+  const status = await handler(createEvent("GET", "/api/dispenser/status/43113"), {});
+  assert.equal(status.statusCode, 400);
+  assert.match(JSON.parse(status.body).error, /CAIP-2 network/i);
+});
+
+test("handler treats Solana dispenser status as unsupported without EVM coercion", async () => {
+  const { handler } = await import("../handler.js");
+
+  const result = await handler(
+    createEvent("GET", "/api/dispenser/status/solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"),
+    {},
+  );
+
+  assert.equal(result.statusCode, 404);
+  assert.match(JSON.parse(result.body).reason, /not configured/i);
+});
+
 test("handler persists Backpack cloud permissions via dedicated permission routes", async () => {
   const { handler } = await import("../handler.js");
   const userAddress = "0x1111111111111111111111111111111111111111";
@@ -310,7 +340,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
   const { handler } = await import("../handler.js");
 
   const userAddress = randomWalletAddress();
-  const chainId = 43113;
+  const network = "eip155:43113" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   try {
@@ -319,13 +349,13 @@ test("handler rejects session creation when the tied wallet lacks the required U
       requestContext: { http: { method: "POST" } },
       headers: {
         "x-session-user-address": userAddress,
-        "x-chain-id": String(chainId),
+        "x-network-id": network,
         "content-type": "application/json",
       },
       body: JSON.stringify({
         budgetLimit: 25_000_000,
         expiresAt,
-        chainId,
+        network,
         purpose: "session",
         name: "SDK Session",
       }),
@@ -351,7 +381,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
       requestContext: { http: { method: "GET" } },
       headers: {
         "x-session-user-address": userAddress,
-        "x-chain-id": String(chainId),
+        "x-network-id": network,
       },
     }, {});
 
@@ -363,7 +393,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
     assert.equal(sessionBody.hasSession, false);
     assert.equal(sessionBody.reason, "none");
   } finally {
-    await valkeyDel(sessionBudgetKey(userAddress, chainId));
+    await valkeyDel(sessionBudgetKey(userAddress, network));
     await closeValkey();
   }
 });
@@ -371,7 +401,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
 test("handler rejects malformed header wallet identity when creating a key", async () => {
   const { handler } = await import("../handler.js");
 
-  const chainId = 43113;
+  const network = "eip155:43113" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   await assert.rejects(
@@ -380,12 +410,12 @@ test("handler rejects malformed header wallet identity when creating a key", asy
       requestContext: { http: { method: "POST" } },
       headers: {
         "x-session-user-address": "not-a-wallet",
-        "x-chain-id": String(chainId),
+        "x-network-id": network,
       },
       body: JSON.stringify({
         budgetLimit: 25_000_000,
         expiresAt,
-        chainId,
+        network,
         purpose: "session",
         name: "Allowance-Free Session",
       }),
@@ -398,7 +428,7 @@ test("handler rejects api key creation when the tied wallet lacks the required U
   const { handler } = await import("../handler.js");
 
   const userAddress = randomWalletAddress();
-  const chainId = 43113;
+  const network = "eip155:43113" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   try {
@@ -407,13 +437,13 @@ test("handler rejects api key creation when the tied wallet lacks the required U
       requestContext: { http: { method: "POST" } },
       headers: {
         "x-session-user-address": userAddress,
-        "x-chain-id": String(chainId),
+        "x-network-id": network,
         "content-type": "application/json",
       },
       body: JSON.stringify({
         budgetLimit: 5_000_000,
         expiresAt,
-        chainId,
+        network,
         purpose: "api",
         name: "Cursor",
       }),
@@ -441,7 +471,7 @@ test("handler rejects api key creation when the tied wallet lacks the required U
       requestContext: { http: { method: "GET" } },
       headers: {
         "x-session-user-address": userAddress,
-        "x-chain-id": String(chainId),
+        "x-network-id": network,
       },
     }, {});
 
@@ -470,7 +500,7 @@ test("selectActiveSessionStatus ignores API keys and uses reserved budget from s
       budgetRemaining: 5_000_000,
       expiresAt: now + 60_000,
       createdAt: now + 10_000,
-      chainId: 8453,
+      network: "eip155:8453",
       name: "Cursor",
     },
     {
@@ -483,12 +513,12 @@ test("selectActiveSessionStatus ignores API keys and uses reserved budget from s
       budgetRemaining: 7_000_000,
       expiresAt: now + 60_000,
       createdAt: now,
-      chainId: 8453,
+      network: "eip155:8453",
       name: "Browser Session",
     },
   ];
 
-  const status = selectActiveSessionStatus(candidates, 8453, now);
+  const status = selectActiveSessionStatus(candidates, "eip155:8453", now);
 
   assert.equal(status.reason, "none");
   assert.deepEqual(status.session, {
@@ -499,7 +529,7 @@ test("selectActiveSessionStatus ignores API keys and uses reserved budget from s
     budgetLocked: 1_000_000,
     budgetRemaining: 7_000_000,
     expiresAt: now + 60_000,
-    chainId: 8453,
+    network: "eip155:8453",
     name: "Browser Session",
   });
 });
@@ -517,12 +547,12 @@ test("selectActiveSessionStatus keeps a live session active while its remaining 
       budgetRemaining: 0,
       expiresAt: now + 60_000,
       createdAt: now,
-      chainId: 8453,
+      network: "eip155:8453",
       name: "Browser Session",
     },
   ];
 
-  const status = selectActiveSessionStatus(candidates, 8453, now);
+  const status = selectActiveSessionStatus(candidates, "eip155:8453", now);
 
   assert.equal(status.reason, "none");
   assert.deepEqual(status.session, {
@@ -533,7 +563,7 @@ test("selectActiveSessionStatus keeps a live session active while its remaining 
     budgetLocked: 8_000_000,
     budgetRemaining: 0,
     expiresAt: now + 60_000,
-    chainId: 8453,
+    network: "eip155:8453",
     name: "Browser Session",
   });
 });

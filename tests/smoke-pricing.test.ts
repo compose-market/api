@@ -134,7 +134,7 @@ const SYNTHETIC_MEDIA: Record<CanonicalModality, Record<string, unknown>> = {
         request: 1, video: 1, second: 6, duration: 6, minute: 0.1,
         generated_seconds: 6, generated_minutes: 0.1, generation: 1,
         width: 1280, height: 720, megapixel: 1, processed_megapixel: 1,
-        compute_second: 6,
+        compute_second: 6, frame: 144,
         cost: 1,
     },
     audio: {

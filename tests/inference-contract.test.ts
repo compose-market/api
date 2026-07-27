@@ -62,7 +62,7 @@ test("chat normalization accepts the runtime model bridge wire shape", () => {
   assert.equal(request.modality, "text");
   assert.equal(request.messages[1]?.tool_calls?.[0]?.function.name, "price.lookup");
   assert.equal(request.messages[2]?.tool_call_id, "call_1");
-  assert.equal(request.tools?.[0]?.function.parameters?.type, "object");
+  assert.equal(request.tools?.[0]?.parameters?.type, "object");
 });
 
 test("chat normalization keeps the existing conservative passthrough shape", () => {
@@ -143,13 +143,11 @@ test("OpenAI Responses wire lowering maps chat tools and reasoning", () => {
     maxOutputTokens: 8,
     tools: [{
       type: "function",
-      function: {
-        name: "deploy",
-        description: "Deploy a target",
-        parameters: { type: "object", properties: { target: { type: "string" } } },
-      },
+      name: "deploy",
+      description: "Deploy a target",
+      parameters: { type: "object", properties: { target: { type: "string" } } },
     }],
-    toolChoice: { type: "function", function: { name: "deploy" } },
+    toolChoice: { type: "function", name: "deploy" },
     customParams: {
       reasoning_effort: "low",
       stream_options: { include_usage: true, include_obfuscation: false },
@@ -191,6 +189,7 @@ test("OpenAI adapter routes chat tools with reasoning through Responses", async 
     return new Response(JSON.stringify({
       status: "completed",
       output: [{
+        id: "fc_1",
         type: "function_call",
         call_id: "call_1",
         name: "deploy",
@@ -227,6 +226,16 @@ test("OpenAI adapter routes chat tools with reasoning through Responses", async 
     assert.equal("reasoning_effort" in body, false);
     assert.equal((body.tools as any[])[0].name, "deploy");
     assert.equal(result.output.toolCalls?.[0]?.name, "deploy");
+    assert.equal(result.output.toolCalls?.[0]?.itemId, "fc_1");
+    assert.equal(result.output.toolCalls?.[0]?.callId, "call_1");
+    assert.equal(result.output.toolCalls?.[0]?.outputIndex, 0);
+    assert.deepEqual(result.output.outputItems, [{
+      id: "fc_1",
+      type: "function_call",
+      call_id: "call_1",
+      name: "deploy",
+      arguments: "{\"target\":\"prod\"}",
+    }]);
   } finally {
     globalThis.fetch = original;
   }
@@ -240,10 +249,10 @@ test("OpenAI adapter streams chat tools with reasoning through Responses", async
     url = String(input);
     body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
     const stream = [
-      "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"deploy\",\"arguments\":\"\"}}\n\n",
-      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"call_1\",\"delta\":\"{\\\"target\\\"\"}\n\n",
-      "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"call_1\",\"name\":\"deploy\",\"arguments\":\"{\\\"target\\\":\\\"prod\\\"}\"}\n\n",
-      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"deploy\",\"arguments\":\"{\\\"target\\\":\\\"prod\\\"}\"}],\"usage\":{\"input_tokens\":11,\"output_tokens\":5,\"total_tokens\":16}}}\n\n",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"deploy\",\"arguments\":\"\"}}\n\n",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{\\\"target\\\"\"}\n\n",
+      "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"fc_1\",\"name\":\"deploy\",\"arguments\":\"{\\\"target\\\":\\\"prod\\\"}\"}\n\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"deploy\",\"arguments\":\"{\\\"target\\\":\\\"prod\\\"}\"}],\"usage\":{\"input_tokens\":11,\"output_tokens\":5,\"total_tokens\":16}}}\n\n",
       "data: [DONE]\n\n",
     ].join("");
     return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
@@ -274,9 +283,95 @@ test("OpenAI adapter streams chat tools with reasoning through Responses", async
     assert.ok(url.endsWith("/responses"));
     assert.equal(body.stream, true);
     assert.equal("include_usage" in (((body.stream_options as Record<string, unknown>) || {})), false);
-    assert.equal(events.find((event) => event.type === "tool-call")?.toolCall?.name, "deploy");
+    const delta = events.find((event) => event.type === "tool-call-delta")?.toolCallDelta;
+    assert.equal(delta?.itemId, "fc_1");
+    assert.equal(delta?.callId, "call_1");
+    const call = events.find((event) => event.type === "tool-call")?.toolCall;
+    assert.equal(call?.name, "deploy");
+    assert.equal(call?.itemId, "fc_1");
+    assert.equal(call?.callId, "call_1");
+    assert.equal(call?.index, 0);
+    assert.deepEqual(events.find((event) => event.type === "output-item")?.item, {
+      id: "fc_1",
+      type: "function_call",
+      call_id: "call_1",
+      name: "deploy",
+      arguments: "{\"target\":\"prod\"}",
+    });
     assert.equal(events.at(-1)?.finishReason, "tool-calls");
     assert.equal(events.at(-1)?.usage?.totalTokens, 16);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("OpenAI Responses adapter sends exact native continuation items", async () => {
+  const original = globalThis.fetch;
+  let body: Record<string, unknown> = {};
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    return Response.json({ status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } });
+  }) as typeof fetch;
+
+  try {
+    const { generateWithTools } = await import("../inference/catalog/adapter.js");
+    const input = [
+      {
+        id: "rs_1",
+        type: "reasoning",
+        summary: [],
+        encrypted_content: "opaque-reasoning",
+      },
+      {
+        id: "fc_1",
+        type: "function_call",
+        call_id: "call_1",
+        name: "lookup",
+        arguments: "{\"query\":\"alpha\"}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "alpha result",
+      },
+    ];
+    const request = normalizeResponsesRequest({
+      model: "openai/gpt-4.1",
+      input,
+    });
+
+    await generateWithTools(request, { provider: "openai", modelId: "gpt-4.1" });
+
+    assert.deepEqual(body.input, input);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("OpenAI Responses adapter canonicalizes OpenCode text aliases before upstream fetch", async () => {
+  const original = globalThis.fetch;
+  let body: Record<string, unknown> = {};
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    return Response.json({ status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } });
+  }) as typeof fetch;
+
+  try {
+    const { generateWithTools } = await import("../inference/catalog/adapter.js");
+    const request = normalizeResponsesRequest({
+      model: "openai/gpt-4.1",
+      input: [
+        { role: "user", content: [{ type: "text", text: "Inspect this repository." }] },
+        { role: "assistant", content: [{ type: "text", text: "I will inspect it." }] },
+      ],
+    });
+
+    await generateWithTools(request, { provider: "openai", modelId: "gpt-4.1" });
+
+    assert.deepEqual(body.input, [
+      { role: "user", content: [{ type: "input_text", text: "Inspect this repository." }] },
+      { role: "assistant", content: [{ type: "output_text", text: "I will inspect it." }] },
+    ]);
   } finally {
     globalThis.fetch = original;
   }
@@ -322,11 +417,15 @@ test("chat stream conversion emits the chunks runtime normalizes", () => {
 test("responses stream conversion preserves rich modality events", () => {
   assert.deepEqual(toResponsesStreamEvent("resp_2", "gemini-3", {
     type: "reasoning-delta",
+    itemId: "rs_1",
+    outputIndex: 0,
     text: "thought",
   }), {
-    type: "response.reasoning.delta",
+    type: "response.reasoning_summary_text.delta",
     response_id: "resp_2",
-    model: "gemini-3",
+    item_id: "rs_1",
+    output_index: 0,
+    summary_index: 0,
     delta: "thought",
   });
 
@@ -356,9 +455,8 @@ test("responses stream conversion preserves rich modality events", () => {
     type: "video-complete",
     video: { jobId: "job_1", url: "https://example.test/video.mp4", status: "completed", progress: 100, mimeType: "video/mp4" },
   }), {
-    type: "response.output_item.completed",
+    type: "response.output_item.done",
     response_id: "resp_2",
-    model: "veo",
     output_index: 0,
     item: {
       type: "output_video",

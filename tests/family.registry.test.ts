@@ -93,7 +93,7 @@ test("compiled catalog reads model family from the canonical aggregator", () => 
         ["@cf/deepgram/flux", "deepgram"],
         ["@cf/baai/bge-base-en-v1.5", "baai"],
         ["@cf/black-forest-labs/flux-1-schnell", "blackforestlabs"],
-        ["sonic-2", "cartesia"],
+        ["sonic-3.5-2026-05-04", "cartesia"],
         ["roboflow/doctr/ocr", "roboflow"],
     ] as const;
 

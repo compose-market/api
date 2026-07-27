@@ -29,6 +29,7 @@ test("normalizeBillingPrice accepts raw compiled token sections", () => {
     unit: "usd_per_1m_tokens",
     values: {
       input: 0.4,
+      cached_input: 0.1,
       output: 1.6,
     },
   });

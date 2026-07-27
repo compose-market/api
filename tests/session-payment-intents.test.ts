@@ -10,9 +10,9 @@ import { markIntentEvidenceSettled, recordChargeEvidence } from "../x402/evidenc
 import { prepareInferencePayment, settlePreparedInferencePayment } from "../x402/index.js";
 import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
 import { closeValkey, valkeyDel, valkeyGet, valkeyHGetAll, valkeyHSet, valkeySRem } from "../x402/keys/valkey.js";
-import { getBudgetInfo, initializeSessionBudget } from "../x402/session-budget.js";
+import { getBudgetInfo, initializeSessionBudget } from "../x402/session/budget.js";
 
-const TEST_CHAIN_ID = 43113;
+const TEST_NETWORK = "eip155:43113" as const;
 const TEST_BUDGET_WEI = 1_000_000;
 const TEST_SESSION_USED_WEI = 25_000;
 const TEST_STALE_KEY_USED_WEI = 50_000;
@@ -28,20 +28,20 @@ function randomWalletAddress(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
 }
 
-function sessionBudgetKey(userAddress: string, chainId: number): string {
-  return `session:budget:${userAddress.toLowerCase()}:${chainId}`;
+function sessionBudgetKey(userAddress: string, network: string): string {
+  return `session:budget:${network}:${userAddress}`;
 }
 
 function userKeysKey(userAddress: string): string {
-  return `user-keys:${userAddress.toLowerCase()}`;
+  return `user-keys:${TEST_NETWORK}:${userAddress}`;
 }
 
 function keyRecordKey(keyId: string): string {
-  return `compose-key:${keyId}`;
+  return `key:${keyId}`;
 }
 
 function revokedKeyKey(keyId: string): string {
-  return `compose-key:revoked:${keyId}`;
+  return `key:revoked:${keyId}`;
 }
 
 function paymentIntentKey(paymentIntentId: string): string {
@@ -63,7 +63,7 @@ function paymentIntentIdempotencyKey(keyId: string, idempotencyKey: string): str
 function inferenceRequest(token: string, idempotencyKey: string, body: Record<string, unknown> = {}): Request {
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
-    "x-chain-id": String(TEST_CHAIN_ID),
+    "x-network-id": TEST_NETWORK,
     "x-idempotency-key": idempotencyKey,
     host: "api.compose.market",
   };
@@ -162,11 +162,11 @@ async function cleanupTestState(input: {
     await valkeyDel(key);
   }
 
-  await valkeyDel(sessionBudgetKey(input.userAddress, TEST_CHAIN_ID));
+  await valkeyDel(sessionBudgetKey(input.userAddress, TEST_NETWORK));
   await closeValkey();
 }
 
-test("session payment intents authorize against the live session ledger instead of stale compose-key usage", async () => {
+test("session payment intents authorize against the live session ledger instead of stale key usage", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
@@ -178,19 +178,19 @@ test("session payment intents authorize against the live session ledger instead 
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
-    await valkeyHSet(sessionBudgetKey(userAddress, TEST_CHAIN_ID), {
+    await valkeyHSet(sessionBudgetKey(userAddress, TEST_NETWORK), {
       usedBudgetWei: String(TEST_SESSION_USED_WEI),
       lockedBudgetWei: "0",
     });
@@ -199,13 +199,13 @@ test("session payment intents authorize against the live session ledger instead 
       budgetReserved: "0",
     });
 
-    const sessionStatus = await getActiveSessionStatus(userAddress, TEST_CHAIN_ID);
+    const sessionStatus = await getActiveSessionStatus(userAddress, TEST_NETWORK);
     assert.equal(sessionStatus.reason, "none");
     assert.equal(sessionStatus.session?.budgetRemaining, TEST_BUDGET_WEI - TEST_SESSION_USED_WEI);
 
     const prepared = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "agent",
       action: "stream",
       resource: "https://api.compose.market/agent/test/stream",
@@ -224,7 +224,7 @@ test("session payment intents authorize against the live session ledger instead 
     assert.equal(prepared.headers["x-session-budget-locked"], String(TEST_BUDGET_WEI - TEST_SESSION_USED_WEI));
     assert.equal(prepared.headers["x-session-budget-remaining"], "0");
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.usedWei, String(TEST_SESSION_USED_WEI));
     assert.equal(budgetInfo?.lockedWei, String(TEST_BUDGET_WEI - TEST_SESSION_USED_WEI));
     assert.equal(budgetInfo?.availableWei, "0");
@@ -256,21 +256,21 @@ test("aborting a session payment intent releases the live reservation and keeps 
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const prepared = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "workflow",
       action: "execute",
       resource: "https://api.compose.market/workflow/test/stream",
@@ -285,7 +285,7 @@ test("aborting a session payment intent releases the live reservation and keeps 
 
     paymentIntentId = prepared.body.paymentIntentId;
 
-    let budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    let budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, String(TEST_REQUEST_WEI));
     assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI - TEST_REQUEST_WEI));
 
@@ -296,11 +296,11 @@ test("aborting a session payment intent releases the live reservation and keeps 
 
     assert.equal(aborted.ok, true);
 
-    budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, "0");
     assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI));
 
-    const sessionStatus = await getActiveSessionStatus(userAddress, TEST_CHAIN_ID);
+    const sessionStatus = await getActiveSessionStatus(userAddress, TEST_NETWORK);
     assert.equal(sessionStatus.reason, "none");
     assert.equal(sessionStatus.session?.budgetRemaining, TEST_BUDGET_WEI);
     assert.equal(sessionStatus.session?.budgetLocked, 0);
@@ -325,21 +325,21 @@ test("session payment intents using budget caps do not lock the whole live sessi
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const prepared = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "api",
       action: "inference",
       resource: "https://api.compose.market/v1/responses",
@@ -357,7 +357,7 @@ test("session payment intents using budget caps do not lock the whole live sessi
     assert.equal(prepared.headers["x-session-budget-locked"], "0");
     assert.equal(prepared.headers["x-session-budget-remaining"], String(TEST_BUDGET_WEI));
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, "0");
     assert.equal(budgetInfo?.usedWei, "0");
     assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI));
@@ -389,7 +389,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "api",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "opencode-api",
     });
     keyId = created.keyId;
@@ -397,7 +397,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     const [first, second] = await Promise.all([
       authorizePaymentIntent({
         authorization: `Bearer ${created.token}`,
-        chainId: TEST_CHAIN_ID,
+        network: TEST_NETWORK,
         service: "api",
         action: "inference",
         resource: "https://api.compose.market/external/v1/chat/completions",
@@ -406,7 +406,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
       }),
       authorizePaymentIntent({
         authorization: `Bearer ${created.token}`,
-        chainId: TEST_CHAIN_ID,
+        network: TEST_NETWORK,
         service: "api",
         action: "inference",
         resource: "https://api.compose.market/external/v1/chat/completions",
@@ -460,7 +460,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
   }
 });
 
-test("native inference compose-key settlement creates and settles a payment intent", async () => {
+test("native inference key settlement creates and settles a payment intent", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
   const idempotencyKey = "native-inference-direct-api";
@@ -473,7 +473,7 @@ test("native inference compose-key settlement creates and settles a payment inte
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "api",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "native-inference-api",
     });
     keyId = created.keyId;
@@ -485,15 +485,15 @@ test("native inference compose-key settlement creates and settles a payment inte
       { useBudgetCap: true },
     );
 
-    assert.ok(payment, "native inference compose-key preparation should succeed");
+    assert.ok(payment, "native inference key preparation should succeed");
     assert.equal(probe.statusCode, null);
     paymentIntentId = await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey));
-    assert.ok(paymentIntentId, "native inference compose-key preparation should create a payment intent");
+    assert.ok(paymentIntentId, "native inference key preparation should create a payment intent");
     assert.equal(payment.runtimeHeaders.Authorization, `Bearer ${created.token}`);
     assert.equal(payment.runtimeHeaders["x-session-active"], "false");
     assert.equal(payment.runtimeHeaders["x-session-user-address"], userAddress.toLowerCase());
     assert.equal(payment.runtimeHeaders["x-payment-intent-id"], paymentIntentId);
-    assert.equal(payment.runtimeHeaders["x-chain-id"], String(TEST_CHAIN_ID));
+    assert.equal(payment.runtimeHeaders["x-network-id"], String(TEST_NETWORK));
 
     const receipt = await settlePreparedInferencePayment(
       payment,
@@ -530,13 +530,13 @@ test("native inference compose-key settlement creates and settles a payment inte
   }
 });
 
-test("native inference session compose-key locks only the final authoritative settlement amount", async () => {
+test("native inference session key locks only the final authoritative settlement amount", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
   const idempotencyKey = "native-inference-direct-session";
   const fixedNow = 1_700_000_000_000;
   const requestId = "native-session-direct";
-  const sessionIntentId = `${userAddress.toLowerCase()}-${requestId}-${fixedNow}`;
+  const sessionIntentId = `${TEST_NETWORK}:${userAddress}-${requestId}-${fixedNow}`;
 
   let keyId: string | null = null;
   const originalNow = Date.now;
@@ -546,14 +546,14 @@ test("native inference session compose-key locks only the final authoritative se
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "native-inference-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
@@ -571,7 +571,7 @@ test("native inference session compose-key locks only the final authoritative se
     assert.equal(payment.runtimeHeaders["x-session-active"], "true");
     assert.equal(payment.runtimeHeaders["x-session-user-address"], userAddress.toLowerCase());
     assert.equal(payment.runtimeHeaders["x-session-budget-remaining"], String(TEST_BUDGET_WEI));
-    assert.equal(payment.runtimeHeaders["x-chain-id"], String(TEST_CHAIN_ID));
+    assert.equal(payment.runtimeHeaders["x-network-id"], String(TEST_NETWORK));
 
     Date.now = () => fixedNow;
     const receipt = await settlePreparedInferencePayment(
@@ -590,7 +590,7 @@ test("native inference session compose-key locks only the final authoritative se
     assert.equal(probe.headers["x-settlement"], "queued");
     assert.equal(probe.headers["x-key-final-amount-wei"], receipt.finalAmountWei);
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, receipt.finalAmountWei);
     assert.equal(budgetInfo?.usedWei, "0");
     assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
@@ -605,13 +605,13 @@ test("native inference session compose-key locks only the final authoritative se
       finalAmountWei: receipt.finalAmountWei,
       settlementStatus: "queued",
       sessionBudgetIntentId: receipt.sessionBudgetIntentId,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
     });
 
     const updated = await markIntentEvidenceSettled({
       sessionBudgetIntentId: receipt.sessionBudgetIntentId,
       txHash: TEST_SETTLEMENT_TX_HASH,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
     });
     assert.equal(updated, 1);
 
@@ -644,21 +644,21 @@ test("idempotent session payment intent authorization replays the same intent wi
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const first = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "api",
       action: "inference",
       resource: "https://api.compose.market/v1/responses",
@@ -675,7 +675,7 @@ test("idempotent session payment intent authorization replays the same intent wi
 
     const replay = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "api",
       action: "inference",
       resource: "https://api.compose.market/v1/responses",
@@ -691,7 +691,7 @@ test("idempotent session payment intent authorization replays the same intent wi
     assert.equal(replay.body.paymentIntentId, paymentIntentId);
     assert.equal(replay.headers["x-idempotent-replay"], "true");
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, String(TEST_REQUEST_WEI));
     assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI - TEST_REQUEST_WEI));
   } finally {
@@ -722,21 +722,21 @@ test("settling a session payment intent cannot exceed the reserved amount", asyn
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const prepared = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "agent",
       action: "stream",
       resource: "https://api.compose.market/agent/test/stream",
@@ -762,7 +762,7 @@ test("settling a session payment intent cannot exceed the reserved amount", asyn
     assert.equal(paymentIntent.status, "authorized");
     assert.equal(paymentIntent.finalAmountWei, undefined);
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, String(TEST_REQUEST_WEI));
     assert.equal(budgetInfo?.usedWei, "0");
   } finally {
@@ -793,21 +793,21 @@ test("settling a session budget-cap intent charges on-chain before marking ValKe
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const prepared = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "api",
       action: "inference",
       resource: "https://api.compose.market/v1/responses",
@@ -852,7 +852,7 @@ test("settling a session budget-cap intent charges on-chain before marking ValKe
     assert.equal(sessionIntent?.status, "settled");
     assert.equal(sessionIntent?.txHash, TEST_SETTLEMENT_TX_HASH);
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, "0");
     assert.equal(budgetInfo?.usedWei, String(TEST_REQUEST_WEI));
     assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI - TEST_REQUEST_WEI));
@@ -877,21 +877,21 @@ test("settled session payment intents replay without double-charging and cannot 
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "route-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const prepared = await authorizePaymentIntent({
       authorization: `Bearer ${created.token}`,
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       service: "workflow",
       action: "execute",
       resource: "https://api.compose.market/workflow/test/stream",
@@ -929,7 +929,7 @@ test("settled session payment intents replay without double-charging and cannot 
     assert.equal(abortSettled.ok, false);
     assert.equal(abortSettled.status, 409);
 
-    const budgetInfo = await getBudgetInfo(userAddress, TEST_CHAIN_ID);
+    const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
     assert.equal(budgetInfo?.lockedWei, "0");
     assert.equal(budgetInfo?.usedWei, String(TEST_REQUEST_WEI));
     assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI - TEST_REQUEST_WEI));

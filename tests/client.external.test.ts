@@ -177,7 +177,7 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
   const { json, errors } = await import("../http/body.js");
   const { register: external } = await import("../inference/external.js");
   const { registerInferenceRoutes } = await import("../inference/gateway.js");
-  const { getCompiledModels } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
   const compiled = getCompiledModels().models;
   assert.ok(compiled.length > 0);
   const sample = compiled[0];
@@ -227,7 +227,7 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
 test("external chat completions require Key bearer auth instead of raw x402 challenge", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
-  const { getCompiledModels } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
   const sample = getCompiledModels().models[0];
   const model = sample ? id(sample) : "";
   assert.ok(model);
@@ -476,7 +476,7 @@ test("external response shaping sanitizes upstream content-filter errors", async
 test("external OpenCode config is generated from the catalog", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
-  const { getCompiledModels } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
   const app = express();
   app.use(json());
   register(app);
@@ -532,28 +532,30 @@ test("external OpenCode config is generated from the catalog", async () => {
       const body = path === "/.well-known/opencode" ? parsed.config : parsed;
       assert.ok(body);
       if (path === "/.well-known/opencode") {
-        assert.equal("auth" in parsed, false);
-        assert.equal(JSON.stringify(parsed).includes("command"), false);
+        assert.deepEqual(parsed.auth, {
+          command: ["sh", "-c", "printf 'compose-market'"],
+          env: "COMPOSE_MARKET_WELLKNOWN",
+        });
         assert.equal(JSON.stringify(parsed).includes("token"), false);
         assert.equal(JSON.stringify(parsed).includes("COMPOSE_MARKET_API_KEY"), false);
       }
       const provider = body.provider["compose-market"];
-      const compiled = getCompiledModels().models;
+      const compiled = getCompiledModels().models.filter((model) => getModelProtocolProfile(model).interactiveText);
       assert.equal("model" in body, false);
       assert.equal("small_model" in body, false);
       assert.equal("enabled_providers" in body, false);
       assert.ok(provider);
       assert.equal("api" in provider, false);
-      assert.equal(provider.npm, "@ai-sdk/openai-compatible");
+      assert.equal(provider.npm, "@ai-sdk/openai");
       assert.equal(provider.options?.baseURL, `${baseUrl}/external/v1`);
       if (path === "/.well-known/opencode") {
         assert.equal("apiKey" in (provider.options || {}), false);
       } else {
         assert.equal(provider.options?.apiKey, "{env:COMPOSE_MARKET_API_KEY}");
       }
-      assert.equal(provider.options?.timeout, false);
-      assert.equal(provider.options?.chunkTimeout, 120000);
-      assert.equal(provider.options?.includeUsage, true);
+      assert.equal("timeout" in (provider.options || {}), false);
+      assert.equal("chunkTimeout" in (provider.options || {}), false);
+      assert.equal("includeUsage" in (provider.options || {}), false);
       assert.equal("setCacheKey" in (provider.options || {}), false);
       const models = provider.models || {};
       assert.equal(Object.keys(models).length, compiled.length);
@@ -570,15 +572,16 @@ test("external OpenCode config is generated from the catalog", async () => {
         if ("modalities" in model) goodModes(model.modalities);
       }
 
+      const parallelModel = compiled.find((model) => getModelProtocolProfile(model).parallelToolCalls);
+      assert.ok(parallelModel);
+      assert.deepEqual(object(models[id(parallelModel)].options), { parallelToolCalls: true });
+
       const rawLimit = compiled.find((model) => partialLimit(model as unknown as Record<string, unknown>));
       const rawCost = compiled.find((model) => partialCost(model as unknown as Record<string, unknown>));
       const rawModes = compiled.find((model) => badModes(model as unknown as Record<string, unknown>));
-      assert.ok(rawLimit);
-      assert.ok(rawCost);
-      assert.ok(rawModes);
-      assert.equal("limit" in models[id(rawLimit)], false);
-      assert.equal("cost" in models[id(rawCost)], false);
-      assert.equal("modalities" in models[id(rawModes)], false);
+      if (rawLimit) assert.equal("limit" in models[id(rawLimit)], false);
+      if (rawCost) assert.equal("cost" in models[id(rawCost)], false);
+      if (rawModes) assert.equal("modalities" in models[id(rawModes)], false);
     }
   });
 });

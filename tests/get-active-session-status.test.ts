@@ -14,9 +14,9 @@ import {
   initializeSessionBudget,
   lockBudget,
   cancelBudgetIntent,
-} from "../x402/session-budget.js";
+} from "../x402/session/budget.js";
 
-const TEST_CHAIN_ID = 43113;
+const TEST_NETWORK = "eip155:43113" as const;
 const TEST_BUDGET_WEI = 1_000_000;
 const TEST_LOCK_WEI = 25_000;
 const TEST_MERCHANT = "0x058271e764154c322f3d3ddc18af44f7d91b1c80";
@@ -28,8 +28,8 @@ function randomWalletAddress(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
 }
 
-function sessionBudgetKey(userAddress: string, chainId: number): string {
-  return `session:budget:${userAddress.toLowerCase()}:${chainId}`;
+function sessionBudgetKey(userAddress: string, network: string): string {
+  return `session:budget:${network}:${userAddress}`;
 }
 
 function userKeysKey(userAddress: string): string {
@@ -37,11 +37,11 @@ function userKeysKey(userAddress: string): string {
 }
 
 function keyRecordKey(keyId: string): string {
-  return `compose-key:${keyId}`;
+  return `key:${keyId}`;
 }
 
 function revokedKeyKey(keyId: string): string {
-  return `compose-key:revoked:${keyId}`;
+  return `key:revoked:${keyId}`;
 }
 
 function intentKey(intentId: string): string {
@@ -64,21 +64,21 @@ test("getActiveSessionStatus reflects session-budget locks for active session to
       budgetLimit: TEST_BUDGET_WEI,
       expiresAt,
       purpose: "session",
-      chainId: TEST_CHAIN_ID,
+      network: TEST_NETWORK,
       name: "test-session",
     });
     keyId = created.keyId;
 
     await initializeSessionBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_BUDGET_WEI),
       expiresAt,
     );
 
     const locked = await lockBudget(
       userAddress,
-      TEST_CHAIN_ID,
+      TEST_NETWORK,
       String(TEST_LOCK_WEI),
       TEST_MERCHANT,
       randomUUID(),
@@ -89,7 +89,7 @@ test("getActiveSessionStatus reflects session-budget locks for active session to
     assert.ok(locked.intentId);
     intentId = locked.intentId ?? null;
 
-    const status = await getActiveSessionStatus(userAddress, TEST_CHAIN_ID);
+    const status = await getActiveSessionStatus(userAddress, TEST_NETWORK);
 
     assert.ok(status.session, "expected an active session");
     assert.equal(status.session?.keyId, keyId);
@@ -111,7 +111,7 @@ test("getActiveSessionStatus reflects session-budget locks for active session to
       await valkeySRem(userKeysKey(userAddress), keyId);
     }
 
-    await valkeyDel(sessionBudgetKey(userAddress, TEST_CHAIN_ID));
+    await valkeyDel(sessionBudgetKey(userAddress, TEST_NETWORK));
     await closeValkey();
   }
 });

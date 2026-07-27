@@ -47,16 +47,16 @@ test("session events close path clears all timers", () => {
 });
 
 const USER = "0x058271e764154c322f3d3ddc18af44f7d91b1c80";
-const CHAIN = 43113;
+const NETWORK = "eip155:43113" as const;
 
 class FakeRequest extends EventEmitter {
-  query = { userAddress: USER, chainId: String(CHAIN) };
+  query = { userAddress: USER, network: NETWORK };
   destroyed = false;
   complete = true;
 
   header(name: string): string | undefined {
     if (name.toLowerCase() === "x-session-user-address") return USER;
-    if (name.toLowerCase() === "x-chain-id") return String(CHAIN);
+    if (name.toLowerCase() === "x-network-id") return NETWORK;
     return undefined;
   }
 }
@@ -114,7 +114,7 @@ function active(expiresAt = Date.now() + 10 * 60_000): ActiveSessionStatus {
       budgetLocked: 0,
       budgetRemaining: 99_000,
       expiresAt,
-      chainId: CHAIN,
+      network: NETWORK,
     },
   };
 }

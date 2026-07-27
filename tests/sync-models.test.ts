@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { aggregateCanonicalFamily, dedupeModels, type NormalizedModel } from "../inference/scripts/sync-models.js";
+import { aggregateCanonicalFamily, dedupeModels, transformHuggingFaceModel, type NormalizedModel } from "../inference/scripts/sync-models.js";
 
 function model(parts: {
     provider?: string;
@@ -56,6 +56,7 @@ test("dedupeModels prefers a succeeded deployment over a higher-capacity non-suc
 test("aggregateCanonicalFamily centralizes model family routing", () => {
     const cases = [
         ["qwen-max", "alibaba"],
+        ["qwq-plus", "alibaba"],
         ["wan2.1-t2i-plus", "alibaba"],
         ["cosyvoice-v3-flash", "alibaba"],
         ["paraformer-realtime-v2", "alibaba"],
@@ -82,6 +83,7 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["minimax-m2.7", "minimax"],
         ["hailuo-02", "minimax"],
         ["hunyuan-video", "tencent"],
+        ["tencent/Hy3", "tencent"],
         ["ernie-4.5", "baidu"],
         ["mai-image-2", "microsoft"],
         ["gemini-3.1-flash-lite", "google"],
@@ -163,6 +165,7 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["lucid-origin", "leonardo"],
         ["phoenix-1.0", "leonardo"],
         ["llava-1.5-7b-hf", "huggingface"],
+        ["@cf/moondream/moondream3.1-9B-A2B", "moondream"],
         ["dreamshaper-8-lcm", "lykon"],
         ["plamo-embedding-1b", "pfnet"],
         ["playai-tts", "playht"],
@@ -181,4 +184,18 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         assert.equal(aggregateCanonicalFamily(modelId), expected, modelId);
     }
     assert.equal(aggregateCanonicalFamily("unlisted-model"), undefined);
+});
+
+test("music generation source types normalize to the catalog writer type", () => {
+    const transformed = transformHuggingFaceModel({
+        modelId: "music_v1",
+        name: "music_v1",
+        type: "music-generation",
+        supportedDataTypes: {
+            inputs: ["text"],
+            outputs: ["audio"],
+        },
+    });
+
+    assert.equal(transformed?.type, "music generation");
 });

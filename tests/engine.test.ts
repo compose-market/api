@@ -20,7 +20,7 @@ test("inference engine resolves models without loading provider adapters", async
   }
 
   assert.equal(
-    warnings.some((warning) => warning.includes("[genai]") || warning.includes("[openai]") || warning.includes("[huggingface]") || warning.includes("[vertex]") || warning.includes("[fireworks]") || warning.includes("[cloudflare]")),
+    warnings.some((warning) => warning.includes("[genai]") || warning.includes("[openai]") || warning.includes("[huggingface]") || warning.includes("[vertex]") || warning.includes("[fireworks]") || warning.includes("[cloudflare]") || warning.includes("[deepinfra]")),
     false,
   );
 });

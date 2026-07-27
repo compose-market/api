@@ -121,6 +121,7 @@ function hasProviderKey(provider: string | undefined): boolean {
   if (name === "aiml") return Boolean(process.env.AI_ML_API_KEY);
   if (name === "cloudflare") return Boolean(process.env.CF_API_TOKEN);
   if (name === "asicloud") return Boolean(process.env.ASI_INFERENCE_API_KEY);
+  if (name === "deepinfra") return Boolean(process.env.DEEPINFRA_API_KEY);
 
   return false;
 }
@@ -206,7 +207,7 @@ function pickEmbeddingModel(models: ModelEntry[], fallback: ModelEntry): ModelEn
 function paymentHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "x-chain-id": CHECK_CHAIN_ID,
+    "x-network-id": CHECK_CHAIN_ID,
   };
 
   if (process.env.CHECK_COMPOSE_KEY) {

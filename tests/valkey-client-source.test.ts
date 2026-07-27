@@ -17,3 +17,12 @@ test("api ValKey clients use bounded request-critical options", () => {
     assert.match(source, /maxRetriesPerRequest\s*:\s*1/, file);
   }
 });
+
+test("keys ValKey client consumes deployed auth and TLS secrets", () => {
+  const source = readFileSync(resolve(root, "x402/keys/valkey.ts"), "utf8");
+
+  assert.match(source, /VALKEY_KEYS_PASSWORD/, "keys ValKey password secret must be read");
+  assert.match(source, /password\s*:/, "keys ValKey password must be passed to ioredis");
+  assert.match(source, /VALKEY_TLS/, "keys ValKey TLS secret must be read");
+  assert.match(source, /tls\s*:/, "keys ValKey TLS option must be passed to ioredis");
+});

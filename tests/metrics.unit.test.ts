@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import "dotenv/config";
 import { encodeAbiParameters, encodeEventTopics, parseAbiItem, type Hex } from "viem";
 
-import { USDC_ADDRESSES } from "../x402/configs/chains.js";
+import { NETWORK_IDS, getNetwork } from "../x402/configs/chains.js";
 import { merchantWalletAddress } from "../x402/wallets.js";
 import { formatUsdcAtomic } from "../metrics/format.js";
 import { aggregatePaymentLogs, incomingAmountFromLogs } from "../metrics/payments.js";
@@ -16,7 +17,7 @@ const transfer = parseAbiItem("event Transfer(address indexed from, address inde
 
 function transferLog(from: `0x${string}`, to: `0x${string}`, value: bigint) {
   return {
-    address: USDC_ADDRESSES[43113],
+    address: getNetwork(NETWORK_IDS.arcTestnet).asset.address,
     topics: encodeEventTopics({
       abi: [transfer],
       eventName: "Transfer",
@@ -47,11 +48,21 @@ test("aggregatePaymentLogs dedupes by transaction and sums incoming transfer amo
 
 test("incomingAmountFromLogs counts only transfers received by the merchant wallet", () => {
   const other = "0x1111111111111111111111111111111111111111";
-  assert.equal(incomingAmountFromLogs(43113, [
+  assert.equal(incomingAmountFromLogs(NETWORK_IDS.arcTestnet, [
     transferLog(other, merchantWalletAddress, 1_000_000n),
     transferLog(merchantWalletAddress, merchantWalletAddress, 2_000_000n),
     transferLog(merchantWalletAddress, other, 9_000_000n),
   ]), "3000000");
+});
+
+test("payments Neon migration keys rows by network and drops legacy chain_id", () => {
+  const source = readFileSync(new URL("../metrics/db.ts", import.meta.url), "utf8");
+
+  assert.match(source, /network\s+TEXT NOT NULL/u);
+  assert.match(source, /PRIMARY KEY \(network, tx_hash\)/u);
+  assert.match(source, /SET network = 'eip155:' \|\| chain_id::text/u);
+  assert.match(source, /ALTER TABLE payments DROP COLUMN chain_id/u);
+  assert.doesNotMatch(source, /chain_id\s+INTEGER NOT NULL/u);
 });
 
 test("buildSnapshot returns public metrics shape with named sources", () => {

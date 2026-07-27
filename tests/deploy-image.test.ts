@@ -48,6 +48,7 @@ test("resolveServiceConfig preserves production defaults", () => {
     maxInstances: "30",
     concurrency: "80",
     timeout: "1800",
+    ingress: "all",
   });
 });
 
@@ -60,6 +61,7 @@ test("resolveServiceConfig reads Cloud Run knobs from env", () => {
     API_CLOUD_RUN_MAX_INSTANCES: "250",
     API_CLOUD_RUN_CONCURRENCY: "120",
     API_CLOUD_RUN_TIMEOUT: "900",
+    API_CLOUD_RUN_INGRESS: "internal-and-cloud-load-balancing",
   }), {
     port: "8080",
     cpu: "4",
@@ -68,6 +70,7 @@ test("resolveServiceConfig reads Cloud Run knobs from env", () => {
     maxInstances: "250",
     concurrency: "120",
     timeout: "900",
+    ingress: "internal-and-cloud-load-balancing",
   });
 });
 

@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -9,25 +11,14 @@ import express from "express";
 import { registerManowarRoutes } from "../routes.js";
 import {
   buildAgentTextSettlement,
-  buildReceiptBills,
+  buildBills,
 } from "../x402/receipts.js";
+import { closeValkey } from "../x402/keys/valkey.js";
 import { quoteMeteredSettlement } from "../x402/metering.js";
-import { createKey } from "../x402/keys/storage.js";
-import { valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
 import type { Receipt } from "../http/request-context.js";
-
-const ORIGINAL_COMPOSE_SESSION_SECRET = process.env.COMPOSE_SESSION_SECRET;
 
 function wallet(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
-}
-
-function keyRecordKey(keyId: string): string {
-  return `compose-key:${keyId}`;
-}
-
-function userKeysKey(userAddress: string): string {
-  return `user-keys:${userAddress.toLowerCase()}`;
 }
 
 test("agent settlement meters include granular nested models_call bills", () => {
@@ -71,7 +62,7 @@ test("agent settlement meters include granular nested models_call bills", () => 
     settledAt: 1,
   };
 
-  const bills = buildReceiptBills(receipt);
+  const bills = buildBills(receipt);
   const kinds = bills.map((bill) => bill.kind).sort();
 
   assert.deepEqual(kinds, ["agent", "model"]);
@@ -102,22 +93,24 @@ test("nested model meters fail closed without canonical modality evidence", () =
   );
 });
 
-test("receipt listing uses Key identity instead of userAddress query trust", {
-  skip: !process.env.VALKEY_KEYS_SERVICE_URI || !process.env.VALKEY_KEYS_PASSWORD,
-}, async () => {
-  process.env.COMPOSE_SESSION_SECRET ||= "test-session-secret";
-  const userAddress = wallet();
-  const otherAddress = wallet();
-  let keyId: string | undefined;
+test("receipt listing requires x-session-user-address header", async () => {
+  const app = express();
+  registerManowarRoutes(app);
+  const server = app.listen(0);
+  await once(server, "listening");
 
-  const created = await createKey(userAddress, {
-    budgetLimit: 1_000_000,
-    expiresAt: Date.now() + 10 * 60 * 1000,
-    purpose: "api",
-    chainId: 43114,
-    name: "receipts-test",
-  });
-  keyId = created.keyId;
+  try {
+    const { port } = server.address() as AddressInfo;
+
+    const unauthorized = await fetch(`http://127.0.0.1:${port}/api/receipts?network=eip155%3A43114`);
+    assert.equal(unauthorized.status, 401);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("receipt listing returns authorized receipts", async () => {
+  const userAddress = wallet();
 
   const app = express();
   registerManowarRoutes(app);
@@ -126,25 +119,15 @@ test("receipt listing uses Key identity instead of userAddress query trust", {
 
   try {
     const { port } = server.address() as AddressInfo;
-    const unauthorized = await fetch(`http://127.0.0.1:${port}/api/receipts?userAddress=${otherAddress}&chainId=43114`);
-    assert.equal(unauthorized.status, 401);
 
-    const authorized = await fetch(`http://127.0.0.1:${port}/api/receipts?userAddress=${otherAddress}&chainId=43114`, {
-      headers: { Authorization: `Bearer ${created.token}` },
+    const authorized = await fetch(`http://127.0.0.1:${port}/api/receipts?network=eip155%3A43114`, {
+      headers: { "x-session-user-address": userAddress, "x-network-id": "eip155:43114" },
     });
     assert.equal(authorized.status, 200);
     const body = await authorized.json() as { userAddress?: string };
-    assert.equal(body.userAddress, userAddress.toLowerCase());
+    assert.equal(body.userAddress, userAddress);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (keyId) {
-      await valkeyDel(keyRecordKey(keyId));
-      await valkeySRem(userKeysKey(userAddress), keyId);
-    }
-    if (ORIGINAL_COMPOSE_SESSION_SECRET === undefined) {
-      delete process.env.COMPOSE_SESSION_SECRET;
-    } else {
-      process.env.COMPOSE_SESSION_SECRET = ORIGINAL_COMPOSE_SESSION_SECRET;
-    }
+    await closeValkey();
   }
 });
