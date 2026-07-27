@@ -42,6 +42,9 @@ export interface AuthoritativeUsage extends Usage {
 export interface AuthoritativeBillingRecord {
   subject: string;
   lineItems: Array<MeterLineItem & { source: "provider_response" | "request" }>;
+  metrics: Record<string, number>;
+  usage?: AuthoritativeUsage;
+  media?: BillingMediaEvidence;
 }
 
 const NBSP = /\u00a0/g;
@@ -628,10 +631,7 @@ function isPrivatePricingValueKey(normalizedKey: string): boolean {
   return normalizedKey === "growth"
     || normalizedKey === "enterprise"
     || normalizedKey === "prepaid"
-    || normalizedKey === "pre_paid"
-    || normalizedKey.includes("batch")
-    || normalizedKey.includes("cached")
-    || normalizedKey.includes("cache");
+    || normalizedKey === "pre_paid";
 }
 
 function inferValueKeyFromUnit(unitLabel: string, unit: string): string {
@@ -1899,8 +1899,8 @@ function buildTokenLineItems(args: {
       && inputTotal === 0
       && outputTotal === 0
       && args.usage.totalTokens > 0
-        ? args.usage.totalTokens
-        : inputTotal;
+      ? args.usage.totalTokens
+      : inputTotal;
 
     const billableInput = typeof inputOnlyTotal === "number"
       ? (typeof section.values.cached_input === "number" && typeof cachedInput === "number"
@@ -2220,6 +2220,7 @@ function quantityAliasesForPrimaryKey(primaryKey: string): string[] {
   if (primaryKey === "search") return ["search", "request"];
   if (primaryKey === "voice") return ["voice", "generation", "request"];
   if (primaryKey === "request") return ["request", "generation"];
+  if (primaryKey === "frame") return ["frame", "second", "duration"];
   if (primaryKey === "step") return ["step"];
   if (primaryKey === "tile") return ["tile"];
   if (primaryKey === "compute_second") return ["compute_second", "second", "duration"];
@@ -2254,6 +2255,7 @@ function buildMeteredMediaBilling(args: {
     const resolved = resolveCompositeUnitPrice(args.pricing.values, metrics);
     return {
       subject: args.subject,
+      metrics: Object.fromEntries(Object.entries(metrics).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))),
       lineItems: [
         {
           key: resolved.key,
@@ -2283,6 +2285,7 @@ function buildMeteredMediaBilling(args: {
 
   return {
     subject: args.subject,
+    metrics: Object.fromEntries(Object.entries(metrics).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))),
     lineItems: [
       {
         key: primaryKey,
@@ -2366,9 +2369,26 @@ export function buildAuthoritativeBilling(args: {
   }
 
   if (lineItems.length > 0) {
+    const metrics: Record<string, number> = {};
+    if (usage) {
+      metrics.input_tokens = usage.promptTokens;
+      metrics.output_tokens = usage.completionTokens;
+      metrics.total_tokens = usage.totalTokens;
+      if (typeof usage.cachedInputTokens === "number") metrics.cached_input_tokens = usage.cachedInputTokens;
+      if (typeof usage.reasoningTokens === "number") metrics.reasoning_tokens = usage.reasoningTokens;
+      for (const [key, value] of Object.entries(usage.billingMetrics || {})) {
+        if (typeof value === "number" && Number.isFinite(value) && value >= 0) metrics[key] = value;
+      }
+    }
+    for (const [key, value] of Object.entries(mediaMetrics)) {
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) metrics[key] = value;
+    }
     return {
       subject: args.subject,
       lineItems,
+      metrics,
+      ...(usage ? { usage } : {}),
+      ...(mediaEvidence ? { media: mediaEvidence } : {}),
     };
   }
 
@@ -2421,5 +2441,10 @@ export function buildRequestBilling(args: {
   if (lineItems.length === 0) {
     throw new Error("authoritative billable quantity is required: request");
   }
-  return { subject: args.subject, lineItems };
+  const metrics = Object.fromEntries(
+    Object.entries(args.metrics).filter((entry): entry is [string, number] => (
+      typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0
+    )),
+  );
+  return { subject: args.subject, lineItems, metrics };
 }

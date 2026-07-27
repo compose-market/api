@@ -1,0 +1,3251 @@
+{
+  "lastUpdated": "2026-07-26T19:23:39.069Z",
+  "totalModels": 6,
+  "byProvider": {
+    "gemini": 2,
+    "elevenlabs": 3,
+    "deepinfra": 1
+  },
+  "byType": {
+    "music generation": 6
+  },
+  "models": [
+    {
+      "name": "Lyria 3 Clip Preview",
+      "modelId": "lyria-3-clip-preview",
+      "family": "google",
+      "description": "Lyria 3 30s model Preview",
+      "type": "music generation",
+      "modelType": "music-generation",
+      "provider": "gemini",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text",
+        "audio"
+      ],
+      "contextWindow": {
+        "inputTokens": 1048576,
+        "outputTokens": 65536
+      },
+      "capabilities": {
+        "audioGeneration": null,
+        "batchApi": false,
+        "caching": false,
+        "codeExecution": null,
+        "fileSearch": null,
+        "functionCalling": null,
+        "groundingGoogleMaps": null,
+        "imageGeneration": null,
+        "liveApi": false,
+        "searchGrounding": null,
+        "structuredOutputs": null,
+        "thinking": null,
+        "urlContext": null,
+        "computerUse": null
+      },
+      "pricing": {
+        "unit": "per_request_usd",
+        "input": null,
+        "output": null,
+        "perRequest": 0.04,
+        "request": 0.04,
+        "notes": "Lyria 3. Source: https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "params": {
+        "_responseJsonSchema": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Output schema of the generated response. This is an alternative to `response_schema` that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must be omitted, but `response_mime_type` is required. While the full JSON Schema may be sent, not all features are supported"
+        },
+        "stopSequences": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+        },
+        "enableEnhancedCivicAnswers": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
+        },
+        "frequencyPenalty": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
+        },
+        "responseMimeType": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://ai.google.dev/gemini-api/"
+        },
+        "languageCode": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The IETF [BCP-47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt) language code that the user configured the app to use. Used for speech recognition and synthesis. Valid values are: `de-DE`, `en-AU`, `en-GB`, `en-IN`, `en-US`, `es-US`, `fr-FR`, `hi-IN`, `pt-BR`, `ar-XA`, `es-ES`, `fr-CA`, `i"
+        },
+        "voiceName": {
+          "type": "string",
+          "required": false,
+          "description": "The name of the preset voice to use."
+        },
+        "speakerVoiceConfigs": {
+          "type": "array",
+          "required": false,
+          "description": "Required. All the enabled speaker voices."
+        },
+        "responseJsonSchema": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. An internal detail. Use `responseJsonSchema` rather than this field."
+        },
+        "languageCodes": {
+          "type": "array",
+          "required": false,
+          "description": "Required. BCP-47 language codes."
+        },
+        "diarization": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Configures speaker diarization."
+        },
+        "wordTimestamp": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Configures word-level timestamp generation."
+        },
+        "customVocabulary": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. A list of custom vocabulary phrases to bias the speech recognition model toward recognizing specific terms (product names, proper nouns, jargon)."
+        },
+        "adaptationPhrases": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. A list of phrases used for speech adaptation, which biases the ASR model to improve recognition of these specific terms."
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function."
+        },
+        "topP": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number "
+        },
+        "logprobs": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+        },
+        "responseLogprobs": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, export the logprobs results in response."
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0]."
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "STRING",
+            "NUMBER",
+            "INTEGER",
+            "BOOLEAN",
+            "ARRAY",
+            "OBJECT",
+            "NULL"
+          ],
+          "description": "Required. Data type."
+        },
+        "minProperties": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Minimum number of the properties for Type.OBJECT."
+        },
+        "properties": {
+          "type": "object",
+          "required": false,
+          "description": "Optional. Properties of Type.OBJECT."
+        },
+        "nullable": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Indicates if the value may be null."
+        },
+        "maxProperties": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Maximum number of the properties for Type.OBJECT."
+        },
+        "minimum": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER"
+        },
+        "maxLength": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Maximum length of the Type.STRING"
+        },
+        "example": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Example of the object. Will only populated when the object is the root."
+        },
+        "propertyOrdering": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The order of the properties. Not a standard field in open api spec. Used to determine the order of the properties in the response."
+        },
+        "minLength": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING"
+        },
+        "required": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. Required properties of Type.OBJECT."
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The title of the schema."
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The format of the data. Any value is allowed, but most do not trigger any special functionality."
+        },
+        "maximum": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Maximum value of the Type.INTEGER and Type.NUMBER"
+        },
+        "minItems": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Minimum number of the elements for Type.ARRAY."
+        },
+        "anyOf": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The value should be validated against any (one or more) of the subschemas in the list."
+        },
+        "default": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Default value of the field. Per JSON Schema, this field is intended for documentation generators and doesn't affect validation. Thus it's included here and ignored so that developers who send schemas with a `default` field don't get unknown-field errors."
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. A brief description of the parameter. This could contain examples of use. Parameter description may be formatted as Markdown."
+        },
+        "maxItems": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Maximum number of the elements for Type.ARRAY."
+        },
+        "enum": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. Possible values of the element of Type.STRING with enum format. For example we can define an Enum Direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]}"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Pattern of the Type.STRING to restrict a string to a regular expression."
+        },
+        "includeThoughts": {
+          "type": "boolean",
+          "required": false,
+          "description": "Indicates whether to include thoughts in the response. If true, thoughts are returned only when available."
+        },
+        "thinkingLevel": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "MINIMAL",
+            "LOW",
+            "MEDIUM",
+            "HIGH"
+          ],
+          "description": "Optional. Controls the maximum depth of the model's internal reasoning process before it produces a response. The default value is model-dependent. Refer to the [Thinking levels guide](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels) for more details. Recommended for Gemini 3 or later"
+        },
+        "thinkingBudget": {
+          "type": "integer",
+          "required": false,
+          "description": "The number of thoughts tokens that the model should generate."
+        },
+        "responseModalities": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+        },
+        "mediaResolution": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "MEDIA_RESOLUTION_LOW",
+            "MEDIA_RESOLUTION_MEDIUM",
+            "MEDIA_RESOLUTION_HIGH"
+          ],
+          "description": "Optional. If specified, the media resolution specified will be used."
+        },
+        "topK": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def"
+        },
+        "candidateCount": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Seed used in decoding. If not set, the request uses a randomly generated seed."
+        },
+        "sampleRate": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Sample rate in Hz."
+        },
+        "mimeType": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "AUDIO_MP3",
+            "AUDIO_OGG_OPUS",
+            "AUDIO_L16",
+            "AUDIO_WAV",
+            "AUDIO_ALAW",
+            "AUDIO_MULAW"
+          ],
+          "description": "Optional. The MIME type of the audio output."
+        },
+        "delivery": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "INLINE",
+            "URI"
+          ],
+          "description": "Optional. The delivery mode for the audio output."
+        },
+        "bitRate": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Bit rate in bits per second (bps). Only applicable for compressed formats (MP3, Opus)."
+        },
+        "schema": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The JSON schema that the output should conform to. Only applicable when mime_type is APPLICATION_JSON."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "ASPECT_RATIO_ONE_BY_ONE",
+            "ASPECT_RATIO_TWO_BY_THREE",
+            "ASPECT_RATIO_THREE_BY_TWO",
+            "ASPECT_RATIO_THREE_BY_FOUR",
+            "ASPECT_RATIO_FOUR_BY_THREE",
+            "ASPECT_RATIO_FOUR_BY_FIVE",
+            "ASPECT_RATIO_FIVE_BY_FOUR",
+            "ASPECT_RATIO_NINE_BY_SIXTEEN",
+            "ASPECT_RATIO_SIXTEEN_BY_NINE",
+            "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+            "ASPECT_RATIO_ONE_BY_EIGHT",
+            "ASPECT_RATIO_EIGHT_BY_ONE",
+            "ASPECT_RATIO_ONE_BY_FOUR",
+            "ASPECT_RATIO_FOUR_BY_ONE"
+          ],
+          "description": "Optional. The aspect ratio for the image output."
+        },
+        "imageSize": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "IMAGE_SIZE_FIVE_TWELVE",
+            "IMAGE_SIZE_ONE_K",
+            "IMAGE_SIZE_TWO_K",
+            "IMAGE_SIZE_FOUR_K"
+          ],
+          "description": "Optional. The size of the image output."
+        },
+        "enableAffectiveDialog": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
+        },
+        "echoTargetLanguage": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, the model will generate audio when the target language is spoken, essentially it will parrot the input. If false, we will not produce audio for the target language."
+        },
+        "targetLanguageCode": {
+          "type": "string",
+          "required": false,
+          "description": "Required. The target language for translation. Supported values are BCP-47 language codes (e.g. \"en\", \"es\", \"fr\")."
+        },
+        "presencePenalty": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+        }
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "google",
+        "modalities": [
+          "audio",
+          "image"
+        ],
+        "operations": [
+          "depth-estimation",
+          "text-to-audio"
+        ],
+        "inputs": [
+          "image",
+          "text"
+        ],
+        "outputs": [
+          "audio",
+          "text"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [],
+        "parameterKeys": [
+          "_responseJsonSchema",
+          "stopSequences",
+          "enableEnhancedCivicAnswers",
+          "frequencyPenalty",
+          "responseMimeType",
+          "languageCode",
+          "voiceName",
+          "speakerVoiceConfigs",
+          "responseJsonSchema",
+          "languageCodes",
+          "diarization",
+          "wordTimestamp",
+          "customVocabulary",
+          "adaptationPhrases",
+          "maxOutputTokens",
+          "topP",
+          "logprobs",
+          "responseLogprobs",
+          "temperature",
+          "type",
+          "minProperties",
+          "properties",
+          "nullable",
+          "maxProperties",
+          "minimum",
+          "maxLength",
+          "example",
+          "propertyOrdering",
+          "minLength",
+          "required",
+          "title",
+          "format",
+          "maximum",
+          "minItems",
+          "anyOf",
+          "default",
+          "description",
+          "maxItems",
+          "enum",
+          "pattern",
+          "includeThoughts",
+          "thinkingLevel",
+          "thinkingBudget",
+          "responseModalities",
+          "mediaResolution",
+          "topK",
+          "candidateCount",
+          "seed",
+          "sampleRate",
+          "mimeType",
+          "delivery",
+          "bitRate",
+          "schema",
+          "aspectRatio",
+          "imageSize",
+          "enableAffectiveDialog",
+          "echoTargetLanguage",
+          "targetLanguageCode",
+          "presencePenalty"
+        ],
+        "parameters": [
+          {
+            "name": "_responseJsonSchema",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Output schema of the generated response. This is an alternative to `response_schema` that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must be omitted, but `response_mime_type` is required. While the full JSON Schema may"
+          },
+          {
+            "name": "stopSequences",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+          },
+          {
+            "name": "enableEnhancedCivicAnswers",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
+          },
+          {
+            "name": "frequencyPenalty",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number o"
+          },
+          {
+            "name": "responseMimeType",
+            "type": "string",
+            "required": false,
+            "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the "
+          },
+          {
+            "name": "languageCode",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The IETF [BCP-47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt) language code that the user configured the app to use. Used for speech recognition and synthesis. Valid values are: `de-DE`, `en-AU`, `en-GB`, `en-IN`, `en-US`, `es-US`, `fr-FR`, `hi-IN`"
+          },
+          {
+            "name": "voiceName",
+            "type": "string",
+            "required": false,
+            "description": "The name of the preset voice to use."
+          },
+          {
+            "name": "speakerVoiceConfigs",
+            "type": "array",
+            "required": false,
+            "description": "Required. All the enabled speaker voices."
+          },
+          {
+            "name": "responseJsonSchema",
+            "type": "string",
+            "required": false,
+            "description": "Optional. An internal detail. Use `responseJsonSchema` rather than this field."
+          },
+          {
+            "name": "languageCodes",
+            "type": "array",
+            "required": false,
+            "description": "Required. BCP-47 language codes."
+          },
+          {
+            "name": "diarization",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Configures speaker diarization."
+          },
+          {
+            "name": "wordTimestamp",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Configures word-level timestamp generation."
+          },
+          {
+            "name": "customVocabulary",
+            "type": "array",
+            "required": false,
+            "description": "Optional. A list of custom vocabulary phrases to bias the speech recognition model toward recognizing specific terms (product names, proper nouns, jargon)."
+          },
+          {
+            "name": "adaptationPhrases",
+            "type": "array",
+            "required": false,
+            "description": "Optional. A list of phrases used for speech adaptation, which biases the ASR model to improve recognition of these specific terms."
+          },
+          {
+            "name": "maxOutputTokens",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function."
+          },
+          {
+            "name": "topP",
+            "type": "number",
+            "required": false,
+            "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k samp"
+          },
+          {
+            "name": "logprobs",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+          },
+          {
+            "name": "responseLogprobs",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. If true, export the logprobs results in response."
+          },
+          {
+            "name": "temperature",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0]."
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "required": false,
+            "description": "Required. Data type.",
+            "options": [
+              "STRING",
+              "NUMBER",
+              "INTEGER",
+              "BOOLEAN",
+              "ARRAY",
+              "OBJECT",
+              "NULL"
+            ]
+          },
+          {
+            "name": "minProperties",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Minimum number of the properties for Type.OBJECT."
+          },
+          {
+            "name": "properties",
+            "type": "object",
+            "required": false,
+            "description": "Optional. Properties of Type.OBJECT."
+          },
+          {
+            "name": "nullable",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Indicates if the value may be null."
+          },
+          {
+            "name": "maxProperties",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Maximum number of the properties for Type.OBJECT."
+          },
+          {
+            "name": "minimum",
+            "type": "number",
+            "required": false,
+            "description": "Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER"
+          },
+          {
+            "name": "maxLength",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Maximum length of the Type.STRING"
+          },
+          {
+            "name": "example",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Example of the object. Will only populated when the object is the root."
+          },
+          {
+            "name": "propertyOrdering",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The order of the properties. Not a standard field in open api spec. Used to determine the order of the properties in the response."
+          },
+          {
+            "name": "minLength",
+            "type": "string",
+            "required": false,
+            "description": "Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING"
+          },
+          {
+            "name": "required",
+            "type": "array",
+            "required": false,
+            "description": "Optional. Required properties of Type.OBJECT."
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The title of the schema."
+          },
+          {
+            "name": "format",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The format of the data. Any value is allowed, but most do not trigger any special functionality."
+          },
+          {
+            "name": "maximum",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Maximum value of the Type.INTEGER and Type.NUMBER"
+          },
+          {
+            "name": "minItems",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Minimum number of the elements for Type.ARRAY."
+          },
+          {
+            "name": "anyOf",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The value should be validated against any (one or more) of the subschemas in the list."
+          },
+          {
+            "name": "default",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Default value of the field. Per JSON Schema, this field is intended for documentation generators and doesn't affect validation. Thus it's included here and ignored so that developers who send schemas with a `default` field don't get unknown-field err"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "description": "Optional. A brief description of the parameter. This could contain examples of use. Parameter description may be formatted as Markdown."
+          },
+          {
+            "name": "maxItems",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Maximum number of the elements for Type.ARRAY."
+          },
+          {
+            "name": "enum",
+            "type": "array",
+            "required": false,
+            "description": "Optional. Possible values of the element of Type.STRING with enum format. For example we can define an Enum Direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]}"
+          },
+          {
+            "name": "pattern",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Pattern of the Type.STRING to restrict a string to a regular expression."
+          },
+          {
+            "name": "includeThoughts",
+            "type": "boolean",
+            "required": false,
+            "description": "Indicates whether to include thoughts in the response. If true, thoughts are returned only when available."
+          },
+          {
+            "name": "thinkingLevel",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Controls the maximum depth of the model's internal reasoning process before it produces a response. The default value is model-dependent. Refer to the [Thinking levels guide](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels) for more de",
+            "options": [
+              "MINIMAL",
+              "LOW",
+              "MEDIUM",
+              "HIGH"
+            ]
+          },
+          {
+            "name": "thinkingBudget",
+            "type": "integer",
+            "required": false,
+            "description": "The number of thoughts tokens that the model should generate."
+          },
+          {
+            "name": "responseModalities",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supporte"
+          },
+          {
+            "name": "mediaResolution",
+            "type": "string",
+            "required": false,
+            "description": "Optional. If specified, the media resolution specified will be used.",
+            "options": [
+              "MEDIA_RESOLUTION_LOW",
+              "MEDIA_RESOLUTION_MEDIUM",
+              "MEDIA_RESOLUTION_HIGH"
+            ]
+          },
+          {
+            "name": "topK",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling "
+          },
+          {
+            "name": "candidateCount",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+          },
+          {
+            "name": "seed",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Seed used in decoding. If not set, the request uses a randomly generated seed."
+          },
+          {
+            "name": "sampleRate",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Sample rate in Hz."
+          },
+          {
+            "name": "mimeType",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The MIME type of the audio output.",
+            "options": [
+              "AUDIO_MP3",
+              "AUDIO_OGG_OPUS",
+              "AUDIO_L16",
+              "AUDIO_WAV",
+              "AUDIO_ALAW",
+              "AUDIO_MULAW"
+            ]
+          },
+          {
+            "name": "delivery",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The delivery mode for the audio output.",
+            "options": [
+              "INLINE",
+              "URI"
+            ]
+          },
+          {
+            "name": "bitRate",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Bit rate in bits per second (bps). Only applicable for compressed formats (MP3, Opus)."
+          },
+          {
+            "name": "schema",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The JSON schema that the output should conform to. Only applicable when mime_type is APPLICATION_JSON."
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The aspect ratio for the image output.",
+            "options": [
+              "ASPECT_RATIO_ONE_BY_ONE",
+              "ASPECT_RATIO_TWO_BY_THREE",
+              "ASPECT_RATIO_THREE_BY_TWO",
+              "ASPECT_RATIO_THREE_BY_FOUR",
+              "ASPECT_RATIO_FOUR_BY_THREE",
+              "ASPECT_RATIO_FOUR_BY_FIVE",
+              "ASPECT_RATIO_FIVE_BY_FOUR",
+              "ASPECT_RATIO_NINE_BY_SIXTEEN",
+              "ASPECT_RATIO_SIXTEEN_BY_NINE",
+              "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+              "ASPECT_RATIO_ONE_BY_EIGHT",
+              "ASPECT_RATIO_EIGHT_BY_ONE"
+            ]
+          },
+          {
+            "name": "imageSize",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The size of the image output.",
+            "options": [
+              "IMAGE_SIZE_FIVE_TWELVE",
+              "IMAGE_SIZE_ONE_K",
+              "IMAGE_SIZE_TWO_K",
+              "IMAGE_SIZE_FOUR_K"
+            ]
+          },
+          {
+            "name": "enableAffectiveDialog",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
+          },
+          {
+            "name": "echoTargetLanguage",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. If true, the model will generate audio when the target language is spoken, essentially it will parrot the input. If false, we will not produce audio for the target language."
+          },
+          {
+            "name": "targetLanguageCode",
+            "type": "string",
+            "required": false,
+            "description": "Required. The target language for translation. Supported values are BCP-47 language codes (e.g. \"en\", \"es\", \"fr\")."
+          },
+          {
+            "name": "presencePenalty",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty "
+          }
+        ],
+        "metadata": [],
+        "operationCapabilities": [
+          {
+            "modality": "image",
+            "operation": "depth-estimation",
+            "input": [
+              "image"
+            ],
+            "output": [
+              "text",
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_request",
+                "unit": "Per request",
+                "valueKeys": [
+                  "request"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_request",
+                "unit": "Per request",
+                "valueKeys": [
+                  "request"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "input:image",
+          "input:text",
+          "modality:audio",
+          "modality:image",
+          "operation:depth-estimation",
+          "operation:text-to-audio",
+          "output:audio",
+          "output:text",
+          "param:_responseJsonSchema Optional. Output schema of the generated response. This is an alternative to `response_schema` that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must be omitted, but `response_mime_type` is required. While the full JSON Schema may",
+          "param:adaptationPhrases Optional. A list of phrases used for speech adaptation, which biases the ASR model to improve recognition of these specific terms.",
+          "param:anyOf Optional. The value should be validated against any (one or more) of the subschemas in the list.",
+          "param:aspectRatio Optional. The aspect ratio for the image output.",
+          "param:bitRate Optional. Bit rate in bits per second (bps). Only applicable for compressed formats (MP3, Opus).",
+          "param:candidateCount Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)",
+          "param:customVocabulary Optional. A list of custom vocabulary phrases to bias the speech recognition model toward recognizing specific terms (product names, proper nouns, jargon).",
+          "param:default Optional. Default value of the field. Per JSON Schema, this field is intended for documentation generators and doesn't affect validation. Thus it's included here and ignored so that developers who send schemas with a `default` field don't get unknown-field err",
+          "param:delivery Optional. The delivery mode for the audio output.",
+          "param:description Optional. A brief description of the parameter. This could contain examples of use. Parameter description may be formatted as Markdown.",
+          "param:diarization Optional. Configures speaker diarization.",
+          "param:echoTargetLanguage Optional. If true, the model will generate audio when the target language is spoken, essentially it will parrot the input. If false, we will not produce audio for the target language.",
+          "param:enableAffectiveDialog Optional. If enabled, the model will detect emotions and adapt its responses accordingly.",
+          "param:enableEnhancedCivicAnswers Optional. Enables enhanced civic answers. It may not be available for all models.",
+          "param:enum Optional. Possible values of the element of Type.STRING with enum format. For example we can define an Enum Direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]}",
+          "param:example Optional. Example of the object. Will only populated when the object is the root.",
+          "param:format Optional. The format of the data. Any value is allowed, but most do not trigger any special functionality.",
+          "param:frequencyPenalty Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number o",
+          "param:imageSize Optional. The size of the image output.",
+          "param:includeThoughts Indicates whether to include thoughts in the response. If true, thoughts are returned only when available.",
+          "param:languageCode Optional. The IETF [BCP-47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt) language code that the user configured the app to use. Used for speech recognition and synthesis. Valid values are: `de-DE`, `en-AU`, `en-GB`, `en-IN`, `en-US`, `es-US`, `fr-FR`, `hi-IN`",
+          "param:languageCodes Required. BCP-47 language codes.",
+          "param:logprobs Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20].",
+          "param:maxItems Optional. Maximum number of the elements for Type.ARRAY.",
+          "param:maxLength Optional. Maximum length of the Type.STRING",
+          "param:maxOutputTokens Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function.",
+          "param:maxProperties Optional. Maximum number of the properties for Type.OBJECT.",
+          "param:maximum Optional. Maximum value of the Type.INTEGER and Type.NUMBER",
+          "param:mediaResolution Optional. If specified, the media resolution specified will be used.",
+          "param:mimeType Optional. The MIME type of the audio output.",
+          "param:minItems Optional. Minimum number of the elements for Type.ARRAY.",
+          "param:minLength Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING",
+          "param:minProperties Optional. Minimum number of the properties for Type.OBJECT.",
+          "param:minimum Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER",
+          "param:nullable Optional. Indicates if the value may be null.",
+          "param:pattern Optional. Pattern of the Type.STRING to restrict a string to a regular expression.",
+          "param:presencePenalty Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty ",
+          "param:properties Optional. Properties of Type.OBJECT.",
+          "param:propertyOrdering Optional. The order of the properties. Not a standard field in open api spec. Used to determine the order of the properties in the response.",
+          "param:required Optional. Required properties of Type.OBJECT.",
+          "param:responseJsonSchema Optional. An internal detail. Use `responseJsonSchema` rather than this field.",
+          "param:responseLogprobs Optional. If true, export the logprobs results in response.",
+          "param:responseMimeType Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the ",
+          "param:responseModalities Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supporte",
+          "param:sampleRate Optional. Sample rate in Hz.",
+          "param:schema Optional. The JSON schema that the output should conform to. Only applicable when mime_type is APPLICATION_JSON.",
+          "param:seed Optional. Seed used in decoding. If not set, the request uses a randomly generated seed.",
+          "param:speakerVoiceConfigs Required. All the enabled speaker voices.",
+          "param:stopSequences Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response.",
+          "param:targetLanguageCode Required. The target language for translation. Supported values are BCP-47 language codes (e.g. \"en\", \"es\", \"fr\").",
+          "param:temperature Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0].",
+          "param:thinkingBudget The number of thoughts tokens that the model should generate.",
+          "param:thinkingLevel Optional. Controls the maximum depth of the model's internal reasoning process before it produces a response. The default value is model-dependent. Refer to the [Thinking levels guide](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels) for more de",
+          "param:title Optional. The title of the schema.",
+          "param:topK Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling ",
+          "param:topP Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k samp",
+          "param:type Required. Data type.",
+          "param:voiceName The name of the preset voice to use.",
+          "param:wordTimestamp Optional. Configures word-level timestamp generation.",
+          "source:music-generation"
+        ]
+      }
+    },
+    {
+      "name": "Lyria 3 Pro Preview",
+      "modelId": "lyria-3-pro-preview",
+      "family": "google",
+      "description": "Lyria 3 Pro Preview",
+      "type": "music generation",
+      "modelType": "music-generation",
+      "provider": "gemini",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text",
+        "audio"
+      ],
+      "contextWindow": {
+        "inputTokens": 1048576,
+        "outputTokens": 65536
+      },
+      "capabilities": {
+        "audioGeneration": null,
+        "batchApi": false,
+        "caching": false,
+        "codeExecution": null,
+        "fileSearch": null,
+        "functionCalling": null,
+        "groundingGoogleMaps": null,
+        "imageGeneration": null,
+        "liveApi": false,
+        "searchGrounding": null,
+        "structuredOutputs": null,
+        "thinking": null,
+        "urlContext": null,
+        "computerUse": null
+      },
+      "pricing": {
+        "unit": "per_request_usd",
+        "input": null,
+        "output": null,
+        "perRequest": 0.08,
+        "request": 0.08,
+        "notes": "Lyria 3. Source: https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "params": {
+        "_responseJsonSchema": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Output schema of the generated response. This is an alternative to `response_schema` that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must be omitted, but `response_mime_type` is required. While the full JSON Schema may be sent, not all features are supported"
+        },
+        "stopSequences": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+        },
+        "enableEnhancedCivicAnswers": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
+        },
+        "frequencyPenalty": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
+        },
+        "responseMimeType": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://ai.google.dev/gemini-api/"
+        },
+        "languageCode": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The IETF [BCP-47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt) language code that the user configured the app to use. Used for speech recognition and synthesis. Valid values are: `de-DE`, `en-AU`, `en-GB`, `en-IN`, `en-US`, `es-US`, `fr-FR`, `hi-IN`, `pt-BR`, `ar-XA`, `es-ES`, `fr-CA`, `i"
+        },
+        "voiceName": {
+          "type": "string",
+          "required": false,
+          "description": "The name of the preset voice to use."
+        },
+        "speakerVoiceConfigs": {
+          "type": "array",
+          "required": false,
+          "description": "Required. All the enabled speaker voices."
+        },
+        "responseJsonSchema": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. An internal detail. Use `responseJsonSchema` rather than this field."
+        },
+        "languageCodes": {
+          "type": "array",
+          "required": false,
+          "description": "Required. BCP-47 language codes."
+        },
+        "diarization": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Configures speaker diarization."
+        },
+        "wordTimestamp": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Configures word-level timestamp generation."
+        },
+        "customVocabulary": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. A list of custom vocabulary phrases to bias the speech recognition model toward recognizing specific terms (product names, proper nouns, jargon)."
+        },
+        "adaptationPhrases": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. A list of phrases used for speech adaptation, which biases the ASR model to improve recognition of these specific terms."
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function."
+        },
+        "topP": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number "
+        },
+        "logprobs": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+        },
+        "responseLogprobs": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, export the logprobs results in response."
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0]."
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "STRING",
+            "NUMBER",
+            "INTEGER",
+            "BOOLEAN",
+            "ARRAY",
+            "OBJECT",
+            "NULL"
+          ],
+          "description": "Required. Data type."
+        },
+        "minProperties": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Minimum number of the properties for Type.OBJECT."
+        },
+        "properties": {
+          "type": "object",
+          "required": false,
+          "description": "Optional. Properties of Type.OBJECT."
+        },
+        "nullable": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Indicates if the value may be null."
+        },
+        "maxProperties": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Maximum number of the properties for Type.OBJECT."
+        },
+        "minimum": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER"
+        },
+        "maxLength": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Maximum length of the Type.STRING"
+        },
+        "example": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Example of the object. Will only populated when the object is the root."
+        },
+        "propertyOrdering": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The order of the properties. Not a standard field in open api spec. Used to determine the order of the properties in the response."
+        },
+        "minLength": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING"
+        },
+        "required": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. Required properties of Type.OBJECT."
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The title of the schema."
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The format of the data. Any value is allowed, but most do not trigger any special functionality."
+        },
+        "maximum": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Maximum value of the Type.INTEGER and Type.NUMBER"
+        },
+        "minItems": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Minimum number of the elements for Type.ARRAY."
+        },
+        "anyOf": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The value should be validated against any (one or more) of the subschemas in the list."
+        },
+        "default": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Default value of the field. Per JSON Schema, this field is intended for documentation generators and doesn't affect validation. Thus it's included here and ignored so that developers who send schemas with a `default` field don't get unknown-field errors."
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. A brief description of the parameter. This could contain examples of use. Parameter description may be formatted as Markdown."
+        },
+        "maxItems": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Maximum number of the elements for Type.ARRAY."
+        },
+        "enum": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. Possible values of the element of Type.STRING with enum format. For example we can define an Enum Direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]}"
+        },
+        "pattern": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. Pattern of the Type.STRING to restrict a string to a regular expression."
+        },
+        "includeThoughts": {
+          "type": "boolean",
+          "required": false,
+          "description": "Indicates whether to include thoughts in the response. If true, thoughts are returned only when available."
+        },
+        "thinkingLevel": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "MINIMAL",
+            "LOW",
+            "MEDIUM",
+            "HIGH"
+          ],
+          "description": "Optional. Controls the maximum depth of the model's internal reasoning process before it produces a response. The default value is model-dependent. Refer to the [Thinking levels guide](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels) for more details. Recommended for Gemini 3 or later"
+        },
+        "thinkingBudget": {
+          "type": "integer",
+          "required": false,
+          "description": "The number of thoughts tokens that the model should generate."
+        },
+        "responseModalities": {
+          "type": "array",
+          "required": false,
+          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+        },
+        "mediaResolution": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "MEDIA_RESOLUTION_LOW",
+            "MEDIA_RESOLUTION_MEDIUM",
+            "MEDIA_RESOLUTION_HIGH"
+          ],
+          "description": "Optional. If specified, the media resolution specified will be used."
+        },
+        "topK": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def"
+        },
+        "candidateCount": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Seed used in decoding. If not set, the request uses a randomly generated seed."
+        },
+        "sampleRate": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Sample rate in Hz."
+        },
+        "mimeType": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "AUDIO_MP3",
+            "AUDIO_OGG_OPUS",
+            "AUDIO_L16",
+            "AUDIO_WAV",
+            "AUDIO_ALAW",
+            "AUDIO_MULAW"
+          ],
+          "description": "Optional. The MIME type of the audio output."
+        },
+        "delivery": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "INLINE",
+            "URI"
+          ],
+          "description": "Optional. The delivery mode for the audio output."
+        },
+        "bitRate": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Bit rate in bits per second (bps). Only applicable for compressed formats (MP3, Opus)."
+        },
+        "schema": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The JSON schema that the output should conform to. Only applicable when mime_type is APPLICATION_JSON."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "ASPECT_RATIO_ONE_BY_ONE",
+            "ASPECT_RATIO_TWO_BY_THREE",
+            "ASPECT_RATIO_THREE_BY_TWO",
+            "ASPECT_RATIO_THREE_BY_FOUR",
+            "ASPECT_RATIO_FOUR_BY_THREE",
+            "ASPECT_RATIO_FOUR_BY_FIVE",
+            "ASPECT_RATIO_FIVE_BY_FOUR",
+            "ASPECT_RATIO_NINE_BY_SIXTEEN",
+            "ASPECT_RATIO_SIXTEEN_BY_NINE",
+            "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+            "ASPECT_RATIO_ONE_BY_EIGHT",
+            "ASPECT_RATIO_EIGHT_BY_ONE",
+            "ASPECT_RATIO_ONE_BY_FOUR",
+            "ASPECT_RATIO_FOUR_BY_ONE"
+          ],
+          "description": "Optional. The aspect ratio for the image output."
+        },
+        "imageSize": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "IMAGE_SIZE_FIVE_TWELVE",
+            "IMAGE_SIZE_ONE_K",
+            "IMAGE_SIZE_TWO_K",
+            "IMAGE_SIZE_FOUR_K"
+          ],
+          "description": "Optional. The size of the image output."
+        },
+        "enableAffectiveDialog": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
+        },
+        "echoTargetLanguage": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, the model will generate audio when the target language is spoken, essentially it will parrot the input. If false, we will not produce audio for the target language."
+        },
+        "targetLanguageCode": {
+          "type": "string",
+          "required": false,
+          "description": "Required. The target language for translation. Supported values are BCP-47 language codes (e.g. \"en\", \"es\", \"fr\")."
+        },
+        "presencePenalty": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+        }
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "google",
+        "modalities": [
+          "audio",
+          "image"
+        ],
+        "operations": [
+          "depth-estimation",
+          "text-to-audio"
+        ],
+        "inputs": [
+          "image",
+          "text"
+        ],
+        "outputs": [
+          "audio",
+          "text"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [],
+        "parameterKeys": [
+          "_responseJsonSchema",
+          "stopSequences",
+          "enableEnhancedCivicAnswers",
+          "frequencyPenalty",
+          "responseMimeType",
+          "languageCode",
+          "voiceName",
+          "speakerVoiceConfigs",
+          "responseJsonSchema",
+          "languageCodes",
+          "diarization",
+          "wordTimestamp",
+          "customVocabulary",
+          "adaptationPhrases",
+          "maxOutputTokens",
+          "topP",
+          "logprobs",
+          "responseLogprobs",
+          "temperature",
+          "type",
+          "minProperties",
+          "properties",
+          "nullable",
+          "maxProperties",
+          "minimum",
+          "maxLength",
+          "example",
+          "propertyOrdering",
+          "minLength",
+          "required",
+          "title",
+          "format",
+          "maximum",
+          "minItems",
+          "anyOf",
+          "default",
+          "description",
+          "maxItems",
+          "enum",
+          "pattern",
+          "includeThoughts",
+          "thinkingLevel",
+          "thinkingBudget",
+          "responseModalities",
+          "mediaResolution",
+          "topK",
+          "candidateCount",
+          "seed",
+          "sampleRate",
+          "mimeType",
+          "delivery",
+          "bitRate",
+          "schema",
+          "aspectRatio",
+          "imageSize",
+          "enableAffectiveDialog",
+          "echoTargetLanguage",
+          "targetLanguageCode",
+          "presencePenalty"
+        ],
+        "parameters": [
+          {
+            "name": "_responseJsonSchema",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Output schema of the generated response. This is an alternative to `response_schema` that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must be omitted, but `response_mime_type` is required. While the full JSON Schema may"
+          },
+          {
+            "name": "stopSequences",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+          },
+          {
+            "name": "enableEnhancedCivicAnswers",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
+          },
+          {
+            "name": "frequencyPenalty",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number o"
+          },
+          {
+            "name": "responseMimeType",
+            "type": "string",
+            "required": false,
+            "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the "
+          },
+          {
+            "name": "languageCode",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The IETF [BCP-47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt) language code that the user configured the app to use. Used for speech recognition and synthesis. Valid values are: `de-DE`, `en-AU`, `en-GB`, `en-IN`, `en-US`, `es-US`, `fr-FR`, `hi-IN`"
+          },
+          {
+            "name": "voiceName",
+            "type": "string",
+            "required": false,
+            "description": "The name of the preset voice to use."
+          },
+          {
+            "name": "speakerVoiceConfigs",
+            "type": "array",
+            "required": false,
+            "description": "Required. All the enabled speaker voices."
+          },
+          {
+            "name": "responseJsonSchema",
+            "type": "string",
+            "required": false,
+            "description": "Optional. An internal detail. Use `responseJsonSchema` rather than this field."
+          },
+          {
+            "name": "languageCodes",
+            "type": "array",
+            "required": false,
+            "description": "Required. BCP-47 language codes."
+          },
+          {
+            "name": "diarization",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Configures speaker diarization."
+          },
+          {
+            "name": "wordTimestamp",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Configures word-level timestamp generation."
+          },
+          {
+            "name": "customVocabulary",
+            "type": "array",
+            "required": false,
+            "description": "Optional. A list of custom vocabulary phrases to bias the speech recognition model toward recognizing specific terms (product names, proper nouns, jargon)."
+          },
+          {
+            "name": "adaptationPhrases",
+            "type": "array",
+            "required": false,
+            "description": "Optional. A list of phrases used for speech adaptation, which biases the ASR model to improve recognition of these specific terms."
+          },
+          {
+            "name": "maxOutputTokens",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function."
+          },
+          {
+            "name": "topP",
+            "type": "number",
+            "required": false,
+            "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k samp"
+          },
+          {
+            "name": "logprobs",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+          },
+          {
+            "name": "responseLogprobs",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. If true, export the logprobs results in response."
+          },
+          {
+            "name": "temperature",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0]."
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "required": false,
+            "description": "Required. Data type.",
+            "options": [
+              "STRING",
+              "NUMBER",
+              "INTEGER",
+              "BOOLEAN",
+              "ARRAY",
+              "OBJECT",
+              "NULL"
+            ]
+          },
+          {
+            "name": "minProperties",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Minimum number of the properties for Type.OBJECT."
+          },
+          {
+            "name": "properties",
+            "type": "object",
+            "required": false,
+            "description": "Optional. Properties of Type.OBJECT."
+          },
+          {
+            "name": "nullable",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. Indicates if the value may be null."
+          },
+          {
+            "name": "maxProperties",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Maximum number of the properties for Type.OBJECT."
+          },
+          {
+            "name": "minimum",
+            "type": "number",
+            "required": false,
+            "description": "Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER"
+          },
+          {
+            "name": "maxLength",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Maximum length of the Type.STRING"
+          },
+          {
+            "name": "example",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Example of the object. Will only populated when the object is the root."
+          },
+          {
+            "name": "propertyOrdering",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The order of the properties. Not a standard field in open api spec. Used to determine the order of the properties in the response."
+          },
+          {
+            "name": "minLength",
+            "type": "string",
+            "required": false,
+            "description": "Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING"
+          },
+          {
+            "name": "required",
+            "type": "array",
+            "required": false,
+            "description": "Optional. Required properties of Type.OBJECT."
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The title of the schema."
+          },
+          {
+            "name": "format",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The format of the data. Any value is allowed, but most do not trigger any special functionality."
+          },
+          {
+            "name": "maximum",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Maximum value of the Type.INTEGER and Type.NUMBER"
+          },
+          {
+            "name": "minItems",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Minimum number of the elements for Type.ARRAY."
+          },
+          {
+            "name": "anyOf",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The value should be validated against any (one or more) of the subschemas in the list."
+          },
+          {
+            "name": "default",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Default value of the field. Per JSON Schema, this field is intended for documentation generators and doesn't affect validation. Thus it's included here and ignored so that developers who send schemas with a `default` field don't get unknown-field err"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "description": "Optional. A brief description of the parameter. This could contain examples of use. Parameter description may be formatted as Markdown."
+          },
+          {
+            "name": "maxItems",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Maximum number of the elements for Type.ARRAY."
+          },
+          {
+            "name": "enum",
+            "type": "array",
+            "required": false,
+            "description": "Optional. Possible values of the element of Type.STRING with enum format. For example we can define an Enum Direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]}"
+          },
+          {
+            "name": "pattern",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Pattern of the Type.STRING to restrict a string to a regular expression."
+          },
+          {
+            "name": "includeThoughts",
+            "type": "boolean",
+            "required": false,
+            "description": "Indicates whether to include thoughts in the response. If true, thoughts are returned only when available."
+          },
+          {
+            "name": "thinkingLevel",
+            "type": "string",
+            "required": false,
+            "description": "Optional. Controls the maximum depth of the model's internal reasoning process before it produces a response. The default value is model-dependent. Refer to the [Thinking levels guide](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels) for more de",
+            "options": [
+              "MINIMAL",
+              "LOW",
+              "MEDIUM",
+              "HIGH"
+            ]
+          },
+          {
+            "name": "thinkingBudget",
+            "type": "integer",
+            "required": false,
+            "description": "The number of thoughts tokens that the model should generate."
+          },
+          {
+            "name": "responseModalities",
+            "type": "array",
+            "required": false,
+            "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supporte"
+          },
+          {
+            "name": "mediaResolution",
+            "type": "string",
+            "required": false,
+            "description": "Optional. If specified, the media resolution specified will be used.",
+            "options": [
+              "MEDIA_RESOLUTION_LOW",
+              "MEDIA_RESOLUTION_MEDIUM",
+              "MEDIA_RESOLUTION_HIGH"
+            ]
+          },
+          {
+            "name": "topK",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling "
+          },
+          {
+            "name": "candidateCount",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+          },
+          {
+            "name": "seed",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Seed used in decoding. If not set, the request uses a randomly generated seed."
+          },
+          {
+            "name": "sampleRate",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Sample rate in Hz."
+          },
+          {
+            "name": "mimeType",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The MIME type of the audio output.",
+            "options": [
+              "AUDIO_MP3",
+              "AUDIO_OGG_OPUS",
+              "AUDIO_L16",
+              "AUDIO_WAV",
+              "AUDIO_ALAW",
+              "AUDIO_MULAW"
+            ]
+          },
+          {
+            "name": "delivery",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The delivery mode for the audio output.",
+            "options": [
+              "INLINE",
+              "URI"
+            ]
+          },
+          {
+            "name": "bitRate",
+            "type": "integer",
+            "required": false,
+            "description": "Optional. Bit rate in bits per second (bps). Only applicable for compressed formats (MP3, Opus)."
+          },
+          {
+            "name": "schema",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The JSON schema that the output should conform to. Only applicable when mime_type is APPLICATION_JSON."
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The aspect ratio for the image output.",
+            "options": [
+              "ASPECT_RATIO_ONE_BY_ONE",
+              "ASPECT_RATIO_TWO_BY_THREE",
+              "ASPECT_RATIO_THREE_BY_TWO",
+              "ASPECT_RATIO_THREE_BY_FOUR",
+              "ASPECT_RATIO_FOUR_BY_THREE",
+              "ASPECT_RATIO_FOUR_BY_FIVE",
+              "ASPECT_RATIO_FIVE_BY_FOUR",
+              "ASPECT_RATIO_NINE_BY_SIXTEEN",
+              "ASPECT_RATIO_SIXTEEN_BY_NINE",
+              "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+              "ASPECT_RATIO_ONE_BY_EIGHT",
+              "ASPECT_RATIO_EIGHT_BY_ONE"
+            ]
+          },
+          {
+            "name": "imageSize",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The size of the image output.",
+            "options": [
+              "IMAGE_SIZE_FIVE_TWELVE",
+              "IMAGE_SIZE_ONE_K",
+              "IMAGE_SIZE_TWO_K",
+              "IMAGE_SIZE_FOUR_K"
+            ]
+          },
+          {
+            "name": "enableAffectiveDialog",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
+          },
+          {
+            "name": "echoTargetLanguage",
+            "type": "boolean",
+            "required": false,
+            "description": "Optional. If true, the model will generate audio when the target language is spoken, essentially it will parrot the input. If false, we will not produce audio for the target language."
+          },
+          {
+            "name": "targetLanguageCode",
+            "type": "string",
+            "required": false,
+            "description": "Required. The target language for translation. Supported values are BCP-47 language codes (e.g. \"en\", \"es\", \"fr\")."
+          },
+          {
+            "name": "presencePenalty",
+            "type": "number",
+            "required": false,
+            "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty "
+          }
+        ],
+        "metadata": [],
+        "operationCapabilities": [
+          {
+            "modality": "image",
+            "operation": "depth-estimation",
+            "input": [
+              "image"
+            ],
+            "output": [
+              "text",
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_request",
+                "unit": "Per request",
+                "valueKeys": [
+                  "request"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_request",
+                "unit": "Per request",
+                "valueKeys": [
+                  "request"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "input:image",
+          "input:text",
+          "modality:audio",
+          "modality:image",
+          "operation:depth-estimation",
+          "operation:text-to-audio",
+          "output:audio",
+          "output:text",
+          "param:_responseJsonSchema Optional. Output schema of the generated response. This is an alternative to `response_schema` that accepts [JSON Schema](https://json-schema.org/). If set, `response_schema` must be omitted, but `response_mime_type` is required. While the full JSON Schema may",
+          "param:adaptationPhrases Optional. A list of phrases used for speech adaptation, which biases the ASR model to improve recognition of these specific terms.",
+          "param:anyOf Optional. The value should be validated against any (one or more) of the subschemas in the list.",
+          "param:aspectRatio Optional. The aspect ratio for the image output.",
+          "param:bitRate Optional. Bit rate in bits per second (bps). Only applicable for compressed formats (MP3, Opus).",
+          "param:candidateCount Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)",
+          "param:customVocabulary Optional. A list of custom vocabulary phrases to bias the speech recognition model toward recognizing specific terms (product names, proper nouns, jargon).",
+          "param:default Optional. Default value of the field. Per JSON Schema, this field is intended for documentation generators and doesn't affect validation. Thus it's included here and ignored so that developers who send schemas with a `default` field don't get unknown-field err",
+          "param:delivery Optional. The delivery mode for the audio output.",
+          "param:description Optional. A brief description of the parameter. This could contain examples of use. Parameter description may be formatted as Markdown.",
+          "param:diarization Optional. Configures speaker diarization.",
+          "param:echoTargetLanguage Optional. If true, the model will generate audio when the target language is spoken, essentially it will parrot the input. If false, we will not produce audio for the target language.",
+          "param:enableAffectiveDialog Optional. If enabled, the model will detect emotions and adapt its responses accordingly.",
+          "param:enableEnhancedCivicAnswers Optional. Enables enhanced civic answers. It may not be available for all models.",
+          "param:enum Optional. Possible values of the element of Type.STRING with enum format. For example we can define an Enum Direction as : {type:STRING, format:enum, enum:[\"EAST\", NORTH\", \"SOUTH\", \"WEST\"]}",
+          "param:example Optional. Example of the object. Will only populated when the object is the root.",
+          "param:format Optional. The format of the data. Any value is allowed, but most do not trigger any special functionality.",
+          "param:frequencyPenalty Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number o",
+          "param:imageSize Optional. The size of the image output.",
+          "param:includeThoughts Indicates whether to include thoughts in the response. If true, thoughts are returned only when available.",
+          "param:languageCode Optional. The IETF [BCP-47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt) language code that the user configured the app to use. Used for speech recognition and synthesis. Valid values are: `de-DE`, `en-AU`, `en-GB`, `en-IN`, `en-US`, `es-US`, `fr-FR`, `hi-IN`",
+          "param:languageCodes Required. BCP-47 language codes.",
+          "param:logprobs Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20].",
+          "param:maxItems Optional. Maximum number of the elements for Type.ARRAY.",
+          "param:maxLength Optional. Maximum length of the Type.STRING",
+          "param:maxOutputTokens Optional. The maximum number of tokens to include in a response candidate. Note: The default value varies by model, see the `Model.output_token_limit` attribute of the `Model` returned from the `getModel` function.",
+          "param:maxProperties Optional. Maximum number of the properties for Type.OBJECT.",
+          "param:maximum Optional. Maximum value of the Type.INTEGER and Type.NUMBER",
+          "param:mediaResolution Optional. If specified, the media resolution specified will be used.",
+          "param:mimeType Optional. The MIME type of the audio output.",
+          "param:minItems Optional. Minimum number of the elements for Type.ARRAY.",
+          "param:minLength Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING",
+          "param:minProperties Optional. Minimum number of the properties for Type.OBJECT.",
+          "param:minimum Optional. SCHEMA FIELDS FOR TYPE INTEGER and NUMBER Minimum value of the Type.INTEGER and Type.NUMBER",
+          "param:nullable Optional. Indicates if the value may be null.",
+          "param:pattern Optional. Pattern of the Type.STRING to restrict a string to a regular expression.",
+          "param:presencePenalty Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty ",
+          "param:properties Optional. Properties of Type.OBJECT.",
+          "param:propertyOrdering Optional. The order of the properties. Not a standard field in open api spec. Used to determine the order of the properties in the response.",
+          "param:required Optional. Required properties of Type.OBJECT.",
+          "param:responseJsonSchema Optional. An internal detail. Use `responseJsonSchema` rather than this field.",
+          "param:responseLogprobs Optional. If true, export the logprobs results in response.",
+          "param:responseMimeType Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the ",
+          "param:responseModalities Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supporte",
+          "param:sampleRate Optional. Sample rate in Hz.",
+          "param:schema Optional. The JSON schema that the output should conform to. Only applicable when mime_type is APPLICATION_JSON.",
+          "param:seed Optional. Seed used in decoding. If not set, the request uses a randomly generated seed.",
+          "param:speakerVoiceConfigs Required. All the enabled speaker voices.",
+          "param:stopSequences Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response.",
+          "param:targetLanguageCode Required. The target language for translation. Supported values are BCP-47 language codes (e.g. \"en\", \"es\", \"fr\").",
+          "param:temperature Optional. Controls the randomness of the output. Note: The default value varies by model, see the `Model.temperature` attribute of the `Model` returned from the `getModel` function. Values can range from [0.0, 2.0].",
+          "param:thinkingBudget The number of thoughts tokens that the model should generate.",
+          "param:thinkingLevel Optional. Controls the maximum depth of the model's internal reasoning process before it produces a response. The default value is model-dependent. Refer to the [Thinking levels guide](https://ai.google.dev/gemini-api/docs/thinking#thinking-levels) for more de",
+          "param:title Optional. The title of the schema.",
+          "param:topK Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling ",
+          "param:topP Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k samp",
+          "param:type Required. Data type.",
+          "param:voiceName The name of the preset voice to use.",
+          "param:wordTimestamp Optional. Configures word-level timestamp generation.",
+          "source:music-generation"
+        ]
+      }
+    },
+    {
+      "name": "Eleven Text TO Sound V2",
+      "modelId": "eleven_text_to_sound_v2",
+      "family": "elevenlabs",
+      "description": "Sound effects generation from text prompts",
+      "type": "music generation",
+      "modelType": "text-to-audio",
+      "provider": "elevenlabs",
+      "input": [
+        "text"
+      ],
+      "output": [
+        "audio"
+      ],
+      "contextWindow": {
+        "inputCharacters": 5000
+      },
+      "capabilities": {
+        "audio_generation": true,
+        "streaming": false,
+        "multilingual": false,
+        "text_to_dialogue": false
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Sound effects generation",
+            "unit": "per generation",
+            "unitKey": "per_generation_usd",
+            "entries": {
+              "generation": 0.12
+            },
+            "source": {
+              "url": "https://elevenlabs.io/pricing/api",
+              "section": "Sound Effects",
+              "row": "Sound Effects",
+              "raw": "Sound Effects Audio Generation $0.12 Price per generation"
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "endpoint": {
+          "method": "POST",
+          "path": "/v1/sound-generation"
+        },
+        "request": {
+          "text": "string",
+          "duration_seconds": {
+            "min": 0.5,
+            "max": 30
+          },
+          "prompt_influence": {
+            "min": 0,
+            "max": 1
+          },
+          "loop": "boolean"
+        }
+      },
+      "sourceMetadata": {
+        "modelDetails": [
+          {
+            "url": "https://elevenlabs.io/docs/overview/models.mdx",
+            "row": "| `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                                                        | N/A                                                                                                                                                                           |"
+          }
+        ],
+        "endpointDocs": {
+          "textToSpeech": [
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx"
+          ],
+          "speechToText": [
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx"
+          ],
+          "dialogue": "https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "music": "https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "voiceChanger": "https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "voiceDesign": "https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "soundEffects": "https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "audioIsolation": "https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx"
+        },
+        "pricing": [
+          {
+            "url": "https://elevenlabs.io/pricing/api",
+            "section": "Sound Effects",
+            "row": "Sound Effects",
+            "raw": "Sound Effects Audio Generation $0.12 Price per generation"
+          }
+        ]
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "elevenlabs",
+        "modalities": [
+          "audio"
+        ],
+        "operations": [
+          "text-to-audio"
+        ],
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "audio"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [
+          "audio_generation"
+        ],
+        "parameterKeys": [
+          "endpoint",
+          "request"
+        ],
+        "parameters": [
+          {
+            "name": "endpoint"
+          },
+          {
+            "name": "request"
+          }
+        ],
+        "metadata": [
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "modelDetails.row: | `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                                                        | N/A                        ",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "pricing.section: Sound Effects",
+          "pricing.row: Sound Effects",
+          "pricing.raw: Sound Effects Audio Generation $0.12 Price per generation"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_generation",
+                "unit": "per generation",
+                "valueKeys": [
+                  "generation"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "capability:audio_generation",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "input:text",
+          "modality:audio",
+          "modelDetails.row: | `eleven_text_to_sound_v2`    | Sound effects generation from text prompts                                                        | N/A                        ",
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "operation:text-to-audio",
+          "output:audio",
+          "param:endpoint",
+          "param:request",
+          "pricing.raw: Sound Effects Audio Generation $0.12 Price per generation",
+          "pricing.row: Sound Effects",
+          "pricing.section: Sound Effects",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "source:music-generation"
+        ]
+      }
+    },
+    {
+      "name": "Music V1",
+      "modelId": "music_v1",
+      "family": "elevenlabs",
+      "description": "Studio-grade music generation from text prompts. Outclassed by music_v2",
+      "type": "music generation",
+      "modelType": "music-generation",
+      "provider": "elevenlabs",
+      "input": [
+        "text"
+      ],
+      "output": [
+        "audio"
+      ],
+      "contextWindow": {
+        "inputCharacters": 5000
+      },
+      "capabilities": {
+        "audio_generation": true,
+        "streaming": false,
+        "multilingual": false,
+        "text_to_dialogue": false
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Music generation",
+            "unit": "per generated audio minute",
+            "unitKey": "per_generated_audio_minute_usd",
+            "entries": {
+              "generated_audio_minute": 0.15
+            },
+            "source": {
+              "url": "https://elevenlabs.io/pricing/api",
+              "section": "Music",
+              "row": "Music",
+              "raw": "Music Music Generation $0.15 Price per minute"
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "endpoints": {
+          "composeMusic": {
+            "method": "POST",
+            "path": "/v1/music"
+          },
+          "streamMusic": {
+            "method": "POST",
+            "path": "/v1/music/stream"
+          },
+          "composeMusicWithDetails": {
+            "method": "POST",
+            "path": "/v1/music/detailed"
+          }
+        },
+        "request": {
+          "model_id": "music_v1",
+          "prompt": "string",
+          "composition_plan": "object"
+        },
+        "output_format": [
+          "mp3_44100_128",
+          "mp3_44100_192",
+          "pcm_44100",
+          "opus_48000_128"
+        ]
+      },
+      "sourceMetadata": {
+        "modelDetails": [
+          {
+            "url": "https://elevenlabs.io/docs/overview/models.mdx",
+            "row": "| `music_v1`                   | Studio-grade music generation from text prompts. Outclassed by `music_v2`                         | `en`, `es`, `de`, `ja`, and more                                                                                                                                              |"
+          }
+        ],
+        "endpointDocs": {
+          "textToSpeech": [
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx"
+          ],
+          "speechToText": [
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx"
+          ],
+          "dialogue": "https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "music": "https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "voiceChanger": "https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "voiceDesign": "https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "soundEffects": "https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "audioIsolation": "https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx"
+        },
+        "pricing": [
+          {
+            "url": "https://elevenlabs.io/pricing/api",
+            "section": "Music",
+            "row": "Music",
+            "raw": "Music Music Generation $0.15 Price per minute"
+          }
+        ]
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "elevenlabs",
+        "modalities": [
+          "audio"
+        ],
+        "operations": [
+          "text-to-audio"
+        ],
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "audio"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [
+          "audio_generation"
+        ],
+        "parameterKeys": [
+          "endpoints",
+          "request",
+          "output_format"
+        ],
+        "parameters": [
+          {
+            "name": "endpoints"
+          },
+          {
+            "name": "request"
+          },
+          {
+            "name": "output_format"
+          }
+        ],
+        "metadata": [
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "modelDetails.row: | `music_v1`                   | Studio-grade music generation from text prompts. Outclassed by `music_v2`                         | `en`, `es`, `de`, `ja`, and",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "pricing.section: Music",
+          "pricing.row: Music",
+          "pricing.raw: Music Music Generation $0.15 Price per minute"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_generated_audio_minute",
+                "unit": "per generated audio minute",
+                "valueKeys": [
+                  "generated_audio_minute"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "capability:audio_generation",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "input:text",
+          "modality:audio",
+          "modelDetails.row: | `music_v1`                   | Studio-grade music generation from text prompts. Outclassed by `music_v2`                         | `en`, `es`, `de`, `ja`, and",
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "operation:text-to-audio",
+          "output:audio",
+          "param:endpoints",
+          "param:output_format",
+          "param:request",
+          "pricing.raw: Music Music Generation $0.15 Price per minute",
+          "pricing.row: Music",
+          "pricing.section: Music",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "source:music-generation"
+        ]
+      }
+    },
+    {
+      "name": "Music V2",
+      "modelId": "music_v2",
+      "family": "elevenlabs",
+      "description": "Studio-grade music generation from text prompts, composition plans and previously generated songs",
+      "type": "music generation",
+      "modelType": "music-generation",
+      "provider": "elevenlabs",
+      "input": [
+        "text"
+      ],
+      "output": [
+        "audio"
+      ],
+      "contextWindow": {
+        "inputCharacters": 5000
+      },
+      "capabilities": {
+        "audio_generation": true,
+        "streaming": false,
+        "multilingual": false,
+        "text_to_dialogue": false
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Music generation",
+            "unit": "per generated audio minute",
+            "unitKey": "per_generated_audio_minute_usd",
+            "entries": {
+              "generated_audio_minute": 0.15
+            },
+            "source": {
+              "url": "https://elevenlabs.io/pricing/api",
+              "section": "Music",
+              "row": "Music",
+              "raw": "Music Music Generation $0.15 Price per minute"
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "endpoints": {
+          "composeMusic": {
+            "method": "POST",
+            "path": "/v1/music"
+          },
+          "streamMusic": {
+            "method": "POST",
+            "path": "/v1/music/stream"
+          },
+          "composeMusicWithDetails": {
+            "method": "POST",
+            "path": "/v1/music/detailed"
+          }
+        },
+        "request": {
+          "model_id": "music_v2",
+          "prompt": "string",
+          "composition_plan": "object"
+        },
+        "output_format": [
+          "mp3_44100_128",
+          "mp3_44100_192",
+          "pcm_44100",
+          "opus_48000_128"
+        ]
+      },
+      "sourceMetadata": {
+        "modelDetails": [
+          {
+            "url": "https://elevenlabs.io/docs/overview/models.mdx",
+            "row": "| `music_v2`                   | Studio-grade music generation from text prompts, composition plans and previously generated songs | `en`, `es`, `de`, `ja`, and more                                                                                                                                              |"
+          }
+        ],
+        "endpointDocs": {
+          "textToSpeech": [
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+            "https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx"
+          ],
+          "speechToText": [
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+            "https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx"
+          ],
+          "dialogue": "https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "music": "https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "voiceChanger": "https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "voiceDesign": "https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "soundEffects": "https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "audioIsolation": "https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx"
+        },
+        "pricing": [
+          {
+            "url": "https://elevenlabs.io/pricing/api",
+            "section": "Music",
+            "row": "Music",
+            "raw": "Music Music Generation $0.15 Price per minute"
+          }
+        ]
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "elevenlabs",
+        "modalities": [
+          "audio"
+        ],
+        "operations": [
+          "text-to-audio"
+        ],
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "audio"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [
+          "audio_generation"
+        ],
+        "parameterKeys": [
+          "endpoints",
+          "request",
+          "output_format"
+        ],
+        "parameters": [
+          {
+            "name": "endpoints"
+          },
+          {
+            "name": "request"
+          },
+          {
+            "name": "output_format"
+          }
+        ],
+        "metadata": [
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "modelDetails.row: | `music_v2`                   | Studio-grade music generation from text prompts, composition plans and previously generated songs | `en`, `es`, `de`, `ja`, and",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "pricing.section: Music",
+          "pricing.row: Music",
+          "pricing.raw: Music Music Generation $0.15 Price per minute"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_generated_audio_minute",
+                "unit": "per generated audio minute",
+                "valueKeys": [
+                  "generated_audio_minute"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "capability:audio_generation",
+          "endpointDocs.audioIsolation: https://elevenlabs.io/docs/api-reference/audio-isolation/convert.mdx",
+          "endpointDocs.dialogue: https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert.mdx",
+          "endpointDocs.music: https://elevenlabs.io/docs/api-reference/music/compose.mdx",
+          "endpointDocs.soundEffects: https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/convert.mdx",
+          "endpointDocs.speechToText: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/convert.mdx",
+          "endpointDocs.textToSpeech: https://elevenlabs.io/docs/api-reference/text-to-speech/stream.mdx",
+          "endpointDocs.voiceChanger: https://elevenlabs.io/docs/api-reference/speech-to-speech/convert.mdx",
+          "endpointDocs.voiceDesign: https://elevenlabs.io/docs/api-reference/text-to-voice/design.mdx",
+          "input:text",
+          "modality:audio",
+          "modelDetails.row: | `music_v2`                   | Studio-grade music generation from text prompts, composition plans and previously generated songs | `en`, `es`, `de`, `ja`, and",
+          "modelDetails.url: https://elevenlabs.io/docs/overview/models.mdx",
+          "operation:text-to-audio",
+          "output:audio",
+          "param:endpoints",
+          "param:output_format",
+          "param:request",
+          "pricing.raw: Music Music Generation $0.15 Price per minute",
+          "pricing.row: Music",
+          "pricing.section: Music",
+          "pricing.url: https://elevenlabs.io/pricing/api",
+          "source:music-generation"
+        ]
+      }
+    },
+    {
+      "name": "Acestep V15 Xl Sft",
+      "modelId": "ACE-Step/acestep-v15-xl-sft",
+      "family": "acestep",
+      "description": "ACE-Step v1.5 is a powerful open-source music foundation model that turns a text prompt into a complete song — vocals, lyrics, and instrumentation — at quality that rivals commercial tools. We run the high-quality XL checkpoint with its planning step  (\"thinking\") on by default, so generations favor musical structure and coherence over raw speed.",
+      "type": "music generation",
+      "modelType": "text-to-music",
+      "provider": "deepinfra",
+      "input": [
+        "text"
+      ],
+      "output": [
+        "audio"
+      ],
+      "contextWindow": {
+        "inputTokens": null,
+        "outputTokens": null
+      },
+      "capabilities": {},
+      "pricing": {
+        "sections": [
+          {
+            "header": "Seconds",
+            "unit": "Per second",
+            "unitKey": "per_second_usd",
+            "entries": {
+              "second": 0.001
+            },
+            "source": {
+              "api": "https://api.deepinfra.com/models/list",
+              "pricingType": "output_length",
+              "raw": {
+                "short": "$0.001 / second of audio",
+                "full": "$0.001 per second of generated music",
+                "type": "output_length",
+                "cents_per_output_sec": 0.1
+              }
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": false,
+          "description": "Describe the music — genre, mood, instrumentation, vocals, tempo and key — and what you'd like the song to be about."
+        },
+        "lyrics": {
+          "type": "string",
+          "required": false,
+          "description": "Lyrics to sing, with optional [verse]/[chorus] structure tags. Empty means the model writes its own lyrics (or, for instrumental requests, none)."
+        },
+        "duration": {
+          "type": "integer",
+          "required": false,
+          "minimum": 30,
+          "maximum": 500,
+          "description": "Length of the track in seconds (30-500). Leave empty to let the model choose."
+        },
+        "response_format": {
+          "type": "string",
+          "required": false,
+          "default": "mp3",
+          "options": [
+            "mp3",
+            "flac",
+            "wav"
+          ],
+          "description": "Output audio format. mp3 is small and universally playable; flac and wav are lossless."
+        },
+        "think": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Let the planning model arrange structure and phrasing before generation. Higher quality but slower; disable it for faster results."
+        },
+        "instrumental": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Generate instrumental music with no vocals, regardless of lyrics."
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "minimum": 0,
+          "description": "Seed for reproducible output; empty for random."
+        },
+        "bpm": {
+          "type": "integer",
+          "required": false,
+          "minimum": 30,
+          "maximum": 300,
+          "description": "Target tempo in beats per minute. Empty means the model chooses."
+        },
+        "language_code": {
+          "type": "string",
+          "required": false,
+          "default": "unknown",
+          "options": [
+            "ar",
+            "az",
+            "bg",
+            "bn",
+            "ca",
+            "cs",
+            "da",
+            "de",
+            "el",
+            "en",
+            "es",
+            "fa",
+            "fi",
+            "fr",
+            "he",
+            "hi",
+            "hr",
+            "ht",
+            "hu",
+            "id",
+            "is",
+            "it",
+            "ja",
+            "ko",
+            "la",
+            "lt",
+            "ms",
+            "ne",
+            "nl",
+            "no",
+            "pa",
+            "pl",
+            "pt",
+            "ro",
+            "ru",
+            "sa",
+            "sk",
+            "sr",
+            "sv",
+            "sw",
+            "ta",
+            "te",
+            "th",
+            "tl",
+            "tr",
+            "uk",
+            "ur",
+            "vi",
+            "yue",
+            "zh",
+            "unknown"
+          ],
+          "description": "Language for auto-written lyrics. Ignored when you supply lyrics or for instrumental tracks."
+        },
+        "negative_prompt": {
+          "type": "string",
+          "required": false,
+          "description": "Styles, genres, moods, or instruments to steer the song away from — a compositional nudge, not an audio filter. Ignored when the model writes its own lyrics."
+        },
+        "guidance_scale": {
+          "type": "number",
+          "required": false,
+          "default": 7,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Classifier-free guidance strength: higher follows the prompt more strictly, lower is more creative/varied. Default 7."
+        },
+        "task": {
+          "type": "string",
+          "required": false,
+          "default": "text2music",
+          "options": [
+            "text2music",
+            "cover",
+            "cover-nofsq",
+            "repaint"
+          ],
+          "description": "Generation task. text2music = from text only. cover = restyle a reference track. cover-nofsq = cover without FSQ quantization. repaint = regenerate a region of the input. Every task except text2music requires input_audio."
+        },
+        "input_audio": {
+          "type": "string",
+          "required": false,
+          "description": "The track to transform — used by the cover / cover-nofsq / repaint tasks (set Task first). Leave empty for plain text2music. This is the audio whose structure/melody is reworked, not the style reference below."
+        },
+        "reference_audio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional style reference: the output borrows the sonic character (timbre, production, vibe) of this clip WITHOUT copying its melody or structure. Works with any task, including text2music. Strength is set by Audio Cover / Reference Strength below (lower ≈ looser)."
+        },
+        "audio_cover_strength": {
+          "type": "number",
+          "required": false,
+          "default": 1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "How strongly the source/reference audio influences the result — governs both cover (the source track) and reference_audio (the style clip). Lower (~0.2) = looser style transfer; higher (→1.0) = closer to the reference."
+        },
+        "flow_edit": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "cover: morph the source toward your prompt/lyrics (an edit), describing the original via flow_edit_source_*."
+        },
+        "flow_edit_source_caption": {
+          "type": "string",
+          "required": false,
+          "description": "flow_edit: caption describing the ORIGINAL input audio."
+        },
+        "flow_edit_source_lyrics": {
+          "type": "string",
+          "required": false,
+          "description": "flow_edit: lyrics of the ORIGINAL input audio."
+        },
+        "repaint_start": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "minimum": 0,
+          "description": "repaint: start of the region to regenerate, seconds."
+        },
+        "repaint_end": {
+          "type": "number",
+          "required": false,
+          "default": -1,
+          "description": "repaint: end of the region to regenerate, seconds (-1 = to the end)."
+        },
+        "repaint_mode": {
+          "type": "string",
+          "required": false,
+          "default": "balanced",
+          "options": [
+            "conservative",
+            "balanced",
+            "aggressive"
+          ],
+          "description": "repaint: how much the regenerated region may diverge."
+        },
+        "repaint_strength": {
+          "type": "number",
+          "required": false,
+          "default": 0.5,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "repaint (balanced mode): 0=aggressive, 1=conservative."
+        },
+        "retake_variance": {
+          "type": "number",
+          "required": false,
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Variation amount when re-generating from the same inputs (0 = none)."
+        },
+        "retake_seed": {
+          "type": "integer",
+          "required": false,
+          "minimum": 0,
+          "description": "Seed for the retake variation (used only when retake_variance > 0)."
+        },
+        "audio_codes": {
+          "type": "string",
+          "required": false,
+          "description": "Advanced: precomputed audio semantic codes for code-controlled generation."
+        }
+      },
+      "sourceMetadata": {
+        "deepinfra": {
+          "nativeApi": "https://api.deepinfra.com/models/list",
+          "openaiApi": "https://api.deepinfra.com/v1/openai/models",
+          "reportedType": "text-to-music",
+          "rawType": "text-to-music",
+          "quantization": null,
+          "isPartner": false,
+          "tags": [],
+          "createTs": "2026-06-08T23:43:10+00:00",
+          "replacedBy": null
+        }
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "acestep",
+        "modalities": [
+          "audio"
+        ],
+        "operations": [
+          "text-to-audio"
+        ],
+        "inputs": [
+          "text"
+        ],
+        "outputs": [
+          "audio"
+        ],
+        "sourceTypes": [
+          "music-generation"
+        ],
+        "streamable": false,
+        "capabilityKeys": [],
+        "parameterKeys": [
+          "prompt",
+          "lyrics",
+          "duration",
+          "response_format",
+          "think",
+          "instrumental",
+          "seed",
+          "bpm",
+          "language_code",
+          "negative_prompt",
+          "guidance_scale",
+          "task",
+          "input_audio",
+          "reference_audio",
+          "audio_cover_strength",
+          "flow_edit",
+          "flow_edit_source_caption",
+          "flow_edit_source_lyrics",
+          "repaint_start",
+          "repaint_end",
+          "repaint_mode",
+          "repaint_strength",
+          "retake_variance",
+          "retake_seed",
+          "audio_codes"
+        ],
+        "parameters": [
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": false,
+            "description": "Describe the music — genre, mood, instrumentation, vocals, tempo and key — and what you'd like the song to be about."
+          },
+          {
+            "name": "lyrics",
+            "type": "string",
+            "required": false,
+            "description": "Lyrics to sing, with optional [verse]/[chorus] structure tags. Empty means the model writes its own lyrics (or, for instrumental requests, none)."
+          },
+          {
+            "name": "duration",
+            "type": "integer",
+            "required": false,
+            "description": "Length of the track in seconds (30-500). Leave empty to let the model choose."
+          },
+          {
+            "name": "response_format",
+            "type": "string",
+            "required": false,
+            "description": "Output audio format. mp3 is small and universally playable; flac and wav are lossless.",
+            "options": [
+              "mp3",
+              "flac",
+              "wav"
+            ]
+          },
+          {
+            "name": "think",
+            "type": "boolean",
+            "required": false,
+            "description": "Let the planning model arrange structure and phrasing before generation. Higher quality but slower; disable it for faster results."
+          },
+          {
+            "name": "instrumental",
+            "type": "boolean",
+            "required": false,
+            "description": "Generate instrumental music with no vocals, regardless of lyrics."
+          },
+          {
+            "name": "seed",
+            "type": "integer",
+            "required": false,
+            "description": "Seed for reproducible output; empty for random."
+          },
+          {
+            "name": "bpm",
+            "type": "integer",
+            "required": false,
+            "description": "Target tempo in beats per minute. Empty means the model chooses."
+          },
+          {
+            "name": "language_code",
+            "type": "string",
+            "required": false,
+            "description": "Language for auto-written lyrics. Ignored when you supply lyrics or for instrumental tracks.",
+            "options": [
+              "ar",
+              "az",
+              "bg",
+              "bn",
+              "ca",
+              "cs",
+              "da",
+              "de",
+              "el",
+              "en",
+              "es",
+              "fa"
+            ]
+          },
+          {
+            "name": "negative_prompt",
+            "type": "string",
+            "required": false,
+            "description": "Styles, genres, moods, or instruments to steer the song away from — a compositional nudge, not an audio filter. Ignored when the model writes its own lyrics."
+          },
+          {
+            "name": "guidance_scale",
+            "type": "number",
+            "required": false,
+            "description": "Classifier-free guidance strength: higher follows the prompt more strictly, lower is more creative/varied. Default 7."
+          },
+          {
+            "name": "task",
+            "type": "string",
+            "required": false,
+            "description": "Generation task. text2music = from text only. cover = restyle a reference track. cover-nofsq = cover without FSQ quantization. repaint = regenerate a region of the input. Every task except text2music requires input_audio.",
+            "options": [
+              "text2music",
+              "cover",
+              "cover-nofsq",
+              "repaint"
+            ]
+          },
+          {
+            "name": "input_audio",
+            "type": "string",
+            "required": false,
+            "description": "The track to transform — used by the cover / cover-nofsq / repaint tasks (set Task first). Leave empty for plain text2music. This is the audio whose structure/melody is reworked, not the style reference below."
+          },
+          {
+            "name": "reference_audio",
+            "type": "string",
+            "required": false,
+            "description": "Optional style reference: the output borrows the sonic character (timbre, production, vibe) of this clip WITHOUT copying its melody or structure. Works with any task, including text2music. Strength is set by Audio Cover / Reference Strength below (lower ≈ loos"
+          },
+          {
+            "name": "audio_cover_strength",
+            "type": "number",
+            "required": false,
+            "description": "How strongly the source/reference audio influences the result — governs both cover (the source track) and reference_audio (the style clip). Lower (~0.2) = looser style transfer; higher (→1.0) = closer to the reference."
+          },
+          {
+            "name": "flow_edit",
+            "type": "boolean",
+            "required": false,
+            "description": "cover: morph the source toward your prompt/lyrics (an edit), describing the original via flow_edit_source_*."
+          },
+          {
+            "name": "flow_edit_source_caption",
+            "type": "string",
+            "required": false,
+            "description": "flow_edit: caption describing the ORIGINAL input audio."
+          },
+          {
+            "name": "flow_edit_source_lyrics",
+            "type": "string",
+            "required": false,
+            "description": "flow_edit: lyrics of the ORIGINAL input audio."
+          },
+          {
+            "name": "repaint_start",
+            "type": "number",
+            "required": false,
+            "description": "repaint: start of the region to regenerate, seconds."
+          },
+          {
+            "name": "repaint_end",
+            "type": "number",
+            "required": false,
+            "description": "repaint: end of the region to regenerate, seconds (-1 = to the end)."
+          },
+          {
+            "name": "repaint_mode",
+            "type": "string",
+            "required": false,
+            "description": "repaint: how much the regenerated region may diverge.",
+            "options": [
+              "conservative",
+              "balanced",
+              "aggressive"
+            ]
+          },
+          {
+            "name": "repaint_strength",
+            "type": "number",
+            "required": false,
+            "description": "repaint (balanced mode): 0=aggressive, 1=conservative."
+          },
+          {
+            "name": "retake_variance",
+            "type": "number",
+            "required": false,
+            "description": "Variation amount when re-generating from the same inputs (0 = none)."
+          },
+          {
+            "name": "retake_seed",
+            "type": "integer",
+            "required": false,
+            "description": "Seed for the retake variation (used only when retake_variance > 0)."
+          },
+          {
+            "name": "audio_codes",
+            "type": "string",
+            "required": false,
+            "description": "Advanced: precomputed audio semantic codes for code-controlled generation."
+          }
+        ],
+        "metadata": [
+          "deepinfra.nativeApi: https://api.deepinfra.com/models/list",
+          "deepinfra.openaiApi: https://api.deepinfra.com/v1/openai/models",
+          "deepinfra.reportedType: text-to-music",
+          "deepinfra.rawType: text-to-music",
+          "deepinfra.isPartner: false",
+          "deepinfra.createTs: 2026-06-08T23:43:10+00:00"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "audio",
+            "operation": "text-to-audio",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "audio"
+            ],
+            "sourceTypes": [
+              "music-generation"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "deepinfra.createTs: 2026-06-08T23:43:10+00:00",
+          "deepinfra.isPartner: false",
+          "deepinfra.nativeApi: https://api.deepinfra.com/models/list",
+          "deepinfra.openaiApi: https://api.deepinfra.com/v1/openai/models",
+          "deepinfra.rawType: text-to-music",
+          "deepinfra.reportedType: text-to-music",
+          "input:text",
+          "modality:audio",
+          "operation:text-to-audio",
+          "output:audio",
+          "param:audio_codes Advanced: precomputed audio semantic codes for code-controlled generation.",
+          "param:audio_cover_strength How strongly the source/reference audio influences the result — governs both cover (the source track) and reference_audio (the style clip). Lower (~0.2) = looser style transfer; higher (→1.0) = closer to the reference.",
+          "param:bpm Target tempo in beats per minute. Empty means the model chooses.",
+          "param:duration Length of the track in seconds (30-500). Leave empty to let the model choose.",
+          "param:flow_edit cover: morph the source toward your prompt/lyrics (an edit), describing the original via flow_edit_source_*.",
+          "param:flow_edit_source_caption flow_edit: caption describing the ORIGINAL input audio.",
+          "param:flow_edit_source_lyrics flow_edit: lyrics of the ORIGINAL input audio.",
+          "param:guidance_scale Classifier-free guidance strength: higher follows the prompt more strictly, lower is more creative/varied. Default 7.",
+          "param:input_audio The track to transform — used by the cover / cover-nofsq / repaint tasks (set Task first). Leave empty for plain text2music. This is the audio whose structure/melody is reworked, not the style reference below.",
+          "param:instrumental Generate instrumental music with no vocals, regardless of lyrics.",
+          "param:language_code Language for auto-written lyrics. Ignored when you supply lyrics or for instrumental tracks.",
+          "param:lyrics Lyrics to sing, with optional [verse]/[chorus] structure tags. Empty means the model writes its own lyrics (or, for instrumental requests, none).",
+          "param:negative_prompt Styles, genres, moods, or instruments to steer the song away from — a compositional nudge, not an audio filter. Ignored when the model writes its own lyrics.",
+          "param:prompt Describe the music — genre, mood, instrumentation, vocals, tempo and key — and what you'd like the song to be about.",
+          "param:reference_audio Optional style reference: the output borrows the sonic character (timbre, production, vibe) of this clip WITHOUT copying its melody or structure. Works with any task, including text2music. Strength is set by Audio Cover / Reference Strength below (lower ≈ loos",
+          "param:repaint_end repaint: end of the region to regenerate, seconds (-1 = to the end).",
+          "param:repaint_mode repaint: how much the regenerated region may diverge.",
+          "param:repaint_start repaint: start of the region to regenerate, seconds.",
+          "param:repaint_strength repaint (balanced mode): 0=aggressive, 1=conservative.",
+          "param:response_format Output audio format. mp3 is small and universally playable; flac and wav are lossless.",
+          "param:retake_seed Seed for the retake variation (used only when retake_variance > 0).",
+          "param:retake_variance Variation amount when re-generating from the same inputs (0 = none).",
+          "param:seed Seed for reproducible output; empty for random.",
+          "param:task Generation task. text2music = from text only. cover = restyle a reference track. cover-nofsq = cover without FSQ quantization. repaint = regenerate a region of the input. Every task except text2music requires input_audio.",
+          "param:think Let the planning model arrange structure and phrasing before generation. Higher quality but slower; disable it for faster results.",
+          "source:music-generation"
+        ]
+      }
+    }
+  ]
+}

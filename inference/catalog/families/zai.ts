@@ -194,9 +194,9 @@ export function toolsToWire(tools: Tool[] | undefined): ZaiToolDefinition[] | un
     return tools.map((tool) => ({
         type: "function" as const,
         function: {
-            name: tool.function.name,
-            description: tool.function.description ?? "",
-            parameters: lower.object(tool.function.parameters),
+            name: tool.name,
+            description: tool.description ?? "",
+            parameters: lower.object(tool.parameters),
         },
     }));
 }

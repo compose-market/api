@@ -142,9 +142,9 @@ export function toolsToWire(tools: Tool[] | undefined): Array<Record<string, unk
     return tools.map((tool) => ({
         type: "function",
         function: {
-            name: tool.function.name,
-            ...(tool.function.description ? { description: tool.function.description } : {}),
-            parameters: lower.object(tool.function.parameters),
+            name: tool.name,
+            ...(tool.description ? { description: tool.description } : {}),
+            parameters: lower.object(tool.parameters),
         },
     }));
 }
@@ -152,7 +152,7 @@ export function toolsToWire(tools: Tool[] | undefined): Array<Record<string, unk
 export function toolChoiceToWire(choice: Choice | undefined): unknown {
     if (!choice) return undefined;
     if (typeof choice === "string") return choice;
-    return choice;
+    return { type: "function", function: { name: choice.name } };
 }
 
 function toolCallsFromAssistant(message: Record<string, unknown> | null | undefined): Call[] | undefined {

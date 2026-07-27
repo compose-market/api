@@ -2,12 +2,22 @@ import {
   resolveOptionalModelParamValues,
   resolveProvidedOptionalModelParamValues,
 } from "./params-handler.js";
-import { getModelById } from "./catalog/registry.js";
+import { getModelById, getModelProtocolProfile } from "./catalog/registry.js";
 import {
   getModelCapabilities,
   type ModelOperationCapability,
 } from "./catalog/modalities/index.js";
 import { realtimeInputParams } from "./catalog/modalities/realtime.js";
+import {
+  normalizeChatToolChoice,
+  normalizeChatTools,
+  normalizeResponsesToolChoice,
+  normalizeResponsesTools,
+  type ResponsesFunctionTool,
+  type ResponsesInputItem,
+  type ResponsesOutputItem as ProtocolResponsesOutputItem,
+  type ResponsesToolChoice,
+} from "./responses.js";
 
 export type Mode = "responses" | "chat" | "embeddings";
 export type Modality = "text" | "image" | "audio" | "video" | "embedding" | "realtime";
@@ -40,20 +50,8 @@ export interface Message {
   name?: string;
 }
 
-export interface Tool {
-  type: "function";
-  function: {
-    name: string;
-    description?: string;
-    parameters?: Schema;
-  };
-}
-
-export type Choice =
-  | "none"
-  | "auto"
-  | "required"
-  | { type: "function"; function: { name: string } };
+export type Tool = ResponsesFunctionTool;
+export type Choice = ResponsesToolChoice;
 
 export interface Format {
   type: "text" | "json_object" | "json_schema";
@@ -71,6 +69,7 @@ export interface Request {
   modality: Modality;
   operation?: string;
   messages: Message[];
+  inputItems?: ResponsesInputItem[];
   instructions?: string;
   tools?: Tool[];
   toolChoice?: Choice;
@@ -99,6 +98,7 @@ export interface Request {
     videoUrl?: string;
   };
   previousResponseId?: string;
+  store?: boolean;
   customParams?: Record<string, unknown>;
   billingMetrics?: Record<string, unknown>;
   /**
@@ -128,6 +128,9 @@ export interface Usage {
 
 export interface Call {
   id?: string;
+  itemId?: string;
+  callId?: string;
+  outputIndex?: number;
   name: string;
   arguments: string | object;
   providerMetadata?: Record<string, unknown>;
@@ -152,6 +155,7 @@ export interface Output {
   usage?: Usage;
   finishReason?: string;
   toolCalls?: Call[];
+  outputItems?: ProtocolResponsesOutputItem[];
   embeddings?: number[][];
   media?: Media;
 }
@@ -177,8 +181,24 @@ export interface Event {
   | "video-complete"
   | "done";
   text?: string;
-  toolCall?: { id: string; name: string; arguments: string; providerMetadata?: Record<string, unknown> };
-  toolCallDelta?: { id?: string; name?: string; arguments?: string; index: number };
+  itemId?: string;
+  toolCall?: {
+    id: string;
+    itemId?: string;
+    callId?: string;
+    name: string;
+    arguments: string;
+    index?: number;
+    providerMetadata?: Record<string, unknown>;
+  };
+  toolCallDelta?: {
+    id?: string;
+    itemId?: string;
+    callId?: string;
+    name?: string;
+    arguments?: string;
+    index: number;
+  };
   thinking?: string;
   citation?: Record<string, unknown>;
   warning?: { code: string; message: string };
@@ -234,26 +254,7 @@ export interface Model {
   stream?(request: Request): AsyncIterable<Event>;
 }
 
-export interface ResponsesOutputItem {
-  type: string;
-  role?: "assistant";
-  text?: string;
-  response_id?: string;
-  model?: string;
-  provider?: string;
-  target?: Record<string, unknown>;
-  image_url?: string;
-  audio_url?: string;
-  video_url?: string;
-  embedding?: number[];
-  job_id?: string;
-  status?: string;
-  progress?: number;
-  mime_type?: string;
-  call_id?: string;
-  name?: string;
-  arguments?: string;
-}
+export type ResponsesOutputItem = ProtocolResponsesOutputItem;
 
 export interface ResponsesResponse {
   id: string;
@@ -334,6 +335,10 @@ function responseUsage(usage: Usage | undefined, extraMetrics?: Record<string, u
 
 function toResponseId(): string {
   return `resp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function toItemId(prefix: "msg" | "rs" | "fc" | "call"): string {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
 }
 
 function parseRole(role: unknown): Message["role"] {
@@ -812,31 +817,122 @@ function buildRequestBillingMetrics(
   return metrics;
 }
 
-function normalizeResponsesInput(input: unknown): Message[] {
+interface NormalizedResponsesInput {
+  items: ResponsesInputItem[];
+  messages: Message[];
+}
+
+function canonicalResponsesInputItem(item: Record<string, unknown>): ResponsesInputItem {
+  const role = typeof item.role === "string" ? item.role : undefined;
+  if (!Array.isArray(item.content)) return { ...item };
+
+  const content = item.content.map((rawPart) => {
+    if (!rawPart || typeof rawPart !== "object" || Array.isArray(rawPart)) return rawPart;
+    const part = rawPart as Record<string, unknown>;
+    if (part.type !== "text") return { ...part };
+    return {
+      ...part,
+      type: role === "assistant" ? "output_text" : "input_text",
+    };
+  });
+  return { ...item, content };
+}
+
+function responseItemOutput(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
   if (typeof input === "string") {
-    return [{ role: "user", content: input }];
+    return {
+      items: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: input }],
+      }],
+      messages: [{ role: "user", content: input }],
+    };
   }
 
   if (!Array.isArray(input)) {
-    return [];
+    return { items: [], messages: [] };
   }
 
   if (input.length === 0) {
-    return [];
+    return { items: [], messages: [] };
   }
 
-  const first = input[0];
-  if (first && typeof first === "object" && "role" in (first as Record<string, unknown>)) {
-    return normalizeMessages(input);
-  }
+  const items = input
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map(canonicalResponsesInputItem);
+  const messages: Message[] = [];
+  let parts: Part[] = [];
+  const flushParts = () => {
+    if (parts.length > 0) {
+      messages.push({ role: "user", content: parts });
+      parts = [];
+    }
+  };
 
-  const parts: Part[] = [];
   for (const item of input) {
     if (!item || typeof item !== "object") {
       continue;
     }
     const record = item as Record<string, unknown>;
     const type = typeof record.type === "string" ? record.type : "";
+
+    if ("role" in record || type === "message") {
+      flushParts();
+      messages.push(...normalizeMessages([record]));
+      continue;
+    }
+
+    if (type === "function_call") {
+      const callId = typeof record.call_id === "string" && record.call_id.length > 0
+        ? record.call_id
+        : typeof record.id === "string" && record.id.length > 0
+          ? record.id
+          : toItemId("call");
+      const name = typeof record.name === "string" ? record.name : "";
+      if (!name) continue;
+      flushParts();
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: callId,
+          type: "function",
+          function: {
+            name,
+            arguments: typeof record.arguments === "string" ? record.arguments : responseItemOutput(record.arguments || {}),
+          },
+        }],
+      });
+      continue;
+    }
+
+    if (type === "function_call_output") {
+      const callId = typeof record.call_id === "string" ? record.call_id : "";
+      if (!callId) continue;
+      flushParts();
+      messages.push({
+        role: "tool",
+        content: responseItemOutput(record.output),
+        tool_call_id: callId,
+      });
+      continue;
+    }
+
+    if (type === "reasoning") {
+      flushParts();
+      continue;
+    }
 
     if (type === "input_text" && typeof record.text === "string") {
       parts.push({ type: "text", text: record.text });
@@ -862,11 +958,8 @@ function normalizeResponsesInput(input: unknown): Message[] {
     }
   }
 
-  if (parts.length === 0) {
-    return [];
-  }
-
-  return [{ role: "user", content: parts }];
+  flushParts();
+  return { items, messages };
 }
 
 function requestedModalities(body: Record<string, unknown>): Modality[] {
@@ -1198,8 +1291,8 @@ export function normalizeChatRequest(body: Record<string, unknown>): Request {
     modality: "text",
     operation: "chat",
     messages,
-    tools: Array.isArray(body.tools) ? body.tools as Tool[] : undefined,
-    toolChoice: body.tool_choice as Choice | undefined,
+    tools: normalizeChatTools(body.tools),
+    toolChoice: normalizeChatToolChoice(body.tool_choice),
     maxTokens: typeof body.max_tokens === "number" ? body.max_tokens : typeof body.max_completion_tokens === "number" ? body.max_completion_tokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     responseId: toResponseId(),
@@ -1227,8 +1320,9 @@ export function normalizeEmbeddingsRequest(body: Record<string, unknown>): Reque
 
 export function normalizeResponsesRequest(body: Record<string, unknown>): Request {
   const model = typeof body.model === "string" ? body.model : "";
+  const normalizedInput = normalizeResponsesInput(body.input);
   const messages = appendAttachmentParts(
-    normalizeResponsesInput(body.input),
+    normalizedInput.messages,
     normalizeAttachmentList(body),
   );
   const route = pickCatalogRoute(body, model, messages, "text");
@@ -1284,9 +1378,10 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
     modality,
     ...(route.operation ? { operation: route.operation } : {}),
     messages,
+    inputItems: normalizedInput.items,
     instructions,
-    tools: Array.isArray(body.tools) ? body.tools as Tool[] : undefined,
-    toolChoice: body.tool_choice as Choice | undefined,
+    tools: normalizeResponsesTools(body.tools),
+    toolChoice: normalizeResponsesToolChoice(body.tool_choice),
     maxTokens: typeof body.max_output_tokens === "number" ? body.max_output_tokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     responseId: toResponseId(),
@@ -1343,6 +1438,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
       ),
     },
     previousResponseId,
+    store: body.store !== false,
     customParams,
     responseFormat: modality === "text" ? parseInboundResponseFormat(body.response_format) : undefined,
     billingMetrics: (modality === "image" || modality === "video" || modality === "audio")
@@ -1351,7 +1447,27 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
   };
 }
 
+export function validateParallelToolCalls(request: Request): void {
+  const value = request.customParams?.parallel_tool_calls;
+  if (value === undefined) return;
+  if (typeof value !== "boolean") {
+    throw Object.assign(new Error("parallel_tool_calls must be a boolean"), {
+      statusCode: 400,
+      code: "invalid_parallel_tool_calls",
+    });
+  }
+  const model = getModelById(request.model);
+  if (!model || getModelProtocolProfile(model).parallelToolCalls) return;
+  throw Object.assign(
+    new Error(`Model '${request.model}' does not support parallel_tool_calls`),
+    { statusCode: 400, code: "unsupported_parallel_tool_calls" },
+  );
+}
+
 export function toResponsesOutputItems(output: Output): ResponsesOutputItem[] {
+  if (Array.isArray(output.outputItems)) {
+    return output.outputItems.map((item) => ({ ...item }));
+  }
   if (output.modality === "embedding") {
     return (output.embeddings || []).map((embedding) => ({
       type: "output_embedding",
@@ -1398,17 +1514,26 @@ export function toResponsesOutputItems(output: Output): ResponsesOutputItem[] {
 
   const items: ResponsesOutputItem[] = [];
   const text = output.content || "";
-  items.push({ type: "output_text", role: "assistant", text });
+  if (text.length > 0) {
+    items.push({
+      id: toItemId("msg"),
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text, annotations: [] }],
+    });
+  }
 
   if (output.toolCalls?.length) {
     for (const call of output.toolCalls) {
       items.push({
-        type: "tool_call",
-        call_id: call.id || `call_${Date.now()}`,
+        id: call.itemId || toItemId("fc"),
+        type: "function_call",
+        status: "completed",
+        call_id: call.callId || call.id || toItemId("call"),
         name: call.name,
         arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
-        ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
-      } as ResponsesOutputItem);
+      });
     }
   }
 
@@ -1532,7 +1657,7 @@ export function formatSSEDone(): string {
  *   event: <name>
  *   data: <json>
  *
- * Used for out-of-band events like `compose.receipt`, `compose.error`,
+ * Used for out-of-band events like `receipt`, `compose.error`,
  * `compose.video.status`, and `compose.budget` that are semantically distinct
  * from regular streaming deltas and which integrator SDKs should recognise
  * via `event:` rather than by parsing the shape of the JSON body.
@@ -1552,7 +1677,7 @@ export function formatSSENamedEvent(name: string, data: unknown): string {
  *   - structured error frames when the stream fails mid-flight
  *   - video-job poll status updates when clients ask for SSE polling
  */
-export interface ReceiptBillPayload {
+export interface BillPayload {
   kind: "agent" | "workflow" | "model" | "tool" | "search" | "memory" | "connector";
   source?: string;
   name?: string;
@@ -1582,7 +1707,7 @@ export interface ReceiptBillPayload {
     };
     distribution: Record<string, string>;
   };
-  children?: ReceiptBillPayload[];
+  children?: BillPayload[];
 }
 
 export interface ReceiptStreamPayload {
@@ -1602,7 +1727,7 @@ export interface ReceiptStreamPayload {
     unitPriceUsd: number;
     amountWei: string;
   }>;
-  bills?: ReceiptBillPayload[];
+  bills?: BillPayload[];
   txHash?: string;
   settlementStatus?: "queued" | "claimed" | "settled" | "failed";
   claimTxHash?: string;
@@ -1622,7 +1747,7 @@ export interface ReceiptStreamPayload {
 export function toReceiptStreamEvent(
   payload: ReceiptStreamPayload,
 ): string {
-  return formatSSENamedEvent("compose.receipt", payload);
+  return formatSSENamedEvent("receipt", payload);
 }
 
 export function toErrorStreamEvent(payload: {
@@ -1662,16 +1787,20 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
     return {
       type: "response.output_text.delta",
       response_id: requestId,
-      model,
+      item_id: event.itemId || toItemId("msg"),
+      output_index: event.outputIndex ?? 0,
+      content_index: 0,
       delta: event.text || "",
     };
   }
 
   if (event.type === "thinking" || event.type === "reasoning-delta") {
     return {
-      type: "response.reasoning.delta",
+      type: "response.reasoning_summary_text.delta",
       response_id: requestId,
-      model,
+      item_id: event.itemId || toItemId("rs"),
+      output_index: event.outputIndex ?? 0,
+      summary_index: 0,
       delta: event.thinking || event.text || "",
     };
   }
@@ -1696,33 +1825,36 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
 
   if (event.type === "error") {
     return {
-      type: "response.error",
-      response_id: requestId,
-      model,
+      type: "error",
       error: event.error || { code: "upstream_error", message: "" },
     };
   }
 
   if (event.type === "tool-call") {
+    const itemId = event.toolCall?.itemId || toItemId("fc");
+    const callId = event.toolCall?.callId || event.toolCall?.id || toItemId("call");
     return {
-      type: "response.tool_call",
+      type: "response.output_item.done",
       response_id: requestId,
-      model,
-      tool_call: event.toolCall,
+      output_index: event.toolCall?.index ?? event.outputIndex ?? 0,
+      item: {
+        id: itemId,
+        type: "function_call",
+        status: "completed",
+        call_id: callId,
+        name: event.toolCall?.name || "",
+        arguments: event.toolCall?.arguments || "{}",
+      },
     };
   }
 
   if (event.type === "tool-call-delta") {
     return {
-      type: "response.tool_call.delta",
+      type: "response.function_call_arguments.delta",
       response_id: requestId,
-      model,
-      index: event.toolCallDelta?.index ?? 0,
-      delta: {
-        ...(event.toolCallDelta?.id ? { id: event.toolCallDelta.id } : {}),
-        ...(event.toolCallDelta?.name ? { name: event.toolCallDelta.name } : {}),
-        ...(event.toolCallDelta?.arguments ? { arguments: event.toolCallDelta.arguments } : {}),
-      },
+      item_id: event.toolCallDelta?.itemId || toItemId("fc"),
+      output_index: event.toolCallDelta?.index ?? 0,
+      delta: event.toolCallDelta?.arguments || "",
     };
   }
 
@@ -1774,9 +1906,8 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
 
   if (event.type === "output-item") {
     return {
-      type: "response.output_item.completed",
+      type: "response.output_item.done",
       response_id: requestId,
-      model,
       output_index: event.outputIndex ?? 0,
       item: event.item ?? { type: "output_text", role: "assistant", text: "" },
     };
@@ -1820,9 +1951,8 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
 
   if (event.type === "video-complete") {
     return {
-      type: "response.output_item.completed",
+      type: "response.output_item.done",
       response_id: requestId,
-      model,
       output_index: event.outputIndex ?? 0,
       item: {
         type: "output_video",
@@ -1906,7 +2036,7 @@ export function toChatStreamEvent(
             ...(isFirstToken ? { role: "assistant" } : {}),
             tool_calls: [
               {
-                index: 0,
+                index: event.toolCall?.index ?? 0,
                 id: event.toolCall?.id,
                 type: "function",
                 function: {

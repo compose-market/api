@@ -140,9 +140,9 @@ export function toolsToWire(tools: Tool[] | undefined): DeepSeekFunctionTool[] |
     return tools.map((tool) => ({
         type: "function" as const,
         function: {
-            name: tool.function.name,
-            ...(tool.function.description ? { description: tool.function.description } : {}),
-            parameters: lower.object(tool.function.parameters),
+            name: tool.name,
+            ...(tool.description ? { description: tool.description } : {}),
+            parameters: lower.object(tool.parameters),
         },
     }));
 }
@@ -151,7 +151,7 @@ export function toolChoiceToWire(choice: Choice | undefined): DeepSeekToolChoice
     if (!choice) return undefined;
     if (choice === "auto" || choice === "none" || choice === "required") return choice;
     if (typeof choice === "object" && choice.type === "function") {
-        return { type: "function", function: { name: choice.function.name } };
+        return { type: "function", function: { name: choice.name } };
     }
     return undefined;
 }

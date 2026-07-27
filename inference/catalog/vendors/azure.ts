@@ -11,7 +11,7 @@
 
 import { getModelById } from "../registry.js";
 import { pricingHasTokenSections } from "../../telemetry.js";
-import type { Call, Choice, Format, Message, Tool, Usage } from "../../core.js";
+import type { Call, Choice, Format, Message, ResponsesOutputItem, Tool, Usage } from "../../core.js";
 import {
   buildBodyChat,
   buildBodyResponses,
@@ -67,6 +67,7 @@ export interface AzureChatResult {
   usage?: Usage;
   finishReason?: string;
   toolCalls?: Call[];
+  outputItems?: ResponsesOutputItem[];
   raw: unknown;
 }
 
@@ -334,8 +335,13 @@ function callsFromResponses(raw: unknown): Call[] | undefined {
     if (type !== "function_call" && type !== "tool_call") continue;
     const name = clean(item.name);
     if (!name) continue;
+    const itemId = clean(item.id) || `fc_${i}`;
+    const callId = clean(item.call_id) || `call_${i}`;
     calls.push({
-      id: clean(item.call_id) || clean(item.id) || `call_${i}`,
+      id: callId,
+      itemId,
+      callId,
+      outputIndex: i,
       name,
       arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
     });
@@ -402,10 +408,11 @@ export async function generateAzureResponses(
     toolChoice?: Choice;
     responseFormat?: Format;
     customParams?: Record<string, unknown>;
+    inputItems?: Array<Record<string, unknown>>;
   },
 ): Promise<AzureChatResult> {
   const credential = credentialForModel(modelId);
-  const body = buildBodyResponses(modelId, mapMessagesForResponsesWire(messages), {
+  const body = buildBodyResponses(modelId, options.inputItems?.length ? options.inputItems : mapMessagesForResponsesWire(messages), {
     wireModelId: deploymentNameForModel(modelId),
     ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
     ...(typeof options.maxTokens === "number" ? { maxOutputTokens: options.maxTokens } : {}),
@@ -417,11 +424,16 @@ export async function generateAzureResponses(
   const raw = await postAzure(credential, "/openai/v1/responses", body);
   const root = asRecord(raw) || {};
   const toolCalls = callsFromResponses(raw);
+  const outputItems = (Array.isArray(root.output) ? root.output : [])
+    .map((item) => asRecord(item))
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item.type === "string")
+    .map((item) => ({ ...item } as ResponsesOutputItem));
   return {
     text: textFromResponses(raw),
     usage: normalizeOpenAIUsage(root.usage),
     finishReason: toolCalls ? "tool-calls" : clean(root.status) || "stop",
     ...(toolCalls ? { toolCalls } : {}),
+    ...(outputItems.length > 0 ? { outputItems } : {}),
     raw,
   };
 }
@@ -540,6 +552,7 @@ export async function generateAzureChat(
     responseFormat?: Format;
     customParams?: Record<string, unknown>;
     operation?: string;
+    inputItems?: Array<Record<string, unknown>>;
   } = {},
 ): Promise<AzureChatResult> {
   const route = routeForModel(modelId, options.operation);

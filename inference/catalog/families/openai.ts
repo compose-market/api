@@ -16,6 +16,7 @@ import type {
     Call,
     Choice,
     Usage,
+    ResponsesOutputItem,
 } from "../../core.js";
 import * as lower from "../shared/schema.js";
 
@@ -911,13 +912,14 @@ function toolsToWire(tools: Tool[] | undefined): Array<Record<string, unknown>> 
     if (!tools || tools.length === 0) return undefined;
     const wire: Array<Record<string, unknown>> = [];
     for (const tool of tools) {
-        if (tool.type !== "function" || !tool.function?.name) continue;
+        if (tool.type !== "function" || !tool.name) continue;
         wire.push({
             type: "function",
             function: {
-                name: tool.function.name,
-                ...(tool.function.description ? { description: tool.function.description } : {}),
-                parameters: lower.object(tool.function.parameters),
+                name: tool.name,
+                ...(tool.description ? { description: tool.description } : {}),
+                parameters: lower.object(tool.parameters),
+                ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
             },
         });
     }
@@ -928,15 +930,14 @@ function toolsToResponsesWire(tools: Tool[] | undefined): Array<Record<string, u
     if (!tools || tools.length === 0) return undefined;
     const wire: Array<Record<string, unknown>> = [];
     for (const tool of tools) {
-        const fn = asWireRecord((tool as unknown as Record<string, unknown>).function);
-        const name = cleanWire(fn?.name);
+        const name = cleanWire(tool.name);
         if (tool.type !== "function" || !name) continue;
         wire.push({
             type: "function",
             name,
-            parameters: lower.object(fn?.parameters as Record<string, unknown> | undefined),
-            ...(typeof fn?.description === "string" && fn.description.length > 0 ? { description: fn.description } : {}),
-            ...(typeof fn?.strict === "boolean" ? { strict: fn.strict } : {}),
+            parameters: lower.object(tool.parameters),
+            ...(typeof tool.description === "string" && tool.description.length > 0 ? { description: tool.description } : {}),
+            ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
         });
     }
     return wire.length > 0 ? wire : undefined;
@@ -947,8 +948,8 @@ function toolChoiceToWire(
 ): "auto" | "none" | "required" | { type: "function"; function: { name: string } } | undefined {
     if (!toolChoice) return undefined;
     if (typeof toolChoice === "string") return toolChoice;
-    if (toolChoice.type === "function" && toolChoice.function?.name) {
-        return { type: "function", function: { name: toolChoice.function.name } };
+    if (toolChoice.type === "function" && toolChoice.name) {
+        return { type: "function", function: { name: toolChoice.name } };
     }
     return undefined;
 }
@@ -958,8 +959,8 @@ function toolChoiceToResponsesWire(
 ): "auto" | "none" | "required" | { type: "function"; name: string } | undefined {
     if (!toolChoice) return undefined;
     if (typeof toolChoice === "string") return toolChoice;
-    if (toolChoice.type === "function" && toolChoice.function?.name) {
-        return { type: "function", name: toolChoice.function.name };
+    if (toolChoice.type === "function" && toolChoice.name) {
+        return { type: "function", name: toolChoice.name };
     }
     return undefined;
 }
@@ -1200,13 +1201,27 @@ function toolCallsFromResponses(data: Record<string, unknown>): Call[] | undefin
         if (type !== "function_call" && type !== "tool_call") continue;
         const name = cleanWire(record.name);
         if (!name) continue;
+        const itemId = cleanWire(record.id) || `fc_${i}`;
+        const callId = cleanWire(record.call_id) || `call_${i}`;
         out.push({
-            id: cleanWire(record.call_id) || cleanWire(record.id) || `call_${i}`,
+            id: callId,
+            itemId,
+            callId,
+            outputIndex: i,
             name,
             arguments: typeof record.arguments === "string" ? record.arguments : JSON.stringify(record.arguments ?? {}),
         });
     }
     return out.length > 0 ? out : undefined;
+}
+
+function outputItemsFromResponses(data: Record<string, unknown>): ResponsesOutputItem[] | undefined {
+    const output = Array.isArray(data.output) ? data.output : [];
+    const items = output
+        .map((item) => asWireRecord(item))
+        .filter((item): item is Record<string, unknown> => item !== null && typeof item.type === "string")
+        .map((item) => ({ ...item } as ResponsesOutputItem));
+    return items.length > 0 ? items : undefined;
 }
 
 function mergeTextForResponses(
@@ -1477,10 +1492,10 @@ export async function* streamChat(
     }
 
     if (sawToolCall) {
-        for (const acc of toolCalls.values()) {
+        for (const [index, acc] of toolCalls.entries()) {
             yield {
                 type: "tool-call",
-                toolCall: { id: acc.id, name: acc.name, arguments: acc.args || "{}" },
+                toolCall: { id: acc.id, name: acc.name, arguments: acc.args || "{}", index },
             };
         }
     }
@@ -1579,17 +1594,21 @@ export async function responses(
     const usage = usageFromOpenAIWire(data.usage);
     const status = cleanWire(data.status);
     const toolCalls = toolCallsFromResponses(data);
+    const outputItems = outputItemsFromResponses(data);
     return {
         modality: "text",
         content: text,
         ...(usage ? { usage } : {}),
         finishReason: toolCalls ? "tool-calls" : status === "completed" ? "stop" : status || "stop",
         ...(toolCalls ? { toolCalls } : {}),
+        ...(outputItems ? { outputItems } : {}),
     };
 }
 
 interface ResponseToolAccumulator {
-    id: string;
+    itemId: string;
+    callId: string;
+    outputIndex: number;
     name: string;
     args: string;
 }
@@ -1608,11 +1627,13 @@ function mergeResponsesToolItem(
     item: Record<string, unknown> | null,
 ): boolean {
     if (!item || cleanWire(item.type) !== "function_call") return false;
-    const id = cleanWire(item.call_id) || cleanWire(item.id) || `call_${outputIndex}`;
+    const itemId = cleanWire(item.id) || `fc_${outputIndex}`;
+    const callId = cleanWire(item.call_id) || `call_${outputIndex}`;
     const name = cleanWire(item.name);
     const args = typeof item.arguments === "string" ? item.arguments : "";
-    const acc = toolCalls.get(outputIndex) || { id, name, args: "" };
-    if (id) acc.id = id;
+    const acc = toolCalls.get(outputIndex) || { itemId, callId, outputIndex, name, args: "" };
+    if (itemId) acc.itemId = itemId;
+    if (callId) acc.callId = callId;
     if (name) acc.name = name;
     if (args) acc.args = args;
     toolCalls.set(outputIndex, acc);
@@ -1658,6 +1679,7 @@ export async function* streamResponses(
     let lastStatus: unknown;
     let sawToolCall = false;
     const toolCalls = new Map<number, ResponseToolAccumulator>();
+    const outputItems = new Map<number, ResponsesOutputItem>();
 
     try {
         while (true) {
@@ -1686,7 +1708,12 @@ export async function* streamResponses(
 
                 const type = cleanWire(parsed.type);
                 if (type === "response.output_text.delta" && typeof parsed.delta === "string" && parsed.delta.length > 0) {
-                    yield { type: "text-delta", text: parsed.delta };
+                    yield {
+                        type: "text-delta",
+                        itemId: cleanWire(parsed.item_id) || undefined,
+                        outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : undefined,
+                        text: parsed.delta,
+                    };
                     continue;
                 }
                 if (
@@ -1694,19 +1721,30 @@ export async function* streamResponses(
                     && typeof parsed.delta === "string"
                     && parsed.delta.length > 0
                 ) {
-                    yield { type: "thinking", thinking: parsed.delta };
+                    yield {
+                        type: "thinking",
+                        itemId: cleanWire(parsed.item_id) || undefined,
+                        outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : undefined,
+                        thinking: parsed.delta,
+                    };
                     continue;
                 }
                 if (type === "response.output_item.added" || type === "response.output_item.done") {
                     const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
-                    sawToolCall = mergeResponsesToolItem(toolCalls, outputIndex, asWireRecord(parsed.item)) || sawToolCall;
+                    const item = asWireRecord(parsed.item);
+                    sawToolCall = mergeResponsesToolItem(toolCalls, outputIndex, item) || sawToolCall;
+                    if (type === "response.output_item.done" && item && typeof item.type === "string") {
+                        outputItems.set(outputIndex, { ...item } as ResponsesOutputItem);
+                    }
                     continue;
                 }
                 if (type === "response.function_call_arguments.delta") {
                     const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
                     const delta = typeof parsed.delta === "string" ? parsed.delta : "";
                     const acc = toolCalls.get(outputIndex) || {
-                        id: cleanWire(parsed.item_id) || `call_${outputIndex}`,
+                        itemId: cleanWire(parsed.item_id) || `fc_${outputIndex}`,
+                        callId: "",
+                        outputIndex,
                         name: "",
                         args: "",
                     };
@@ -1717,7 +1755,8 @@ export async function* streamResponses(
                         type: "tool-call-delta",
                         toolCallDelta: {
                             index: outputIndex,
-                            ...(acc.id ? { id: acc.id } : {}),
+                            ...(acc.callId ? { id: acc.callId, callId: acc.callId } : {}),
+                            ...(acc.itemId ? { itemId: acc.itemId } : {}),
                             ...(acc.name ? { name: acc.name } : {}),
                             ...(delta ? { arguments: delta } : {}),
                         },
@@ -1727,7 +1766,9 @@ export async function* streamResponses(
                 if (type === "response.function_call_arguments.done") {
                     const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
                     const acc = toolCalls.get(outputIndex) || {
-                        id: cleanWire(parsed.item_id) || `call_${outputIndex}`,
+                        itemId: cleanWire(parsed.item_id) || `fc_${outputIndex}`,
+                        callId: "",
+                        outputIndex,
                         name: "",
                         args: "",
                     };
@@ -1744,6 +1785,8 @@ export async function* streamResponses(
                         lastUsage = usageFromOpenAIWire(responseRecord.usage);
                         lastStatus = responseRecord.status;
                         sawToolCall = mergeResponsesCompletedToolCalls(toolCalls, responseRecord) || sawToolCall;
+                        const completedItems = outputItemsFromResponses(responseRecord) || [];
+                        completedItems.forEach((item, index) => outputItems.set(index, item));
                     }
                     continue;
                 }
@@ -1763,12 +1806,24 @@ export async function* streamResponses(
     }
 
     if (sawToolCall) {
-        for (const acc of toolCalls.values()) {
+        for (const [index, acc] of toolCalls.entries()) {
             yield {
                 type: "tool-call",
-                toolCall: { id: acc.id, name: acc.name, arguments: acc.args || "{}" },
+                toolCall: {
+                    id: acc.callId || `call_${index}`,
+                    itemId: acc.itemId,
+                    callId: acc.callId || `call_${index}`,
+                    name: acc.name,
+                    arguments: acc.args || "{}",
+                    index: acc.outputIndex,
+                },
             };
         }
+    }
+
+
+    for (const [outputIndex, item] of [...outputItems.entries()].sort(([left], [right]) => left - right)) {
+        yield { type: "output-item", outputIndex, item };
     }
 
     yield {

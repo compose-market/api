@@ -178,16 +178,21 @@ function hasNonTextContent(messages: Message[]): boolean {
     return false;
 }
 
-function toolsToWire(tools: Tool[] | undefined): Tool[] | undefined {
+function toolsToWire(tools: Tool[] | undefined): Array<Record<string, unknown>> | undefined {
     if (!tools || tools.length === 0) return undefined;
     return tools.map((tool) => ({
         type: "function",
         function: {
-            name: tool.function.name,
-            ...(tool.function.description ? { description: tool.function.description } : {}),
-            parameters: lower.object(tool.function.parameters),
+            name: tool.name,
+            ...(tool.description ? { description: tool.description } : {}),
+            parameters: lower.object(tool.parameters),
         },
     }));
+}
+
+function toolChoiceToWire(choice: Choice | undefined): unknown {
+    if (!choice || typeof choice === "string") return choice;
+    return { type: "function", function: { name: choice.name } };
 }
 
 /**
@@ -215,7 +220,7 @@ export function buildChatBody(
                 ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
                 ...(options.stop ? { stop: options.stop } : {}),
                 ...(options.tools ? { tools: toolsToWire(options.tools) } : {}),
-                ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
+                ...(options.toolChoice ? { tool_choice: toolChoiceToWire(options.toolChoice) } : {}),
                 ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
                 ...(typeof options.enableThinking === "boolean" ? { enable_thinking: options.enableThinking } : {}),
                 ...(typeof options.thinkingBudget === "number" ? { thinking_budget: options.thinkingBudget } : {}),

@@ -541,12 +541,12 @@ export const PROVIDERS = [
     "azure",
     "vertex",
     "fireworks",
+    "deepinfra",
     "cloudflare",
     "deepgram",
     "elevenlabs",
     "cartesia",
     "roboflow",
-    "aiml",
 ] as const;
 
 export type ModelProvider = typeof PROVIDERS[number];
@@ -573,7 +573,7 @@ export const PROVIDER_PRIORITY: Record<ModelProvider, number> = {
     "deepgram": 2,
     "elevenlabs": 2,
     "cartesia": 2,
-    "aiml": 2,
+    "deepinfra": 2,
     "asicloud": 3,
     "cloudflare": 3,
     "roboflow": 3,
@@ -650,6 +650,43 @@ export type TaskType =
 
 export type ModelPricing = Record<string, unknown>;
 
+export interface ModelSemanticParameter {
+    name: string;
+    type?: string;
+    required?: boolean;
+    description?: string;
+    [key: string]: unknown;
+}
+
+export interface ModelOperationCapability {
+    modality: string;
+    operation: string;
+    input?: string[];
+    output?: string[];
+    sourceTypes?: string[];
+    streamable?: boolean;
+    pricingUnits?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+}
+
+/** Compiled, provider-neutral facts produced by the catalog classifiers. */
+export interface ModelSemantics {
+    family?: string;
+    modalities?: string[];
+    operations?: string[];
+    inputs?: string[];
+    outputs?: string[];
+    sourceTypes?: string[];
+    streamable?: boolean;
+    capabilityKeys?: string[];
+    parameterKeys?: string[];
+    parameters?: ModelSemanticParameter[];
+    metadata?: string[];
+    operationCapabilities?: ModelOperationCapability[];
+    characteristics?: string[];
+    [key: string]: unknown;
+}
+
 // =============================================================================
 // ModelCard - The Canonical Model Schema
 // =============================================================================
@@ -706,7 +743,7 @@ export interface ModelCard {
     /** Optional source tracking. */
     availableFrom?: ModelProvider[];
     /** Derived semantic routing/search profile compiled from catalog classifiers. */
-    semantics?: unknown;
+    semantics?: ModelSemantics;
 }
 
 // =============================================================================

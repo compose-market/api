@@ -106,7 +106,7 @@ export function classifyVisionModel(model: ModelCard, source: ModelSourceShape):
   }
 
   if (
-    (hasSourceType(source, ["zero-shot-classification"]) && hasInput(source, "image"))
+    (hasSourceType(source, ["zero-shot-classification", "zero-shot-image-classification"]) && hasInput(source, "image"))
     || (hasInput(source, "image") && hasInput(source, "text") && hasCompareEvidence(model))
   ) {
     capabilities.push(buildCapability(model, source, "image", "zero-shot-classification", false, {

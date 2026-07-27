@@ -1,15 +1,24 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import {
+  executeRequest,
   handleAudioSpeech,
   handleAudioTranscription,
-  handleChatCompletions,
   handleEmbeddings,
   handleImageGeneration,
   handleResponses,
   handleVideoGeneration,
 } from "./gateway.js";
-import { getCompiledModels, getModelById, resolveModel, type ModelCard, type ResolvedModel } from "./catalog/registry.js";
+import { normalizeResponsesRequest } from "./core.js";
+import {
+  getCompiledModels,
+  getModelById,
+  getModelProtocolProfile,
+  resolveModel,
+  type ModelCard,
+  type ResolvedModel,
+} from "./catalog/registry.js";
 import { extractKeyFromHeader, validateKey } from "../x402/keys/middleware.js";
+import { publicOriginFromRequest } from "../http/public-origin.js";
 
 const URLS = /\bhttps?:\/\/[^\s"'<>)]*/gi;
 const OPEN = "compose-market";
@@ -29,6 +38,10 @@ const configs = new Map<string, Cached>();
 
 function catalog(): ModelCard[] {
   return getCompiledModels().models;
+}
+
+function textCatalog(): ModelCard[] {
+  return catalog().filter((model) => getModelProtocolProfile(model).interactiveText);
 }
 
 function upstream(model: Pick<ModelCard, "modelId" | "upstreamModelId">): string {
@@ -99,11 +112,6 @@ function list(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function yes(model: ModelCard, keys: string[]): boolean {
-  const caps = record(model.capabilities);
-  return keys.some((key) => caps?.[key] === true);
-}
-
 function limit(model: ModelCard): Record<string, number> | undefined {
   const context = record(model.contextWindow);
   const contextTokens = typeof model.contextWindow === "number"
@@ -148,12 +156,12 @@ function price(model: ModelCard): Record<string, number> | undefined {
 function meta(model: ModelCard): Record<string, unknown> {
   const input = list(model.input);
   const output = list(model.output);
+  const profile = getModelProtocolProfile(model);
   const data: Record<string, unknown> = {
     name: model.name || model.modelId,
   };
-  const caps = record(model.capabilities);
-  if (caps?.reasoning === true) data.reasoning = true;
-  if (yes(model, ["tool_use", "tool_calling", "function_calling", "tools"])) data.tool_call = true;
+  if (profile.reasoning) data.reasoning = true;
+  if (profile.toolCalls) data.tool_call = true;
   if (input.some((item) => item !== "text")) data.attachment = true;
   const bounds = limit(model);
   if (bounds) data.limit = bounds;
@@ -189,11 +197,12 @@ function olimit(model: ModelCard): Record<string, number> | undefined {
 
 function ometa(model: ModelCard): Record<string, unknown> {
   const input = list(model.input);
+  const profile = getModelProtocolProfile(model);
   const data: Record<string, unknown> = {};
   if (model.name && model.name !== model.modelId) data.name = model.name;
-  const caps = record(model.capabilities);
-  if (caps?.reasoning === true) data.reasoning = true;
-  if (yes(model, ["tool_use", "tool_calling", "function_calling", "tools"])) data.tool_call = true;
+  if (profile.reasoning) data.reasoning = true;
+  if (profile.toolCalls) data.tool_call = true;
+  if (profile.parallelToolCalls) data.options = { parallelToolCalls: true };
   if (input.some((item) => item !== "text" && MODES.has(item))) data.attachment = true;
   const bounds = olimit(model);
   if (bounds) data.limit = bounds;
@@ -201,13 +210,7 @@ function ometa(model: ModelCard): Record<string, unknown> {
 }
 
 function origin(req: Request): string {
-  const configured = process.env.API_URL?.trim().replace(/\/+$/u, "");
-  if (configured) {
-    return configured;
-  }
-  const proto = req.get("x-forwarded-proto") || req.protocol || "https";
-  const host = req.get("x-forwarded-host") || req.get("host") || "api.compose.market";
-  return `${proto}://${host}`;
+  return publicOriginFromRequest(req);
 }
 
 function headers(res: Response): void {
@@ -320,12 +323,14 @@ function data(frame: string): string | null {
   return line ? line.slice("data:".length).trim() : null;
 }
 
-function frame(res: Response, value: string): string {
-  if (/^event:\s*compose\.(receipt|video\.status)/imu.test(value)) {
+type ExternalProtocol = "chat" | "responses";
+
+function frame(res: Response, value: string, protocol: ExternalProtocol): string {
+  if (/^event:\s*(receipt|compose\.receipt|compose\.video\.status|video\.status)/imu.test(value)) {
     return "";
   }
 
-  if (/^event:\s*compose\.error/mu.test(value)) {
+  if (/^event:\s*(compose\.error|error)/mu.test(value)) {
     const raw = data(value);
     let parsed: unknown = raw || "Request failed";
     if (raw) {
@@ -344,23 +349,31 @@ function frame(res: Response, value: string): string {
   }
 
   try {
-    return `data: ${JSON.stringify(body(res, JSON.parse(raw)))}\n\n`;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed
+      || typeof parsed !== "object"
+      || (protocol === "chat" && !parsed.choices && !parsed.error)
+    ) {
+      return "";
+    }
+    return `data: ${JSON.stringify(body(res, parsed))}\n\n`;
   } catch {
     return value.endsWith("\n\n") ? value : `${value}\n\n`;
   }
 }
 
-function sse(res: Response, value: string): string {
+function sse(res: Response, value: string, protocol: ExternalProtocol): string {
   if (!/^(data|event):/mu.test(value)) {
     return value;
   }
   return value
     .split("\n\n")
-    .map((item) => item.trim().length > 0 ? frame(res, item) : "")
+    .map((item) => item.trim().length > 0 ? frame(res, item, protocol) : "")
     .join("");
 }
 
-export function shape(): RequestHandler {
+export function shape(protocol: ExternalProtocol = "chat"): RequestHandler {
   return (_req, res, next) => {
     const json = res.json.bind(res);
     res.json = ((value?: unknown) => json(body(res, value))) as typeof res.json;
@@ -371,7 +384,7 @@ export function shape(): RequestHandler {
       if (!value || !/^(data|event):/mu.test(value)) {
         return write(chunk, ...args);
       }
-      const nextChunk = sse(res, value);
+      const nextChunk = sse(res, value, protocol);
       if (nextChunk.length === 0) {
         const callback = args.find((arg): arg is () => void => typeof arg === "function");
         callback?.();
@@ -454,17 +467,18 @@ function auth(): RequestHandler {
         return;
       }
 
-      if (!validation.record.chainId) {
+      if (!validation.record.network) {
         fail(
           res,
           400,
-          "Key is missing a chainId and cannot be used from OpenAI-compatible external clients.",
-          "compose_key_chain_required",
+          "Key is missing a network and cannot be used from OpenAI-compatible external clients.",
+          "compose_key_network_required",
         );
         return;
       }
 
-      req.headers["x-chain-id"] = String(validation.record.chainId);
+      req.headers["x-network-id"] = validation.record.network;
+      req.headers["x-session-user-address"] = validation.record.userAddress;
       next();
     } catch (error) {
       fail(
@@ -498,7 +512,7 @@ async function model(req: Request, res: Response): Promise<void> {
 }
 
 function config(base: string, key: boolean): Config {
-  const models = Object.fromEntries(catalog().map((model) => [
+  const models = Object.fromEntries(textCatalog().map((model) => [
     model.modelId,
     ometa(model),
   ]));
@@ -508,13 +522,10 @@ function config(base: string, key: boolean): Config {
     provider: {
       [OPEN]: {
         name: "Compose.Market",
-        npm: "@ai-sdk/openai-compatible",
+        npm: "@ai-sdk/openai",
         options: {
           baseURL: `${base}/external/v1`,
           ...(key ? { apiKey: `{env:${ENV}}` } : {}),
-          includeUsage: true,
-          timeout: false,
-          chunkTimeout: 120000,
         },
         models,
       },
@@ -535,6 +546,10 @@ function cache(req: Request): Cached {
     config: value,
     opencode: JSON.stringify(value),
     wellknown: JSON.stringify({
+      auth: {
+        command: ["sh", "-c", "printf 'compose-market'"],
+        env: "COMPOSE_MARKET_WELLKNOWN",
+      },
       config: clean,
     }),
   };
@@ -550,6 +565,21 @@ async function wellknown(req: Request, res: Response): Promise<void> {
   send(res, cache(req).wellknown);
 }
 
+async function handleExternalChatCompletions(req: Request, res: Response): Promise<void> {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const responsesBody: Record<string, unknown> = {
+    ...body,
+    input: body.messages,
+    max_output_tokens: body.max_tokens ?? body.max_completion_tokens,
+  };
+  delete responsesBody.messages;
+  delete responsesBody.max_tokens;
+  delete responsesBody.max_completion_tokens;
+
+  const request = normalizeResponsesRequest(responsesBody);
+  await executeRequest({ req, res, request, shape: "chat" });
+}
+
 function route(app: Express, method: "get" | "post", path: string, ...handlers: RequestHandler[]): void {
   app[method](path, ...handlers);
 }
@@ -557,7 +587,8 @@ function route(app: Express, method: "get" | "post", path: string, ...handlers: 
 export function register(app: Express): void {
   const guard = auth();
   const resolve = resolveExternalModel();
-  const shaped = shape();
+  const shaped = shape("chat");
+  const responsesShaped = shape("responses");
 
   route(app, "get", "/external/v1/models", asyncify(models));
   route(app, "get", "/external/v1/models/:model", asyncify(model));
@@ -568,8 +599,8 @@ export function register(app: Express): void {
   route(app, "get", "/.well-known/opencode", asyncify(wellknown));
   route(app, "get", "/external/opencode", asyncify(opencode));
 
-  route(app, "post", "/external/v1/chat/completions", resolve, shaped, guard, asyncify(handleChatCompletions));
-  route(app, "post", "/external/v1/responses", resolve, shaped, guard, asyncify(handleResponses));
+  route(app, "post", "/external/v1/chat/completions", resolve, shaped, guard, asyncify(handleExternalChatCompletions));
+  route(app, "post", "/external/v1/responses", resolve, responsesShaped, guard, asyncify(handleResponses));
   route(app, "post", "/external/v1/embeddings", resolve, shaped, guard, asyncify(handleEmbeddings));
   route(app, "post", "/external/v1/images/generations", resolve, shaped, guard, asyncify(handleImageGeneration));
   route(app, "post", "/external/v1/audio/speech", resolve, shaped, guard, asyncify(handleAudioSpeech));

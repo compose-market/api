@@ -1,8 +1,11 @@
 import { getModelById } from "../registry.js";
-import type { Message, Usage } from "../../core.js";
+import type { Call, Choice, Message, Tool, Usage } from "../../core.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { buildWanVideoSubmission } from "../families/alibaba.js";
+import {
+  buildChatBody as buildAlibabaChatBody,
+  buildWanVideoSubmission,
+} from "../families/alibaba.js";
 
 interface AlibabaBases {
   origin: string;
@@ -26,6 +29,7 @@ export interface AlibabaChatResult {
   text: string;
   usage?: Usage;
   finishReason?: string;
+  toolCalls?: Call[];
   raw: unknown;
 }
 
@@ -358,15 +362,37 @@ function dashscopeMessages(messages: Message[]): Array<Record<string, unknown>> 
     .filter((message) => Array.isArray(message.content) && message.content.length > 0);
 }
 
-function textFromOpenAIChat(raw: unknown): { text: string; finishReason?: string; usage?: Usage } {
+function textFromOpenAIChat(raw: unknown): {
+  text: string;
+  finishReason?: string;
+  usage?: Usage;
+  toolCalls?: Call[];
+} {
   const root = asRecord(raw) || {};
   const choices = Array.isArray(root.choices) ? root.choices : [];
   const first = asRecord(choices[0]) || {};
   const message = asRecord(first.message) || {};
+  const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  const toolCalls = rawCalls
+    .map((value, index): Call | null => {
+      const call = asRecord(value);
+      const fn = asRecord(call?.function);
+      const name = clean(fn?.name);
+      if (!name) return null;
+      return {
+        id: clean(call?.id) || `call_${index}`,
+        name,
+        arguments: typeof fn?.arguments === "string" ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
+      };
+    })
+    .filter((call): call is Call => call !== null);
   return {
     text: clean(message.content),
-    finishReason: clean(first.finish_reason) || undefined,
+    finishReason: toolCalls.length > 0
+      ? "tool-calls"
+      : clean(first.finish_reason) || undefined,
     usage: usageFromOpenAI(root.usage),
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
   };
 }
 
@@ -797,8 +823,8 @@ export async function generateAlibabaChat(
   options: {
     temperature?: number;
     maxTokens?: number;
-    tools?: unknown;
-    toolChoice?: unknown;
+    tools?: Tool[];
+    toolChoice?: Choice;
     responseFormat?: unknown;
     customParams?: Record<string, unknown>;
   } = {},
@@ -810,15 +836,16 @@ export async function generateAlibabaChat(
 
   const bases = basesForModel(modelId);
   if (route === "openai_chat") {
-    const raw = await postJson(`${bases.compatibleBase}/chat/completions`, {
-      model: modelId,
-      messages,
+    const request = buildAlibabaChatBody(modelId, messages, {
+      wire: "openai_chat",
       ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-      ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
+      ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
       ...(options.tools ? { tools: options.tools } : {}),
-      ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
-      ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+      ...(options.customParams ? { customParams: options.customParams } : {}),
     });
+    const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body);
     return { ...textFromOpenAIChat(raw), raw };
   }
 

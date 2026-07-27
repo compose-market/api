@@ -32,12 +32,10 @@ import {
   type HFInferenceInput,
 } from "./vendors/huggingface.js";
 import {
-  generateVertexChat,
   generateVertexEmbeddings,
   generateVertexImage,
   generateVertexSpeech,
   generateVertexVideo,
-  streamVertexChat,
   transcribeVertexAudio,
 } from "./vendors/vertex.js";
 import {
@@ -58,6 +56,14 @@ import {
   submitAlibabaVideo,
   transcribeAlibabaAudio,
 } from "./vendors/alibaba.js";
+import {
+  generateDeepInfraImage,
+  generateDeepInfraVideo,
+  generateDeepInfraSpeech,
+  generateDeepInfraMusic,
+  transcribeDeepInfraAudio,
+  rerankDeepInfraText,
+} from "./vendors/deepinfra.js";
 import {
   analyzeCloudflareImage,
   analyzeCloudflareVision,
@@ -332,6 +338,12 @@ function openaiCompatEndpointFor(provider: ModelProvider): openaiFamily.OpenAIWi
         apiKey: process.env.FIREWORKS_API_KEY || "",
         authStyle: "bearer",
       };
+    case "deepinfra":
+      return {
+        baseURL: "https://api.deepinfra.com/v1/openai",
+        apiKey: process.env.DEEPINFRA_API_KEY || "",
+        authStyle: "bearer",
+      };
     case "asicloud":
       return {
         baseURL: "https://inference.asicloud.cudos.org/v1",
@@ -351,7 +363,7 @@ function openaiCompatEndpointFor(provider: ModelProvider): openaiFamily.OpenAIWi
 
 function hasFunctionTools(request: Request): boolean {
   return Array.isArray(request.tools)
-    && request.tools.some((tool) => tool?.type === "function" && Boolean(tool.function?.name));
+    && request.tools.some((tool) => tool?.type === "function" && Boolean(tool.name));
 }
 
 function hasReasoning(request: Request): boolean {
@@ -378,6 +390,19 @@ function realtimeParams(request: Request): Record<string, unknown> | undefined {
 
 function estimateTokens(text: string): number {
   return Math.ceil((text || "").length / 4);
+}
+
+function vertexGoogleEndpoint(): ReturnType<typeof googleFamily.vertexEndpoint> {
+  const projectId = process.env.VERTEX_PROJECT_ID || "";
+  const accessToken = process.env.VERTEX_AI_API_KEY || "";
+  if (!projectId || !accessToken) {
+    throw new Error("VERTEX_PROJECT_ID and VERTEX_AI_API_KEY are required for Vertex text generation");
+  }
+  return googleFamily.vertexEndpoint({
+    projectId,
+    location: process.env.VERTEX_LOCATION || "us-central1",
+    accessToken,
+  });
 }
 
 function number(value: unknown): number | undefined {
@@ -913,6 +938,14 @@ async function transcribe(request: Request, target: AdapterTarget): Promise<Outp
           responseFormat: request.audioOptions?.responseFormat,
           customParams: request.customParams,
         });
+      case "deepinfra":
+        return transcribeDeepInfraAudio(target.modelId, audioBuffer, audioMedia.mimeType, {
+          language: request.audioOptions?.language,
+          responseFormat: request.audioOptions?.responseFormat as any,
+          prompt: supportsTranscriptionPrompt(card) ? prompt : undefined,
+          customParams: request.customParams,
+          signal: target.signal,
+        });
       default:
         throw new Error(`Speech-to-text not supported for provider: ${target.provider}`);
     }
@@ -1002,22 +1035,17 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
   }
 
   if (target.provider === "vertex") {
-    const text = await generateVertexChat(target.modelId, mapMessagesForVertex(request.messages), {
-      temperature: request.temperature,
-      maxTokens: request.maxTokens,
+    return googleFamily.chat(vertexGoogleEndpoint(), target.modelId, request.messages, {
+      ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+      ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+      ...(request.tools ? { tools: request.tools } : {}),
+      ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+      ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+      thoughtSignatureLookup: recallThoughtSignature,
+      onThoughtSignature: rememberThoughtSignature,
+      customParams: request.customParams,
+      signal: target.signal,
     });
-
-    const completionTokens = estimateTokens(text);
-    return {
-      modality: "text",
-      content: text,
-      usage: {
-        promptTokens: 0,
-        completionTokens,
-        totalTokens: completionTokens,
-      },
-      finishReason: "stop",
-    };
   }
 
   if (target.provider === "azure") {
@@ -1029,6 +1057,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       responseFormat: request.responseFormat,
       customParams: request.customParams,
       operation: request.operation,
+      inputItems: request.mode === "responses" ? request.inputItems : undefined,
     });
 
     return {
@@ -1041,6 +1070,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       },
       finishReason: result.finishReason || "stop",
       ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+      ...(result.outputItems ? { outputItems: result.outputItems } : {}),
     };
   }
 
@@ -1063,6 +1093,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
         totalTokens: estimateTokens(result.text),
       },
       finishReason: result.finishReason || "stop",
+      ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
     };
   }
 
@@ -1090,6 +1121,27 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
         ? custom.contexts
         : [];
     const result = await rerankCloudflareText(
+      target.modelId,
+      typeof custom.query === "string" ? custom.query : getPrimaryText(request.messages),
+      documents as Array<string | Record<string, unknown>>,
+      custom,
+    );
+    return {
+      modality: "text",
+      content: result.text,
+      usage: result.usage,
+      finishReason: "stop",
+    };
+  }
+
+  if (target.provider === "deepinfra" && operation(request) === "rerank") {
+    const custom = request.customParams || {};
+    const documents = Array.isArray(custom.documents)
+      ? custom.documents
+      : Array.isArray(custom.contexts)
+        ? custom.contexts
+        : [];
+    const result = await rerankDeepInfraText(
       target.modelId,
       typeof custom.query === "string" ? custom.query : getPrimaryText(request.messages),
       documents as Array<string | Record<string, unknown>>,
@@ -1154,7 +1206,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
   // fireworks, asicloud, hugging face router).
   const endpoint = openaiCompatEndpointFor(target.provider);
   if (useOpenAIResponsesWire(request, target)) {
-    return openaiFamily.responses(endpoint, target.modelId, openaiFamily.mapMessagesForResponsesWire(request.messages), {
+    return openaiFamily.responses(
+      endpoint,
+      target.modelId,
+      request.mode === "responses" && request.inputItems?.length
+        ? request.inputItems
+        : openaiFamily.mapMessagesForResponsesWire(request.messages),
+      {
       ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
       ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
       ...(request.tools ? { tools: request.tools } : {}),
@@ -1162,7 +1220,8 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
       customParams: request.customParams,
       signal: target.signal,
-    });
+      },
+    );
   }
   return openaiFamily.chat(endpoint, target.modelId, request.messages, {
     ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
@@ -1478,6 +1537,31 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
           },
         };
       }
+      case "deepinfra": {
+        const imageUrls = findUrls(request.messages, "image_url");
+        const imgUrl = request.imageOptions?.imageUrl || imageUrls[0];
+        const maskUrl = imageUrls[1];
+
+        const result = await generateDeepInfraImage(target.modelId, prompt, {
+          size: request.imageOptions?.size,
+          quality: request.imageOptions?.quality,
+          n: request.imageOptions?.n,
+          imageUrl: imgUrl,
+          maskUrl,
+          signal: target.signal,
+          customParams,
+        });
+        return {
+          buffer: result.buffer,
+          mimeType: result.mimeType,
+          usage: {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            billingMetrics: { image: 1 },
+          },
+        };
+      }
       default:
         throw new Error(`Image generation not supported for provider: ${target.provider}`);
     }
@@ -1716,6 +1800,15 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
         const result = await executeHFInference(input);
         return { buffer: result.data as Buffer, mimeType: "video/mp4" };
       }
+      case "deepinfra": {
+        const result = await generateDeepInfraVideo(target.modelId, prompt, {
+          imageUrl,
+          videoUrl,
+          signal: target.signal,
+          customParams,
+        });
+        return { buffer: result.buffer, mimeType: result.mimeType };
+      }
       default:
         throw new Error(`Video generation not supported for provider: ${target.provider}`);
     }
@@ -1926,6 +2019,21 @@ async function invokeAudio(request: Request, target: AdapterTarget): Promise<Out
           voice: request.audioOptions?.voice,
           responseFormat: request.audioOptions?.responseFormat,
           speed: request.audioOptions?.speed,
+          customParams: request.customParams,
+        });
+      case "deepinfra":
+        if (operation(request) === "music-generation" || hasType(card, "music-generation")) {
+          return generateDeepInfraMusic(target.modelId, prompt, {
+            language: request.audioOptions?.language,
+            signal: target.signal,
+            customParams: request.customParams,
+          });
+        }
+        return generateDeepInfraSpeech(target.modelId, prompt, {
+          voice: request.audioOptions?.voice,
+          responseFormat: request.audioOptions?.responseFormat,
+          speed: request.audioOptions?.speed,
+          signal: target.signal,
           customParams: request.customParams,
         });
       default:
@@ -2282,45 +2390,35 @@ export async function* streamWithTools(
     return;
   }
 
-  if (target.provider === "vertex") {
-    const queue = new AsyncEventQueue<Event>();
-
-    void (async () => {
-      let fullText = "";
-      try {
-        await streamVertexChat(target.modelId, mapMessagesForVertex(request.messages), {
-          temperature: request.temperature,
-          maxTokens: request.maxTokens,
-          onToken: async (token) => {
-            fullText += token;
-            queue.push({ type: "text-delta", text: token });
-          },
-          onComplete: async () => {
-            const completionTokens = estimateTokens(fullText);
-            queue.push({
-              type: "done",
-              finishReason: "stop",
-              usage: {
-                promptTokens: 0,
-                completionTokens,
-                totalTokens: completionTokens,
-              },
-            });
-            queue.end();
-          },
-          onError: async (error) => {
-            queue.error(error);
-          },
-        });
-      } catch (error) {
-        queue.error(error);
-      }
-    })();
-
-    for await (const event of queue) {
-      yield event;
+  if (target.provider === "deepinfra" && operation(request) === "rerank") {
+    const output = await invokeText(request, target);
+    if (output.content) {
+      yield { type: "text-delta", text: output.content };
     }
+    yield {
+      type: "done",
+      finishReason: output.finishReason || "stop",
+      usage: output.usage || {
+        promptTokens: estimateTokens(getPrimaryText(request.messages)),
+        completionTokens: estimateTokens(output.content || ""),
+        totalTokens: estimateTokens(getPrimaryText(request.messages)) + estimateTokens(output.content || ""),
+      },
+    };
+    return;
+  }
 
+  if (target.provider === "vertex") {
+    yield* googleFamily.streamChat(vertexGoogleEndpoint(), target.modelId, request.messages, {
+      ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+      ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+      ...(request.tools ? { tools: request.tools } : {}),
+      ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+      ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+      thoughtSignatureLookup: recallThoughtSignature,
+      onThoughtSignature: rememberThoughtSignature,
+      customParams: request.customParams,
+      signal: target.signal,
+    });
     return;
   }
 
@@ -2333,6 +2431,7 @@ export async function* streamWithTools(
       responseFormat: request.responseFormat,
       customParams: request.customParams,
       operation: request.operation,
+      inputItems: request.mode === "responses" ? request.inputItems : undefined,
     });
     if (result.text) {
       yield { type: "text-delta", text: result.text };
@@ -2343,8 +2442,11 @@ export async function* streamWithTools(
         type: "tool-call",
         toolCall: {
           id: call.id || `call_${callIndex}`,
+          ...(call.itemId ? { itemId: call.itemId } : {}),
+          ...(call.callId ? { callId: call.callId } : {}),
           name: call.name,
           arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
+          index: call.outputIndex ?? callIndex,
           ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
         },
       };
@@ -2373,6 +2475,18 @@ export async function* streamWithTools(
     });
     if (result.text) {
       yield { type: "text-delta", text: result.text };
+    }
+    for (const [index, call] of (result.toolCalls || []).entries()) {
+      yield {
+        type: "tool-call",
+        toolCall: {
+          id: call.id || `call_${index}`,
+          name: call.name,
+          arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
+          index,
+          ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
+        },
+      };
     }
     yield {
       type: "done",
@@ -2411,7 +2525,13 @@ export async function* streamWithTools(
   // cloudflare, fireworks, asicloud, hugging face router).
   const endpoint = openaiCompatEndpointFor(target.provider);
   if (useOpenAIResponsesWire(request, target)) {
-    yield* openaiFamily.streamResponses(endpoint, target.modelId, openaiFamily.mapMessagesForResponsesWire(request.messages), {
+    yield* openaiFamily.streamResponses(
+      endpoint,
+      target.modelId,
+      request.mode === "responses" && request.inputItems?.length
+        ? request.inputItems
+        : openaiFamily.mapMessagesForResponsesWire(request.messages),
+      {
       ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
       ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
       ...(request.tools ? { tools: request.tools } : {}),
@@ -2419,7 +2539,8 @@ export async function* streamWithTools(
       ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
       customParams: request.customParams,
       signal: target.signal,
-    });
+      },
+    );
     return;
   }
   for await (const event of openaiFamily.streamChat(endpoint, target.modelId, request.messages, {

@@ -38,27 +38,19 @@ while external routes keep response bodies compatible with OpenAI-style clients.
 The generated catalog is the source of truth for provider rows. It is
 deduplicated by provider priority.
 
-```text
-504 curated models
-11 providers
-6 modalities (text, image, audio, video, embedding, realtime)
-20 task types
-30 model families
-```
-
-| Provider | Models | Role |
+| Provider | Role |
 | --- | --- | --- |
-| `gemini` | 43 | Google AI direct wire |
-| `azure` | 29 | Azure Microsoft Foundry |
-| `fireworks` | 14 | Fireworks AI |
-| `alibaba` | 212 | Alibaba Cloud (Qwen, Wan, CosyVoice) |
-| `openai` | 22 | OpenAI direct + Responses wire |
-| `cloudflare` | 62 | Cloudflare Workers AI |
-| `deepgram` | 8 | Deepgram TTS + STT + realtime |
-| `elevenlabs` | 11 | ElevenLabs TTS + music + realtime |
-| `cartesia` | 13 | Cartesia TTS |
-| `roboflow` | 84 | Roboflow vision, embeddings, OCR |
-| `asicloud` | 6 | ASI Cloud |
+| `gemini` | Google AI direct wire |
+| `azure` | Azure Microsoft Foundry |
+| `fireworks` | Fireworks AI |
+| `alibaba` | Alibaba Cloud (Qwen, Wan, CosyVoice) |
+| `openai` | OpenAI direct + Responses wire |
+| `cloudflare` | Cloudflare Workers AI |
+| `deepgram` | Deepgram TTS + STT + realtime |
+| `elevenlabs` | ElevenLabs TTS + music + realtime |
+| `cartesia` | Cartesia TTS |
+| `roboflow` | Roboflow vision, embeddings, OCR |
+| `asicloud` | ASI Cloud |
 
 The model string is the contract. Compose does not inspect the prompt to guess
 a provider, and it does not silently fall back to a duplicate provider row.
@@ -74,7 +66,7 @@ other provider rows get readable public aliases.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/v1/models` | Compiled catalog (504 models). |
+| `GET` | `/v1/models` | Compiled catalog. |
 | `GET` | `/v1/models/all` | Extended catalog, when present. |
 | `POST` | `/v1/models/search` | Filter by provider, modality, operation, streaming, context, price. |
 | `GET` | `/v1/families` | Model family catalog. |
@@ -140,6 +132,21 @@ catalog.
 Chat and responses streams use OpenAI-shaped SSE chunks. Native routes can also
 emit Compose named events:
 
+`/v1/responses` and `/external/v1/responses` use the native Responses protocol,
+not Chat Completions chunks. Function tools are flat objects with `type`, `name`,
+`description`, and `parameters`. A streamed function call keeps three values
+distinct: its `output_index`, output-item `id`, and continuation `call_id`.
+Interleaved argument deltas are keyed by output item and the terminal
+`response.completed` contains the complete ordered output array.
+
+Compose asks the selected model for tool calls; the calling IDE or agent runtime
+executes those tools. Clients can return several results together as
+`function_call_output` input items. Stored continuation through
+`previous_response_id` is backed only by durable response state. If that state is
+unavailable, the API returns `503 response_state_unavailable` instead of silently
+falling back to process memory. `parallel_tool_calls` is accepted only when the
+compiled model catalog declares that parameter.
+
 | Event | Meaning |
 | --- | --- |
 | `receipt` | Payment settled. Final amount, network, line items, optional transaction hash. |
@@ -152,7 +159,7 @@ External streams remove these events and keep the stream OpenAI-shaped.
 curl -N https://api.compose.market/v1/chat/completions \
   -H "Authorization: Bearer $COMPOSE_MARKET_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "x-chain-id: 43113" \
+  -H "x-network-id: 43113" \
   -d '{
     "model": "gpt-5.5",
     "stream": true,

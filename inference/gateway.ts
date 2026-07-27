@@ -1,5 +1,6 @@
 import type { Express, NextFunction, Request as Req, Response as Res } from "express";
 import type { PaymentRequired } from "@x402/core/types";
+import { publicResourceUrl } from "../http/public-origin.js";
 
 import {
   getCompiledModels,
@@ -30,11 +31,18 @@ import {
 } from "../x402/metering.js";
 import {
   kickBatchSettlement,
+  getNetworkFromRequest,
+  getPaymentSignatureFromRequest,
   prepareInferencePayment,
   settlePreparedInferencePayment,
   type PreparedInferencePayment,
   type InferenceAuthorizationInput,
 } from "../x402/index.js";
+import {
+  buildModelEndpointPaymentRequired,
+  sendPaymentRequired,
+  shouldDirectChallenge,
+} from "../x402/discovery.js";
 import { type Receipt } from "../http/request-context.js";
 import {
   type MeteredSettlementInput,
@@ -49,6 +57,7 @@ import {
   type ReceiptContext,
 } from "../x402/receipts.js";
 import { recordChargeEvidence, type EvidenceKind } from "../x402/evidence.js";
+import { isNetworkId, type NetworkId } from "../x402/configs/chains.js";
 import {
   createErrorResponse as createCoreErrorResponse,
   formatSSE as formatCoreSSE,
@@ -65,6 +74,7 @@ import {
   toResponsesOutputItems,
   toResponsesResponse,
   toResponsesStreamEvent,
+  validateParallelToolCalls,
   toReceiptStreamEvent,
   toErrorStreamEvent,
   toVideoStatusStreamEvent,
@@ -74,6 +84,7 @@ import {
   type Request,
   type Event,
 } from "./core.js";
+import { ResponsesStreamEncoder } from "./responses.js";
 import {
   appendRealtime as appendRealtimeEngine,
   cancel as cancelEngine,
@@ -82,7 +93,16 @@ import {
   retrieve as retrieveEngine,
   stream as streamEngine,
 } from "./engine.js";
-import { valkeyGet, valkeySet } from "../x402/keys/valkey.js";
+import {
+  responseStateStore,
+  type StoredResponseRecord,
+} from "./state.js";
+import {
+  addInferenceSettlement,
+  finishInferenceTelemetry,
+  markInferenceFirstOutput,
+  startInferenceTelemetry,
+} from "./events.js";
 
 export { attachReceiptToJsonBody, receiptForJsonBody };
 
@@ -323,20 +343,6 @@ export interface ModelsListResponse {
   data: ModelCard[];
 }
 
-interface StoredResponseRecord {
-  id: string;
-  model: string;
-  provider: ModelProvider;
-  operation?: string;
-  createdAt: number;
-  status: "in_progress" | "completed" | "failed" | "cancelled";
-  inputMessages?: CoreMessage[];
-  previousResponseId?: string;
-  output?: Output;
-  jobId?: string;
-  error?: string;
-}
-
 // =============================================================================
 // CORS
 // =============================================================================
@@ -391,6 +397,7 @@ export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "GET", path: "/v1/models/:model/params", handler: handleModelParams, description: "Model optional params" },
   { method: "GET", path: "/v1/models/:model", handler: handleGetModel, description: "Get model" },
   { method: "POST", path: "/v1/responses", handler: handleResponses, description: "Canonical request responses API" },
+  { method: "POST", path: "/v1/responses/:modelId", handler: handleModelResponses, description: "Concrete model Responses API" },
   { method: "GET", path: "/v1/responses/:id", handler: handleGetResponse, description: "Retrieve response by ID" },
   { method: "GET", path: "/v1/responses/:id/input_items", handler: handleGetResponseInputItems, description: "Retrieve response input items" },
   { method: "POST", path: "/v1/responses/:id/input_items", handler: handleAppendResponseInputItems, description: "Append input to live realtime response" },
@@ -702,23 +709,25 @@ export function adaptError(
   }
 
   if (statusCode === 404) {
+    const record = getErrorRecord(error);
     return {
       status: 404,
       body: createErrorResponse(
         error instanceof Error ? error.message : "Model not found",
         "invalid_request_error",
-        "model_not_found",
+        typeof record?.code === "string" ? record.code : "model_not_found",
       ),
     };
   }
 
   if (statusCode === 400) {
+    const record = getErrorRecord(error);
     return {
       status: 400,
       body: createErrorResponse(
         error instanceof Error ? error.message : "Invalid request",
         "invalid_request_error",
-        "invalid_request",
+        typeof record?.code === "string" ? record.code : "invalid_request",
       ),
     };
   }
@@ -753,6 +762,18 @@ export function adaptError(
         error instanceof Error ? error.message : "Upstream timeout",
         "upstream_error",
         typeof record?.code === "string" ? record.code : "upstream_timeout",
+      ),
+    };
+  }
+
+  if (statusCode === 503) {
+    const record = getErrorRecord(error);
+    return {
+      status: 503,
+      body: createErrorResponse(
+        error instanceof Error ? error.message : "Response state is unavailable",
+        "server_error",
+        typeof record?.code === "string" ? record.code : "response_state_unavailable",
       ),
     };
   }
@@ -962,8 +983,6 @@ function applyLegacyAttachments(messages: CoreMessage[], body: ChatCompletionReq
 
 type ResponseShape = "responses" | "chat" | "embeddings";
 
-const RESPONSE_RECORD_TTL_SECONDS = 24 * 60 * 60;
-const responseRecordMemory = new Map<string, StoredResponseRecord>();
 const DEFAULT_DIRECT_CALL_TIMEOUT_MS = 4 * 60_000;
 
 class UpstreamTimeoutError extends Error {
@@ -1091,37 +1110,12 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function responseRecordKey(id: string): string {
-  return `responses:record:${id}`;
-}
-
 async function saveResponseRecord(record: StoredResponseRecord): Promise<void> {
-  responseRecordMemory.set(record.id, record);
-  try {
-    await valkeySet(responseRecordKey(record.id), JSON.stringify(record), RESPONSE_RECORD_TTL_SECONDS);
-  } catch (error) {
-    console.warn("[gateway] Failed to persist response record to ValKey:", error instanceof Error ? error.message : String(error));
-  }
+  await responseStateStore.save(record);
 }
 
 async function getResponseRecord(id: string): Promise<StoredResponseRecord | null> {
-  const memory = responseRecordMemory.get(id);
-  if (memory) {
-    return memory;
-  }
-
-  try {
-    const raw = await valkeyGet(responseRecordKey(id));
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as StoredResponseRecord;
-    responseRecordMemory.set(id, parsed);
-    return parsed;
-  } catch (error) {
-    console.warn("[gateway] Failed to read response record from ValKey:", error instanceof Error ? error.message : String(error));
-    return null;
-  }
+  return responseStateStore.get(id);
 }
 
 function applyRoutingHeaders(
@@ -1165,16 +1159,21 @@ async function settlePaidInference(args: {
   request: Request;
   output: Output;
   resolved: ResolvedModel;
-}): Promise<Receipt | null> {
+}): Promise<{
+  receipt: Receipt | null;
+  settlement: Awaited<ReturnType<typeof settlePreparedInferencePayment>>;
+  quote: ReturnType<typeof buildSettlementMeterFromOutput>;
+}> {
+  const quote = buildSettlementMeterFromOutput({
+    request: args.request,
+    output: args.output,
+    resolved: args.resolved,
+  });
   const settlementReceipt = await settlePreparedInferencePayment(
     args.payment,
     args.res,
     {
-      meter: buildSettlementMeterFromOutput({
-        request: args.request,
-        output: args.output,
-        resolved: args.resolved,
-      }).meter as MeteredSettlementInput,
+      meter: quote.meter as MeteredSettlementInput,
     },
   );
 
@@ -1217,7 +1216,7 @@ async function settlePaidInference(args: {
         sessionBudgetIntentId: settlementReceipt.sessionBudgetIntentId,
         paymentChannelId: settlementReceipt.paymentChannelId,
         paymentCumulativeAmountWei: settlementReceipt.paymentCumulativeAmountWei,
-        chainId: settlementReceipt.chainId || getChainIdFromInferenceRequest(args.req),
+        network: settlementReceipt.network || getNetworkFromInferenceRequest(args.req),
         settledAt: settlementReceipt.settledAt,
       });
     }
@@ -1226,16 +1225,16 @@ async function settlePaidInference(args: {
     if (shouldKickSettlement(args.req)) {
       await kickBatchSettlement(settlementReceipt, "inference:evidence");
     }
-    return null;
+    return { receipt: null, settlement: settlementReceipt, quote };
   }
   const receipt = await finalizeReceipt(
-    receiptFromInferenceSettlement(settlementReceipt, getChainIdFromInferenceRequest(args.req)),
+    receiptFromInferenceSettlement(settlementReceipt, getNetworkFromInferenceRequest(args.req)),
     receiptContextFromInferenceRequest(args.req),
   );
   if (shouldKickSettlement(args.req)) {
     await kickBatchSettlement(settlementReceipt, "inference:receipt");
   }
-  return receipt;
+  return { receipt, settlement: settlementReceipt, quote };
 }
 
 function metricDelta(current?: Record<string, unknown>, previous?: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -1327,12 +1326,11 @@ function readHeader(req: Req, name: string): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function getChainIdFromInferenceRequest(req: Req): number | undefined {
-  const header = req.get?.("x-chain-id") || req.headers?.["x-chain-id"];
+function getNetworkFromInferenceRequest(req: Req): NetworkId | undefined {
+  const header = req.get?.("x-network-id") || req.headers?.["x-network-id"];
   if (!header) return undefined;
   const value = Array.isArray(header) ? header[0] : header;
-  const parsed = parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return isNetworkId(String(value)) ? String(value) as NetworkId : undefined;
 }
 
 function receiptContextFromInferenceRequest(req: Req): ReceiptContext {
@@ -1344,7 +1342,7 @@ function receiptContextFromInferenceRequest(req: Req): ReceiptContext {
     action: kind === "model"
       ? `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`
       : resourceAction(req, `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`),
-    resource: `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url || ""}`,
+    resource: publicResourceUrl(req),
     userAddress: typeof userAddress === "string" ? userAddress.toLowerCase() : undefined,
   };
 }
@@ -1420,7 +1418,7 @@ async function buildResponsesHistory(responseId: string, visited = new Set<strin
   visited.add(responseId);
   const record = await getResponseRecord(responseId);
   if (!record) {
-    throw Object.assign(new Error(`Response '${responseId}' not found`), { statusCode: 404 });
+    throw Object.assign(new Error(`Response '${responseId}' not found`), { statusCode: 404, code: "response_not_found" });
   }
 
   const prior = record.previousResponseId
@@ -1434,9 +1432,34 @@ async function buildResponsesHistory(responseId: string, visited = new Set<strin
     : [...prior, ...inputMessages];
 }
 
+async function buildResponsesItemHistory(
+  responseId: string,
+  visited = new Set<string>(),
+): Promise<Record<string, unknown>[]> {
+  if (visited.has(responseId)) {
+    throw Object.assign(new Error(`Response history cycle detected for '${responseId}'`), { statusCode: 400 });
+  }
+
+  visited.add(responseId);
+  const record = await getResponseRecord(responseId);
+  if (!record) {
+    throw Object.assign(new Error(`Response '${responseId}' not found`), { statusCode: 404, code: "response_not_found" });
+  }
+
+  const prior = record.previousResponseId
+    ? await buildResponsesItemHistory(record.previousResponseId, visited)
+    : [];
+  const inputItems = Array.isArray(record.inputItems) ? record.inputItems : [];
+  const outputItems = record.output ? toResponsesOutputItems(record.output) : [];
+  return [...prior, ...inputItems, ...outputItems];
+}
+
 async function hydrateResponsesRequest(request: Request): Promise<Request> {
   const priorMessages = request.previousResponseId
     ? await buildResponsesHistory(request.previousResponseId)
+    : [];
+  const priorItems = request.previousResponseId
+    ? await buildResponsesItemHistory(request.previousResponseId)
     : [];
   const currentMessages = request.instructions
     ? [{ role: "system", content: request.instructions } satisfies CoreMessage, ...priorMessages, ...request.messages]
@@ -1445,10 +1468,14 @@ async function hydrateResponsesRequest(request: Request): Promise<Request> {
   return {
     ...request,
     messages: currentMessages,
+    inputItems: [...priorItems, ...(request.inputItems || [])],
   };
 }
 
 function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unknown>[] {
+  if (Array.isArray(record.inputItems)) {
+    return record.inputItems.map((item) => ({ ...item }));
+  }
   return (record.inputMessages || []).map((message) => ({
     role: message.role,
     content: message.content,
@@ -1458,7 +1485,61 @@ function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unkn
   }));
 }
 
-async function executeRequest(args: {
+function writeResponsesEvents(res: Res, encoder: ResponsesStreamEncoder, event: Event): void {
+  for (const payload of encoder.push(event)) {
+    res.write(formatCoreSSE(payload));
+  }
+}
+
+function writeDirectResponsesOutput(
+  res: Res,
+  encoder: ResponsesStreamEncoder,
+  output: Output,
+): void {
+  toResponsesOutputItems(output).forEach((item, outputIndex) => {
+    if (item.type === "function_call") {
+      writeResponsesEvents(res, encoder, {
+        type: "tool-call",
+        outputIndex,
+        toolCall: {
+          id: typeof item.call_id === "string" ? item.call_id : "",
+          itemId: typeof item.id === "string" ? item.id : undefined,
+          callId: typeof item.call_id === "string" ? item.call_id : undefined,
+          index: outputIndex,
+          name: typeof item.name === "string" ? item.name : "",
+          arguments: typeof item.arguments === "string" ? item.arguments : "{}",
+        },
+      });
+      return;
+    }
+
+    if (item.type === "message") {
+      const content = Array.isArray(item.content) ? item.content : [];
+      for (const part of content) {
+        const record = part && typeof part === "object" && !Array.isArray(part)
+          ? part as Record<string, unknown>
+          : null;
+        if (record?.type === "output_text" && typeof record.text === "string") {
+          writeResponsesEvents(res, encoder, {
+            type: "text-delta",
+            itemId: typeof item.id === "string" ? item.id : undefined,
+            outputIndex,
+            text: record.text,
+          });
+        }
+      }
+      return;
+    }
+
+    writeResponsesEvents(res, encoder, {
+      type: "output-item",
+      outputIndex,
+      item,
+    });
+  });
+}
+
+export async function executeRequest(args: {
   req: Req;
   res: Res;
   request: Request;
@@ -1472,6 +1553,8 @@ async function executeRequest(args: {
     args.res.status(400).json(createCoreErrorResponse("model is required", "invalid_request_error", "missing_model"));
     return;
   }
+
+  validateParallelToolCalls(request);
 
   if (!validateStreamingModality(request, args.res)) {
     return;
@@ -1487,6 +1570,18 @@ async function executeRequest(args: {
     lifecycle.cleanup();
     return;
   }
+  const telemetry = startInferenceTelemetry({
+    userAddress: readHeader(args.req, "x-session-user-address"),
+    network: getNetworkFromInferenceRequest(args.req),
+    request,
+    resolved: paid.resolved,
+  });
+  let telemetryFinished = false;
+  const finishTelemetry = async (status: "succeeded" | "failed" | "aborted", error?: unknown) => {
+    if (telemetryFinished) return;
+    telemetryFinished = true;
+    await finishInferenceTelemetry(telemetry, status, error);
+  };
   let paymentTerminal = false;
   const abortPaidInference = async (reason: string) => {
     if (paymentTerminal) {
@@ -1496,15 +1591,9 @@ async function executeRequest(args: {
     await paid.payment.abort(reason);
   };
   const settleOutput = async (output: Output) => {
-    const receipt = await settlePaidInference({
-      req: args.req,
-      res: args.res,
-      payment: paid.payment,
-      request,
-      output,
-      resolved: paid.resolved,
-    });
+    const { receipt, settlement, quote } = await settlePaidInference({ req: args.req, res: args.res, payment: paid.payment, request, output, resolved: paid.resolved });
     paymentTerminal = true;
+    addInferenceSettlement(telemetry, quote, settlement);
     return receipt;
   };
   const abortPaymentOnClose = () => {
@@ -1521,6 +1610,8 @@ async function executeRequest(args: {
     operation: request.operation,
     createdAt: Math.floor(Date.now() / 1000),
     status: "in_progress",
+    store: args.shape === "responses" ? args.request.store !== false : false,
+    inputItems: args.shape === "responses" ? args.request.inputItems : undefined,
     inputMessages: args.shape === "responses" ? args.request.messages : undefined,
     previousResponseId: args.shape === "responses" ? args.request.previousResponseId : undefined,
   };
@@ -1539,27 +1630,29 @@ async function executeRequest(args: {
         final: { modelId },
       });
       paid.payment.applyHeaders(args.res);
-      args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, { type: "created" })));
+      const responsesEncoder = new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt);
+      writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
       try {
         const direct = withDirectDeadline(lifecycle.signal);
+        const keepalive = setInterval(() => {
+          if (!args.res.writableEnded) {
+            args.res.write(": ping\n\n");
+          }
+        }, 15_000);
         let routed: Awaited<ReturnType<typeof generateEngine>>;
         try {
           routed = await generateEngine(request, { signal: direct.signal });
         } finally {
+          clearInterval(keepalive);
           direct.cleanup();
         }
         const output = routed.result.output;
+        markInferenceFirstOutput(telemetry);
         const receipt = await settleOutput(output);
         let finalOutput = output;
 
-        toResponsesOutputItems(output).forEach((item, outputIndex) => {
-          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
-            type: "output-item",
-            outputIndex,
-            item,
-          })));
-        });
+        writeDirectResponsesOutput(args.res, responsesEncoder, output);
 
         if (receipt) {
           args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
@@ -1597,11 +1690,11 @@ async function executeRequest(args: {
                 },
               };
               for (const item of toResponsesOutputItems(finalOutput)) {
-                args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+                writeResponsesEvents(args.res, responsesEncoder, {
                   type: "output-item",
                   outputIndex,
                   item,
-                })));
+                });
                 outputIndex += 1;
               }
               break;
@@ -1640,11 +1733,12 @@ async function executeRequest(args: {
           }
         }
 
-        args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+        writeResponsesEvents(args.res, responsesEncoder, {
           type: "done",
           finishReason: finalOutput.finishReason || "stop",
           usage: finalOutput.usage,
-        })));
+        });
+        finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
         args.res.write(formatCoreSSEDone());
         args.res.end();
 
@@ -1659,15 +1753,19 @@ async function executeRequest(args: {
           ...(finalOutput.media?.jobId ? { jobId: finalOutput.media.jobId } : {}),
           ...(finalOutput.media?.status === "failed" ? { error: finalOutput.media.status } : {}),
         });
+        await finishTelemetry(finalOutput.media?.status === "failed" ? "failed" : "succeeded");
       } catch (error) {
         try {
           await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
         } catch { /* best-effort */ }
         try {
-          args.res.write(toErrorStreamEvent({
-            code: "upstream_error",
-            message: error instanceof Error ? error.message : String(error),
-          }));
+          writeResponsesEvents(args.res, responsesEncoder, {
+            type: "error",
+            error: {
+              code: "upstream_error",
+              message: error instanceof Error ? error.message : String(error),
+            },
+          });
           args.res.write(formatCoreSSEDone());
           args.res.end();
         } catch { /* best-effort */ }
@@ -1690,9 +1788,10 @@ async function executeRequest(args: {
 
       applyRoutingHeaders(args.res, routed.route);
       paid.payment.applyHeaders(args.res);
-      if (args.shape === "responses") {
-        args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, { type: "created" })));
-      }
+      const responsesEncoder = args.shape === "responses"
+        ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
+        : null;
+      if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
       let isFirstToken = true;
       let aggregatedText = "";
@@ -1757,12 +1856,11 @@ async function executeRequest(args: {
 
       try {
         for await (const event of routed.result.stream) {
+          markInferenceFirstOutput(telemetry);
           if (event.type === "text-delta") {
             aggregatedText += event.text || "";
-            const payload = args.shape === "chat"
-              ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
-              : toResponsesStreamEvent(request.responseId, modelId, event);
-            args.res.write(formatCoreSSE(payload));
+            if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, event);
+            else args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
             isFirstToken = false;
             continue;
           }
@@ -1773,10 +1871,11 @@ async function executeRequest(args: {
             || event.type === "tool-call"
             || event.type === "tool-call-delta"
           ) {
-            const payload = args.shape === "chat"
-              ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
-              : toResponsesStreamEvent(request.responseId, modelId, event);
-            args.res.write(formatCoreSSE(payload));
+            if (responsesEncoder) {
+              writeResponsesEvents(args.res, responsesEncoder, event);
+            } else {
+              args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+            }
             isFirstToken = false;
             continue;
           }
@@ -1802,6 +1901,10 @@ async function executeRequest(args: {
             }
             if (event.media) {
               lastMedia = event.media;
+            }
+            if (responsesEncoder && event.type === "error") {
+              writeResponsesEvents(args.res, responsesEncoder, event);
+              throw new Error(event.error?.message || "upstream_error");
             }
             const payload = args.shape === "chat"
               ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
@@ -1842,10 +1945,8 @@ async function executeRequest(args: {
               pendingImageDoneEvent = event;
               continue;
             }
-            const payload = args.shape === "chat"
-              ? toChatStreamEvent(request.responseId, modelId, event)
-              : toResponsesStreamEvent(request.responseId, modelId, event);
-            args.res.write(formatCoreSSE(payload));
+            if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, event);
+            else args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event)));
             if (args.shape === "chat" && event.usage) {
               args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, event.usage)));
             }
@@ -1862,11 +1963,12 @@ async function executeRequest(args: {
 
         if (!lastUsage && !(request.modality === "realtime" && lastMedia)) {
           await abortPaidInference("missing_stream_evidence");
+          await finishTelemetry("failed", new Error("missing_stream_evidence"));
           args.res.end();
           return;
         }
 
-        const finalOutput: Output = {
+        let finalOutput: Output = {
           modality: streamedImage ? "image" : request.modality === "realtime" ? "realtime" : "text",
           ...(streamedImage
             ? {
@@ -1886,26 +1988,39 @@ async function executeRequest(args: {
             }),
           ...(lastUsage ? { usage: lastUsage } : {}),
           finishReason,
+          ...(responsesEncoder && !streamedImage ? { outputItems: responsesEncoder.items() } : {}),
+          ...(responsesEncoder?.calls().length ? { toolCalls: responsesEncoder.calls() } : {}),
         };
 
         const streamReceipt = realtimeStream ? null : await settleOutput(finalOutput);
         if (realtimeStream && realtimeSettlements <= 0) {
           await abortPaidInference("missing_realtime_settlement_evidence");
+          await finishTelemetry("failed", new Error("missing_realtime_settlement_evidence"));
           args.res.end();
           return;
         }
 
         if (pendingImageCompleteEvent) {
-          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
-          args.res.write(formatCoreSSE(toResponsesStreamEvent(
-            request.responseId,
-            modelId,
-            pendingImageDoneEvent ?? {
+          if (responsesEncoder) {
+            writeDirectResponsesOutput(args.res, responsesEncoder, finalOutput);
+            writeResponsesEvents(args.res, responsesEncoder, pendingImageDoneEvent ?? {
               type: "done",
               usage: lastUsage,
               finishReason,
-            },
-          )));
+            });
+            finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
+          } else {
+            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
+            args.res.write(formatCoreSSE(toResponsesStreamEvent(
+              request.responseId,
+              modelId,
+              pendingImageDoneEvent ?? {
+                type: "done",
+                usage: lastUsage,
+                finishReason,
+              },
+            )));
+          }
         }
 
         if (streamReceipt) {
@@ -1919,6 +2034,7 @@ async function executeRequest(args: {
           status: "completed",
           output: finalOutput,
         });
+        await finishTelemetry("succeeded");
       } catch (error) {
         try {
           await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
@@ -1929,10 +2045,20 @@ async function executeRequest(args: {
           // Emit structured error frame before propagating so clients know why
           // the stream closed without a final `done` event.
           try {
-            args.res.write(toErrorStreamEvent({
-              code: "upstream_error",
-              message: error instanceof Error ? error.message : String(error),
-            }));
+            if (responsesEncoder) {
+              writeResponsesEvents(args.res, responsesEncoder, {
+                type: "error",
+                error: {
+                  code: "upstream_error",
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              });
+            } else {
+              args.res.write(toErrorStreamEvent({
+                code: "upstream_error",
+                message: error instanceof Error ? error.message : String(error),
+              }));
+            }
           } catch { /* best-effort */ }
           try { args.res.write(formatCoreSSEDone()); } catch { /* best-effort */ }
           try { args.res.end(); } catch { /* best-effort */ }
@@ -1954,6 +2080,7 @@ async function executeRequest(args: {
     applyRoutingHeaders(args.res, routed.route);
 
     const output = routed.result.output;
+    markInferenceFirstOutput(telemetry);
     const jsonReceipt = await settleOutput(output);
     applyReceiptHeader(args.res, jsonReceipt);
 
@@ -1964,6 +2091,7 @@ async function executeRequest(args: {
       ...(output.media?.jobId ? { jobId: output.media.jobId } : {}),
     };
     await saveResponseRecord(record);
+    await finishTelemetry("succeeded");
 
     if (args.shape === "chat") {
       const body = toChatCompletionsResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
@@ -1992,6 +2120,7 @@ async function executeRequest(args: {
       status: "failed",
       error: error instanceof Error ? error.message : String(error),
     });
+    await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
     throw error;
   } finally {
     lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);
@@ -2036,6 +2165,46 @@ export async function handleResponses(req: Req, res: Res): Promise<void> {
   } catch (error) {
     writeAdaptedError(res, error, 500);
   }
+}
+
+async function handleModelResponses(req: Req, res: Res): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  const rawModelId = Array.isArray(req.params.modelId) ? req.params.modelId[0] : req.params.modelId;
+  const modelId = typeof rawModelId === "string" ? rawModelId : "";
+  if (!modelId) {
+    res.status(400).json(createCoreErrorResponse("modelId is required", "invalid_request_error", "missing_model"));
+    return;
+  }
+
+  if (getPaymentSignatureFromRequest(req) && !getNetworkFromRequest(req)) {
+    res.status(400).json({ error: "x-network-id header is required" });
+    return;
+  }
+
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown>
+    : {};
+  if (body.model !== undefined && body.model !== modelId) {
+    res.status(400).json(createCoreErrorResponse("body model must match path modelId", "invalid_request_error", "model_conflict"));
+    return;
+  }
+
+  if (shouldDirectChallenge(req)) {
+    const resourceUrl = publicResourceUrl(req);
+    sendPaymentRequired(res, await buildModelEndpointPaymentRequired(modelId, resourceUrl));
+    return;
+  }
+
+  req.body = {
+    ...body,
+    model: modelId,
+  };
+  await handleResponses(req, res);
 }
 
 async function handleGetResponse(req: Req, res: Res): Promise<void> {
@@ -2246,6 +2415,18 @@ async function runDeferredInference(args: {
     lifecycle.cleanup();
     return;
   }
+  const telemetry = startInferenceTelemetry({
+    userAddress: readHeader(args.req, "x-session-user-address"),
+    network: getNetworkFromInferenceRequest(args.req),
+    request: args.request,
+    resolved: paid.resolved,
+  });
+  let telemetryFinished = false;
+  const finishTelemetry = async (status: "succeeded" | "failed" | "aborted", error?: unknown) => {
+    if (telemetryFinished) return;
+    telemetryFinished = true;
+    await finishInferenceTelemetry(telemetry, status, error);
+  };
   let paymentTerminal = false;
   const abortPaidInference = async (reason: string) => {
     if (paymentTerminal) {
@@ -2269,7 +2450,8 @@ async function runDeferredInference(args: {
     } finally {
       direct.cleanup();
     }
-    const receipt = await settlePaidInference({
+    markInferenceFirstOutput(telemetry);
+    const { receipt, settlement, quote } = await settlePaidInference({
       req: args.req,
       res: args.res,
       payment: paid.payment,
@@ -2277,12 +2459,15 @@ async function runDeferredInference(args: {
       output: result,
       resolved: paid.resolved,
     });
+    addInferenceSettlement(telemetry, quote, settlement);
     paymentTerminal = true;
     applyReceiptHeader(args.res, receipt);
     await args.onSuccess(result, receipt);
+    await finishTelemetry("succeeded");
     lifecycle.done();
   } catch (error) {
     await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
+    await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
     throw error;
   } finally {
     lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);

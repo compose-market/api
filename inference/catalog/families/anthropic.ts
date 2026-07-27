@@ -188,9 +188,9 @@ export type AnthropicToolChoice =
 export function toolsToWire(tools: Tool[] | undefined): AnthropicTool[] | undefined {
     if (!tools || tools.length === 0) return undefined;
     return tools.map((tool) => ({
-        name: tool.function.name,
-        ...(tool.function.description ? { description: tool.function.description } : {}),
-        input_schema: lower.object(tool.function.parameters),
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        input_schema: lower.object(tool.parameters),
     }));
 }
 
@@ -200,7 +200,7 @@ export function toolChoiceToWire(choice: Choice | undefined): AnthropicToolChoic
     if (choice === "none") return { type: "none" };
     if (choice === "required") return { type: "any" };
     if (typeof choice === "object" && choice.type === "function") {
-        return { type: "tool", name: choice.function.name };
+        return { type: "tool", name: choice.name };
     }
     return undefined;
 }

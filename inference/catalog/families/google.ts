@@ -1930,11 +1930,11 @@ function googleToolsToWire(tools: Tool[] | undefined): Array<Record<string, unkn
     if (!tools || tools.length === 0) return undefined;
     const declarations: Array<Record<string, unknown>> = [];
     for (const tool of tools) {
-        if (tool.type !== "function" || !tool.function?.name) continue;
+        if (tool.type !== "function" || !tool.name) continue;
         declarations.push({
-            name: tool.function.name,
-            ...(tool.function.description ? { description: tool.function.description } : {}),
-            parameters: lower.google(lower.object(tool.function.parameters)),
+            name: tool.name,
+            ...(tool.description ? { description: tool.description } : {}),
+            parameters: lower.google(lower.object(tool.parameters)),
         });
     }
     if (declarations.length === 0) return undefined;
@@ -1948,8 +1948,8 @@ function googleToolConfigToWire(toolChoice: Choice | undefined): Record<string, 
         if (toolChoice === "none") return { functionCallingConfig: { mode: "NONE" } };
         return { functionCallingConfig: { mode: "AUTO" } };
     }
-    if (toolChoice.type === "function" && toolChoice.function?.name) {
-        return { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [toolChoice.function.name] } };
+    if (toolChoice.type === "function" && toolChoice.name) {
+        return { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [toolChoice.name] } };
     }
     return undefined;
 }
@@ -2176,6 +2176,8 @@ function extractToolCallsAndCaptureSignatures(
             if (sig && onSignature) onSignature(id, sig);
             toolCalls.push({
                 id,
+                callId: id,
+                outputIndex: toolCallIndex,
                 name,
                 arguments: typeof args === "string" ? args : JSON.stringify(args),
                 ...(sig ? { providerMetadata: { google: { thoughtSignature: sig } } } : {}),
@@ -2318,6 +2320,8 @@ export async function* streamChat(
                     type: "tool-call",
                     toolCall: {
                         id,
+                        callId: id,
+                        index: toolCallIndex,
                         name,
                         arguments: argString,
                         ...(sig ? { providerMetadata: { google: { thoughtSignature: sig } } } : {}),

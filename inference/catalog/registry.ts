@@ -28,11 +28,61 @@ export interface ResolvedModel {
     known: boolean;
 }
 
+export interface ModelProtocolProfile {
+    family?: string;
+    operations: string[];
+    inputModalities: string[];
+    outputModalities: string[];
+    interactiveText: boolean;
+    toolCalls: boolean;
+    parallelToolCalls: boolean;
+    reasoning: boolean;
+    streamable: boolean;
+}
+
+const INTERACTIVE_TEXT_OPERATIONS = new Set(["chat", "vision-chat", "deep-research", "dumb-pipe"]);
+const TOOL_CAPABILITIES = new Set(["functionCalling", "function_calling", "tool_calling", "tool_usage"]);
+const REASONING_CAPABILITIES = new Set(["reasoning", "thinking"]);
+
+/**
+ * Return the protocol-facing view of already-compiled catalog semantics.
+ * Consumers must not reinterpret raw provider capability spellings themselves.
+ */
+export function getModelProtocolProfile(model: ModelCard): ModelProtocolProfile {
+    const semantics = model.semantics;
+    const operations = Array.isArray(semantics?.operations) ? [...semantics.operations] : [];
+    const inputs = Array.isArray(semantics?.inputs) ? [...semantics.inputs] : [];
+    const outputs = Array.isArray(semantics?.outputs) ? [...semantics.outputs] : [];
+    const capabilities = new Set(Array.isArray(semantics?.capabilityKeys) ? semantics.capabilityKeys : []);
+    const parameters = new Set(Array.isArray(semantics?.parameterKeys) ? semantics.parameterKeys : []);
+    const toolCalls = [...TOOL_CAPABILITIES].some((key) => capabilities.has(key));
+
+    return {
+        ...(typeof semantics?.family === "string" ? { family: semantics.family } : {}),
+        operations,
+        inputModalities: inputs,
+        outputModalities: outputs,
+        interactiveText: outputs.includes("text") && operations.some((operation) => INTERACTIVE_TEXT_OPERATIONS.has(operation)),
+        toolCalls,
+        parallelToolCalls: toolCalls && parameters.has("parallel_tool_calls"),
+        reasoning: [...REASONING_CAPABILITIES].some((key) => capabilities.has(key)),
+        streamable: semantics?.streamable === true,
+    };
+}
+
 // =============================================================================
 // Compiled Models Loading
 // =============================================================================
 
 function getModelsBasePath(): string {
+    if (cachedModelsBasePath) {
+        const modelPath = path.join(cachedModelsBasePath, "models.json");
+        if (fs.existsSync(modelPath)) {
+            return cachedModelsBasePath;
+        }
+        cachedModelsBasePath = null;
+    }
+
     const candidatePaths: string[] = [];
     const runtimeDir = typeof __dirname !== "undefined" && __dirname ? __dirname : process.cwd();
 
@@ -67,6 +117,7 @@ function getModelsBasePath(): string {
             if (fs.existsSync(modelPath)) {
                 const stats = fs.statSync(modelPath);
                 console.log(`[models] Found models.json at: ${p} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+                cachedModelsBasePath = p;
                 return p;
             }
         } catch {
@@ -95,20 +146,34 @@ function getModelsBasePath(): string {
     return path.join(process.cwd(), "data");
 }
 
+let cachedModelsBasePath: string | null = null;
 let compiledModelsCache: CompiledModelsData | null = null;
-let compiledModelsCacheTime = 0;
-const MODELS_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+let compiledModelsCachePath: string | null = null;
+let compiledModelsCacheSignature: string | null = null;
 let compiledModelIndex: Map<string, ModelCard> | null = null;
 let compiledModelProviderIndex: Map<string, Map<ModelProvider, ModelCard>> | null = null;
 
-function loadCompiledModels(): CompiledModelsData {
-    const now = Date.now();
-    if (compiledModelsCache && (now - compiledModelsCacheTime) < MODELS_CACHE_TTL) {
-        return compiledModelsCache;
+function fileSignature(filePath: string): string | null {
+    try {
+        const stats = fs.statSync(filePath);
+        return `${stats.size}:${stats.mtimeMs}`;
+    } catch {
+        return null;
     }
+}
 
+function loadCompiledModels(): CompiledModelsData {
     const basePath = getModelsBasePath();
     const modelsPath = path.join(basePath, "models.json");
+    const signature = fileSignature(modelsPath);
+
+    if (
+        compiledModelsCache
+        && compiledModelsCachePath === modelsPath
+        && compiledModelsCacheSignature === signature
+    ) {
+        return compiledModelsCache;
+    }
 
     try {
         if (fs.existsSync(modelsPath)) {
@@ -117,19 +182,24 @@ function loadCompiledModels(): CompiledModelsData {
                 ...parsed,
                 models: Array.isArray(parsed.models) ? parsed.models.map(normalizeCompiledModel) : [],
             };
-            compiledModelsCacheTime = now;
+            compiledModelsCachePath = modelsPath;
+            compiledModelsCacheSignature = signature;
             compiledModelIndex = null;
             compiledModelProviderIndex = null;
             console.log(`[models] Loaded ${compiledModelsCache?.totalModels || 0} models from ${modelsPath}`);
         } else {
             console.warn(`[models] models.json not found at ${modelsPath}`);
             compiledModelsCache = { lastUpdated: "", totalModels: 0, byProvider: {} as any, byType: {}, models: [] };
+            compiledModelsCachePath = modelsPath;
+            compiledModelsCacheSignature = null;
             compiledModelIndex = null;
             compiledModelProviderIndex = null;
         }
     } catch (e) {
         console.error("[models] Failed to load models.json:", e);
         compiledModelsCache = { lastUpdated: "", totalModels: 0, byProvider: {} as any, byType: {}, models: [] };
+        compiledModelsCachePath = modelsPath;
+        compiledModelsCacheSignature = signature;
         compiledModelIndex = null;
         compiledModelProviderIndex = null;
     }
@@ -380,7 +450,8 @@ export async function refreshRegistry(): Promise<{
     sources: ModelProvider[];
 }> {
     compiledModelsCache = null;
-    compiledModelsCacheTime = 0;
+    compiledModelsCachePath = null;
+    compiledModelsCacheSignature = null;
     compiledModelIndex = null;
     compiledModelProviderIndex = null;
     extendedModelIndex = null;
