@@ -9,12 +9,12 @@ import {
 } from "viem";
 
 import {
-    getChainConfig,
-    getRpcUrl,
-    getSupportedChainIds,
-    getUsdcAddress,
+    getNetwork,
+    getNetworkRpcUrl,
+    getSupportedNetworks,
     getViemChain,
-    type ChainId,
+    isEvmNetwork,
+    type EvmNetworkId,
 } from "../x402/configs/chains.js";
 import { merchantWalletAddress } from "../x402/wallets.js";
 import { bumpPaymentSnapshot } from "./cache.js";
@@ -30,7 +30,7 @@ const LIVE_CHUNK = 10_000n;
 const ALCHEMY_PAGE_SIZE = "0x3e8";
 
 export interface PaymentRecord {
-    chainId: number;
+    network: EvmNetworkId;
     txHash: string;
     amountAtomic: string | number | bigint;
     source?: "history" | "settlement";
@@ -51,7 +51,7 @@ export interface ReceiptLog {
 }
 
 export interface ConfirmedPaymentInput {
-    chainId: number;
+    network: EvmNetworkId;
     txHash: string;
 }
 
@@ -81,11 +81,10 @@ interface AlchemyResponse {
     };
 }
 
-function supportedConfiguredChains(): ChainId[] {
-    return getSupportedChainIds().filter((chainId) => {
-        const config = getChainConfig(chainId);
-        return Boolean(process.env[config.rpcEnvVar]);
-    });
+function supportedConfiguredChains(): EvmNetworkId[] {
+    return getSupportedNetworks().filter((definition): definition is typeof definition & { id: EvmNetworkId } => {
+        return isEvmNetwork(definition.id) && Boolean(process.env[definition.rpcEnvVar]);
+    }).map((definition) => definition.id);
 }
 
 function normalizedHash(value: string): string {
@@ -128,8 +127,8 @@ export function aggregatePaymentLogs(logs: PaymentLog[]): Array<{ txHash: string
     }));
 }
 
-export function incomingAmountFromLogs(chainId: number, logs: ReceiptLog[]): string {
-    const usdc = getUsdcAddress(chainId);
+export function incomingAmountFromLogs(network: EvmNetworkId, logs: ReceiptLog[]): string {
+    const usdc = getNetwork(network).asset.address;
     let total = 0n;
 
     for (const log of logs) {
@@ -150,14 +149,14 @@ export function incomingAmountFromLogs(chainId: number, logs: ReceiptLog[]): str
     return total.toString();
 }
 
-async function exists(chainId: number, txHash: string): Promise<boolean> {
+async function exists(network: EvmNetworkId, txHash: string): Promise<boolean> {
     await ensure();
     const result = await rows<{ found: number }>(
         `SELECT 1 AS found
          FROM payments
-         WHERE chain_id = $1 AND tx_hash = $2
+         WHERE network = $1 AND tx_hash = $2
          LIMIT 1`,
-        [chainId, normalizedHash(txHash)],
+        [network, normalizedHash(txHash)],
     );
     return result.length > 0;
 }
@@ -168,12 +167,12 @@ export async function recordPayment(input: PaymentRecord): Promise<boolean> {
     if (BigInt(amount) <= 0n) return false;
 
     const result = await rows<{ inserted: number }>(
-        `INSERT INTO payments (chain_id, tx_hash, amount_atomic, source, settled_at)
+        `INSERT INTO payments (network, tx_hash, amount_atomic, source, settled_at)
          VALUES ($1, $2, $3::numeric, $4, $5)
-         ON CONFLICT (chain_id, tx_hash) DO NOTHING
+         ON CONFLICT (network, tx_hash) DO NOTHING
          RETURNING 1 AS inserted`,
         [
-            input.chainId,
+            input.network,
             normalizedHash(input.txHash),
             amount,
             input.source ?? "settlement",
@@ -190,7 +189,7 @@ export async function recordPayment(input: PaymentRecord): Promise<boolean> {
     return false;
 }
 
-async function recordPayments(chainId: number, payments: Array<{ txHash: string; amountAtomic: string }>): Promise<number> {
+async function recordPayments(network: EvmNetworkId, payments: Array<{ txHash: string; amountAtomic: string }>): Promise<number> {
     const clean = payments
         .map((payment) => ({
             txHash: normalizedHash(payment.txHash),
@@ -207,13 +206,13 @@ async function recordPayments(chainId: number, payments: Array<{ txHash: string;
     clean.forEach((payment, index) => {
         const base = index * 5;
         values.push(`($${base + 1}, $${base + 2}, $${base + 3}::numeric, $${base + 4}, $${base + 5})`);
-        params.push(chainId, payment.txHash, payment.amountAtomic, "history", null);
+        params.push(network, payment.txHash, payment.amountAtomic, "history", null);
     });
 
     const result = await rows<{ inserted: number }>(
-        `INSERT INTO payments (chain_id, tx_hash, amount_atomic, source, settled_at)
+        `INSERT INTO payments (network, tx_hash, amount_atomic, source, settled_at)
          VALUES ${values.join(", ")}
-         ON CONFLICT (chain_id, tx_hash) DO NOTHING
+         ON CONFLICT (network, tx_hash) DO NOTHING
          RETURNING 1 AS inserted`,
         params,
     );
@@ -223,33 +222,33 @@ async function recordPayments(chainId: number, payments: Array<{ txHash: string;
     return result.length;
 }
 
-async function targetFor(chainId: ChainId): Promise<bigint> {
-    const existing = await getState(`payments:target:${chainId}`);
+async function targetFor(network: EvmNetworkId): Promise<bigint> {
+    const existing = await getState(`payments:target:${network}`);
     if (existing) {
         return BigInt(existing);
     }
 
     const client = createPublicClient({
-        chain: getViemChain(chainId),
-        transport: http(getRpcUrl(chainId)),
+        chain: getViemChain(network),
+        transport: http(getNetworkRpcUrl(network)),
     });
     const latest = await client.getBlockNumber();
-    await setState(`payments:target:${chainId}`, latest.toString());
+    await setState(`payments:target:${network}`, latest.toString());
     return latest;
 }
 
-async function ensureCutoff(chains: ChainId[]): Promise<void> {
+async function ensureCutoff(chains: EvmNetworkId[]): Promise<void> {
     if (await getState("payments:cutoff")) return;
     await setState("payments:cutoff", new Date().toISOString());
-    for (const chainId of chains) {
-        await targetFor(chainId);
+    for (const network of chains) {
+        await targetFor(network);
     }
 }
 
-async function markHistoryComplete(chains: ChainId[]): Promise<boolean> {
-    for (const chainId of chains) {
-        const target = await targetFor(chainId);
-        const cursor = BigInt(await getState(`payments:cursor:${chainId}`) ?? "-1");
+async function markHistoryComplete(chains: EvmNetworkId[]): Promise<boolean> {
+    for (const network of chains) {
+        const target = await targetFor(network);
+        const cursor = BigInt(await getState(`payments:cursor:${network}`) ?? "-1");
         if (cursor < target) {
             return false;
         }
@@ -258,13 +257,13 @@ async function markHistoryComplete(chains: ChainId[]): Promise<boolean> {
     return true;
 }
 
-async function scanAlchemyTransfers(chainId: ChainId, target: bigint, maxPages: number): Promise<{
+async function scanAlchemyTransfers(network: EvmNetworkId, target: bigint, maxPages: number): Promise<{
     pages: number;
     transfers: number;
     transactions: number;
 }> {
-    const rpcUrl = getRpcUrl(chainId);
-    const pageState = `payments:alchemy:page:${chainId}`;
+    const rpcUrl = getNetworkRpcUrl(network);
+    const pageState = `payments:alchemy:page:${network}`;
     let pageKey = await getState(pageState);
     let pages = 0;
     let transfers = 0;
@@ -275,7 +274,7 @@ async function scanAlchemyTransfers(chainId: ChainId, target: bigint, maxPages: 
             fromBlock: "0x0",
             toBlock: blockHex(target),
             toAddress: merchantWalletAddress,
-            contractAddresses: [getUsdcAddress(chainId)],
+            contractAddresses: [getNetwork(network).asset.address],
             category: ["erc20"],
             excludeZeroValue: true,
             withMetadata: false,
@@ -304,14 +303,14 @@ async function scanAlchemyTransfers(chainId: ChainId, target: bigint, maxPages: 
         const rows = aggregatePaymentLogs((body?.result?.transfers || [])
             .filter((transfer) =>
                 sameAddress(transfer.to || undefined, merchantWalletAddress)
-                && sameAddress(transfer.rawContract?.address || undefined, getUsdcAddress(chainId)))
+                && sameAddress(transfer.rawContract?.address || undefined, getNetwork(network).asset.address))
             .map((transfer) => ({
                 transactionHash: transfer.hash as Hash | undefined,
                 args: {
                     value: transfer.rawContract?.value ? BigInt(transfer.rawContract.value) : 0n,
                 },
             })));
-        transactions += await recordPayments(chainId, rows);
+        transactions += await recordPayments(network, rows);
         transfers += body?.result?.transfers?.length || 0;
         pages += 1;
 
@@ -319,7 +318,7 @@ async function scanAlchemyTransfers(chainId: ChainId, target: bigint, maxPages: 
         if (pageKey) {
             await setState(pageState, pageKey);
         } else {
-            await setState(`payments:cursor:${chainId}`, target.toString());
+            await setState(`payments:cursor:${network}`, target.toString());
             break;
         }
     }
@@ -327,16 +326,16 @@ async function scanAlchemyTransfers(chainId: ChainId, target: bigint, maxPages: 
     return { pages, transfers, transactions };
 }
 
-async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number, startChunk?: bigint): Promise<{
+async function scanLogs(network: EvmNetworkId, target: bigint, maxRanges: number, startChunk?: bigint): Promise<{
     ranges: number;
     transfers: number;
     transactions: number;
 }> {
     const client = createPublicClient({
-        chain: getViemChain(chainId),
-        transport: http(getRpcUrl(chainId)),
+        chain: getViemChain(network),
+        transport: http(getNetworkRpcUrl(network)),
     });
-    let cursor = BigInt(await getState(`payments:cursor:${chainId}`) ?? "-1");
+    let cursor = BigInt(await getState(`payments:cursor:${network}`) ?? "-1");
     let from = cursor + 1n;
     let chunk = startChunk ?? START_CHUNK;
     let ranges = 0;
@@ -347,18 +346,18 @@ async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number, sta
         const to = from + chunk - 1n > target ? target : from + chunk - 1n;
         try {
             const logs = await client.getLogs({
-                address: getUsdcAddress(chainId) as Address,
+                address: getNetwork(network).asset.address as Address,
                 event: transfer,
                 args: { to: merchantWalletAddress },
                 fromBlock: from,
                 toBlock: to,
             });
             const grouped = aggregatePaymentLogs(logs);
-            transactions += await recordPayments(chainId, grouped);
+            transactions += await recordPayments(network, grouped);
             transfers += logs.length;
             ranges += 1;
             cursor = to;
-            await setState(`payments:cursor:${chainId}`, cursor.toString());
+            await setState(`payments:cursor:${network}`, cursor.toString());
             from = to + 1n;
             chunk = chunk * 2n > MAX_CHUNK ? MAX_CHUNK : chunk * 2n;
         } catch (error) {
@@ -372,15 +371,15 @@ async function scanLogs(chainId: ChainId, target: bigint, maxRanges: number, sta
     return { ranges, transfers, transactions };
 }
 
-async function getLatestBlockNumber(chainId: ChainId): Promise<bigint> {
+async function getLatestBlockNumber(network: EvmNetworkId): Promise<bigint> {
     const client = createPublicClient({
-        chain: getViemChain(chainId),
-        transport: http(getRpcUrl(chainId)),
+        chain: getViemChain(network),
+        transport: http(getNetworkRpcUrl(network)),
     });
     return await client.getBlockNumber();
 }
 
-async function syncLivePayments(chains: ChainId[], maxRanges: number): Promise<{
+async function syncLivePayments(chains: EvmNetworkId[], maxRanges: number): Promise<{
     chains: number;
     ranges: number;
     transfers: number;
@@ -392,20 +391,27 @@ async function syncLivePayments(chains: ChainId[], maxRanges: number): Promise<{
     let transfers = 0;
     let transactions = 0;
 
-    for (const chainId of chains) {
+    for (const network of chains) {
         if (ranges >= maxRanges) break;
 
-        const latest = await getLatestBlockNumber(chainId);
-        const cursor = BigInt(await getState(`payments:cursor:${chainId}`) ?? "0");
+        const latest = await getLatestBlockNumber(network);
+        const cursor = BigInt(await getState(`payments:cursor:${network}`) ?? "0");
         if (cursor >= latest) continue;
 
-        if (isAlchemyRpc(getRpcUrl(chainId))) {
-            const result = await scanAlchemyTransfers(chainId, latest, maxRanges - ranges);
-            ranges += result.pages;
-            transfers += result.transfers;
-            transactions += result.transactions;
-        } else {
-            const result = await scanLogs(chainId, latest, maxRanges - ranges, LIVE_CHUNK);
+        let scanned = false;
+        if (isAlchemyRpc(getNetworkRpcUrl(network))) {
+            try {
+                const result = await scanAlchemyTransfers(network, latest, maxRanges - ranges);
+                ranges += result.pages;
+                transfers += result.transfers;
+                transactions += result.transactions;
+                scanned = true;
+            } catch {
+                // Fall back to standard log scanning if Alchemy EAPIs are unsupported or fail on this network
+            }
+        }
+        if (!scanned) {
+            const result = await scanLogs(network, latest, maxRanges - ranges, LIVE_CHUNK);
             ranges += result.ranges;
             transfers += result.transfers;
             transactions += result.transactions;
@@ -444,17 +450,24 @@ export async function syncPayments(options: PaymentSyncOptions = {}): Promise<{
     let transactions = 0;
     const maxRanges = options.maxRanges ?? Number.POSITIVE_INFINITY;
 
-    for (const chainId of chains) {
+    for (const network of chains) {
         if (ranges >= maxRanges) break;
 
-        const target = await targetFor(chainId);
-        if (isAlchemyRpc(getRpcUrl(chainId))) {
-            const result = await scanAlchemyTransfers(chainId, target, maxRanges - ranges);
-            ranges += result.pages;
-            transfers += result.transfers;
-            transactions += result.transactions;
-        } else {
-            const result = await scanLogs(chainId, target, maxRanges - ranges);
+        const target = await targetFor(network);
+        let scanned = false;
+        if (isAlchemyRpc(getNetworkRpcUrl(network))) {
+            try {
+                const result = await scanAlchemyTransfers(network, target, maxRanges - ranges);
+                ranges += result.pages;
+                transfers += result.transfers;
+                transactions += result.transactions;
+                scanned = true;
+            } catch {
+                // Fall back to standard log scanning if Alchemy EAPIs are unsupported or fail on this network
+            }
+        }
+        if (!scanned) {
+            const result = await scanLogs(network, target, maxRanges - ranges);
             ranges += result.ranges;
             transfers += result.transfers;
             transactions += result.transactions;
@@ -478,27 +491,27 @@ export async function recordConfirmedPayment(input: ConfirmedPaymentInput): Prom
     amountAtomic: string;
 }> {
     const txHash = normalizedHash(input.txHash);
-    if (await exists(input.chainId, txHash)) {
+    if (await exists(input.network, txHash)) {
         return { recorded: false, amountAtomic: "0" };
     }
 
     const client = createPublicClient({
-        chain: getViemChain(input.chainId),
-        transport: http(getRpcUrl(input.chainId)),
+        chain: getViemChain(input.network),
+        transport: http(getNetworkRpcUrl(input.network)),
     });
     const receipt = await client.waitForTransactionReceipt({ hash: txHash as Hex });
     if (receipt.status !== "success") {
         throw new Error(`Settlement transaction failed: ${txHash}`);
     }
 
-    const amountAtomic = incomingAmountFromLogs(input.chainId, receipt.logs);
+    const amountAtomic = incomingAmountFromLogs(input.network, receipt.logs);
     if (BigInt(amountAtomic) <= 0n) {
         throw new Error(`Settlement transaction has no incoming USDC transfer to merchant wallet: ${txHash}`);
     }
 
     return {
         recorded: await recordPayment({
-            chainId: input.chainId,
+            network: input.network,
             txHash,
             amountAtomic,
             source: "settlement",
@@ -512,7 +525,7 @@ export function triggerConfirmedPayment(input: ConfirmedPaymentInput, source: st
     void recordConfirmedPayment(input).catch((error) => {
         console.error("[metrics] settled payment record failed", {
             source,
-            chainId: input.chainId,
+            network: input.network,
             txHash: input.txHash,
             error: error instanceof Error ? error.message : String(error),
         });

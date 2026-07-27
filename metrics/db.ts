@@ -49,15 +49,29 @@ async function migrate(): Promise<void> {
 
     await db.query(`
         CREATE TABLE IF NOT EXISTS payments (
-            chain_id      INTEGER NOT NULL,
+            network       TEXT NOT NULL,
             tx_hash       TEXT NOT NULL,
             amount_atomic NUMERIC(78, 0) NOT NULL DEFAULT 0,
             source        TEXT NOT NULL DEFAULT 'settlement' CHECK (source IN ('history', 'settlement')),
             settled_at    TIMESTAMPTZ,
             created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (chain_id, tx_hash)
+            PRIMARY KEY (network, tx_hash)
         )
+    `);
+    await db.query(`
+        DO $$ BEGIN
+          IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'payments' AND column_name = 'chain_id') THEN
+            ALTER TABLE payments ADD COLUMN IF NOT EXISTS network TEXT;
+            UPDATE payments
+               SET network = 'eip155:' || chain_id::text
+             WHERE network IS NULL OR network = '';
+            ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_pkey;
+            ALTER TABLE payments ALTER COLUMN network SET NOT NULL;
+            ALTER TABLE payments ADD CONSTRAINT payments_pkey PRIMARY KEY (network, tx_hash);
+            ALTER TABLE payments DROP COLUMN chain_id;
+          END IF;
+        END $$
     `);
     await db.query(`ALTER TABLE payments ALTER COLUMN source SET DEFAULT 'settlement'`);
     await db.query(`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_source_check`);
@@ -68,10 +82,19 @@ async function migrate(): Promise<void> {
         CREATE TABLE IF NOT EXISTS sessions (
             key_id       TEXT PRIMARY KEY,
             user_address TEXT,
-            chain_id     INTEGER,
+            network      TEXT,
             created_at   TIMESTAMPTZ,
             recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )
+    `);
+    await db.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS network TEXT`);
+    await db.query(`
+        DO $$ BEGIN
+          IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'sessions' AND column_name = 'chain_id') THEN
+            UPDATE sessions SET network = 'eip155:' || chain_id::text WHERE network IS NULL AND chain_id IS NOT NULL;
+            ALTER TABLE sessions DROP COLUMN chain_id;
+          END IF;
+        END $$
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_sessions_recorded ON sessions(recorded_at)`);
     await db.query(`DROP TABLE IF EXISTS intents`);

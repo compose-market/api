@@ -1,11 +1,12 @@
 import { getValkeyClient } from "../x402/keys/valkey.js";
 import { bumpSessionSnapshot } from "./cache.js";
 import { ensure, getState, rows, setState, stateUpdatedAt } from "./db.js";
+import type { NetworkId } from "../x402/configs/chains.js";
 
 export interface SessionRecord {
     keyId: string;
     userAddress?: string;
-    chainId?: number;
+    network?: NetworkId;
     createdAt?: number | Date;
 }
 
@@ -40,14 +41,14 @@ function latest(values: Array<string | undefined>): string | undefined {
 export async function recordSession(input: SessionRecord): Promise<boolean> {
     await ensure();
     const result = await rows<{ inserted: number }>(
-        `INSERT INTO sessions (key_id, user_address, chain_id, created_at)
+        `INSERT INTO sessions (key_id, user_address, network, created_at)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (key_id) DO NOTHING
          RETURNING 1 AS inserted`,
         [
             input.keyId,
-            input.userAddress?.toLowerCase() ?? null,
-            input.chainId ?? null,
+            input.userAddress ?? null,
+            input.network ?? null,
             createdDate(input.createdAt),
         ],
     );
@@ -63,9 +64,9 @@ function purpose(value: string | undefined): "session" | "api" | undefined {
     return value === "session" || value === "api" ? value : undefined;
 }
 
-function addressFromSessionSet(key: string): string | undefined {
-    const match = /^session:budget:(0x[a-fA-F0-9]{40}):intents$/.exec(key);
-    return match?.[1]?.toLowerCase();
+function contextFromSessionSet(key: string): { network: NetworkId; address: string } | null {
+    const match = /^session:budget:([^:]+:[^:]+):(.+):intents$/.exec(key);
+    return match ? { network: match[1] as NetworkId, address: match[2] } : null;
 }
 
 export async function syncSessionsFromValkey(): Promise<{ scanned: number; inserted: number }> {
@@ -79,14 +80,15 @@ export async function syncSessionsFromValkey(): Promise<{ scanned: number; inser
         cursor = nextCursor;
         for (const raw of keys) {
             const key = String(raw);
-            const userAddress = addressFromSessionSet(key);
+            const context = contextFromSessionSet(key);
             const ids = await valkey.smembers(key);
 
             for (const keyId of ids) {
                 scanned += 1;
                 if (await recordSession({
                     keyId,
-                    userAddress,
+                    userAddress: context?.address,
+                    network: context?.network,
                 })) {
                     inserted += 1;
                 }
@@ -108,7 +110,7 @@ export async function syncSessionsFromValkey(): Promise<{ scanned: number; inser
             if (await recordSession({
                 keyId: record.paymentIntentId,
                 userAddress: record.userAddress,
-                chainId: record.chainId ? Number.parseInt(record.chainId, 10) : undefined,
+                network: record.network as NetworkId | undefined,
                 createdAt: record.createdAt ? Number.parseInt(record.createdAt, 10) : undefined,
             })) {
                 inserted += 1;
