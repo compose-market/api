@@ -44,8 +44,8 @@ const ALLOWED_HEADERS = [
     "Content-Type",
     "Accept",
     "Accept-Language",
-    "X-Chain-Id",
-    "x-chain-id",
+    "X-Network-Id",
+    "x-network-id",
     "X-Request-Id",
     "x-request-id",
     "X-Session-User-Address",
@@ -75,6 +75,7 @@ const ALLOWED_HEADERS = [
 
 const CREDENTIALED_ORIGIN_MATCHERS: RegExp[] = [
     /^https?:\/\/([a-z0-9-]+\.)*compose\.market(?::\d+)?$/i,
+    /^https:\/\/api\.inference\.diy(?::\d+)?$/i,
     /^https?:\/\/localhost(?::\d+)?$/i,
     /^https?:\/\/127\.0\.0\.1(?::\d+)?$/i,
     /^https?:\/\/0\.0\.0\.0(?::\d+)?$/i,

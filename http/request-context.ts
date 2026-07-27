@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 export const REQUEST_ID_HEADER = "X-Request-Id";
 export const RECEIPT_HEADER = "X-Receipt";
 
-export interface ReceiptLineItem {
+export interface LineItem {
     key: string;
     unit: string;
     quantity: number;
@@ -24,14 +24,14 @@ export interface ReceiptLineItem {
     amountWei: string;
 }
 
-export interface ReceiptBill {
+export interface Bill {
     kind: "agent" | "workflow" | "model" | "tool" | "search" | "memory" | "connector";
     source?: string;
     name?: string;
     action?: string;
     subject?: string;
     amountWei: string;
-    lineItems: ReceiptLineItem[];
+    lineItems: LineItem[];
     agent?: string;
     agentWallet?: string;
     depth?: number;
@@ -48,10 +48,10 @@ export interface ReceiptBill {
         };
         distribution: Record<string, string>;
     };
-    children?: ReceiptBill[];
+    children?: Bill[];
 }
 
-export interface ReceiptCumulative {
+export interface CumulativeBill {
     totalAmountWei: string;
     providerAmountWei?: string;
     platformFeeWei?: string;
@@ -65,8 +65,8 @@ export interface Receipt {
     resource?: string;
     userAddress?: string;
     subject?: string;
-    lineItems?: ReceiptLineItem[];
-    bills?: ReceiptBill[];
+    lineItems?: LineItem[];
+    bills?: Bill[];
     providerAmountWei?: string;
     platformFeeWei?: string;
     finalAmountWei: string;
@@ -78,9 +78,9 @@ export interface Receipt {
     sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
-    network: `eip155:${number}`;
+    network: `${string}:${string}`;
     settledAt: number;
-    cumulative?: ReceiptCumulative;
+    cumulative?: CumulativeBill;
 }
 
 /**
