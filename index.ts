@@ -16,6 +16,8 @@ import { syncPayments } from "./metrics/payments.js";
 import { syncSessionsFromValkey } from "./metrics/sessions.js";
 import { syncAllExpenses } from "./metrics/expenses/index.js";
 import { refreshMetricsSnapshot } from "./metrics/snapshot.js";
+import { registerAnalyticsRoutes } from "./analytics/index.js";
+import { registerSvmRoutes } from "./svm/relay.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
 export { expiryWorker } from "./x402/keys/expiry.js";
@@ -160,10 +162,12 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
 
   registerExternalRoutes(app);
   registerInferenceRoutes(app);
+  registerAnalyticsRoutes(app);
   registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
   registerMetricsRoutes(app);
   registerHandlerRoutes(app);
+  registerSvmRoutes(app);
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const error = err as { status?: number; statusCode?: number; message?: string };
