@@ -49,7 +49,12 @@ function content(message: Message): string | unknown[] {
   if (typeof message.content === "string") return message.content;
   if (!Array.isArray(message.content)) return "";
   return message.content.map((part) => {
-    if (part.type === "text") return { type: "text", text: part.text || "" };
+    if (part.type === "text") return {
+      type: "text",
+      text: part.text || "",
+      ...(part.cache_control ? { cache_control: part.cache_control } : {}),
+      ...(part.prompt_cache_breakpoint !== undefined ? { prompt_cache_breakpoint: part.prompt_cache_breakpoint } : {}),
+    };
     if (part.type === "image_url") return { type: "image_url", image_url: part.image_url };
     if (part.type === "video_url") return { type: "video_url", video_url: part.video_url };
     return { type: "text", text: JSON.stringify(part) };
@@ -76,6 +81,7 @@ export function mapMessages(messages: Message[]): Array<Record<string, unknown>>
       ? { reasoning_content: message.reasoning_content }
       : {}),
     ...(message.role === "assistant" && message.partial === true ? { partial: true } : {}),
+    ...(message.cache_control ? { cache_control: message.cache_control } : {}),
   }));
 }
 
@@ -88,6 +94,8 @@ function tools(tools: Tool[] | undefined): Array<Record<string, unknown>> | unde
       ...(tool.description ? { description: tool.description } : {}),
       parameters: lower.object(tool.parameters),
     },
+    ...(tool.cache_control ? { cache_control: tool.cache_control } : {}),
+    ...(tool.prompt_cache_breakpoint !== undefined ? { prompt_cache_breakpoint: tool.prompt_cache_breakpoint } : {}),
   }));
 }
 
@@ -104,12 +112,28 @@ export function buildChatBody(
 ): Record<string, unknown> {
   const functionTools = tools(options.tools);
   const params = { ...(options.customParams || {}) };
+  const normalizedModelId = (options.wireModelId || modelId).toLowerCase();
+  const kimiK3 = normalizedModelId.includes("kimi-k3");
+  const kimiK27 = normalizedModelId.includes("kimi-k2.7") || normalizedModelId.includes("kimi-k2p7");
   const reasoning = asRecord(params.reasoning);
   if (params.reasoning_effort === undefined && typeof reasoning?.effort === "string") {
     params.reasoning_effort = reasoning.effort;
   }
   delete params.reasoning;
+  delete params.reasoningEffort;
+  if (kimiK3 || kimiK27) {
+    delete params.thinking;
+    for (const key of ["temperature", "top_p", "n", "presence_penalty", "frequency_penalty"]) {
+      delete params[key];
+    }
+  }
+  if (kimiK3) {
+    const effort = typeof params.reasoning_effort === "string" ? params.reasoning_effort.toLowerCase() : undefined;
+    if (effort && !["low", "high", "max"].includes(effort)) delete params.reasoning_effort;
+  }
+  if (kimiK27) delete params.reasoning_effort;
   for (const key of [
+    "context_management",
     "include",
     "instructions",
     "max_tool_calls",
@@ -124,20 +148,33 @@ export function buildChatBody(
     delete params[key];
   }
   const wireMessages = mapMessages(messages);
+  if (kimiK3 || kimiK27) {
+    for (const message of wireMessages) {
+      if (message.role === "assistant" && Array.isArray(message.tool_calls) && !('reasoning_content' in message)) {
+        message.reasoning_content = "";
+      }
+    }
+  }
   if (params.partial === true) {
     const lastAssistant = [...wireMessages].reverse().find((message) => message.role === "assistant");
     if (lastAssistant) lastAssistant.partial = true;
   }
   delete params.partial;
+  const selectedToolChoice = kimiK27
+    && options.toolChoice !== undefined
+    && options.toolChoice !== "auto"
+    && options.toolChoice !== "none"
+    ? "auto"
+    : options.toolChoice;
   return {
     model: options.wireModelId || modelId,
     messages: wireMessages,
-    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-    ...(typeof options.topP === "number" ? { top_p: options.topP } : {}),
+    ...(!kimiK3 && !kimiK27 && typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+    ...(!kimiK3 && !kimiK27 && typeof options.topP === "number" ? { top_p: options.topP } : {}),
     ...(typeof options.maxTokens === "number" ? { max_completion_tokens: options.maxTokens } : {}),
     ...(options.stop !== undefined ? { stop: options.stop } : {}),
     ...(functionTools ? { tools: functionTools } : {}),
-    ...(options.toolChoice ? { tool_choice: toolChoice(options.toolChoice) } : {}),
+    ...(selectedToolChoice ? { tool_choice: toolChoice(selectedToolChoice) } : {}),
     ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
     ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
     ...params,
@@ -151,19 +188,29 @@ export function usage(raw: unknown): Usage | undefined {
   const completionTokens = readNonNeg(value, ["completion_tokens", "output_tokens"]) ?? 0;
   const totalTokens = readNonNeg(value, ["total_tokens"]) ?? promptTokens + completionTokens;
   const cachedInputTokens = readNonNeg(value, ["cached_tokens"])
-    ?? readNonNeg(asRecord(value.prompt_tokens_details), ["cached_tokens"]);
+    ?? readNonNeg(value, ["cached_input_tokens", "cached_prompt_tokens", "prompt_cache_hit_tokens"])
+    ?? readNonNeg(asRecord(value.prompt_tokens_details), ["cached_tokens"])
+    ?? readNonNeg(asRecord(value.input_tokens_details), ["cached_tokens"]);
+  const inputDetails = asRecord(value.prompt_tokens_details) || asRecord(value.input_tokens_details);
+  const perfMetrics = asRecord(value.perf_metrics);
+  const cacheWriteTokens = readNonNeg(value, ["cache_write_tokens"])
+    ?? readNonNeg(inputDetails, ["cache_write_tokens"]);
+  const resolvedCachedInputTokens = cachedInputTokens
+    ?? readNonNeg(perfMetrics, ["cached-prompt-tokens", "cached_prompt_tokens"]);
   const reasoningTokens = readNonNeg(asRecord(value.completion_tokens_details), ["reasoning_tokens"]);
   const billingMetrics: Record<string, unknown> = {};
   assignMetric(billingMetrics, "input_tokens", promptTokens);
   assignMetric(billingMetrics, "output_tokens", completionTokens);
   assignMetric(billingMetrics, "total_tokens", totalTokens);
-  assignMetric(billingMetrics, "cached_input_tokens", cachedInputTokens);
+  assignMetric(billingMetrics, "cached_input_tokens", resolvedCachedInputTokens);
+  assignMetric(billingMetrics, "cache_write_input_tokens", cacheWriteTokens);
   assignMetric(billingMetrics, "reasoning_tokens", reasoningTokens);
   return {
     promptTokens,
     completionTokens,
     totalTokens,
-    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(resolvedCachedInputTokens !== undefined ? { cachedInputTokens: resolvedCachedInputTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     billingMetrics,
     raw: value,

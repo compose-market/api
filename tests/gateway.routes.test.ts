@@ -582,6 +582,19 @@ test("adaptError classifies provider topup rate-limit wording as rate limit", as
   });
 });
 
+test("adaptError preserves retryable upstream status and Retry-After", async () => {
+  const { adaptError } = await import("../inference/gateway.js");
+  const error = Object.assign(new Error("provider overloaded"), {
+    statusCode: 503,
+    code: "server_is_overloaded",
+    retryAfter: "7",
+  });
+  const adapted = adaptError(error, 500);
+  assert.equal(adapted.status, 503);
+  assert.equal((adapted.body as { error?: { code?: string } }).error?.code, "server_is_overloaded");
+  assert.equal(adapted.headers?.["Retry-After"], "7");
+});
+
 test("adaptError classifies provider missing modality input as invalid request", async () => {
   const { adaptError } = await import("../inference/gateway.js");
   const error = new Error("Roboflow image analysis requires an image input");
@@ -978,6 +991,8 @@ test("toChatUsageStreamEvent emits the OpenAI-compatible usage-only terminal chu
     prompt_tokens: 123,
     completion_tokens: 45,
     total_tokens: 168,
+    prompt_tokens_details: { cached_tokens: 0 },
+    completion_tokens_details: { reasoning_tokens: 0 },
   });
 });
 

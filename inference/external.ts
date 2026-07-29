@@ -5,12 +5,12 @@ import {
   handleAudioTranscription,
   handleEmbeddings,
   handleImageGeneration,
-  handleResponses,
   handleVideoGeneration,
 } from "./gateway.js";
-import { normalizeResponsesRequest } from "./core.js";
+import { normalizeChatRequest, normalizeResponsesRequest } from "./core.js";
 import {
   getCompiledModels,
+  getModalityModels,
   getModelById,
   getModelProtocolProfile,
   resolveModel,
@@ -24,7 +24,9 @@ const URLS = /\bhttps?:\/\/[^\s"'<>)]*/gi;
 const OPEN = "compose-market";
 const ENV = "COMPOSE_MARKET_API_KEY";
 const MODES = new Set(["text", "audio", "image", "video", "pdf"]);
-const CACHE = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400";
+const OPENAI_PACKAGE = "@ai-sdk/openai";
+const OPENAI_COMPATIBLE_PACKAGE = "@ai-sdk/openai-compatible";
+const CACHE = "public, max-age=0, s-maxage=60, must-revalidate";
 
 type Config = Record<string, unknown>;
 
@@ -34,14 +36,12 @@ interface Cached {
   wellknown: string;
 }
 
-const configs = new Map<string, Cached>();
-
 function catalog(): ModelCard[] {
   return getCompiledModels().models;
 }
 
 function textCatalog(): ModelCard[] {
-  return catalog().filter((model) => getModelProtocolProfile(model).interactiveText);
+  return getModalityModels("text").filter((model) => getModelProtocolProfile(model).interactiveText);
 }
 
 function upstream(model: Pick<ModelCard, "modelId" | "upstreamModelId">): string {
@@ -112,29 +112,34 @@ function list(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function positive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function nonNegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function modes(value: unknown): string[] {
+  return list(value).filter((item) => MODES.has(item));
+}
+
 function limit(model: ModelCard): Record<string, number> | undefined {
   const context = record(model.contextWindow);
-  const contextTokens = typeof model.contextWindow === "number"
-    ? model.contextWindow
-    : typeof context?.tokens === "number"
-      ? context.tokens
-      : undefined;
-  const input = typeof context?.inputTokens === "number"
-    ? context.inputTokens
-    : typeof context?.input_tokens === "number"
-      ? context.input_tokens
-      : contextTokens;
-  const output = typeof context?.outputTokens === "number"
-    ? context.outputTokens
-    : typeof context?.output_tokens === "number"
-      ? context.output_tokens
-      : typeof model.maxOutputTokens === "number"
-        ? model.maxOutputTokens
-        : undefined;
+  const contextTokens = positive(model.contextWindow)
+    ?? positive(context?.tokens)
+    ?? positive(context?.contextTokens)
+    ?? positive(context?.context_tokens)
+    ?? positive(context?.inputTokens)
+    ?? positive(context?.input_tokens);
+  const input = positive(context?.inputTokens) ?? positive(context?.input_tokens);
+  const output = positive(context?.outputTokens)
+    ?? positive(context?.output_tokens)
+    ?? positive(model.maxOutputTokens);
   const out: Record<string, number> = {};
-  if (typeof contextTokens === "number" && contextTokens > 0) out.context = contextTokens;
-  if (typeof input === "number" && input > 0) out.input = input;
-  if (typeof output === "number" && output > 0) out.output = output;
+  if (contextTokens !== undefined) out.context = contextTokens;
+  if (input !== undefined) out.input = input;
+  if (output !== undefined) out.output = output;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -142,15 +147,21 @@ function price(model: ModelCard): Record<string, number> | undefined {
   const pricing = record(model.pricing);
   const sections = Array.isArray(pricing?.sections) ? pricing.sections : [];
   const section = record(sections.find((item) => record(item)?.default === true)) || record(sections[0]);
-  const entries = record(section?.entries);
+  const entries = record(section?.entries) || pricing;
   if (!entries) return undefined;
-  const out: Record<string, number> = {};
-  if (typeof entries.input === "number") out.input = entries.input;
-  if (typeof entries.output === "number") out.output = entries.output;
-  if (typeof entries.cached_input === "number") out.cache_read = entries.cached_input;
-  if (typeof entries.cache_read === "number") out.cache_read = entries.cache_read;
-  if (typeof entries.cache_write === "number") out.cache_write = entries.cache_write;
-  return Object.keys(out).length > 0 ? out : undefined;
+  const input = nonNegative(entries.input);
+  const output = nonNegative(entries.output);
+  if (input === undefined || output === undefined) return undefined;
+  const cacheRead = nonNegative(entries.cached_input) ?? nonNegative(entries.cache_read);
+  const cacheWrite = nonNegative(entries.cache_write)
+    ?? nonNegative(entries.cache_writes)
+    ?? nonNegative(entries.input_token_cache_creation_5m);
+  return {
+    input,
+    output,
+    ...(cacheRead !== undefined ? { cache_read: cacheRead } : {}),
+    ...(cacheWrite !== undefined ? { cache_write: cacheWrite } : {}),
+  };
 }
 
 function meta(model: ModelCard): Record<string, unknown> {
@@ -195,17 +206,30 @@ function olimit(model: ModelCard): Record<string, number> | undefined {
   };
 }
 
+function externalProtocol(model: ModelCard): "chat" | "responses" {
+  const capabilities = record(model.capabilities);
+  return model.provider === "openai" || capabilities?.responses === true
+    ? "responses"
+    : "chat";
+}
+
 function ometa(model: ModelCard): Record<string, unknown> {
-  const input = list(model.input);
+  const input = modes(model.input);
+  const output = modes(model.output);
   const profile = getModelProtocolProfile(model);
   const data: Record<string, unknown> = {};
   if (model.name && model.name !== model.modelId) data.name = model.name;
+  if (profile.family) data.family = profile.family;
   if (profile.reasoning) data.reasoning = true;
-  if (profile.toolCalls) data.tool_call = true;
+  data.tool_call = profile.toolCalls;
   if (profile.parallelToolCalls) data.options = { parallelToolCalls: true };
-  if (input.some((item) => item !== "text" && MODES.has(item))) data.attachment = true;
+  if (externalProtocol(model) === "responses") data.provider = { npm: OPENAI_PACKAGE };
+  if (input.length > 0 && output.length > 0) data.modalities = { input, output };
+  if (input.some((item) => item !== "text")) data.attachment = true;
   const bounds = olimit(model);
   if (bounds) data.limit = bounds;
+  const cost = price(model);
+  if (cost) data.cost = cost;
   return data;
 }
 
@@ -215,8 +239,8 @@ function origin(req: Request): string {
 
 function headers(res: Response): void {
   res.setHeader("Cache-Control", CACHE);
-  res.setHeader("CDN-Cache-Control", "public, s-maxage=3600, stale-while-revalidate=86400");
-  res.setHeader("Surrogate-Control", "max-age=3600, stale-while-revalidate=86400");
+  res.setHeader("CDN-Cache-Control", "public, s-maxage=60, must-revalidate");
+  res.setHeader("Surrogate-Control", "max-age=60");
 }
 
 function send(res: Response, json: string): void {
@@ -425,8 +449,9 @@ export function resolveExternalModel(): RequestHandler {
 
     const source = body as Record<string, unknown>;
     source.model = resolved.id;
-    source.provider = resolved.resolved.provider;
     res.locals.externalModelId = resolved.id;
+    res.locals.externalResolvedModel = resolved.resolved;
+    res.locals.externalCompatibility = true;
     res.locals.upstreamProvider = resolved.resolved.provider;
     res.locals.upstreamModel = resolved.upstreamModelId;
     res.locals.publicModel = resolved.id;
@@ -522,9 +547,11 @@ function config(base: string, key: boolean): Config {
     provider: {
       [OPEN]: {
         name: "Compose.Market",
-        npm: "@ai-sdk/openai",
+        npm: OPENAI_COMPATIBLE_PACKAGE,
         options: {
           baseURL: `${base}/external/v1`,
+          setCacheKey: true,
+          includeUsage: true,
           ...(key ? { apiKey: `{env:${ENV}}` } : {}),
         },
         models,
@@ -535,14 +562,9 @@ function config(base: string, key: boolean): Config {
 
 function cache(req: Request): Cached {
   const base = origin(req);
-  const found = configs.get(base);
-  if (found) {
-    return found;
-  }
-
   const value = config(base, true);
   const clean = config(base, false);
-  const next = {
+  return {
     config: value,
     opencode: JSON.stringify(value),
     wellknown: JSON.stringify({
@@ -553,8 +575,6 @@ function cache(req: Request): Cached {
       config: clean,
     }),
   };
-  configs.set(base, next);
-  return next;
 }
 
 async function opencode(req: Request, res: Response): Promise<void> {
@@ -565,19 +585,54 @@ async function wellknown(req: Request, res: Response): Promise<void> {
   send(res, cache(req).wellknown);
 }
 
+export function normalizeExternalChatRequest(body: Record<string, unknown>) {
+  return normalizeChatRequest(body);
+}
+
 async function handleExternalChatCompletions(req: Request, res: Response): Promise<void> {
   const body = (req.body || {}) as Record<string, unknown>;
-  const responsesBody: Record<string, unknown> = {
-    ...body,
-    input: body.messages,
-    max_output_tokens: body.max_tokens ?? body.max_completion_tokens,
-  };
-  delete responsesBody.messages;
-  delete responsesBody.max_tokens;
-  delete responsesBody.max_completion_tokens;
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    fail(res, 400, "messages is required and must be a non-empty array", "missing_messages");
+    return;
+  }
+  if (body.stream !== undefined && typeof body.stream !== "boolean") {
+    fail(res, 400, "stream must be a boolean when provided", "invalid_stream");
+    return;
+  }
+  const request = normalizeExternalChatRequest(body);
+  await executeRequest({ req, res, request, shape: "chat", externalCompatibility: true });
+}
 
-  const request = normalizeResponsesRequest(responsesBody);
-  await executeRequest({ req, res, request, shape: "chat" });
+async function handleExternalResponses(req: Request, res: Response): Promise<void> {
+  const body = (req.body || {}) as Record<string, unknown>;
+  if (body.stream !== undefined && typeof body.stream !== "boolean") {
+    fail(res, 400, "stream must be a boolean when provided", "invalid_stream");
+    return;
+  }
+  const request = normalizeResponsesRequest(body);
+  if (request.messages.length === 0 && !request.previousResponseId) {
+    fail(res, 400, "input is required", "missing_input");
+    return;
+  }
+  const resolved = res.locals.externalResolvedModel as ResolvedModel | undefined;
+  if (
+    resolved?.card
+    && externalProtocol(resolved.card) !== "responses"
+    && (
+      body.previous_response_id !== undefined
+      || body.context_management !== undefined
+      || body.truncation !== undefined
+    )
+  ) {
+    fail(
+      res,
+      400,
+      "This model does not expose Responses continuation or context management. Send complete stateless input or use Chat Completions.",
+      "unsupported_responses_state",
+    );
+    return;
+  }
+  await executeRequest({ req, res, request, shape: "responses", externalCompatibility: true });
 }
 
 function route(app: Express, method: "get" | "post", path: string, ...handlers: RequestHandler[]): void {
@@ -600,7 +655,7 @@ export function register(app: Express): void {
   route(app, "get", "/external/opencode", asyncify(opencode));
 
   route(app, "post", "/external/v1/chat/completions", resolve, shaped, guard, asyncify(handleExternalChatCompletions));
-  route(app, "post", "/external/v1/responses", resolve, responsesShaped, guard, asyncify(handleResponses));
+  route(app, "post", "/external/v1/responses", resolve, responsesShaped, guard, asyncify(handleExternalResponses));
   route(app, "post", "/external/v1/embeddings", resolve, shaped, guard, asyncify(handleEmbeddings));
   route(app, "post", "/external/v1/images/generations", resolve, shaped, guard, asyncify(handleImageGeneration));
   route(app, "post", "/external/v1/audio/speech", resolve, shaped, guard, asyncify(handleAudioSpeech));

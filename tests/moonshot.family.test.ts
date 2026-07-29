@@ -47,6 +47,36 @@ test("Moonshot body maps Responses reasoning effort without leaking Responses sh
   assert.deepEqual(body.stream_options, { include_usage: true });
 });
 
+test("Kimi K3 body removes unsupported sampling and completes tool reasoning history", () => {
+  const body = buildChatBody("accounts/fireworks/models/kimi-k3", [{
+    role: "assistant",
+    content: null,
+    tool_calls: [{ id: "call_1", type: "function", function: { name: "inspect", arguments: "{}" } }],
+  }], {
+    temperature: 0.2,
+    topP: 0.5,
+    toolChoice: "required",
+    customParams: { reasoning_effort: "high", thinking: { type: "enabled" }, presence_penalty: 1 },
+  }, true);
+  assert.equal(body.temperature, undefined);
+  assert.equal(body.top_p, undefined);
+  assert.equal(body.presence_penalty, undefined);
+  assert.equal(body.thinking, undefined);
+  assert.equal(body.reasoning_effort, "high");
+  assert.equal(body.tool_choice, "required");
+  assert.equal((body.messages as Array<Record<string, unknown>>)[0]?.reasoning_content, "");
+});
+
+test("Kimi K2.7 removes unsupported reasoning and normalizes required tools", () => {
+  const body = buildChatBody("accounts/fireworks/models/kimi-k2p7-code", [{ role: "user", content: "Inspect" }], {
+    toolChoice: "required",
+    customParams: { reasoning_effort: "high", thinking: { type: "enabled" } },
+  });
+  assert.equal(body.reasoning_effort, undefined);
+  assert.equal(body.thinking, undefined);
+  assert.equal(body.tool_choice, "auto");
+});
+
 test("Moonshot parser streams reasoning, text, tools, and authoritative usage", () => {
   const parser = createStreamParser();
   assert.deepEqual(parser.feed({ choices: [{ delta: { reasoning_content: "Think " } }] }), [

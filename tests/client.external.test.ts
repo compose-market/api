@@ -50,7 +50,15 @@ function bounds(model: Record<string, unknown>): Record<string, number> | undefi
     ? model.contextWindow
     : typeof context?.tokens === "number"
       ? context.tokens
-      : undefined;
+      : typeof context?.contextTokens === "number"
+        ? context.contextTokens
+        : typeof context?.context_tokens === "number"
+          ? context.context_tokens
+          : typeof context?.inputTokens === "number"
+            ? context.inputTokens
+            : typeof context?.input_tokens === "number"
+              ? context.input_tokens
+              : undefined;
   const input = typeof context?.inputTokens === "number"
     ? context.inputTokens
     : typeof context?.input_tokens === "number"
@@ -112,6 +120,7 @@ function goodLimit(value: unknown): void {
   if ("input" in limit) {
     assert.equal(typeof limit.input, "number");
     assert.ok((limit.input as number) > 0);
+    assert.ok((limit.input as number) <= context);
   }
 }
 
@@ -312,28 +321,44 @@ test("external body limit failures are OpenAI-shaped", async () => {
 });
 
 test("external chat normalization preserves OpenAI and AI SDK options", async () => {
-  const { normalizeChatRequest } = await import("../inference/core.js");
-  const cleaned = normalizeChatRequest({
+  const { normalizeExternalChatRequest } = await import("../inference/external.js");
+  const cleaned = normalizeExternalChatRequest({
     model: "example-model",
     promptCacheKey: "ses_test",
+    promptCacheOptions: { mode: "explicit", ttl: "30m" },
     reasoning_effort: "medium",
     verbosity: "low",
     stream_options: { include_usage: true },
     tools: [{
       type: "function",
+      cache_control: { type: "ephemeral" },
       function: {
         name: "repo.inspect",
         parameters: { type: "object", properties: {} },
       },
     }],
-    messages: [{ role: "user", content: "Inspect the repository." }],
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "Inspect the repository.", cache_control: { type: "ephemeral" } }],
+    }],
   });
 
   assert.equal(cleaned.customParams?.prompt_cache_key, "ses_test");
+  assert.deepEqual(cleaned.customParams?.prompt_cache_options, { mode: "explicit", ttl: "30m" });
   assert.equal(cleaned.customParams?.reasoning_effort, "medium");
   assert.deepEqual(cleaned.customParams?.stream_options, { include_usage: true });
   assert.deepEqual(cleaned.customParams?.text, { verbosity: "low" });
-  assert.ok(Array.isArray(cleaned.tools));
+  assert.deepEqual(cleaned.tools, [{
+    type: "function",
+    name: "repo.inspect",
+    parameters: { type: "object", properties: {} },
+    cache_control: { type: "ephemeral" },
+  }]);
+  assert.deepEqual(cleaned.messages[0]?.content, [{
+    type: "text",
+    text: "Inspect the repository.",
+    cache_control: { type: "ephemeral" },
+  }]);
 });
 
 test("external resolver keeps public ids and reports provider/upstream diagnostics", async () => {
@@ -358,8 +383,10 @@ test("external resolver keeps public ids and reports provider/upstream diagnosti
 
   assert.equal(called, true);
   assert.equal((req.body as Record<string, unknown>).model, "openai/gpt-5.5");
-  assert.equal((req.body as Record<string, unknown>).provider, "openai");
+  assert.equal("provider" in (req.body as Record<string, unknown>), false);
   assert.equal(res.locals.externalModelId, "openai/gpt-5.5");
+  assert.equal((res.locals.externalResolvedModel as { provider?: string }).provider, "openai");
+  assert.equal(res.locals.externalCompatibility, true);
   assert.equal(headers["x-upstream-provider"], "openai");
   assert.equal(headers["x-upstream-model"], "gpt-5.5");
   assert.equal(headers["x-public-model"], "openai/gpt-5.5");
@@ -477,7 +504,7 @@ test("external response shaping sanitizes upstream content-filter errors", async
 test("external OpenCode config is generated from the catalog", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
-  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
+  const { getModalityModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
   const app = express();
   app.use(json());
   register(app);
@@ -489,8 +516,9 @@ test("external OpenCode config is generated from the catalog", async () => {
       assert.equal(response.status, 200);
       const control = response.headers.get("cache-control") || "";
       assert.match(control, /\bpublic\b/);
-      assert.match(control, /\bs-maxage=3600\b/);
-      assert.match(control, /\bstale-while-revalidate=86400\b/);
+      assert.match(control, /\bs-maxage=60\b/);
+      assert.match(control, /\bmust-revalidate\b/);
+      assert.doesNotMatch(control, /stale-while-revalidate/);
       const parsed = await response.json() as {
         auth?: { command?: string[]; env?: string };
         config?: {
@@ -508,6 +536,7 @@ test("external OpenCode config is generated from the catalog", async () => {
               timeout?: false;
               chunkTimeout?: number;
               includeUsage?: boolean;
+              setCacheKey?: boolean;
             };
             models?: Record<string, Record<string, unknown>>;
           }>;
@@ -526,6 +555,7 @@ test("external OpenCode config is generated from the catalog", async () => {
             timeout?: false;
             chunkTimeout?: number;
             includeUsage?: boolean;
+            setCacheKey?: boolean;
           };
           models?: Record<string, Record<string, unknown>>;
         }>;
@@ -541,13 +571,13 @@ test("external OpenCode config is generated from the catalog", async () => {
         assert.equal(JSON.stringify(parsed).includes("COMPOSE_MARKET_API_KEY"), false);
       }
       const provider = body.provider["compose-market"];
-      const compiled = getCompiledModels().models.filter((model) => getModelProtocolProfile(model).interactiveText);
+      const compiled = getModalityModels("text").filter((model) => getModelProtocolProfile(model).interactiveText);
       assert.equal("model" in body, false);
       assert.equal("small_model" in body, false);
       assert.equal("enabled_providers" in body, false);
       assert.ok(provider);
       assert.equal("api" in provider, false);
-      assert.equal(provider.npm, "@ai-sdk/openai");
+      assert.equal(provider.npm, "@ai-sdk/openai-compatible");
       assert.equal(provider.options?.baseURL, `${baseUrl}/external/v1`);
       if (path === "/.well-known/opencode") {
         assert.equal("apiKey" in (provider.options || {}), false);
@@ -556,8 +586,8 @@ test("external OpenCode config is generated from the catalog", async () => {
       }
       assert.equal("timeout" in (provider.options || {}), false);
       assert.equal("chunkTimeout" in (provider.options || {}), false);
-      assert.equal("includeUsage" in (provider.options || {}), false);
-      assert.equal("setCacheKey" in (provider.options || {}), false);
+      assert.equal(provider.options?.includeUsage, true);
+      assert.equal(provider.options?.setCacheKey, true);
       const models = provider.models || {};
       assert.equal(Object.keys(models).length, compiled.length);
       for (const model of compiled) {
@@ -566,6 +596,12 @@ test("external OpenCode config is generated from the catalog", async () => {
       assert.ok(models["gpt-5.5"]);
       assert.ok(models["openai/gpt-5.5"]);
       assert.equal(models["kimi-k3"]?.reasoning, true);
+      assert.equal(models["kimi-k3"]?.family, "moonshot");
+      assert.deepEqual(models["kimi-k3"]?.limit, { context: 1048576, input: 1048576, output: 1048576 });
+      assert.deepEqual(models["kimi-k3"]?.cost, { input: 3, output: 15 });
+      assert.deepEqual(models["kimi-k3"]?.modalities, { input: ["text", "image"], output: ["text"] });
+      assert.equal(models["kimi-k3"]?.provider, undefined);
+      assert.deepEqual(models["gpt-5.6-sol"]?.provider, { npm: "@ai-sdk/openai" });
       assert.equal(Boolean(Object.keys(models).some((model) => model.includes("|"))), false);
 
       for (const model of Object.values(models)) {

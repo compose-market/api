@@ -32,8 +32,9 @@ test("payable stream route aborts unsettled runtime streams on client close", ()
 test("inference gateway threads cancellation and deadlines into provider work", () => {
   assert.match(GATEWAY, /function createRequestAbort/);
   assert.match(GATEWAY, /function withDirectDeadline/);
-  assert.match(GATEWAY, /generateEngine\(request,\s*\{\s*signal: direct\.signal\s*\}\)/);
-  assert.match(GATEWAY, /streamEngine\(request,\s*\{\s*signal: lifecycle\.signal\s*\}\)/);
+  assert.match(GATEWAY, /generateEngine\(nextRequest,[\s\S]{0,180}signal: direct\?\.signal \|\| lifecycle\.signal/);
+  assert.match(GATEWAY, /streamEngine\(request,[\s\S]{0,180}signal: lifecycle\.signal/);
+  assert.match(GATEWAY, /externalCompatibility \? null : withDirectDeadline/);
   assert.match(GATEWAY, /execute: \(signal\) => invokeDirectAdapter\(request,\s*signal\)/);
   assert.match(GATEWAY, /class UpstreamTimeoutError/);
   assert.match(GATEWAY, /code = ["']upstream_timeout["']/);

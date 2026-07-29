@@ -20,6 +20,7 @@ export interface Cancel {
 
 export interface RunOptions {
   signal?: AbortSignal;
+  retriesPerTarget?: number;
 }
 
 function load() {
@@ -45,6 +46,7 @@ export async function generate(request: Request, options: RunOptions = {}): Prom
       provider: resolved.provider,
       card: resolved.card,
     },
+    retriesPerTarget: options.retriesPerTarget,
     execute: async (target) => {
       const { generateWithTools } = await load();
       return generateWithTools(request, {
@@ -68,6 +70,7 @@ export async function stream(request: Request, options: RunOptions = {}): Promis
       provider: resolved.provider,
       card: resolved.card,
     },
+    retriesPerTarget: options.retriesPerTarget,
     execute: async (target) => {
       const { streamWithTools } = await load();
       return {

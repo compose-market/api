@@ -20,13 +20,16 @@ import {
     unlockBudget,
 } from "./session/budget.js";
 import {
-    valkeyDel,
+    valkeyCompareAndDelete,
+    valkeyCommitReservedBudget,
     valkeyExpire,
     valkeyGet,
     valkeyHGetAll,
     valkeyHIncrByAmount,
     valkeyHSet,
+    valkeyReleaseReservedBudget,
     valkeySetNXEX,
+    valkeyTryReserveBudget,
 } from "./keys/valkey.js";
 import { merchantWalletAddress } from "./wallets.js";
 import {
@@ -41,7 +44,7 @@ const KEY_LOCK_PREFIX = "key-lock:";
 const IDEMPOTENCY_PREFIX = "payment-intent-idem:";
 const INTENT_TTL_SECONDS = 15 * 60;
 const LOCK_TTL_SECONDS = 15;
-const LOCK_ATTEMPTS = 20;
+const LOCK_ATTEMPTS = 80;
 const LOCK_DELAY_MS = 25;
 
 export type PaymentIntentStatus = "authorized" | "settling" | "settled" | "aborted" | "failed";
@@ -402,7 +405,7 @@ async function withValkeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> 
         if (acquired) {
             break;
         }
-        await new Promise((resolve) => setTimeout(resolve, LOCK_DELAY_MS));
+        await new Promise((resolve) => setTimeout(resolve, LOCK_DELAY_MS + Math.floor(Math.random() * LOCK_DELAY_MS)));
     }
 
     if (!acquired) {
@@ -412,10 +415,7 @@ async function withValkeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> 
     try {
         return await fn();
     } finally {
-        const currentOwner = await valkeyGet(key);
-        if (currentOwner === owner) {
-            await valkeyDel(key);
-        }
+        await valkeyCompareAndDelete(key, owner);
     }
 }
 
@@ -583,7 +583,10 @@ export async function authorizePaymentIntent(
         const recordKey = keyRecordKey(validation.payload.keyId);
         const purpose = validation.record.purpose;
 
-        const budgetState = await withValkeyLock(keyLockKey(validation.payload.keyId), async () => {
+        const authorizationLockKey = purpose === "api" && authorizationAmount.useBudgetCap
+            ? paymentIntentLockKey(paymentIntentId)
+            : keyLockKey(validation.payload.keyId);
+        const budgetState = await withValkeyLock(authorizationLockKey, async () => {
             const record = await getKeyRecord(validation.payload!.keyId);
             if (!record) {
                 throw new Error("Compose key record not found");
@@ -847,23 +850,10 @@ export async function settlePaymentIntent(
                     ? 0n
                     : maxAmount;
             if (intent.purpose === "api" && intent.useBudgetCap && apiReservedAmount <= 0n) {
-                const reserved = await withValkeyLock(keyLockKey(intent.keyId), async () => {
-                    const record = await getKeyRecord(intent.keyId);
-                    if (!record) {
-                        throw new Error("Compose key record not found");
-                    }
-
-                    const currentReserved = BigInt(await getKeyReservedBudget(intent.keyId));
-                    const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - currentReserved;
-                    if (finalAmount > available) {
-                        return false;
-                    }
-
-                    await valkeyHIncrByAmount(keyRecordKey(intent.keyId), "budgetReserved", finalAmount);
-                    await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                        reservedAmountWei: finalAmountStr,
-                    });
-                    return true;
+                const reserved = await valkeyTryReserveBudget({
+                    budgetKey: keyRecordKey(intent.keyId),
+                    intentKey: paymentIntentKey(intent.paymentIntentId),
+                    amount: finalAmount,
                 });
 
                 if (!reserved) {
@@ -905,23 +895,26 @@ export async function settlePaymentIntent(
                     if (sessionBudgetIntentId) {
                         await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
                     }
-                } else {
-                    await withValkeyLock(keyLockKey(intent.keyId), async () => {
-                        if (apiReservedAmount > 0n) {
-                            await valkeyHIncrByAmount(
-                                keyRecordKey(intent.keyId),
-                                "budgetReserved",
-                                -apiReservedAmount,
-                            );
-                        }
+                } else if (apiReservedAmount > 0n) {
+                    await valkeyReleaseReservedBudget({
+                        budgetKey: keyRecordKey(intent.keyId),
+                        intentKey: paymentIntentKey(intent.paymentIntentId),
+                        reservedAmount: apiReservedAmount,
+                        intentFields: {
+                            status: "failed",
+                            updatedAt: String(Date.now()),
+                            error: settlementError,
+                        },
                     });
                 }
 
-                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                    status: "failed",
-                    updatedAt: String(Date.now()),
-                    error: settlementError,
-                });
+                if (intent.purpose === "session") {
+                    await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
+                        status: "failed",
+                        updatedAt: String(Date.now()),
+                        error: settlementError,
+                    });
+                }
 
                 return buildPaymentRequiredFailure({
                     resourceUrl: intent.resource,
@@ -941,19 +934,9 @@ export async function settlePaymentIntent(
                     await markIntentsSettled([sessionBudgetIntentId], settlement.txHash || "");
                 }
                 await valkeyHSet(keyRecordKey(intent.keyId), "lastUsedAt", String(Date.now()));
-            } else {
-                await withValkeyLock(keyLockKey(intent.keyId), async () => {
-                    const recordKey = keyRecordKey(intent.keyId);
-                    if (apiReservedAmount > 0n) {
-                        await valkeyHIncrByAmount(recordKey, "budgetReserved", -apiReservedAmount);
-                    }
-                    await valkeyHIncrByAmount(recordKey, "budgetUsed", finalAmount);
-                    await valkeyHSet(recordKey, "lastUsedAt", String(Date.now()));
-                });
             }
-
             const settledAt = Date.now();
-            await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
+            const settledFields = {
                 status: "settled",
                 updatedAt: String(settledAt),
                 settledAt: String(settledAt),
@@ -967,7 +950,19 @@ export async function settlePaymentIntent(
                     platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
                     finalAmountWei: finalAmountStr,
                 }),
-            });
+            };
+            if (intent.purpose === "api") {
+                await valkeyCommitReservedBudget({
+                    budgetKey: keyRecordKey(intent.keyId),
+                    intentKey: paymentIntentKey(intent.paymentIntentId),
+                    reservedAmount: apiReservedAmount,
+                    finalAmount,
+                    lastUsedAt: settledAt,
+                    intentFields: settledFields,
+                });
+            } else {
+                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), settledFields);
+            }
 
             const headers = appendSettlementAmountHeaders(
                 await buildPaymentBudgetHeaders(intent),
@@ -996,7 +991,12 @@ export async function settlePaymentIntent(
             };
         });
     } catch (error) {
-        return failure(400, error instanceof Error ? error.message : "Invalid payment settlement request");
+        const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
+            ? (error as { statusCode: number }).statusCode
+            : 400;
+        return failure(status, error instanceof Error ? error.message : "Invalid payment settlement request", {
+            headers: status === 429 ? { "Retry-After": "1" } : {},
+        });
     }
 }
 
@@ -1044,25 +1044,30 @@ export async function abortPaymentIntent(
                 if (intent.sessionBudgetIntentId) {
                     await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
                 }
-            } else {
-                await withValkeyLock(keyLockKey(intent.keyId), async () => {
-                    if (reservedAmount > 0n) {
-                        await valkeyHIncrByAmount(
-                            keyRecordKey(intent.keyId),
-                            "budgetReserved",
-                            -reservedAmount,
-                        );
-                    }
+            } else if (reservedAmount > 0n) {
+                const abortedAt = Date.now();
+                await valkeyReleaseReservedBudget({
+                    budgetKey: keyRecordKey(intent.keyId),
+                    intentKey: paymentIntentKey(intent.paymentIntentId),
+                    reservedAmount,
+                    intentFields: {
+                        status: "aborted",
+                        updatedAt: String(abortedAt),
+                        abortedAt: String(abortedAt),
+                        error: input.reason,
+                    },
                 });
             }
 
             const abortedAt = Date.now();
-            await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                status: "aborted",
-                updatedAt: String(abortedAt),
-                abortedAt: String(abortedAt),
-                error: input.reason,
-            });
+            if (intent.purpose === "session" || reservedAmount === 0n) {
+                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
+                    status: "aborted",
+                    updatedAt: String(abortedAt),
+                    abortedAt: String(abortedAt),
+                    error: input.reason,
+                });
+            }
 
             const headers = await buildPaymentBudgetHeaders(intent);
             return {
@@ -1077,6 +1082,11 @@ export async function abortPaymentIntent(
             };
         });
     } catch (error) {
-        return failure(400, error instanceof Error ? error.message : "Invalid payment abort request");
+        const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
+            ? (error as { statusCode: number }).statusCode
+            : 400;
+        return failure(status, error instanceof Error ? error.message : "Invalid payment abort request", {
+            headers: status === 429 ? { "Retry-After": "1" } : {},
+        });
     }
 }

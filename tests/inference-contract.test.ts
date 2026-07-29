@@ -266,7 +266,7 @@ test("OpenAI adapter routes chat tools with reasoning through Responses", async 
   }
 });
 
-test("OpenAI adapter streams chat tools with reasoning through Responses", async () => {
+test("OpenAI adapter accepts response.completed followed by EOF without DONE", async () => {
   const original = globalThis.fetch;
   let url = "";
   let body: Record<string, unknown> = {};
@@ -278,7 +278,6 @@ test("OpenAI adapter streams chat tools with reasoning through Responses", async
       "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{\\\"target\\\"\"}\n\n",
       "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"item_id\":\"fc_1\",\"name\":\"deploy\",\"arguments\":\"{\\\"target\\\":\\\"prod\\\"}\"}\n\n",
       "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"deploy\",\"arguments\":\"{\\\"target\\\":\\\"prod\\\"}\"}],\"usage\":{\"input_tokens\":11,\"output_tokens\":5,\"total_tokens\":16}}}\n\n",
-      "data: [DONE]\n\n",
     ].join("");
     return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
   }) as typeof fetch;
@@ -436,6 +435,8 @@ test("chat stream conversion emits the chunks runtime normalizes", () => {
     prompt_tokens: 11,
     completion_tokens: 7,
     total_tokens: 18,
+    prompt_tokens_details: { cached_tokens: 0 },
+    completion_tokens_details: { reasoning_tokens: 0 },
   });
 });
 

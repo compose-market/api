@@ -49,6 +49,13 @@ export type AnthropicContentBlock =
 
 export type AnthropicCacheControl = { type: "ephemeral"; ttl?: "5m" | "1h" };
 
+function cacheControl(value: unknown): AnthropicCacheControl | undefined {
+    const record = asRecord(value);
+    if (record?.type !== "ephemeral") return undefined;
+    const ttl = record.ttl === "5m" || record.ttl === "1h" ? record.ttl : undefined;
+    return { type: "ephemeral", ...(ttl ? { ttl } : {}) };
+}
+
 export type AnthropicImageSource =
     | { type: "base64"; data: string; media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp" }
     | { type: "url"; url: string };
@@ -100,7 +107,12 @@ export function mapMessagesForAnthropic(
             const text = textOf(message.content);
             out.push({
                 role: "user",
-                content: [{ type: "tool_result", tool_use_id: id, content: text }],
+                content: [{
+                    type: "tool_result",
+                    tool_use_id: id,
+                    content: text,
+                    ...(cacheControl(message.cache_control) ? { cache_control: cacheControl(message.cache_control) } : {}),
+                }],
             });
             continue;
         }
@@ -109,7 +121,11 @@ export function mapMessagesForAnthropic(
         if (message.role === "assistant") {
             const blocks: AnthropicContentBlock[] = [];
             const text = textOf(message.content);
-            if (text) blocks.push({ type: "text", text });
+            if (text) blocks.push({
+                type: "text",
+                text,
+                ...(cacheControl(message.cache_control) ? { cache_control: cacheControl(message.cache_control) } : {}),
+            });
             for (const call of message.tool_calls ?? []) {
                 let input: Record<string, unknown> = {};
                 try { input = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; }
@@ -127,7 +143,11 @@ export function mapMessagesForAnthropic(
         } else if (Array.isArray(message.content)) {
             for (const part of message.content) {
                 if (part.type === "text" && part.text) {
-                    content.push({ type: "text", text: part.text });
+                    content.push({
+                        type: "text",
+                        text: part.text,
+                        ...(cacheControl(part.cache_control) ? { cache_control: cacheControl(part.cache_control) } : {}),
+                    });
                 } else if (part.type === "image_url") {
                     const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
                     if (!url) continue;
@@ -191,6 +211,7 @@ export function toolsToWire(tools: Tool[] | undefined): AnthropicTool[] | undefi
         name: tool.name,
         ...(tool.description ? { description: tool.description } : {}),
         input_schema: lower.object(tool.parameters),
+        ...(cacheControl(tool.cache_control) ? { cache_control: cacheControl(tool.cache_control) } : {}),
     }));
 }
 
@@ -216,20 +237,24 @@ export function usageFromAnthropic(rawUsage: unknown): Usage | undefined {
     const outputTokens = readNonNeg(usage, ["output_tokens"]) ?? 0;
     const cacheCreate = readNonNeg(usage, ["cache_creation_input_tokens"]);
     const cacheRead = readNonNeg(usage, ["cache_read_input_tokens"]);
-    const total = inputTokens + outputTokens;
+    const promptTokens = inputTokens + (cacheCreate || 0) + (cacheRead || 0);
+    const total = promptTokens + outputTokens;
 
     const billingMetrics: Record<string, unknown> = {};
-    assignMetric(billingMetrics, "input_tokens", inputTokens);
+    assignMetric(billingMetrics, "input_tokens", promptTokens);
+    assignMetric(billingMetrics, "uncached_input_tokens", inputTokens);
     assignMetric(billingMetrics, "output_tokens", outputTokens);
     assignMetric(billingMetrics, "total_tokens", total);
     assignMetric(billingMetrics, "cache_creation_input_tokens", cacheCreate);
+    assignMetric(billingMetrics, "cache_write_input_tokens", cacheCreate);
     assignMetric(billingMetrics, "cache_read_input_tokens", cacheRead);
 
     return {
-        promptTokens: inputTokens,
+        promptTokens,
         completionTokens: outputTokens,
         totalTokens: total,
         ...(typeof cacheRead === "number" ? { cachedInputTokens: cacheRead } : {}),
+        ...(typeof cacheCreate === "number" ? { cacheWriteTokens: cacheCreate } : {}),
         ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
         raw: usage,
     };

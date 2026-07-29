@@ -86,6 +86,11 @@ import {
 } from "./core.js";
 import { ResponsesStreamEncoder } from "./responses.js";
 import {
+  isContextOverflowError,
+  manageContext,
+  type ContextManagementResult,
+} from "./context.js";
+import {
   appendRealtime as appendRealtimeEngine,
   cancel as cancelEngine,
   closeRealtime as closeRealtimeEngine,
@@ -686,6 +691,12 @@ export function adaptError(
   const asRecord = getErrorRecord(error);
   const causeRecord = getErrorRecord(asRecord?.cause);
   const statusCode = getErrorStatusCode(asRecord) ?? getErrorStatusCode(causeRecord);
+  const retryAfter = typeof asRecord?.retryAfter === "string"
+    ? asRecord.retryAfter
+    : typeof causeRecord?.retryAfter === "string"
+      ? causeRecord.retryAfter
+      : undefined;
+  const retryHeaders = retryAfter ? { "Retry-After": retryAfter } : undefined;
   const paymentRequired = getPaymentRequiredBody(asRecord) ?? getPaymentRequiredBody(causeRecord);
   const paymentRequiredHeader = getPaymentRequiredHeader(asRecord) ?? getPaymentRequiredHeader(causeRecord);
 
@@ -744,13 +755,28 @@ export function adaptError(
   }
 
   if (statusCode === 429) {
+    const record = getErrorRecord(error);
     return {
       status: 429,
       body: createErrorResponse(
         error instanceof Error ? error.message : "Rate limit exceeded",
         "rate_limit_error",
-        "rate_limit_exceeded",
+        typeof record?.code === "string" ? record.code : "rate_limit_exceeded",
       ),
+      ...(retryHeaders ? { headers: retryHeaders } : {}),
+    };
+  }
+
+  if (statusCode === 408 || statusCode === 409 || statusCode === 425) {
+    const record = getErrorRecord(error);
+    return {
+      status: statusCode,
+      body: createErrorResponse(
+        error instanceof Error ? error.message : "Upstream request should be retried",
+        "server_error",
+        typeof record?.code === "string" ? record.code : "upstream_retryable_error",
+      ),
+      ...(retryHeaders ? { headers: retryHeaders } : {}),
     };
   }
 
@@ -763,6 +789,7 @@ export function adaptError(
         "upstream_error",
         typeof record?.code === "string" ? record.code : "upstream_timeout",
       ),
+      ...(retryHeaders ? { headers: retryHeaders } : {}),
     };
   }
 
@@ -775,6 +802,20 @@ export function adaptError(
         "server_error",
         typeof record?.code === "string" ? record.code : "response_state_unavailable",
       ),
+      ...(retryHeaders ? { headers: retryHeaders } : {}),
+    };
+  }
+
+  if (typeof statusCode === "number" && statusCode >= 500) {
+    const record = getErrorRecord(error);
+    return {
+      status: statusCode,
+      body: createErrorResponse(
+        error instanceof Error ? error.message : "Upstream server error",
+        "server_error",
+        typeof record?.code === "string" ? record.code : "upstream_server_error",
+      ),
+      ...(retryHeaders ? { headers: retryHeaders } : {}),
     };
   }
 
@@ -1573,14 +1614,28 @@ export async function executeRequest(args: {
   res: Res;
   request: Request;
   shape: ResponseShape;
+  externalCompatibility?: boolean;
 }): Promise<void> {
-  const request = args.shape === "responses"
+  const externalCompatibility = args.externalCompatibility === true || args.res.locals.externalCompatibility === true;
+  let request = args.shape === "responses" && !externalCompatibility
     ? await hydrateResponsesRequest(args.request)
     : args.request;
   const modelId = request.model;
   if (!modelId) {
     args.res.status(400).json(createCoreErrorResponse("model is required", "invalid_request_error", "missing_model"));
     return;
+  }
+
+  const contextModel = getModelById(modelId);
+  let contextPlan: ContextManagementResult | null = null;
+  if (args.shape === "responses" && request.modality === "text" && !externalCompatibility) {
+    contextPlan = manageContext({ request, model: contextModel, defaultEnabled: true });
+    request = contextPlan.request;
+    if (contextPlan.compacted && !args.res.headersSent) {
+      args.res.setHeader("x-context-management", "truncated");
+      args.res.setHeader("x-context-original-estimated-tokens", String(contextPlan.originalEstimatedTokens));
+      args.res.setHeader("x-context-effective-estimated-tokens", String(contextPlan.effectiveEstimatedTokens));
+    }
   }
 
   validateParallelToolCalls(request);
@@ -1639,7 +1694,7 @@ export async function executeRequest(args: {
     operation: request.operation,
     createdAt: Math.floor(Date.now() / 1000),
     status: "in_progress",
-    store: args.shape === "responses" ? args.request.store !== false : false,
+    store: args.shape === "responses" && !externalCompatibility ? args.request.store !== false : false,
     inputItems: args.shape === "responses" ? args.request.inputItems : undefined,
     inputMessages: args.shape === "responses" ? args.request.messages : undefined,
     previousResponseId: args.shape === "responses" ? args.request.previousResponseId : undefined,
@@ -1669,7 +1724,7 @@ export async function executeRequest(args: {
       writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
       try {
-        const direct = withDirectDeadline(lifecycle.signal);
+        const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
         const keepalive = setInterval(() => {
           if (!args.res.writableEnded) {
             args.res.write(": ping\n\n");
@@ -1677,10 +1732,13 @@ export async function executeRequest(args: {
         }, 15_000);
         let routed: Awaited<ReturnType<typeof generateEngine>>;
         try {
-          routed = await generateEngine(request, { signal: direct.signal });
+          routed = await generateEngine(request, {
+            signal: direct?.signal || lifecycle.signal,
+            retriesPerTarget: externalCompatibility ? 0 : undefined,
+          });
         } finally {
           clearInterval(keepalive);
-          direct.cleanup();
+          direct?.cleanup();
         }
         const output = routed.result.output;
         markInferenceFirstOutput(telemetry);
@@ -1810,7 +1868,10 @@ export async function executeRequest(args: {
     }
 
     if (request.stream && usesProviderStream(request)) {
-      const routed = await streamEngine(request, { signal: lifecycle.signal });
+      const routed = await streamEngine(request, {
+        signal: lifecycle.signal,
+        retriesPerTarget: externalCompatibility ? 0 : undefined,
+      });
 
       const responsesEncoder = args.shape === "responses"
         ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
@@ -1832,6 +1893,7 @@ export async function executeRequest(args: {
       } | null = null;
       let pendingImageCompleteEvent: Event | null = null;
       let pendingDoneEvent: Event | null = null;
+      const externalChatToolDeltaIndexes = new Set<number>();
       let lastMedia: Output["media"] | undefined;
       const realtimeStream = request.modality === "realtime";
       let settledUsage: Output["usage"] | undefined;
@@ -1890,12 +1952,7 @@ export async function executeRequest(args: {
             continue;
           }
 
-          if (
-            event.type === "thinking"
-            || event.type === "reasoning-delta"
-            || event.type === "tool-call"
-            || event.type === "tool-call-delta"
-          ) {
+          if (event.type === "thinking" || event.type === "reasoning-delta") {
             if (event.type === "thinking" || event.type === "reasoning-delta") {
               aggregatedReasoning += event.thinking || event.text || "";
             }
@@ -1903,6 +1960,32 @@ export async function executeRequest(args: {
               writeResponsesEvents(args.res, responsesEncoder, event);
             } else {
               args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+            }
+            isFirstToken = false;
+            continue;
+          }
+
+          if (event.type === "tool-call-delta") {
+            if (externalCompatibility && typeof event.toolCallDelta?.index === "number") {
+              externalChatToolDeltaIndexes.add(event.toolCallDelta.index);
+            }
+            if (responsesEncoder) {
+              writeResponsesEvents(args.res, responsesEncoder, event);
+            } else {
+              args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+            }
+            isFirstToken = false;
+            continue;
+          }
+
+          if (event.type === "tool-call") {
+            if (responsesEncoder) {
+              writeResponsesEvents(args.res, responsesEncoder, event);
+            } else {
+              const index = event.toolCall?.index ?? event.outputIndex ?? 0;
+              if (!externalCompatibility || !externalChatToolDeltaIndexes.has(index)) {
+                args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+              }
             }
             isFirstToken = false;
             continue;
@@ -2096,12 +2179,36 @@ export async function executeRequest(args: {
       return;
     }
 
-    const direct = withDirectDeadline(lifecycle.signal);
     let routed: Awaited<ReturnType<typeof generateEngine>>;
+    const runDirect = async (nextRequest: Request) => {
+      const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
+      try {
+        return await generateEngine(nextRequest, {
+          signal: direct?.signal || lifecycle.signal,
+          retriesPerTarget: externalCompatibility ? 0 : undefined,
+        });
+      } finally {
+        direct?.cleanup();
+      }
+    };
     try {
-      routed = await generateEngine(request, { signal: direct.signal });
-    } finally {
-      direct.cleanup();
+      routed = await runDirect(request);
+    } catch (error) {
+      if (!contextPlan?.enabled || !isContextOverflowError(error)) throw error;
+      const retryPlan = manageContext({
+        request,
+        model: contextModel,
+        defaultEnabled: true,
+        aggressive: true,
+      });
+      if (!retryPlan.compacted || retryPlan.effectiveEstimatedTokens >= contextPlan.effectiveEstimatedTokens) throw error;
+      request = retryPlan.request;
+      contextPlan = retryPlan;
+      if (!args.res.headersSent) {
+        args.res.setHeader("x-context-management", "truncated-retry");
+        args.res.setHeader("x-context-effective-estimated-tokens", String(retryPlan.effectiveEstimatedTokens));
+      }
+      routed = await runDirect(request);
     }
 
     applyRoutingHeaders(args.res, routed.route);
@@ -2470,12 +2577,12 @@ async function runDeferredInference(args: {
   lifecycle.signal.addEventListener("abort", abortPaymentOnClose, { once: true });
 
   try {
-    const direct = withDirectDeadline(lifecycle.signal);
+    const direct = args.res.locals.externalCompatibility === true ? null : withDirectDeadline(lifecycle.signal);
     let result: Output;
     try {
-      result = await args.execute(direct.signal);
+      result = await args.execute(direct?.signal || lifecycle.signal);
     } finally {
-      direct.cleanup();
+      direct?.cleanup();
     }
     markInferenceFirstOutput(telemetry);
     const { receipt, settlement, quote } = await settlePaidInference({

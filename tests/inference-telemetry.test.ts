@@ -35,6 +35,20 @@ test("normalizeBillingPrice accepts raw compiled token sections", () => {
   });
 });
 
+test("normalizeBillingPrice canonicalizes explicit cache-write aliases", () => {
+  for (const [key, price] of [["cache_writes", 1.25], ["input_token_cache_creation_5m", 0.713]] as const) {
+    const pricing = normalizeBillingPrice({
+      sections: [{
+        header: "Text tokens",
+        unit: "Per 1M tokens",
+        unitKey: "per_1m_tokens_usd",
+        entries: { input: 1, output: 6, [key]: price },
+      }],
+    });
+    assert.equal(pricing.values.cache_write, price);
+  }
+});
+
 test("normalizeBillingPrice excludes private batch embedding rows in favor of online text input", () => {
   const pricing = normalizeBillingPrice({
     sections: [
@@ -237,6 +251,34 @@ test("buildAuthoritativeBilling splits cached input tokens when pricing exposes 
       source: "provider_response",
     },
   ]);
+});
+
+test("buildAuthoritativeBilling prices cache reads and writes without double-billing input", () => {
+  const billing = buildAuthoritativeBilling({
+    subject: "anthropic:claude-sonnet",
+    modality: "text",
+    pricing: {
+      unit: "usd_per_1m_tokens",
+      values: { input: 0.4, cached_input: 0.1, cache_write: 0.5, output: 1.6 },
+    },
+    usage: {
+      promptTokens: 1200,
+      completionTokens: 300,
+      totalTokens: 1500,
+      cachedInputTokens: 200,
+      cacheWriteTokens: 100,
+    },
+  });
+  assert.deepEqual(billing.lineItems.map(({ key, quantity }) => ({ key, quantity })), [
+    { key: "cached_input_tokens", quantity: 200 },
+    { key: "cache_write_input_tokens", quantity: 100 },
+    { key: "input_tokens", quantity: 900 },
+    { key: "output_tokens", quantity: 300 },
+  ]);
+  assert.equal(
+    billing.lineItems.filter((item) => item.key.includes("input_tokens")).reduce((sum, item) => sum + item.quantity, 0),
+    1200,
+  );
 });
 
 test("buildAuthoritativeBilling does not double-count reasoning tokens", () => {

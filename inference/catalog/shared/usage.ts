@@ -14,7 +14,21 @@ const PROMPT_KEYS = ["prompt_tokens", "input_tokens", "promptTokens", "inputToke
 const COMPLETION_KEYS = ["completion_tokens", "output_tokens", "completionTokens", "outputTokens"] as const;
 const TOTAL_KEYS = ["total_tokens", "totalTokens"] as const;
 const REASONING_KEYS = ["reasoning_tokens", "reasoningTokens", "completion_tokens_details.reasoning_tokens"] as const;
-const CACHED_KEYS = ["cached_tokens", "cached_input_tokens", "cachedInputTokens", "prompt_tokens_details.cached_tokens"] as const;
+const CACHED_KEYS = [
+    "cached_tokens",
+    "cached_input_tokens",
+    "cachedInputTokens",
+    "cached_prompt_tokens",
+    "prompt_cache_hit_tokens",
+    "prompt_tokens_details.cached_tokens",
+    "input_tokens_details.cached_tokens",
+] as const;
+const CACHE_WRITE_KEYS = [
+    "cache_write_tokens",
+    "cacheWriteTokens",
+    "prompt_tokens_details.cache_write_tokens",
+    "input_tokens_details.cache_write_tokens",
+] as const;
 
 const DETAIL_METRICS = [
     ["prompt_tokens_details.text_tokens", "input_text_tokens"],
@@ -25,6 +39,8 @@ const DETAIL_METRICS = [
     ["input_tokens_details.image_tokens", "input_image_tokens"],
     ["input_tokens_details.audio_tokens", "input_audio_tokens"],
     ["input_tokens_details.cached_tokens", "cached_input_tokens"],
+    ["prompt_tokens_details.cache_write_tokens", "cache_write_input_tokens"],
+    ["input_tokens_details.cache_write_tokens", "cache_write_input_tokens"],
     ["completion_tokens_details.text_tokens", "output_text_tokens"],
     ["completion_tokens_details.image_tokens", "output_image_tokens"],
     ["completion_tokens_details.audio_tokens", "output_audio_tokens"],
@@ -69,6 +85,7 @@ export function normalizeOpenAIUsage(rawUsage: unknown): Usage | undefined {
     const totalTokens = readNonNeg(record, TOTAL_KEYS) ?? promptTokens + completionTokens;
     const reasoningTokens = readNested(record, REASONING_KEYS);
     const cachedInputTokens = readNested(record, CACHED_KEYS);
+    const cacheWriteTokens = readNested(record, CACHE_WRITE_KEYS);
 
     const billingMetrics: Record<string, unknown> = {};
     assignMetric(billingMetrics, "input_tokens", promptTokens);
@@ -76,6 +93,7 @@ export function normalizeOpenAIUsage(rawUsage: unknown): Usage | undefined {
     assignMetric(billingMetrics, "total_tokens", totalTokens);
     assignMetric(billingMetrics, "reasoning_tokens", reasoningTokens);
     assignMetric(billingMetrics, "cached_input_tokens", cachedInputTokens);
+    assignMetric(billingMetrics, "cache_write_input_tokens", cacheWriteTokens);
     for (const [path, key] of DETAIL_METRICS) {
         assignMetric(billingMetrics, key, readNested(record, [path]));
     }
@@ -86,6 +104,7 @@ export function normalizeOpenAIUsage(rawUsage: unknown): Usage | undefined {
         totalTokens,
         ...(typeof reasoningTokens === "number" ? { reasoningTokens } : {}),
         ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+        ...(typeof cacheWriteTokens === "number" ? { cacheWriteTokens } : {}),
         ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
         raw: record,
     };

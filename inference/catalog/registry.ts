@@ -156,6 +156,7 @@ let compiledModelsCachePath: string | null = null;
 let compiledModelsCacheSignature: string | null = null;
 let compiledModelIndex: Map<string, ModelCard> | null = null;
 let compiledModelProviderIndex: Map<string, Map<ModelProvider, ModelCard>> | null = null;
+const modalityModelsCache = new Map<string, { signature: string | null; models: ModelCard[] }>();
 
 function fileSignature(filePath: string): string | null {
     try {
@@ -323,6 +324,32 @@ export function getCompiledModels(): CompiledModelsData {
     return loadCompiledModels();
 }
 
+/** Load the generated catalog for one canonical modality. */
+export function getModalityModels(modality: CanonicalModality): ModelCard[] {
+    const basePath = getModelsBasePath();
+    const modalityPath = path.join(basePath, "modalities", `${modality}.json`);
+    const signature = fileSignature(modalityPath);
+    const cached = modalityModelsCache.get(modality);
+    if (cached && cached.signature === signature) return cached.models;
+
+    try {
+        if (fs.existsSync(modalityPath)) {
+            const parsed = JSON.parse(fs.readFileSync(modalityPath, "utf-8")) as CompiledModelsData;
+            const models = Array.isArray(parsed.models) ? parsed.models.map(normalizeCompiledModel) : [];
+            modalityModelsCache.set(modality, { signature, models });
+            return models;
+        }
+    } catch (error) {
+        console.warn(`[models] Failed to load ${modality} modality catalog:`, error);
+    }
+
+    const models = loadCompiledModels().models.filter((model) =>
+        modelMatchesModalityOperation(model, { modality }),
+    );
+    modalityModelsCache.set(modality, { signature, models });
+    return models;
+}
+
 /**
  * Get extended models data (full catalog, 43k+ models)
  * Used for /v1/models/all endpoint
@@ -461,6 +488,7 @@ export async function refreshRegistry(): Promise<{
     extendedModelIndex = null;
     extendedModelProviderIndex = null;
     extendedModelsCache = null;
+    modalityModelsCache.clear();
     return getModelRegistry();
 }
 

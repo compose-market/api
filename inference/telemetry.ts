@@ -278,6 +278,8 @@ function collectTokenBillingMetrics(record: Record<string, unknown>): Record<str
 
   assignMetric(metrics, "cached_input_tokens", record.cachedInputTokens);
   assignMetric(metrics, "cached_input_tokens", inputDetails?.cached_tokens ?? inputDetails?.cachedTokens);
+  assignMetric(metrics, "cache_write_input_tokens", record.cacheWriteTokens);
+  assignMetric(metrics, "cache_write_input_tokens", inputDetails?.cache_write_tokens ?? inputDetails?.cacheWriteTokens);
   assignMetric(metrics, "input_text_tokens", inputDetails?.text_tokens ?? inputDetails?.textTokens);
   assignMetric(metrics, "input_audio_tokens", inputDetails?.audio_tokens ?? inputDetails?.audioTokens);
   assignMetric(metrics, "input_image_tokens", inputDetails?.image_tokens ?? inputDetails?.imageTokens);
@@ -307,13 +309,16 @@ function withOptionalReasoning(reasoningTokens: number | undefined): { reasoning
 
 function withTokenBillingDetails(source: Record<string, unknown>): {
   cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   billingMetrics?: Record<string, unknown>;
 } {
   const billingMetrics = collectTokenBillingMetrics(source);
   const cachedInputTokens = billingMetrics ? readNonNegativeMetric(billingMetrics, ["cached_input_tokens"]) : undefined;
+  const cacheWriteTokens = billingMetrics ? readNonNegativeMetric(billingMetrics, ["cache_write_input_tokens"]) : undefined;
 
   return {
     ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+    ...(typeof cacheWriteTokens === "number" ? { cacheWriteTokens } : {}),
     ...(billingMetrics ? { billingMetrics } : {}),
   };
 }
@@ -637,6 +642,9 @@ function isPrivatePricingValueKey(normalizedKey: string): boolean {
 function inferValueKeyFromUnit(unitLabel: string, unit: string): string {
   const words = new Set(normalizeUnitWords(unitLabel).map((word) => normalizeUnitWord(word)));
 
+  if ((words.has("cache") || words.has("cached")) && (words.has("write") || words.has("writes") || words.has("creation"))) {
+    return "cache_write";
+  }
   if (words.has("cached") && (words.has("input") || words.has("prompt"))) {
     return "cached_input";
   }
@@ -668,6 +676,14 @@ function normalizePricingValueKey(unit: string, rawKey: string): string | null {
   }
 
   const primary = primaryValueKeyForUnit(unit);
+  if (
+    normalizedKey === "cache_write"
+    || normalizedKey === "cache_writes"
+    || normalizedKey === "input_token_cache_creation_5m"
+    || normalizedKey === "cache_creation_input"
+  ) {
+    return isTokenUnit(unit) ? "cache_write" : primary;
+  }
   if (normalizedKey === "input" || normalizedKey === "output" || normalizedKey === "cached_input" || normalizedKey === "reasoning") {
     return primary && !isTokenUnit(unit) ? primary : normalizedKey;
   }
@@ -797,7 +813,7 @@ function buildDynamicBillingSections(record: Record<string, unknown>): BillingPr
       continue;
     }
 
-    const match = key.match(/^(input|output|cached_input|reasoning)_per_(.+?)(?:_usd)?$/);
+    const match = key.match(/^(input|output|cached_input|cache_write|reasoning)_per_(.+?)(?:_usd)?$/);
     if (!match) {
       continue;
     }
@@ -945,7 +961,7 @@ function tokenEntriesFromSourceRows(section: Record<string, unknown>, unit: stri
 
   const entries = asRecord(section.entries);
   if (entries) {
-    const hasDirectionalPrices = ["input", "output", "cached_input", "reasoning"].some((key) => {
+    const hasDirectionalPrices = ["input", "output", "cached_input", "cache_write", "reasoning"].some((key) => {
       const value = entries[key];
       return typeof value === "number" && Number.isFinite(value) && value > 0;
     });
@@ -1878,6 +1894,9 @@ function buildTokenLineItems(args: {
     const cachedInput = category === "generic"
       ? (args.usage.cachedInputTokens ?? readNonNegativeMetric(billingMetrics || {}, ["cached_input_tokens"]))
       : readNonNegativeMetric(billingMetrics || {}, [`cached_input_${category}_tokens`]);
+    const cacheWriteInput = category === "generic"
+      ? (args.usage.cacheWriteTokens ?? readNonNegativeMetric(billingMetrics || {}, ["cache_write_input_tokens", "cache_creation_input_tokens"]))
+      : readNonNegativeMetric(billingMetrics || {}, [`cache_write_input_${category}_tokens`, `cache_creation_input_${category}_tokens`]);
     const outputMetric = category === "generic"
       ? args.usage.completionTokens
       : readNonNegativeMetric(billingMetrics || {}, [`output_${category}_tokens`]);
@@ -1890,8 +1909,12 @@ function buildTokenLineItems(args: {
       ? (args.usage.reasoningTokens ?? readNonNegativeMetric(billingMetrics || {}, ["reasoning_tokens"]))
       : undefined;
 
-    if (typeof inputTotal === "number" && inputTotal > 0 && typeof cachedInput === "number" && cachedInput > inputTotal) {
-      throw new Error("authoritative usage is invalid: cached input tokens exceed total input tokens");
+    if (
+      typeof inputTotal === "number"
+      && inputTotal > 0
+      && (cachedInput || 0) + (cacheWriteInput || 0) > inputTotal
+    ) {
+      throw new Error("authoritative usage is invalid: cached read and cache write tokens exceed total input tokens");
     }
 
     if (typeof section.values.cached_input === "number" && typeof cachedInput === "number" && cachedInput > 0) {
@@ -1904,9 +1927,20 @@ function buildTokenLineItems(args: {
       });
     }
 
+    if (typeof section.values.cache_write === "number" && typeof cacheWriteInput === "number" && cacheWriteInput > 0) {
+      lineItems.push({
+        key: category === "generic" ? "cache_write_input_tokens" : `${category}_cache_write_input_tokens`,
+        unit: section.unit,
+        quantity: cacheWriteInput,
+        unitPriceUsd: section.values.cache_write,
+        source: "provider_response",
+      });
+    }
+
     const inputOnlyTotal = typeof section.values.input === "number"
       && typeof section.values.output !== "number"
       && typeof section.values.cached_input !== "number"
+      && typeof section.values.cache_write !== "number"
       && typeof section.values.reasoning !== "number"
       && inputTotal === 0
       && outputTotal === 0
@@ -1915,10 +1949,13 @@ function buildTokenLineItems(args: {
       : inputTotal;
 
     const billableInput = typeof inputOnlyTotal === "number"
-      ? (typeof section.values.cached_input === "number" && typeof cachedInput === "number"
-        ? inputOnlyTotal - cachedInput
-        : inputOnlyTotal)
+      ? inputOnlyTotal
+        - (typeof section.values.cached_input === "number" ? (cachedInput || 0) : 0)
+        - (typeof section.values.cache_write === "number" ? (cacheWriteInput || 0) : 0)
       : undefined;
+    if (typeof billableInput === "number" && billableInput < 0) {
+      throw new Error("authoritative usage is invalid: cache token buckets exceed input tokens");
+    }
     if (typeof section.values.input === "number" && typeof billableInput === "number" && billableInput > 0) {
       lineItems.push({
         key: category === "generic" ? "input_tokens" : `${category}_input_tokens`,
@@ -1962,6 +1999,7 @@ function buildTokenLineItems(args: {
     const hasDirectionalPrices = typeof section.values.input === "number"
       || typeof section.values.output === "number"
       || typeof section.values.cached_input === "number"
+      || typeof section.values.cache_write === "number"
       || typeof section.values.reasoning === "number";
 
     if (!hasDirectionalPrices && typeof section.values.cost === "number") {
@@ -2398,6 +2436,7 @@ export function buildAuthoritativeBilling(args: {
       metrics.output_tokens = usage.completionTokens;
       metrics.total_tokens = usage.totalTokens;
       if (typeof usage.cachedInputTokens === "number") metrics.cached_input_tokens = usage.cachedInputTokens;
+      if (typeof usage.cacheWriteTokens === "number") metrics.cache_write_input_tokens = usage.cacheWriteTokens;
       if (typeof usage.reasoningTokens === "number") metrics.reasoning_tokens = usage.reasoningTokens;
       for (const [key, value] of Object.entries(usage.billingMetrics || {})) {
         if (typeof value === "number" && Number.isFinite(value) && value >= 0) metrics[key] = value;

@@ -9,7 +9,16 @@ import { abortPaymentIntent, authorizePaymentIntent, settlePaymentIntent } from 
 import { markIntentEvidenceSettled, recordChargeEvidence } from "../x402/evidence.js";
 import { prepareInferencePayment, settlePreparedInferencePayment } from "../x402/index.js";
 import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
-import { closeValkey, valkeyDel, valkeyGet, valkeyHGetAll, valkeyHSet, valkeySRem } from "../x402/keys/valkey.js";
+import {
+  closeValkey,
+  valkeyCompareAndDelete,
+  valkeyDel,
+  valkeyGet,
+  valkeyHGetAll,
+  valkeyHSet,
+  valkeySRem,
+  valkeySetNXEX,
+} from "../x402/keys/valkey.js";
 import { getBudgetInfo, initializeSessionBudget } from "../x402/session/budget.js";
 
 const TEST_NETWORK = "eip155:5042002" as const;
@@ -457,6 +466,68 @@ test("api payment intents using budget caps do not reserve the whole key budget 
       keyId,
       paymentIntentIds,
     });
+  }
+});
+
+test("concurrent API budget-cap settlements cannot overdraw the shared ledger", async () => {
+  const userAddress = randomWalletAddress();
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+  const settlementCount = 12;
+  const settlementAmountWei = 100_000;
+  const paymentIntentIds: string[] = [];
+  let keyId: string | null = null;
+
+  try {
+    const created = await createKey(userAddress, {
+      budgetLimit: TEST_BUDGET_WEI,
+      expiresAt,
+      purpose: "api",
+      network: TEST_NETWORK,
+      name: "concurrent-settlement-api",
+    });
+    keyId = created.keyId;
+
+    const authorizations = await Promise.all(Array.from({ length: settlementCount }, () =>
+      authorizePaymentIntent({
+        authorization: `Bearer ${created.token}`,
+        network: TEST_NETWORK,
+        service: "api",
+        action: "inference",
+        resource: "https://api.compose.market/external/v1/chat/completions",
+        method: "POST",
+        useBudgetCap: true,
+      }),
+    ));
+    const successful = authorizations.filter((result): result is Extract<typeof result, { ok: true }> => result.ok);
+    assert.equal(successful.length, settlementCount);
+    paymentIntentIds.push(...successful.map((result) => result.body.paymentIntentId));
+
+    const settlements = await Promise.all(successful.map((result) => settlePaymentIntent({
+      paymentIntentId: result.body.paymentIntentId,
+      finalAmountWei: String(settlementAmountWei),
+    })));
+    assert.equal(settlements.filter((result) => result.ok).length, TEST_BUDGET_WEI / settlementAmountWei);
+    assert.equal(settlements.filter((result) => !result.ok).every((result) => result.status === 402), true);
+
+    const record = await valkeyHGetAll(keyRecordKey(created.keyId));
+    assert.equal(record.budgetReserved, "0");
+    assert.equal(record.budgetUsed, String(TEST_BUDGET_WEI));
+  } finally {
+    await cleanupTestState({ userAddress, keyId, paymentIntentIds });
+  }
+});
+
+test("Valkey lease release cannot delete another owner's lock", async () => {
+  const key = `test-lock:${randomUUID()}`;
+  try {
+    assert.equal(await valkeySetNXEX(key, "owner-a", 30), true);
+    assert.equal(await valkeyCompareAndDelete(key, "owner-b"), false);
+    assert.equal(await valkeyGet(key), "owner-a");
+    assert.equal(await valkeyCompareAndDelete(key, "owner-a"), true);
+    assert.equal(await valkeyGet(key), null);
+  } finally {
+    await valkeyDel(key);
+    await closeValkey();
   }
 });
 

@@ -10,6 +10,8 @@ export interface ResponsesFunctionTool {
   description?: string;
   parameters?: JsonSchema;
   strict?: boolean;
+  cache_control?: Record<string, unknown>;
+  prompt_cache_breakpoint?: unknown;
 }
 
 export type ResponsesToolChoice =
@@ -54,6 +56,8 @@ export function normalizeResponsesTools(value: unknown): ResponsesFunctionTool[]
       ...(nonEmpty(tool.description) ? { description: tool.description as string } : {}),
       ...(object(tool.parameters) ? { parameters: tool.parameters as JsonSchema } : {}),
       ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
+      ...(object(tool.cache_control) ? { cache_control: tool.cache_control as Record<string, unknown> } : {}),
+      ...(tool.prompt_cache_breakpoint !== undefined ? { prompt_cache_breakpoint: tool.prompt_cache_breakpoint } : {}),
     });
   }
   return tools.length > 0 ? tools : undefined;
@@ -74,6 +78,8 @@ export function normalizeChatTools(value: unknown): ResponsesFunctionTool[] | un
       ...(nonEmpty(fn.description) ? { description: fn.description as string } : {}),
       ...(object(fn.parameters) ? { parameters: fn.parameters as JsonSchema } : {}),
       ...(typeof fn.strict === "boolean" ? { strict: fn.strict } : {}),
+      ...(object(tool.cache_control) ? { cache_control: tool.cache_control as Record<string, unknown> } : {}),
+      ...(tool.prompt_cache_breakpoint !== undefined ? { prompt_cache_breakpoint: tool.prompt_cache_breakpoint } : {}),
     });
   }
   return tools.length > 0 ? tools : undefined;
@@ -127,12 +133,19 @@ interface PendingReasoning {
 
 function responseUsage(usage: Usage | undefined): Record<string, unknown> | undefined {
   if (!usage) return undefined;
+  const cachedTokens = usage.cachedInputTokens
+    ?? (typeof usage.billingMetrics?.cached_input_tokens === "number" ? usage.billingMetrics.cached_input_tokens : 0);
+  const cacheWriteTokens = usage.cacheWriteTokens
+    ?? (typeof usage.billingMetrics?.cache_write_input_tokens === "number"
+      ? usage.billingMetrics.cache_write_input_tokens
+      : undefined);
   return {
     input_tokens: usage.promptTokens,
     output_tokens: usage.completionTokens,
     total_tokens: usage.totalTokens,
     input_tokens_details: {
-      cached_tokens: usage.cachedInputTokens ?? 0,
+      cached_tokens: cachedTokens,
+      ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
     },
     output_tokens_details: {
       reasoning_tokens: usage.reasoningTokens ?? 0,

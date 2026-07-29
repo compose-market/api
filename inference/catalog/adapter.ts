@@ -422,9 +422,15 @@ function moonshotResponseFormat(request: Request): Record<string, unknown> | und
 
 function moonshotOptions(request: Request): moonshotFamily.MoonshotChatOptions {
   const responseFormat = moonshotResponseFormat(request);
+  const topP = typeof request.customParams?.top_p === "number" ? request.customParams.top_p : undefined;
+  const stop = typeof request.customParams?.stop === "string" || Array.isArray(request.customParams?.stop)
+    ? request.customParams.stop as string | string[]
+    : undefined;
   return {
     ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+    ...(topP !== undefined ? { topP } : {}),
     ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+    ...(stop !== undefined ? { stop } : {}),
     ...(request.tools ? { tools: request.tools } : {}),
     ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
     ...(responseFormat ? { responseFormat } : {}),
@@ -441,7 +447,7 @@ async function invokeMoonshotText(request: Request, target: AdapterTarget): Prom
     signal: target.signal,
   });
   if (!response.ok) {
-    throw new Error(`Moonshot chat HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`);
+    throw await openaiFamily.responseError("Moonshot chat", response);
   }
   const result = moonshotFamily.parseChatResponse(await response.json());
   return {
@@ -467,7 +473,7 @@ async function* streamMoonshotText(request: Request, target: AdapterTarget): Asy
     signal: target.signal,
   });
   if (!response.ok || !response.body) {
-    throw new Error(`Moonshot stream HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`);
+    throw await openaiFamily.responseError("Moonshot stream", response);
   }
 
   const parser = moonshotFamily.createStreamParser();
@@ -721,6 +727,7 @@ type Tokens = {
   outputTokens?: number;
   reasoningTokens?: number;
   cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   inputTokenDetails?: {
     noCacheTokens?: number;
     cacheReadTokens?: number;
@@ -757,6 +764,7 @@ function extractUsageBillingMetrics(result: Tokens): Record<string, unknown> | u
   const raw = asRecord(result.raw);
 
   assignMetric(metrics, "cached_input_tokens", result.cachedInputTokens ?? result.inputTokenDetails?.cacheReadTokens);
+  assignMetric(metrics, "cache_write_input_tokens", result.cacheWriteTokens ?? result.inputTokenDetails?.cacheWriteTokens);
   assignMetric(metrics, "uncached_input_tokens", result.inputTokenDetails?.noCacheTokens);
   assignMetric(metrics, "output_text_tokens", result.outputTokenDetails?.textTokens);
   assignMetric(metrics, "reasoning_tokens", result.reasoningTokens ?? result.outputTokenDetails?.reasoningTokens);
@@ -769,6 +777,7 @@ function extractUsageBillingMetrics(result: Tokens): Record<string, unknown> | u
   );
   const cachedInputDetails = asRecord(inputDetails?.cached_tokens_details ?? inputDetails?.cachedTokensDetails);
   assignMetric(metrics, "cached_input_tokens", inputDetails?.cached_tokens ?? inputDetails?.cachedTokens);
+  assignMetric(metrics, "cache_write_input_tokens", inputDetails?.cache_write_tokens ?? inputDetails?.cacheWriteTokens);
   assignMetric(metrics, "input_text_tokens", inputDetails?.text_tokens ?? inputDetails?.textTokens);
   assignMetric(metrics, "input_audio_tokens", inputDetails?.audio_tokens ?? inputDetails?.audioTokens);
   assignMetric(metrics, "input_image_tokens", inputDetails?.image_tokens ?? inputDetails?.imageTokens);
@@ -800,6 +809,9 @@ export function normalizeUsage(result: Tokens): Usage {
   const cachedInputTokens =
     readTokenCount(result.cachedInputTokens)
     ?? readTokenCount(result.inputTokenDetails?.cacheReadTokens);
+  const cacheWriteTokens =
+    readTokenCount(result.cacheWriteTokens)
+    ?? readTokenCount(result.inputTokenDetails?.cacheWriteTokens);
   const billingMetrics = extractUsageBillingMetrics(result);
   const raw = asRecord(result.raw);
 
@@ -809,6 +821,7 @@ export function normalizeUsage(result: Tokens): Usage {
     totalTokens,
     ...(typeof reasoningTokens === "number" ? { reasoningTokens } : {}),
     ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+    ...(typeof cacheWriteTokens === "number" ? { cacheWriteTokens } : {}),
     ...(billingMetrics ? { billingMetrics } : {}),
     ...(raw ? { raw } : {}),
   };
@@ -822,10 +835,16 @@ function canonicalUsage(value: unknown): Usage | undefined {
   const totalTokens = readTokenCount(record.totalTokens ?? record.total_tokens);
   if (promptTokens === undefined || completionTokens === undefined) return undefined;
   const metrics = asRecord(record.billingMetrics);
+  const cachedInputTokens = readTokenCount(record.cachedInputTokens ?? record.cached_input_tokens)
+    ?? readTokenCount(metrics?.cached_input_tokens);
+  const cacheWriteTokens = readTokenCount(record.cacheWriteTokens ?? record.cache_write_tokens)
+    ?? readTokenCount(metrics?.cache_write_input_tokens);
   return {
     promptTokens,
     completionTokens,
     totalTokens: totalTokens ?? promptTokens + completionTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
     ...(metrics ? { billingMetrics: metrics } : {}),
     ...(asRecord(record.raw) ? { raw: asRecord(record.raw)! } : {}),
   };
@@ -1179,6 +1198,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       tools: request.tools,
       toolChoice: request.toolChoice,
       responseFormat: request.responseFormat,
+      previousResponseId: request.previousResponseId,
       customParams: request.customParams,
       operation: request.operation,
       inputItems: request.mode === "responses" ? request.inputItems : undefined,
@@ -1322,6 +1342,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       ...(request.tools ? { tools: request.tools } : {}),
       ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
       ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+      ...(request.previousResponseId ? { previousResponseId: request.previousResponseId } : {}),
       thoughtSignatureLookup: recallThoughtSignature,
       onThoughtSignature: rememberThoughtSignature,
       customParams: request.customParams,
@@ -2566,6 +2587,7 @@ export async function* streamWithTools(
       tools: request.tools,
       toolChoice: request.toolChoice,
       responseFormat: request.responseFormat,
+      previousResponseId: request.previousResponseId,
       customParams: request.customParams,
       operation: request.operation,
       inputItems: request.mode === "responses" ? request.inputItems : undefined,
@@ -2598,6 +2620,7 @@ export async function* streamWithTools(
       ...(request.tools ? { tools: request.tools } : {}),
       ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
       ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+      ...(request.previousResponseId ? { previousResponseId: request.previousResponseId } : {}),
       thoughtSignatureLookup: recallThoughtSignature,
       onThoughtSignature: rememberThoughtSignature,
       customParams: request.customParams,

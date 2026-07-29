@@ -35,6 +35,8 @@ export interface Part {
   output?: unknown;
   result?: unknown;
   args?: unknown;
+  cache_control?: Record<string, unknown>;
+  prompt_cache_breakpoint?: unknown;
 }
 
 export interface Message {
@@ -50,6 +52,7 @@ export interface Message {
   name?: string;
   reasoning_content?: string;
   partial?: boolean;
+  cache_control?: Record<string, unknown>;
 }
 
 export type Tool = ResponsesFunctionTool;
@@ -101,6 +104,8 @@ export interface Request {
   };
   previousResponseId?: string;
   store?: boolean;
+  truncation?: "auto" | "disabled";
+  contextManagement?: unknown;
   customParams?: Record<string, unknown>;
   billingMetrics?: Record<string, unknown>;
   /**
@@ -124,6 +129,7 @@ export interface Usage {
   totalTokens: number;
   reasoningTokens?: number;
   cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   billingMetrics?: Record<string, unknown>;
   raw?: Record<string, unknown>;
 }
@@ -270,6 +276,8 @@ export interface ResponsesResponse {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    input_tokens_details?: { cached_tokens: number; cache_write_tokens?: number };
+    output_tokens_details?: { reasoning_tokens: number };
     billingMetrics?: Record<string, unknown>;
   };
   error?: {
@@ -301,6 +309,8 @@ export interface ChatCompletionsResponse {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    prompt_tokens_details?: { cached_tokens: number; cache_write_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens: number };
     billingMetrics?: Record<string, unknown>;
   };
 }
@@ -325,13 +335,34 @@ function mergeBillingMetrics(...sources: Array<Record<string, unknown> | undefin
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+function nonNegativeMetric(metrics: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = metrics?.[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function usageCacheReadTokens(usage: Usage): number {
+  return usage.cachedInputTokens ?? nonNegativeMetric(usage.billingMetrics, "cached_input_tokens") ?? 0;
+}
+
+function usageCacheWriteTokens(usage: Usage): number | undefined {
+  return usage.cacheWriteTokens ?? nonNegativeMetric(usage.billingMetrics, "cache_write_input_tokens");
+}
+
 function responseUsage(usage: Usage | undefined, extraMetrics?: Record<string, unknown>): ResponsesResponse["usage"] {
   if (!usage) return undefined;
   const billingMetrics = mergeBillingMetrics(usage.billingMetrics, extraMetrics);
+  const cacheWriteTokens = usageCacheWriteTokens(usage);
   return {
     input_tokens: usage.promptTokens,
     output_tokens: usage.completionTokens,
     total_tokens: usage.totalTokens,
+    input_tokens_details: {
+      cached_tokens: usageCacheReadTokens(usage),
+      ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
+    },
+    output_tokens_details: {
+      reasoning_tokens: usage.reasoningTokens ?? nonNegativeMetric(usage.billingMetrics, "reasoning_tokens") ?? 0,
+    },
     ...(billingMetrics ? { billingMetrics } : {}),
   };
 }
@@ -356,6 +387,7 @@ function parseRole(role: unknown): Message["role"] {
 
 const PASS = [
   "candidate_labels",
+  "context_management",
   "contexts",
   "documents",
   "examples",
@@ -369,6 +401,7 @@ const PASS = [
   "partial",
   "presence_penalty",
   "prompt_cache_key",
+  "prompt_cache_options",
   "prompt_cache_retention",
   "query",
   "reasoning",
@@ -388,6 +421,7 @@ const PASS = [
   "top_n",
   "top_p",
   "truncate",
+  "truncation",
   "user",
 ] as const;
 
@@ -426,6 +460,8 @@ function params(body: Record<string, unknown>): Record<string, unknown> | null {
 
   const cache = pickStringValue(body.promptCacheKey);
   if (cache) output.prompt_cache_key = cache;
+  const cacheOptions = asRecord(body.promptCacheOptions);
+  if (cacheOptions) output.prompt_cache_options = cacheOptions;
   const retention = pickStringValue(body.promptCacheRetention);
   if (retention) output.prompt_cache_retention = retention;
   const effort = pickStringValue(body.reasoningEffort);
@@ -453,7 +489,12 @@ function normalizeContentParts(parts: unknown[]): Part[] {
     const type = typeof part.type === "string" ? part.type : "";
 
     if ((type === "text" || type === "input_text" || type === "output_text") && typeof part.text === "string") {
-      normalized.push({ type: "text", text: part.text });
+      normalized.push({
+        type: "text",
+        text: part.text,
+        ...(asRecord(part.cache_control) ? { cache_control: part.cache_control as Record<string, unknown> } : {}),
+        ...(part.prompt_cache_breakpoint !== undefined ? { prompt_cache_breakpoint: part.prompt_cache_breakpoint } : {}),
+      });
       continue;
     }
 
@@ -525,6 +566,7 @@ function normalizeMessages(input: unknown): Message[] {
           name: typeof message.name === "string" ? message.name : undefined,
           reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : undefined,
           partial: message.partial === true ? true : undefined,
+          cache_control: asRecord(message.cache_control) || undefined,
         } satisfies Message;
       }
 
@@ -536,6 +578,7 @@ function normalizeMessages(input: unknown): Message[] {
         name: typeof message.name === "string" ? message.name : undefined,
         reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : undefined,
         partial: message.partial === true ? true : undefined,
+        cache_control: asRecord(message.cache_control) || undefined,
       } satisfies Message;
     });
 }
@@ -1418,6 +1461,15 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
   };
   const customParams = Object.keys(providedParams).length > 0 ? providedParams : undefined;
   const customParamsRecord = asRecord(customParams);
+  const truncation = body.truncation === "auto" || body.truncation === "disabled"
+    ? body.truncation
+    : undefined;
+  if (body.truncation !== undefined && truncation === undefined) {
+    throw Object.assign(new Error("truncation must be 'auto' or 'disabled'"), {
+      statusCode: 400,
+      code: "invalid_truncation",
+    });
+  }
 
   return {
     mode: "responses",
@@ -1487,6 +1539,8 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
     },
     previousResponseId,
     store: body.store !== false,
+    truncation,
+    ...(body.context_management !== undefined ? { contextManagement: body.context_management } : {}),
     customParams,
     responseFormat: modality === "text" ? parseInboundResponseFormat(body.response_format) : undefined,
     billingMetrics: (modality === "image" || modality === "video" || modality === "audio")
@@ -1617,6 +1671,7 @@ export function toResponsesResponse(model: string, requestId: string, output: Ou
 export function toChatCompletionsResponse(model: string, requestId: string, output: Output): ChatCompletionsResponse {
   const usage = output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const billingMetrics = mergeBillingMetrics(usage.billingMetrics, output.media?.billingMetrics);
+  const cacheWriteTokens = usageCacheWriteTokens(usage);
 
   return {
     id: requestId,
@@ -1654,6 +1709,13 @@ export function toChatCompletionsResponse(model: string, requestId: string, outp
       prompt_tokens: usage.promptTokens,
       completion_tokens: usage.completionTokens,
       total_tokens: usage.totalTokens,
+      prompt_tokens_details: {
+        cached_tokens: usageCacheReadTokens(usage),
+        ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
+      },
+      completion_tokens_details: {
+        reasoning_tokens: usage.reasoningTokens ?? 0,
+      },
       ...(billingMetrics ? { billingMetrics } : {}),
     },
   };
@@ -2161,6 +2223,7 @@ export function toChatUsageStreamEvent(
   model: string,
   usage: Usage,
 ): Record<string, unknown> {
+  const cacheWriteTokens = usageCacheWriteTokens(usage);
   return {
     id: requestId,
     object: "chat.completion.chunk",
@@ -2171,6 +2234,13 @@ export function toChatUsageStreamEvent(
       prompt_tokens: usage.promptTokens,
       completion_tokens: usage.completionTokens,
       total_tokens: usage.totalTokens,
+      prompt_tokens_details: {
+        cached_tokens: usageCacheReadTokens(usage),
+        ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}),
+      },
+      completion_tokens_details: {
+        reasoning_tokens: usage.reasoningTokens ?? 0,
+      },
     },
   };
 }

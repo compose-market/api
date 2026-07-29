@@ -261,6 +261,101 @@ export async function valkeyHIncrByAmount(
     return String(result);
 }
 
+/** Atomically reserve budget and attach the reservation to its payment intent. */
+export async function valkeyTryReserveBudget(input: {
+    budgetKey: string;
+    intentKey: string;
+    amount: string | bigint;
+}): Promise<boolean> {
+    const valkey = await getValkeyClient();
+    const amount = normalizeValkeyInteger(input.amount);
+    const result = await valkey.eval(
+        `local function normalize(value)
+    local normalized = string.gsub(value, "^0+", "")
+    return normalized == "" and "0" or normalized
+end
+local function add(left, right)
+    left = normalize(left)
+    right = normalize(right)
+    local result = ""
+    local carry = 0
+    local i = string.len(left)
+    local j = string.len(right)
+    while i > 0 or j > 0 or carry > 0 do
+        local leftDigit = i > 0 and tonumber(string.sub(left, i, i)) or 0
+        local rightDigit = j > 0 and tonumber(string.sub(right, j, j)) or 0
+        local sum = leftDigit + rightDigit + carry
+        result = tostring(sum % 10) .. result
+        carry = math.floor(sum / 10)
+        i = i - 1
+        j = j - 1
+    end
+    return normalize(result)
+end
+local function greaterThan(left, right)
+    left = normalize(left)
+    right = normalize(right)
+    if string.len(left) ~= string.len(right) then
+        return string.len(left) > string.len(right)
+    end
+    return left > right
+end
+local budgetLimit = redis.call("HGET", KEYS[1], "budgetLimit") or "0"
+local budgetUsed = redis.call("HGET", KEYS[1], "budgetUsed") or "0"
+local budgetReserved = redis.call("HGET", KEYS[1], "budgetReserved") or "0"
+local normalizedAmount = normalize(ARGV[1])
+if string.sub(ARGV[1], 1, 1) == "-" or normalizedAmount == "0" or greaterThan(add(add(budgetUsed, budgetReserved), normalizedAmount), budgetLimit) then
+    return 0
+end
+redis.call("HINCRBY", KEYS[1], "budgetReserved", ARGV[1])
+redis.call("HSET", KEYS[2], "reservedAmountWei", ARGV[1])
+return 1`,
+        2,
+        input.budgetKey,
+        input.intentKey,
+        amount,
+    );
+    return Number(result) === 1;
+}
+
+function throwTransactionFailure(results: Array<[Error | null, unknown]> | null): void {
+    if (!results) throw new Error("ValKey transaction was aborted");
+    const failure = results.find(([error]) => error);
+    if (failure?.[0]) throw failure[0];
+}
+
+/** Atomically move a reservation to used budget and finalize its intent. */
+export async function valkeyCommitReservedBudget(input: {
+    budgetKey: string;
+    intentKey: string;
+    reservedAmount: string | bigint;
+    finalAmount: string | bigint;
+    lastUsedAt: number;
+    intentFields: Record<string, string>;
+}): Promise<void> {
+    const valkey = await getValkeyClient();
+    const transaction = valkey.multi();
+    transaction.hincrby(input.budgetKey, "budgetReserved", (-BigInt(input.reservedAmount)).toString());
+    transaction.hincrby(input.budgetKey, "budgetUsed", normalizeValkeyInteger(input.finalAmount));
+    transaction.hset(input.budgetKey, "lastUsedAt", String(input.lastUsedAt));
+    transaction.hset(input.intentKey, input.intentFields);
+    throwTransactionFailure(await transaction.exec());
+}
+
+/** Atomically release a reservation and finalize its failed/aborted intent. */
+export async function valkeyReleaseReservedBudget(input: {
+    budgetKey: string;
+    intentKey: string;
+    reservedAmount: string | bigint;
+    intentFields: Record<string, string>;
+}): Promise<void> {
+    const valkey = await getValkeyClient();
+    const transaction = valkey.multi();
+    transaction.hincrby(input.budgetKey, "budgetReserved", (-BigInt(input.reservedAmount)).toString());
+    transaction.hset(input.intentKey, input.intentFields);
+    throwTransactionFailure(await transaction.exec());
+}
+
 /**
  * Set key expiration
  */
@@ -288,6 +383,18 @@ export async function valkeySetNXEX(key: string, value: string, ttlSeconds: numb
     const valkey = await getValkeyClient();
     const result = await valkey.set(key, value, "EX", ttlSeconds, "NX");
     return result === "OK";
+}
+
+/** Delete a lease only when it is still owned by the expected token. */
+export async function valkeyCompareAndDelete(key: string, expectedValue: string): Promise<boolean> {
+    const valkey = await getValkeyClient();
+    const result = await valkey.eval(
+        'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end',
+        1,
+        key,
+        expectedValue,
+    );
+    return Number(result) > 0;
 }
 
 /**

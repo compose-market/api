@@ -796,6 +796,7 @@ export interface OpenAIWireResponsesOptions {
     tools?: Tool[];
     toolChoice?: Choice;
     responseFormat?: Request["responseFormat"];
+    previousResponseId?: string;
     customParams?: Record<string, unknown>;
     wireModelId?: string;
     stream?: boolean;
@@ -809,7 +810,7 @@ const DEFAULT_OPENAI_PATHS = {
     responses: "/responses",
 } as const;
 
-const CHAT_OMIT = new Set(["text", "verbosity"]);
+const CHAT_OMIT = new Set(["context_management", "text", "truncation", "verbosity"]);
 const RESPONSES_OMIT = new Set([
     "max_completion_tokens",
     "max_tokens",
@@ -858,6 +859,24 @@ async function readErrorBodyWire(response: Response): Promise<string> {
     } catch {
         return response.statusText;
     }
+}
+
+export async function responseError(label: string, response: Response): Promise<Error> {
+    const responseBody = await readErrorBodyWire(response);
+    let code: string | undefined;
+    try {
+        const root = asWireRecord(JSON.parse(responseBody));
+        const upstream = asWireRecord(root?.error) || root;
+        code = cleanWire(upstream?.code) || cleanWire(upstream?.type) || undefined;
+    } catch {
+        // Keep bounded non-JSON provider bodies in the error message.
+    }
+    return Object.assign(new Error(`${label} HTTP ${response.status}: ${responseBody}`), {
+        statusCode: response.status,
+        ...(code ? { code } : {}),
+        ...(response.headers.get("retry-after") ? { retryAfter: response.headers.get("retry-after") } : {}),
+        responseBody,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,7 +1237,11 @@ export function usageFromOpenAIWire(rawUsage: unknown): Usage | undefined {
     const reasoningTokens = readNonNegWire(usage, ["reasoning_tokens", "reasoningTokens"])
         ?? readNonNegWire(outputDetails ?? undefined, ["reasoning_tokens", "reasoningTokens"]);
     const cachedInputTokens = readNonNegWire(usage, ["cached_input_tokens", "cachedInputTokens"])
+        ?? readNonNegWire(usage, ["cached_prompt_tokens", "prompt_cache_hit_tokens"])
         ?? readNonNegWire(inputDetails ?? undefined, ["cached_tokens", "cachedTokens"]);
+    const cacheWriteTokens = readNonNegWire(usage, ["cache_write_tokens", "cacheWriteTokens"])
+        ?? readNonNegWire(inputDetails ?? undefined, ["cache_write_tokens", "cacheWriteTokens"]);
+    assignMetricWire(metrics, "cache_write_input_tokens", cacheWriteTokens);
 
     return {
         promptTokens,
@@ -1226,6 +1249,7 @@ export function usageFromOpenAIWire(rawUsage: unknown): Usage | undefined {
         totalTokens,
         ...(typeof reasoningTokens === "number" ? { reasoningTokens } : {}),
         ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+        ...(typeof cacheWriteTokens === "number" ? { cacheWriteTokens } : {}),
         ...(Object.keys(metrics).length > 0 ? { billingMetrics: metrics } : {}),
         raw: usage,
     };
@@ -1363,6 +1387,7 @@ export function buildBodyResponses(
     const body: Record<string, unknown> = {
         model: opts?.wireModelId || modelId,
         input,
+        ...(opts?.previousResponseId ? { previous_response_id: opts.previousResponseId } : {}),
     };
     if (typeof opts?.temperature === "number") body.temperature = opts.temperature;
     if (typeof opts?.maxOutputTokens === "number") body.max_output_tokens = opts.maxOutputTokens;
@@ -1412,7 +1437,7 @@ export async function chat(
         signal: opts?.signal,
     });
     if (!response.ok) {
-        throw new Error(`OpenAI-wire chat HTTP ${response.status}: ${await readErrorBodyWire(response)}`);
+        throw await responseError("OpenAI-wire chat", response);
     }
     const data = (await response.json()) as Record<string, unknown>;
     const choices = Array.isArray(data.choices) ? data.choices : [];
@@ -1473,7 +1498,7 @@ export async function* streamChat(
         signal: opts?.signal,
     });
     if (!response.ok || !response.body) {
-        throw new Error(`OpenAI-wire stream HTTP ${response.status}: ${await readErrorBodyWire(response)}`);
+        throw await responseError("OpenAI-wire stream", response);
     }
 
     const reader = response.body.getReader();
@@ -1591,7 +1616,7 @@ export async function embeddings(
         signal: opts?.signal,
     });
     if (!response.ok) {
-        throw new Error(`OpenAI-wire embeddings HTTP ${response.status}: ${await readErrorBodyWire(response)}`);
+        throw await responseError("OpenAI-wire embeddings", response);
     }
     const data = (await response.json()) as Record<string, unknown>;
     const dataArr = Array.isArray(data.data) ? data.data : [];
@@ -1626,7 +1651,7 @@ export async function responses(
         signal: opts?.signal,
     });
     if (!response.ok) {
-        throw new Error(`OpenAI-wire responses HTTP ${response.status}: ${await readErrorBodyWire(response)}`);
+        throw await responseError("OpenAI-wire responses", response);
     }
     const data = (await response.json()) as Record<string, unknown>;
     const text = typeof data.output_text === "string" ? data.output_text : (() => {
@@ -1721,7 +1746,7 @@ export async function* streamResponses(
         signal: opts?.signal,
     });
     if (!response.ok || !response.body) {
-        throw new Error(`OpenAI-wire responses stream HTTP ${response.status}: ${await readErrorBodyWire(response)}`);
+        throw await responseError("OpenAI-wire responses stream", response);
     }
 
     const reader = response.body.getReader();

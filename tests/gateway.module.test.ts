@@ -37,6 +37,18 @@ test("gateway module does not export duplicate modality execution helpers", asyn
   assert.equal("checkVideoJobStatus" in gateway, false);
 });
 
+test("external compatibility uses adapters without Compose state, retries, or deadlines", async () => {
+  const source = await readFile(join(process.cwd(), "inference/gateway.ts"), "utf8");
+  const start = source.indexOf("export async function executeRequest");
+  const end = source.indexOf("export async function handleResponses", start);
+  const execute = source.slice(start, end);
+  assert.match(execute, /args\.shape === "responses" && !externalCompatibility[\s\S]*hydrateResponsesRequest/);
+  assert.match(execute, /store: args\.shape === "responses" && !externalCompatibility/);
+  assert.match(execute, /retriesPerTarget: externalCompatibility \? 0 : undefined/);
+  assert.match(execute, /externalCompatibility \? null : withDirectDeadline/);
+  assert.doesNotMatch(source, /executeExternalWireRequest|upstream stream ended without terminal success/);
+});
+
 test("inference terminal event, DONE, and EOF are contiguous before settlement", async () => {
   const source = await readFile(join(process.cwd(), "inference/gateway.ts"), "utf8");
   const closeStart = source.indexOf("function closeEventStream");

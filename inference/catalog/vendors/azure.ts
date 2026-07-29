@@ -410,6 +410,7 @@ export async function generateAzureResponses(
     tools?: Tool[];
     toolChoice?: Choice;
     responseFormat?: Format;
+    previousResponseId?: string;
     customParams?: Record<string, unknown>;
     inputItems?: Array<Record<string, unknown>>;
     signal?: AbortSignal;
@@ -423,6 +424,7 @@ export async function generateAzureResponses(
     ...(options.tools ? { tools: options.tools } : {}),
     ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
     ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+    ...(options.previousResponseId ? { previousResponseId: options.previousResponseId } : {}),
     customParams: omit(options.customParams, ["stream", "stream_options"]),
   });
   const raw = await postAzure(credential, "/openai/v1/responses", body, "api-key", options.signal);
@@ -554,6 +556,7 @@ export async function generateAzureChat(
     tools?: Tool[];
     toolChoice?: Choice;
     responseFormat?: Format;
+    previousResponseId?: string;
     customParams?: Record<string, unknown>;
     operation?: string;
     inputItems?: Array<Record<string, unknown>>;
@@ -765,6 +768,7 @@ async function* streamAzureResponsesWire(
       ...(options.tools ? { tools: options.tools } : {}),
       ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
       ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+      ...(options.previousResponseId ? { previousResponseId: options.previousResponseId } : {}),
       customParams: omit(options.customParams, ["stream", "stream_options"]),
       stream: true,
     },
