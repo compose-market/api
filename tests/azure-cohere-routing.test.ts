@@ -107,6 +107,19 @@ test("Azure Cohere streaming derives prompt-contained labels for classification"
   globalThis.fetch = (async (input: URL | RequestInfo, init?: RequestInit) => {
     url = String(input);
     body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+    if (url.includes("/openai/v1/chat/completions")) {
+      const sse = [
+        'data: {"choices":[{"delta":{"content":"greeting"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13}}',
+        "data: [DONE]",
+        "",
+      ].join("\n\n");
+      return new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
     return Response.json({
       results: [
         { index: 0, relevance_score: 0.9 },

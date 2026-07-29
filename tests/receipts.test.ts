@@ -34,7 +34,7 @@ test("agent settlement meters include granular nested models_call bills", () => 
     meters: [{
       kind: "model",
       source: "models_call",
-      model: "@cf/leonardo/lucid-origin",
+      model: "lucid-origin",
       modality: "image",
       usage: {
         promptTokens: 0,
@@ -67,7 +67,7 @@ test("agent settlement meters include granular nested models_call bills", () => 
 
   assert.deepEqual(kinds, ["agent", "model"]);
   assert.ok(bills.some((bill) => bill.kind === "model" && bill.source === "models_call"));
-  assert.ok(quoted.lineItems.some((item) => item.key.startsWith("model.models_call.cloudflare:@cf/leonardo/lucid-origin:")));
+  assert.ok(quoted.lineItems.some((item) => item.key.startsWith("model.models_call.cloudflare:lucid-origin:")));
 });
 
 test("nested model meters fail closed without canonical modality evidence", () => {
@@ -84,7 +84,7 @@ test("nested model meters fail closed without canonical modality evidence", () =
       meters: [{
         kind: "model",
         source: "models_call",
-        model: "@cf/leonardo/lucid-origin",
+        model: "lucid-origin",
         usage: { billingMetrics: { tile: 1 } },
         media: { billingMetrics: { tile: 1 }, requests: 1 },
       }],

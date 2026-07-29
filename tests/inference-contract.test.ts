@@ -117,6 +117,31 @@ test("OpenAI chat wire lowering keeps Responses-only text config out of chat bod
   assert.equal(body.reasoning_effort, "low");
 });
 
+test("unsafe seed values never reach OpenAI-compatible provider bodies", () => {
+  assert.throws(() => normalizeResponsesRequest({
+    model: "deepinfra/google/gemma-3-27b-it",
+    input: "Hello",
+    seed: "-9223372036854775808",
+  }), /seed must be a safe integer/);
+
+  assert.throws(() => normalizeResponsesRequest({
+    model: "deepinfra/google/gemma-3-27b-it",
+    input: "Hello",
+    custom_params: { seed: -9223372036854776000 },
+  }), /seed must be a safe integer/);
+
+  assert.throws(() => buildBodyChat("google/gemma-3-27b-it", [{ role: "user", content: "Hello" }], {
+    customParams: { seed: -9223372036854776000 },
+  }), /seed must be a safe integer/);
+
+  const safe = normalizeResponsesRequest({
+    model: "deepinfra/google/gemma-3-27b-it",
+    input: "Hello",
+    seed: "42",
+  });
+  assert.equal(safe.customParams?.seed, 42);
+});
+
 test("OpenAI Responses wire lowering maps chat tools and reasoning", () => {
   const input = mapMessagesForResponsesWire([
     { role: "user", content: "Deploy." },
@@ -468,4 +493,21 @@ test("responses stream conversion preserves rich modality events", () => {
       mime_type: "video/mp4",
     },
   });
+});
+
+test("image preview sequence is separate from stable output identity", () => {
+  const partial = toResponsesStreamEvent("resp_image", "gpt-image-2", {
+    type: "image-partial",
+    outputIndex: 0,
+    image: { base64: "AAA", index: 2 },
+  });
+  assert.equal(partial.output_index, 0);
+  assert.equal(partial.partial_image_index, 2);
+
+  const completed = toResponsesStreamEvent("resp_image", "gpt-image-2", {
+    type: "image-complete",
+    outputIndex: 0,
+    image: { base64: "BBB" },
+  });
+  assert.equal(completed.output_index, 0);
 });

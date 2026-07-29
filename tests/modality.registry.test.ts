@@ -125,7 +125,7 @@ test("realtime modality is catalog-native without stealing dual-mode REST operat
     { modality: "realtime", operation: "realtime-transcription" },
   ]);
 
-  const cloudflareTts = operations("@cf/deepgram/aura-1");
+  const cloudflareTts = operations("aura-1");
   assert.ok(cloudflareTts.some((entry) =>
     entry.modality === "audio" && entry.operation === "text-to-speech"
   ));
@@ -133,7 +133,7 @@ test("realtime modality is catalog-native without stealing dual-mode REST operat
     entry.modality === "realtime" && entry.operation === "realtime-speech"
   ));
 
-  const cloudflareStt = operations("@cf/deepgram/nova-3");
+  const cloudflareStt = operations("nova-3");
   assert.ok(cloudflareStt.some((entry) =>
     entry.modality === "text" && entry.operation === "speech-to-text"
   ));
@@ -141,7 +141,7 @@ test("realtime modality is catalog-native without stealing dual-mode REST operat
     entry.modality === "realtime" && entry.operation === "realtime-transcription"
   ));
 
-  assert.deepEqual(operations("@cf/deepgram/flux"), [
+  assert.deepEqual(operations("deepgram/flux"), [
     { modality: "realtime", operation: "realtime-transcription" },
   ]);
 });
@@ -169,7 +169,7 @@ test("modality catalog exposes canonical operation groups for integrators and ag
 
 test("model capabilities expose source pricing units without flattening them", () => {
   const models = getCompiledModels().models;
-  const tokenPricedImage = models.find((model) => model.modelId === "chatgpt-image-latest");
+  const tokenPricedImage = models.find((model) => model.modelId === "openai/gpt-image-2");
   const imagePricedImage = models.find((model) => model.modelId === "qwen-image");
   assert.ok(tokenPricedImage);
   assert.ok(imagePricedImage);

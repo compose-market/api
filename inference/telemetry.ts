@@ -864,8 +864,20 @@ function pricingSectionText(section: Record<string, unknown>, includeRaw: boolea
 function isPrivatePricingSection(section: Record<string, unknown>): boolean {
   const sectionText = pricingSectionText(section, false);
   const rawText = pricingSectionText(section, true);
+  const source = asRecord(section.source);
+  const rowTexts = Array.isArray(source?.rows)
+    ? source.rows
+      .map((row) => asRecord(row))
+      .filter((row): row is Record<string, unknown> => Boolean(row))
+      .map((row) => [row.type, row.priceName, row.rawUnit]
+        .filter((value): value is string => typeof value === "string")
+        .join(" "))
+    : [];
+  const privateRowsOnly = rowTexts.length > 0
+    && rowTexts.every((text) => /\bbatch(?:ed)?\b|pre[\s_-]?paid/i.test(text));
 
-  return /\bbatch(?:ed)?\b/.test(rawText)
+  return privateRowsOnly
+    || /\bbatch(?:ed)?\b/.test(typeof source?.raw === "string" ? source.raw.toLowerCase() : "")
     || /pre[\s_-]?paid/.test(rawText)
     || /\bcach(?:e|ed|ing)\b/.test(sectionText);
 }
@@ -2032,6 +2044,17 @@ function resolveParamDrivenMediaSection(args: {
 }): BillingPriceSection | null {
   if (args.sections.length <= 1 || (args.modality !== "image" && args.modality !== "video")) {
     return null;
+  }
+
+  // Image quality is a public request selector with a fixed ordinal ladder.
+  // Resolve it directly instead of inferring semantics from a model id.
+  const quality = args.metrics.quality;
+  const sharedTierShape = new Set(args.sections.map((section) => `${section.unit}\u0000${section.header || ""}`)).size === 1;
+  if (args.modality === "image" && sharedTierShape && (typeof quality === "string" || typeof quality === "number")) {
+    const qualityIndex = optionPricingTierIndex(["low", "medium", "high"], quality, args.sections.length);
+    if (qualityIndex >= 0) {
+      return args.sections[qualityIndex] || null;
+    }
   }
 
   const modelId = args.subject.includes(":")

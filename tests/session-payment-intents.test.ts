@@ -12,7 +12,7 @@ import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
 import { closeValkey, valkeyDel, valkeyGet, valkeyHGetAll, valkeyHSet, valkeySRem } from "../x402/keys/valkey.js";
 import { getBudgetInfo, initializeSessionBudget } from "../x402/session/budget.js";
 
-const TEST_NETWORK = "eip155:43113" as const;
+const TEST_NETWORK = "eip155:5042002" as const;
 const TEST_BUDGET_WEI = 1_000_000;
 const TEST_SESSION_USED_WEI = 25_000;
 const TEST_STALE_KEY_USED_WEI = 50_000;

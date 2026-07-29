@@ -21,6 +21,13 @@ function ids(catalog: Catalog): string[] {
     .sort();
 }
 
+function providerIds(catalog: Catalog): string[] {
+  return catalog.models
+    .filter((model) => model.provider === "deepgram")
+    .map((model) => model.modelId)
+    .sort();
+}
+
 test("Deepgram sync keeps premium models out of the public compiled catalog", () => {
   const core = read("providers/deepgram.json");
   const premium = read("providers/deepgram_premium.json");
@@ -28,7 +35,10 @@ test("Deepgram sync keeps premium models out of the public compiled catalog", ()
 
   const coreIds = ids(core);
   const premiumIds = ids(premium);
-  const compiledIds = ids(compiled);
+  // Deepgram-provider rows in the compiled catalog. Family aliases from other
+  // providers (e.g. `deepgram/flux` on cloudflare) share the family namespace
+  // legitimately and are not part of this provider-row check.
+  const compiledIds = providerIds(compiled);
   const sourceCoreIds = Array.isArray(core.source?.coreModelIds)
     ? [...core.source.coreModelIds].filter((value): value is string => typeof value === "string").sort()
     : [];

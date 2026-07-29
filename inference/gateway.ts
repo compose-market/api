@@ -1394,6 +1394,7 @@ function outputToAssistantMessage(output: Output): CoreMessage | null {
   return {
     role: "assistant",
     content: output.content || "",
+    ...(output.reasoning !== undefined ? { reasoning_content: output.reasoning } : {}),
     ...(output.toolCalls?.length
       ? {
         tool_calls: output.toolCalls.map((call, index) => ({
@@ -1482,6 +1483,8 @@ function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unkn
     ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
     ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
     ...(message.name ? { name: message.name } : {}),
+    ...(message.reasoning_content !== undefined ? { reasoning_content: message.reasoning_content } : {}),
+    ...(message.partial === true ? { partial: true } : {}),
   }));
 }
 
@@ -1489,6 +1492,32 @@ function writeResponsesEvents(res: Res, encoder: ResponsesStreamEncoder, event: 
   for (const payload of encoder.push(event)) {
     res.write(formatCoreSSE(payload));
   }
+}
+
+function writeResponsesPayloads(res: Res, payloads: Array<Record<string, unknown>>): void {
+  for (const payload of payloads) {
+    res.write(formatCoreSSE(payload));
+  }
+}
+
+function closeEventStream(res: Res): void {
+  if (res.writableEnded) return;
+  res.write(formatCoreSSEDone());
+  res.end();
+}
+
+const INFERENCE_SSE_OPEN_PADDING = " ".repeat(2048);
+
+function openEventStream(res: Res, responseId: string): void {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("x-response-id", responseId);
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  res.write(`: open ${INFERENCE_SSE_OPEN_PADDING}\n\n`);
+  const flush = (res as Res & { flush?: () => void }).flush;
+  if (typeof flush === "function") flush.call(res);
 }
 
 function writeDirectResponsesOutput(
@@ -1615,14 +1644,10 @@ export async function executeRequest(args: {
     inputMessages: args.shape === "responses" ? args.request.messages : undefined,
     previousResponseId: args.shape === "responses" ? args.request.previousResponseId : undefined,
   };
-  await saveResponseRecord(baseRecord);
 
   try {
-    if (request.stream && args.shape === "responses" && !usesProviderStream(request)) {
-      args.res.setHeader("Content-Type", "text/event-stream");
-      args.res.setHeader("Cache-Control", "no-cache");
-      args.res.setHeader("Connection", "keep-alive");
-      args.res.setHeader("x-response-id", request.responseId);
+    let baseRecordSave: Promise<unknown> | null = null;
+    if (request.stream) {
       applyRoutingHeaders(args.res, {
         attempts: 1,
         fallbackUsed: false,
@@ -1630,6 +1655,16 @@ export async function executeRequest(args: {
         final: { modelId },
       });
       paid.payment.applyHeaders(args.res);
+      openEventStream(args.res, request.responseId);
+      baseRecordSave = saveResponseRecord(baseRecord).then(
+        () => null,
+        (error) => error,
+      );
+    } else {
+      await saveResponseRecord(baseRecord);
+    }
+
+    if (request.stream && args.shape === "responses" && !usesProviderStream(request)) {
       const responsesEncoder = new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt);
       writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
@@ -1649,14 +1684,9 @@ export async function executeRequest(args: {
         }
         const output = routed.result.output;
         markInferenceFirstOutput(telemetry);
-        const receipt = await settleOutput(output);
         let finalOutput = output;
 
         writeDirectResponsesOutput(args.res, responsesEncoder, output);
-
-        if (receipt) {
-          args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
-        }
 
         const jobId = output.media?.jobId;
         if (output.modality === "video" && jobId && output.media?.status !== "completed") {
@@ -1739,8 +1769,12 @@ export async function executeRequest(args: {
           usage: finalOutput.usage,
         });
         finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
-        args.res.write(formatCoreSSEDone());
-        args.res.end();
+        closeEventStream(args.res);
+        lifecycle.done();
+
+        await settleOutput(finalOutput);
+        const stateError = await baseRecordSave;
+        if (stateError) throw stateError;
 
         await saveResponseRecord({
           ...baseRecord,
@@ -1776,18 +1810,8 @@ export async function executeRequest(args: {
     }
 
     if (request.stream && usesProviderStream(request)) {
-      args.res.setHeader("Content-Type", "text/event-stream");
-      args.res.setHeader("Cache-Control", "no-cache");
-      args.res.setHeader("Connection", "keep-alive");
-      // X-Request-Id is set by the top-level middleware. We also keep the
-      // inference-specific response id available under x-response-id
-      // so clients can round-trip it for /v1/responses/:id retrieval.
-      args.res.setHeader("x-response-id", request.responseId);
-
       const routed = await streamEngine(request, { signal: lifecycle.signal });
 
-      applyRoutingHeaders(args.res, routed.route);
-      paid.payment.applyHeaders(args.res);
       const responsesEncoder = args.shape === "responses"
         ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
         : null;
@@ -1795,6 +1819,7 @@ export async function executeRequest(args: {
 
       let isFirstToken = true;
       let aggregatedText = "";
+      let aggregatedReasoning = "";
       let lastUsage: Output["usage"] | undefined;
       let finishReason = "stop";
       let streamedImage: {
@@ -1806,7 +1831,7 @@ export async function executeRequest(args: {
         billingMetrics?: Record<string, unknown>;
       } | null = null;
       let pendingImageCompleteEvent: Event | null = null;
-      let pendingImageDoneEvent: Event | null = null;
+      let pendingDoneEvent: Event | null = null;
       let lastMedia: Output["media"] | undefined;
       const realtimeStream = request.modality === "realtime";
       let settledUsage: Output["usage"] | undefined;
@@ -1871,12 +1896,22 @@ export async function executeRequest(args: {
             || event.type === "tool-call"
             || event.type === "tool-call-delta"
           ) {
+            if (event.type === "thinking" || event.type === "reasoning-delta") {
+              aggregatedReasoning += event.thinking || event.text || "";
+            }
             if (responsesEncoder) {
               writeResponsesEvents(args.res, responsesEncoder, event);
             } else {
               args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
             }
             isFirstToken = false;
+            continue;
+          }
+
+          if (event.type === "output-item") {
+            if (responsesEncoder) {
+              writeResponsesEvents(args.res, responsesEncoder, event);
+            }
             continue;
           }
 
@@ -1941,23 +1976,9 @@ export async function executeRequest(args: {
               lastMedia = event.media;
             }
             finishReason = event.finishReason || "stop";
-            if (streamedImage) {
-              pendingImageDoneEvent = event;
-              continue;
-            }
-            if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, event);
-            else args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event)));
-            if (args.shape === "chat" && event.usage) {
-              args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, event.usage)));
-            }
+            pendingDoneEvent = event;
             scheduleRealtimeSettlement();
-          }
-        }
-
-        if (realtimeStream) {
-          await settlementChain;
-          if (settlementFailure) {
-            throw settlementFailure;
+            continue;
           }
         }
 
@@ -1984,6 +2005,7 @@ export async function executeRequest(args: {
             }
             : {
               content: aggregatedText,
+              ...(aggregatedReasoning ? { reasoning: aggregatedReasoning } : {}),
               ...(request.modality === "realtime" && lastMedia ? { media: lastMedia } : {}),
             }),
           ...(lastUsage ? { usage: lastUsage } : {}),
@@ -1992,42 +2014,48 @@ export async function executeRequest(args: {
           ...(responsesEncoder?.calls().length ? { toolCalls: responsesEncoder.calls() } : {}),
         };
 
-        const streamReceipt = realtimeStream ? null : await settleOutput(finalOutput);
-        if (realtimeStream && realtimeSettlements <= 0) {
-          await abortPaidInference("missing_realtime_settlement_evidence");
-          await finishTelemetry("failed", new Error("missing_realtime_settlement_evidence"));
-          args.res.end();
-          return;
-        }
-
         if (pendingImageCompleteEvent) {
+          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
           if (responsesEncoder) {
             writeDirectResponsesOutput(args.res, responsesEncoder, finalOutput);
-            writeResponsesEvents(args.res, responsesEncoder, pendingImageDoneEvent ?? {
-              type: "done",
-              usage: lastUsage,
-              finishReason,
-            });
             finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
-          } else {
-            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
-            args.res.write(formatCoreSSE(toResponsesStreamEvent(
-              request.responseId,
-              modelId,
-              pendingImageDoneEvent ?? {
-                type: "done",
-                usage: lastUsage,
-                finishReason,
-              },
-            )));
           }
         }
 
-        if (streamReceipt) {
-          args.res.write(toReceiptStreamEvent(receiptStreamPayload(streamReceipt)));
+        if (responsesEncoder) {
+          writeResponsesPayloads(args.res, responsesEncoder.finishItems());
+          finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
         }
-        args.res.write(formatCoreSSEDone());
-        args.res.end();
+
+        const terminalEvent = pendingDoneEvent ?? {
+          type: "done" as const,
+          usage: lastUsage,
+          finishReason,
+        };
+        if (responsesEncoder) {
+          writeResponsesEvents(args.res, responsesEncoder, terminalEvent);
+        } else {
+          args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, terminalEvent)));
+          if (terminalEvent.usage) {
+            args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, terminalEvent.usage)));
+          }
+        }
+        closeEventStream(args.res);
+        lifecycle.done();
+
+        if (realtimeStream) {
+          await settlementChain;
+          if (settlementFailure) {
+            throw settlementFailure;
+          }
+          if (realtimeSettlements <= 0) {
+            throw new Error("missing_realtime_settlement_evidence");
+          }
+        } else {
+          await settleOutput(finalOutput);
+        }
+        const stateError = await baseRecordSave;
+        if (stateError) throw stateError;
 
         await saveResponseRecord({
           ...baseRecord,
@@ -2060,8 +2088,7 @@ export async function executeRequest(args: {
               }));
             }
           } catch { /* best-effort */ }
-          try { args.res.write(formatCoreSSEDone()); } catch { /* best-effort */ }
-          try { args.res.end(); } catch { /* best-effort */ }
+          try { closeEventStream(args.res); } catch { /* best-effort */ }
         }
         throw error;
       }
@@ -3162,7 +3189,7 @@ export async function handleVideoStatus(req: Req, res: Res): Promise<void> {
 /**
  * Server-Sent Events stream that polls the video job until it reaches a
  * terminal state and forwards every intermediate status update as a
- * `compose.video.status` event. Not billable — the inference charge happens
+ * `video.status` event. Not billable — the inference charge happens
  * on /v1/videos/generations submission.
  *
  * Query params:

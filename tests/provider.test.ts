@@ -22,15 +22,11 @@ test("resolveModel requires catalog model identity", () => {
   );
 });
 
-test("compiled OpenAI Sora pricing is media-duration priced", () => {
-  const sora = resolveModel("sora-2");
-  const pricing = sora.card?.pricing as { sections?: Array<{ unitKey?: string; entries?: Record<string, number> }> } | undefined;
-  const sections = pricing?.sections || [];
-  const units = sections.map((section) => section.unitKey);
+test("compiled catalog excludes deprecated OpenAI Sora models", () => {
+  const ids = new Set(getCompiledModels().models.map((model) => model.modelId));
 
-  assert.ok(units.length > 0);
-  assert.ok(units.every((unit) => unit === "usd_per_second"));
-  assert.ok(sections.every((section) => typeof section.entries?.second === "number" && section.entries.second > 0));
+  assert.equal(ids.has("sora-2"), false);
+  assert.equal(ids.has("sora-2-pro"), false);
 });
 
 test("compiled ElevenLabs music pricing uses generated audio minute evidence", () => {

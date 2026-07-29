@@ -49,14 +49,20 @@ import {
 import {
     getBudgetInfo as getSessionBudgetInfo,
     initializeSessionBudget,
-} from "./x402/session-budget.js";
+} from "./x402/session/budget.js";
 import {
     getSessionFundingReadiness,
-} from "./x402/session-allowance.js";
+} from "./x402/session/allowance.js";
 import { recordSession } from "./metrics/sessions.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerManowarRoutes } from "./routes.js";
+import {
+    AGENTS_ENTRYPOINT,
+    AGENTS_CATALOG,
+    MODELS_ENTRYPOINT,
+    MODELS_CATALOG,
+} from "./x402/discovery.js";
 import { buildResolvedSettlementMeter, resolveBillingModel } from "./x402/metering.js";
 import type { Modality, Usage } from "./inference/core.js";
 import type { BillingMediaEvidence } from "./inference/telemetry.js";
@@ -65,11 +71,12 @@ import {
     abortPaymentIntent,
     settlePaymentIntent,
 } from "./x402/intents.js";
-import { getActiveChainId, CHAIN_CONFIG, USDC_ADDRESSES, type ChainId } from "./x402/configs/chains.js";
+import { getDefaultNetwork, getNetwork, getNetworkRpcUrl, isEvmNetwork, isNetworkId, type EvmNetworkId, type NetworkId } from "./x402/configs/chains.js";
+import { validateSvmAddress } from "@x402/svm";
 import {
     getFacilitatorSupported,
     getFacilitatorChainMetadata,
-    getChainIdFromPaymentPayload,
+    getNetworkFromPaymentPayload,
     parseFacilitatorSettleRequest,
     parseFacilitatorVerifyRequest,
     settlePayment,
@@ -100,27 +107,27 @@ const loadDispenser = () => import("./dispenser/index.js");
 // X-Receipt) freely on top of the middleware-set CORS + X-Request-Id.
 const corsHeaders: Record<string, string> = {};
 
-function chainIdHeader(event: APIGatewayProxyEventV2): number | undefined {
-    const raw = getHeader(event, "x-chain-id");
-    const chainId = raw ? Number.parseInt(raw, 10) : Number.NaN;
-    return Number.isInteger(chainId) && chainId > 0 ? chainId : undefined;
+function networkHeader(event: APIGatewayProxyEventV2): NetworkId | undefined {
+    const raw = getHeader(event, "x-network-id");
+    return raw && isNetworkId(raw) ? raw : undefined;
 }
 
-function triggerPaymentMetric(chainId: number | undefined, txHash: unknown, source: string): void {
-    if (!chainId || typeof txHash !== "string" || txHash.trim().length === 0) return;
-    triggerConfirmedPayment({ chainId, txHash }, source);
+function triggerPaymentMetric(network: NetworkId | undefined, txHash: unknown, source: string): void {
+    if (!network || !isEvmNetwork(network) || typeof txHash !== "string" || txHash.trim().length === 0) return;
+    triggerConfirmedPayment({ network, txHash }, source);
 }
 
 async function recordSettlementCycleMetrics(result: {
     native?: {
         chains?: Array<{
             chainId: number;
+            network: EvmNetworkId;
             settleTxHash?: string;
         }>;
     } | null;
     intents?: {
         results?: Array<{
-            chainId: number;
+            network: NetworkId;
             txHash?: string;
             error?: string;
         }>;
@@ -130,12 +137,12 @@ async function recordSettlementCycleMetrics(result: {
     for (const chain of result.native?.chains || []) {
         if (chain.settleTxHash) {
             tasks.push(recordConfirmedPayment({
-                chainId: chain.chainId,
+                network: chain.network,
                 txHash: chain.settleTxHash,
             }).catch((error) => {
                 console.error("[metrics] native batch settlement record failed", {
                     source,
-                    chainId: chain.chainId,
+                    network: chain.network,
                     txHash: chain.settleTxHash,
                     error: error instanceof Error ? error.message : String(error),
                 });
@@ -143,14 +150,14 @@ async function recordSettlementCycleMetrics(result: {
         }
     }
     for (const item of result.intents?.results || []) {
-        if (!item.error && item.txHash) {
+        if (!item.error && item.txHash && isEvmNetwork(item.network)) {
             tasks.push(recordConfirmedPayment({
-                chainId: item.chainId,
+                network: item.network,
                 txHash: item.txHash,
             }).catch((error) => {
                 console.error("[metrics] intent batch settlement record failed", {
                     source,
-                    chainId: item.chainId,
+                    network: item.network,
                     txHash: item.txHash,
                     error: error instanceof Error ? error.message : String(error),
                 });
@@ -170,7 +177,7 @@ function envelopePayload(envelope: RawEnvelope | null): Record<string, unknown> 
     }
     return {
         rootRunId: envelope.rootRunId,
-        chainId: envelope.chainId,
+        network: envelope.network,
         maxAmountWei: envelope.maxAmountWei,
         usedWei: envelope.usedWei || "0",
         remainingWei,
@@ -216,29 +223,29 @@ function getHeader(event: APIGatewayProxyEventV2, name: string): string | undefi
     return undefined;
 }
 
-function normalizeWallet(value: unknown): string | null {
+function normalizeAccount(value: unknown): string | null {
     if (typeof value !== "string") {
         return null;
     }
-    const normalized = value.trim().toLowerCase();
-    return /^0x[a-f0-9]{40}$/.test(normalized) ? normalized : null;
+    const normalized = value.trim();
+    return normalized || null;
 }
 
 function requireUserAddressHeader(event: APIGatewayProxyEventV2): string {
-    const userAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
+    const userAddress = normalizeAccount(getHeader(event, "x-session-user-address"));
     if (!userAddress) {
+        throw new Error("x-session-user-address header required");
+    }
+    if (!/^0x[a-fA-F0-9]{40}$/.test(userAddress) && !validateSvmAddress(userAddress)) {
         throw new Error("x-session-user-address header required");
     }
     return userAddress;
 }
 
-function requireChainIdHeader(event: APIGatewayProxyEventV2): number {
-    const chainIdRaw = getHeader(event, "x-chain-id");
-    const chainId = chainIdRaw ? Number.parseInt(chainIdRaw, 10) : Number.NaN;
-    if (!Number.isInteger(chainId) || chainId <= 0) {
-        throw new Error("x-chain-id header required");
-    }
-    return chainId;
+function requireNetworkHeader(event: APIGatewayProxyEventV2): NetworkId {
+    const network = getHeader(event, "x-network-id");
+    if (!network || !isNetworkId(network)) throw new Error("x-network-id header required");
+    return network;
 }
 
 async function generateDecorativeImage(prompt: string, size: string): Promise<string> {
@@ -364,12 +371,19 @@ export function registerHandlerRoutes(app: Application): void {
 
     registerManowarRoutes(app);
 
+    app.get("/openapi.json", routeHandler);
+    app.get("/.well-known/x402", routeHandler);
+    app.get(MODELS_CATALOG, routeHandler);
+    app.get(AGENTS_CATALOG, routeHandler);
+    app.post(new RegExp(`^${MODELS_ENTRYPOINT.replace(/\/$/u, "")}/?$`, "u"), routeHandler);
+    app.post(new RegExp(`^${AGENTS_ENTRYPOINT.replace(/\/$/u, "")}/?$`, "u"), routeHandler);
+
     app.get("/health", routeHandler);
     app.get("/api/models", routeHandler);
     app.get("/agents", routeHandler);
     app.get("/agents/search", routeHandler);
-    app.get(/^\/agent\/0x[a-fA-F0-9]{40}\/avatar$/, routeHandler);
-    app.get(/^\/agent\/0x[a-fA-F0-9]{40}$/, routeHandler);
+    app.get(/^\/agent\/[^/]+\/avatar$/, routeHandler);
+    app.get(/^\/agent\/[^/]+$/, routeHandler);
     app.get("/workflows", routeHandler);
     app.get(/^\/workflow\/0x[a-fA-F0-9]{40}$/, routeHandler);
     app.get("/api/agentverse/agents", routeHandler);
@@ -413,7 +427,7 @@ export function registerHandlerRoutes(app: Application): void {
 
     app.post("/api/dispenser/claim", routeHandler);
     app.get("/api/dispenser/status", routeHandler);
-    app.get(/^\/api\/dispenser\/status\/\d+$/, routeHandler);
+    app.get(/^\/api\/dispenser\/status\/[^/]+$/, routeHandler);
     app.get(/^\/api\/dispenser\/check\/0x[a-fA-F0-9]{40}$/, routeHandler);
 
     app.post("/api/settlement/batch", routeHandler);
@@ -572,14 +586,14 @@ export async function handler(
             return handleDispenserClaim(event);
         }
 
-        // GET /api/dispenser/status - Get dispenser status for all chains
+        // GET /api/dispenser/status - Get dispenser status for all configured networks
         if (method === "GET" && path === "/api/dispenser/status") {
             return handleDispenserStatus();
         }
 
-        // GET /api/dispenser/status/:chainId - Get dispenser status for specific chain
-        if (method === "GET" && path.match(/^\/api\/dispenser\/status\/\d+$/)) {
-            return handleDispenserStatusByChain(event);
+        // GET /api/dispenser/status/:network - Get dispenser status for specific network
+        if (method === "GET" && path.match(/^\/api\/dispenser\/status\/[^/]+$/)) {
+            return handleDispenserStatusByNetwork(event);
         }
 
         // GET /api/dispenser/check/:address - Check if address has claimed
@@ -622,13 +636,13 @@ export async function handler(
 
         // GET /api/settlement/status - Get pending settlement info for a user
         if (method === "GET" && path === "/api/settlement/status") {
-            const chainId = parseInt(event.queryStringParameters?.chainId || String(getActiveChainId()), 10);
+            const network = requireNetworkHeader(event);
             const userAddress = requireUserAddressHeader(event);
 
             try {
-                const { getBudgetInfo } = await import("./x402/session-budget.js");
+                const { getBudgetInfo } = await import("./x402/session/budget.js");
 
-                const info = await getBudgetInfo(userAddress, chainId);
+                const info = await getBudgetInfo(userAddress, network);
 
                 if (!info) {
                     return {
@@ -791,7 +805,15 @@ export async function batchSettlementHandler(
             skipped: result.skipped,
             runId: result.intents?.runId,
             nativeRunId: result.native?.runId,
-            nativeChains: result.native?.chains,
+            nativeNetworks: result.native?.chains?.map((entry) => ({
+                network: entry.network,
+                claimCount: entry.claimCount,
+                claimTxHashes: entry.claimTxHashes,
+                settleTxHash: entry.settleTxHash,
+                reconciledReceipts: entry.reconciledReceipts,
+                reconciledEvidence: entry.reconciledEvidence,
+                error: entry.error,
+            })),
             totalUsers: result.intents?.totalUsers,
             totalIntents: result.intents?.totalIntents,
             successCount: result.intents?.successCount,
@@ -807,13 +829,13 @@ export async function batchSettlementHandler(
 }
 
 function assertNativeBatchSettlement(native: {
-    chains?: Array<{ chainId: number; error?: string }>;
+    chains?: Array<{ chainId: number; network: EvmNetworkId; error?: string }>;
 }): void {
     const failed = native.chains?.filter((chain) => chain.error) || [];
     if (failed.length === 0) {
         return;
     }
-    const detail = failed.map((chain) => `${chain.chainId}: ${chain.error}`).join("; ");
+    const detail = failed.map((chain) => `${chain.network}: ${chain.error}`).join("; ");
     throw new Error(`Native batch settlement failed: ${detail}`);
 }
 
@@ -824,11 +846,11 @@ function assertNativeBatchSettlement(native: {
 
 async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const userAddress = requireUserAddressHeader(event);
-    const chainId = chainIdHeader(event);
+    const network = requireNetworkHeader(event);
 
-    const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
+    const sessionStatus = await getActiveSessionStatus(userAddress, network);
     const session = sessionStatus.session;
-    const rawEnvelope = envelopePayload(await readActiveRawEnvelope({ payer: userAddress, chainId }));
+    const rawEnvelope = envelopePayload(await readActiveRawEnvelope({ payer: userAddress, network }));
 
     if (!session) {
         return {
@@ -837,15 +859,7 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
             body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason, rawEnvelope)),
         };
     }
-    const sessionChainId = session.chainId ?? chainId;
-    if (!sessionChainId) {
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify(buildInactiveSessionPayload("chain_mismatch", rawEnvelope)),
-        };
-    }
-    const liveBudget = await getSessionBudgetInfo(userAddress, sessionChainId);
+    const liveBudget = await getSessionBudgetInfo(userAddress, session.network);
     const budgetLimit = BigInt(liveBudget?.totalWei ?? session.budgetLimit);
     const budgetUsed = BigInt(liveBudget?.usedWei ?? session.budgetUsed);
     const budgetLocked = BigInt(liveBudget?.lockedWei ?? session.budgetLocked);
@@ -860,7 +874,7 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
         budgetLocked: budgetLocked.toString(),
         budgetRemaining: budgetRemaining.toString(),
         expiresAt: session.expiresAt,
-        chainId: sessionChainId,
+        network: session.network,
         name: session.name,
         ...(rawEnvelope ? { rawEnvelope } : {}),
     };
@@ -938,12 +952,11 @@ type PaymentIntentPrepareBody = {
 async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const body = event.body ? JSON.parse(event.body) as PaymentIntentPrepareBody : {};
     const authorization = event.headers.authorization || event.headers.Authorization;
-    const chainIdHeader = event.headers["x-chain-id"] || event.headers["X-Chain-Id"];
-    const chainId = chainIdHeader ? parseInt(chainIdHeader, 10) : NaN;
+    const network = requireNetworkHeader(event);
 
     const result = await authorizePaymentIntent({
         authorization: authorization || "",
-        chainId,
+        network,
         service: body.service || "",
         action: body.action || "",
         resource: body.resource || "",
@@ -968,7 +981,7 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
         try {
             await recordSession({
                 keyId: result.body.paymentIntentId,
-                chainId: Number.isFinite(chainId) ? chainId : undefined,
+                network,
                 createdAt: new Date(),
             });
         } catch (error) {
@@ -1020,7 +1033,8 @@ async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise
             : undefined,
     });
     if (result.ok) {
-        triggerPaymentMetric(chainIdHeader(event), (result.body as { txHash?: unknown }).txHash, "payment-intent");
+        const body = result.body as { network?: NetworkId; txHash?: unknown };
+        triggerPaymentMetric(body.network, body.txHash, "payment-intent");
     }
 
     return {
@@ -1109,11 +1123,11 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
 
     let budgetLimit: number;
     let expiresAt: number;
-    let chainId: number;
+    let network: NetworkId;
     try {
         budgetLimit = parsePositiveIntegerInput(body.budgetLimit, "budgetLimit");
         expiresAt = parsePositiveIntegerInput(body.expiresAt, "expiresAt");
-        chainId = parsePositiveIntegerInput(body.chainId, "chainId");
+        network = requireNetworkHeader(event);
     } catch (error) {
         return {
             statusCode: 400,
@@ -1121,7 +1135,7 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             body: JSON.stringify({
                 error: error instanceof Error
                     ? error.message
-                    : "budgetLimit, expiresAt, chainId, and purpose are required",
+                    : "budgetLimit, expiresAt, network, and purpose are required",
             }),
         };
     }
@@ -1141,48 +1155,46 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
     }
     const userAddress = requireUserAddressHeader(event);
 
-    if (purpose === "session" || purpose === "api") {
-        try {
-            const readiness = await getSessionFundingReadiness({
-                userAddress,
-                chainId,
-                requiredBudgetWei: budgetLimit,
-            });
+    try {
+        const readiness = await getSessionFundingReadiness({
+            userAddress,
+            network,
+            requiredBudgetWei: budgetLimit,
+        });
 
-            if (!readiness.ready) {
-                const budgetLabel = purpose === "session" ? "session budget" : "Compose key budget";
-                const actionLabel = purpose === "session" ? "session creation" : "key creation";
-                return {
-                    statusCode: 402,
-                    headers: corsHeaders,
-                    body: JSON.stringify({
-                        error: readiness.reason === "insufficient_balance"
-                            ? `Insufficient USDC balance for requested ${budgetLabel}`
-                            : `Insufficient USDC allowance for requested ${budgetLabel}`,
-                        hint: readiness.reason === "insufficient_balance"
-                            ? `Fund the tied wallet/smart account with at least the selected ${budgetLabel}, then retry ${actionLabel}.`
-                            : `Approve Compose.Market to spend at least the selected ${budgetLabel}, then retry ${actionLabel}.`,
-                        code: readiness.reason,
-                        details: {
-                            requiredWei: readiness.requiredWei,
-                            balanceWei: readiness.balanceWei,
-                            allowanceWei: readiness.allowanceWei,
-                            spender: readiness.spender,
-                        },
-                    }),
-                };
-            }
-        } catch (error) {
+        if (!readiness.ready) {
+            const budgetLabel = purpose === "session" ? "session budget" : "Compose key budget";
+            const actionLabel = purpose === "session" ? "session creation" : "key creation";
             return {
-                statusCode: 503,
+                statusCode: 402,
                 headers: corsHeaders,
                 body: JSON.stringify({
-                    error: error instanceof Error
-                        ? error.message
-                        : "Failed to verify Compose key funding readiness",
+                    error: readiness.reason === "insufficient_balance"
+                        ? `Insufficient USDC balance for requested ${budgetLabel}`
+                        : `Insufficient USDC allowance for requested ${budgetLabel}`,
+                    hint: readiness.reason === "insufficient_balance"
+                        ? `Fund the selected account with at least the selected ${budgetLabel}, then retry ${actionLabel}.`
+                        : `Authorize Compose.Market to spend at least the selected ${budgetLabel}, then retry ${actionLabel}.`,
+                    code: readiness.reason,
+                    details: {
+                        requiredWei: readiness.requiredWei,
+                        balanceWei: readiness.balanceWei,
+                        allowanceWei: readiness.allowanceWei,
+                        spender: readiness.spender,
+                    },
                 }),
             };
         }
+    } catch (error) {
+        return {
+            statusCode: 503,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error
+                    ? error.message
+                    : "Failed to verify Compose key funding readiness",
+            }),
+        };
     }
 
     const result = await createKey(userAddress, {
@@ -1190,14 +1202,14 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         expiresAt,
         purpose,
         name: body.name,
-        chainId,
+        network,
     });
 
     if (purpose === "session") {
         try {
             await initializeSessionBudget(
-                userAddress.trim().toLowerCase(),
-                chainId,
+                userAddress,
+                network,
                 String(budgetLimit),
                 expiresAt,
             );
@@ -1215,7 +1227,7 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
 
     const budgetLimitString = String(result.budgetLimit);
     const liveBudget = purpose === "session"
-        ? await getSessionBudgetInfo(userAddress, chainId)
+        ? await getSessionBudgetInfo(userAddress, network)
         : null;
     const budgetUsed = liveBudget?.usedWei || "0";
     const budgetRemaining = liveBudget?.availableWei || budgetLimitString;
@@ -1231,14 +1243,15 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             budgetRemaining,
             createdAt,
             purpose,
-            chainId,
+            network,
         }),
     };
 }
 
 async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const userAddress = requireUserAddressHeader(event);
-    const keys = await listUserKeys(userAddress);
+    const network = requireNetworkHeader(event);
+    const keys = await listUserKeys(userAddress, network);
 
     const safeKeys = keys.map(k => ({
         keyId: k.keyId,
@@ -1251,6 +1264,7 @@ async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGateway
         revokedAt: k.revokedAt,
         name: k.name,
         lastUsedAt: k.lastUsedAt,
+        network: k.network,
     }));
 
     return {
@@ -1264,8 +1278,8 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
     const keyId = event.rawPath.replace("/api/keys/", "");
 
     const authHeader = event.headers["authorization"] || event.headers["Authorization"];
-    const composeKeyToken = extractKeyFromHeader(authHeader);
-    if (!composeKeyToken) {
+    const keyToken = extractKeyFromHeader(authHeader);
+    if (!keyToken) {
         return {
             statusCode: 401,
             headers: corsHeaders,
@@ -1278,7 +1292,7 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
         };
     }
 
-    const validation = await validateKey(composeKeyToken, 0);
+    const validation = await validateKey(keyToken, 0);
     if (!validation.valid || !validation.payload) {
         return {
             statusCode: 401,
@@ -1311,7 +1325,7 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
         };
     }
 
-    if (record.userAddress.toLowerCase() !== validation.payload.sub.toLowerCase()) {
+    if (record.userAddress !== validation.payload.sub || record.network !== validation.payload.network) {
         return {
             statusCode: 403,
             headers: corsHeaders,
@@ -1342,16 +1356,16 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
             revokedAt: record.revokedAt,
             lastUsedAt: record.lastUsedAt,
             name: record.name,
-            chainId: record.chainId,
+            network: record.network,
         }),
     };
 }
 
 async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const authHeader = event.headers["authorization"];
-    const composeKeyToken = extractKeyFromHeader(authHeader);
+    const keyToken = extractKeyFromHeader(authHeader);
 
-    if (!composeKeyToken) {
+    if (!keyToken) {
         return {
             statusCode: 401,
             headers: corsHeaders,
@@ -1362,7 +1376,7 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
     const body = event.body ? JSON.parse(event.body) : {};
     const amountWei = parseInt(body.amount, 10);
 
-    const validation = await validateKey(composeKeyToken, amountWei);
+    const validation = await validateKey(keyToken, amountWei);
     if (!validation.valid) {
         return {
             statusCode: 401,
@@ -1380,9 +1394,16 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
         };
     }
 
-    const keyChainId = validation.record!.chainId!;
+    const keyNetwork = validation.record!.network;
+    if (!isEvmNetwork(keyNetwork)) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "Solana key settlement requires an SVM authorization payload" }),
+        };
+    }
     const { settleKeyPayment } = await import("./x402/settlement.js");
-    const result = await settleKeyPayment(validation.payload!.sub, amountWei, keyChainId);
+    const result = await settleKeyPayment(validation.payload!.sub, amountWei, keyNetwork);
 
     if (!result.success) {
         return {
@@ -1394,7 +1415,7 @@ async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<AP
 
     await consumeKeyBudget(validation.payload!.keyId, amountWei);
     const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
-    triggerPaymentMetric(keyChainId, result.txHash, "compose-key");
+    triggerPaymentMetric(keyNetwork, result.txHash, "key");
 
     return {
         statusCode: 200,
@@ -1418,8 +1439,8 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
     // The unsigned `x-session-user-address` header is never a trust input;
     // the JWT's signed `sub` is.
     const authHeader = event.headers["authorization"] || event.headers["Authorization"];
-    const composeKeyToken = extractKeyFromHeader(authHeader);
-    if (!composeKeyToken) {
+    const keyToken = extractKeyFromHeader(authHeader);
+    if (!keyToken) {
         return {
             statusCode: 401,
             headers: corsHeaders,
@@ -1432,7 +1453,7 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         };
     }
 
-    const validation = await validateKey(composeKeyToken, 0);
+    const validation = await validateKey(keyToken, 0);
     if (!validation.valid || !validation.payload) {
         return {
             statusCode: 401,
@@ -1446,7 +1467,7 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         };
     }
 
-    const callerAddress = validation.payload.sub.toLowerCase();
+    const callerAddress = validation.payload.sub;
     const targetRecord = validation.payload.keyId === keyId
         ? validation.record ?? (await getKeyRecord(keyId))
         : await getKeyRecord(keyId);
@@ -1461,7 +1482,7 @@ async function handleRevokeKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         };
     }
 
-    if (targetRecord.userAddress.toLowerCase() !== callerAddress) {
+    if (targetRecord.userAddress !== callerAddress || targetRecord.network !== validation.payload.network) {
         return {
             statusCode: 403,
             headers: corsHeaders,
@@ -1504,27 +1525,24 @@ async function handleFacilitatorSupported(): Promise<APIGatewayProxyResultV2> {
     return {
         statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify(getFacilitatorSupported()),
+        body: JSON.stringify(await getFacilitatorSupported()),
     };
 }
 
 async function handleFacilitatorChains(): Promise<APIGatewayProxyResultV2> {
-    // Enumerates the chains the facilitator is currently configured for,
-    // including USDC contract + explorer + CAIP-2 network id, so SDK consumers
-    // don't have to ship a duplicate chain table that can drift out of sync.
-    const base = getFacilitatorChainMetadata();
-    const enriched = base.map((entry) => {
-        const cfg = CHAIN_CONFIG[entry.chainId as ChainId];
-        const usdcAddress = USDC_ADDRESSES[entry.chainId as ChainId];
+    const chains = (await getFacilitatorChainMetadata()).map((entry) => {
+        const definition = getNetwork(entry.network);
         return {
-            chainId: entry.chainId,
             name: entry.name,
             network: entry.network,
-            shortName: cfg?.shortName,
-            isTestnet: cfg?.isTestnet ?? false,
-            explorer: cfg?.explorer,
-            usdcAddress,
-            schemes: ["exact", "upto"] as const,
+            namespace: definition.namespace,
+            shortName: definition.shortName,
+            isTestnet: definition.environment === "testnet",
+            explorer: definition.explorer,
+            explorerQuery: definition.explorerQuery,
+            rpcUrl: getNetworkRpcUrl(entry.network),
+            assetAddress: definition.asset.address,
+            schemes: definition.schemes,
             asset: "USDC",
             decimals: 6,
         };
@@ -1532,7 +1550,10 @@ async function handleFacilitatorChains(): Promise<APIGatewayProxyResultV2> {
     return {
         statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify({ chains: enriched, defaultChainId: getActiveChainId() }),
+        body: JSON.stringify({
+            chains,
+            defaultNetwork: getDefaultNetwork(),
+        }),
     };
 }
 
@@ -1564,10 +1585,10 @@ async function handleFacilitatorSettle(event: APIGatewayProxyEventV2): Promise<A
     try {
         const body = event.body ? JSON.parse(event.body) : {};
         const { paymentPayload, paymentRequirements } = parseFacilitatorSettleRequest(body);
-        const chainId = getChainIdFromPaymentPayload(paymentPayload);
+        const network = getNetworkFromPaymentPayload(paymentPayload);
         const result = await settlePayment(paymentPayload, paymentRequirements);
-        if (result.success) {
-            triggerPaymentMetric(chainId, result.transaction, "facilitator");
+        if (result.success && isEvmNetwork(network)) {
+            triggerPaymentMetric(network, result.transaction, "facilitator");
         }
 
         return {
@@ -1851,17 +1872,33 @@ async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIG
 
 async function handleDispenserClaim(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const body = event.body ? JSON.parse(event.body) : {};
-    const { address, chainId } = body;
+    const { address, network } = body;
 
-    if (!address || !chainId) {
+    if ("chainId" in body || "chain_id" in body) {
         return {
             statusCode: 400,
             headers: corsHeaders,
-            body: JSON.stringify({ error: "address and chainId are required" }),
+            body: JSON.stringify({ error: "chainId is not supported; use network" }),
         };
     }
 
-    if (!address.match(/^0x[a-fA-F0-9]{40}$/)) {
+    if (!address || !network) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "address and network are required" }),
+        };
+    }
+
+    if (typeof network !== "string" || !isNetworkId(network)) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "network must be a supported CAIP-2 network" }),
+        };
+    }
+
+    if (isEvmNetwork(network) && !address.match(/^0x[a-fA-F0-9]{40}$/)) {
         return {
             statusCode: 400,
             headers: corsHeaders,
@@ -1870,7 +1907,7 @@ async function handleDispenserClaim(event: APIGatewayProxyEventV2): Promise<APIG
     }
 
     const dispenser = await loadDispenser();
-    const result = await dispenser.claimDispenserUSDC({ address, chainId });
+    const result = await dispenser.claimDispenserUSDC({ address, network });
 
     const statusCode = result.success
         ? 200
@@ -1901,11 +1938,18 @@ async function handleDispenserStatus(): Promise<APIGatewayProxyResultV2> {
     };
 }
 
-async function handleDispenserStatusByChain(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const chainId = parseInt(event.rawPath.split("/api/dispenser/status/")[1], 10);
+async function handleDispenserStatusByNetwork(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+    const rawNetwork = decodeURIComponent(event.rawPath.split("/api/dispenser/status/")[1] || "");
+    if (!isNetworkId(rawNetwork)) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: "network must be a supported CAIP-2 network" }),
+        };
+    }
 
     const dispenser = await loadDispenser();
-    const result = await dispenser.checkDispenserAvailable(chainId);
+    const result = await dispenser.checkDispenserAvailable(rawNetwork);
 
     return {
         statusCode: result.available ? 200 : 404,
@@ -1926,8 +1970,8 @@ async function handleDispenserCheck(event: APIGatewayProxyEventV2): Promise<APIG
         body: JSON.stringify({
             address,
             hasClaimed: status.claimed,
-            claimedOnChain: status.chainId,
-            claimedOnChainName: status.chainName,
+            claimedOnNetwork: status.network,
+            claimedOnNetworkName: status.networkName,
             claimedAt: status.claimedAt,
         }),
     };

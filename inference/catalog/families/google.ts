@@ -2151,8 +2151,9 @@ async function buildGoogleBody(
 function extractToolCallsAndCaptureSignatures(
     candidate: Record<string, unknown> | null,
     onSignature?: (toolCallId: string, signature: string) => void,
-): { text: string; toolCalls: Call[] } {
+): { text: string; reasoning: string; toolCalls: Call[] } {
     let text = "";
+    let reasoning = "";
     const toolCalls: Call[] = [];
     const content = asGoogleRecord(candidate?.content);
     const parts = Array.isArray(content?.parts) ? content!.parts : [];
@@ -2161,7 +2162,8 @@ function extractToolCallsAndCaptureSignatures(
         const record = asGoogleRecord(part);
         if (!record) continue;
         if (typeof record.text === "string") {
-            text += record.text;
+            if (record.thought === true) reasoning += record.text;
+            else text += record.text;
             continue;
         }
         const fc = asGoogleRecord(record.functionCall);
@@ -2185,7 +2187,7 @@ function extractToolCallsAndCaptureSignatures(
             toolCallIndex += 1;
         }
     }
-    return { text, toolCalls };
+    return { text, reasoning, toolCalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -2214,11 +2216,12 @@ export async function chat(
     const data = (await response.json()) as Record<string, unknown>;
     const candidates = Array.isArray(data.candidates) ? data.candidates : [];
     const first = asGoogleRecord(candidates[0]);
-    const { text, toolCalls } = extractToolCallsAndCaptureSignatures(first, opts?.onThoughtSignature);
+    const { text, reasoning, toolCalls } = extractToolCallsAndCaptureSignatures(first, opts?.onThoughtSignature);
     const usage = usageFromGoogleWire(data.usageMetadata);
     return {
         modality: "text",
         content: text,
+        ...(reasoning ? { reasoning } : {}),
         usage,
         finishReason: finishReasonFromGoogleWire(first?.finishReason, toolCalls.length > 0),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),

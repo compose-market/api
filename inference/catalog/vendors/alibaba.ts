@@ -1,7 +1,8 @@
 import { getModelById } from "../registry.js";
-import type { Call, Choice, Message, Tool, Usage } from "../../core.js";
+import type { Call, Choice, Event, Message, Tool, Usage } from "../../core.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { normalizeOpenAIUsage } from "../shared/index.js";
 import {
   buildChatBody as buildAlibabaChatBody,
   buildWanVideoSubmission,
@@ -27,6 +28,7 @@ type AlibabaRoute =
 
 export interface AlibabaChatResult {
   text: string;
+  reasoning?: string;
   usage?: Usage;
   finishReason?: string;
   toolCalls?: Call[];
@@ -199,7 +201,12 @@ function asrUsesSingleFileUrl(modelId: string): boolean {
   return `${modelId} ${card?.name || ""}`.toLowerCase().includes("filetrans");
 }
 
-async function postJson(url: string, body: Record<string, unknown>, extraHeaders: Record<string, string> = {}): Promise<unknown> {
+async function postJson(
+  url: string,
+  body: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
+  signal?: AbortSignal,
+): Promise<unknown> {
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -208,6 +215,7 @@ async function postJson(url: string, body: Record<string, unknown>, extraHeaders
       ...extraHeaders,
     },
     body: JSON.stringify(body),
+    signal,
   });
 
   const text = await response.text();
@@ -266,7 +274,7 @@ function usageFromOpenAI(value: unknown): Usage | undefined {
     promptTokens,
     completionTokens,
     totalTokens,
-    ...(usage ? { raw: usage } : {}),
+    raw: usage,
   };
 }
 
@@ -364,6 +372,7 @@ function dashscopeMessages(messages: Message[]): Array<Record<string, unknown>> 
 
 function textFromOpenAIChat(raw: unknown): {
   text: string;
+  reasoning?: string;
   finishReason?: string;
   usage?: Usage;
   toolCalls?: Call[];
@@ -388,6 +397,7 @@ function textFromOpenAIChat(raw: unknown): {
     .filter((call): call is Call => call !== null);
   return {
     text: clean(message.content),
+    ...(clean(message.reasoning_content) ? { reasoning: clean(message.reasoning_content) } : {}),
     finishReason: toolCalls.length > 0
       ? "tool-calls"
       : clean(first.finish_reason) || undefined,
@@ -827,6 +837,7 @@ export async function generateAlibabaChat(
     toolChoice?: Choice;
     responseFormat?: unknown;
     customParams?: Record<string, unknown>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<AlibabaChatResult> {
   const route = routeForModel(modelId);
@@ -845,7 +856,7 @@ export async function generateAlibabaChat(
       ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
       ...(options.customParams ? { customParams: options.customParams } : {}),
     });
-    const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body);
+    const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body, {}, options.signal);
     return { ...textFromOpenAIChat(raw), raw };
   }
 
@@ -857,7 +868,7 @@ export async function generateAlibabaChat(
       ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
       ...(options.customParams || {}),
     },
-  });
+  }, {}, options.signal);
 
   const text = textFromDashScope(raw);
   return {
@@ -865,6 +876,168 @@ export async function generateAlibabaChat(
     usage: usageFromDashScope(raw),
     finishReason: "stop",
     raw,
+  };
+}
+
+interface AlibabaToolAccumulator {
+  id: string;
+  name: string;
+  arguments: string;
+  index: number;
+}
+
+async function* alibabaSseJson(response: Response): AsyncGenerator<Record<string, unknown>> {
+  if (!response.ok || !response.body) {
+    const detail = await response.text();
+    throw new Error(`Alibaba provider stream HTTP ${response.status}: ${detail.slice(0, 500)}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let dataLines: string[] = [];
+
+  const parse = (lines: string[]): Record<string, unknown> | null | "done" => {
+    if (lines.length === 0) return null;
+    const data = lines.join("\n");
+    if (data.trim() === "[DONE]") return "done";
+    try {
+      return JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      throw new Error(`Alibaba stream returned invalid SSE JSON: ${data.slice(0, 500)}`);
+    }
+  };
+
+  let reachedEof = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        let line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line === "") {
+          const parsed = parse(dataLines);
+          dataLines = [];
+          if (parsed === "done") {
+            try { await reader.cancel(); } catch { /* best effort */ }
+            return;
+          }
+          if (parsed) yield parsed;
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).replace(/^ /, ""));
+        }
+        newline = buffer.indexOf("\n");
+      }
+      if (done) {
+        reachedEof = true;
+        break;
+      }
+    }
+
+    if (buffer.endsWith("\r")) buffer = buffer.slice(0, -1);
+    if (buffer.startsWith("data:")) dataLines.push(buffer.slice(5).replace(/^ /, ""));
+    const parsed = parse(dataLines);
+    if (parsed && parsed !== "done") yield parsed;
+  } finally {
+    if (!reachedEof) {
+      try { await reader.cancel(); } catch { /* best effort */ }
+    }
+    try { reader.releaseLock(); } catch { /* best effort */ }
+  }
+}
+
+export async function* streamAlibabaChat(
+  modelId: string,
+  messages: Message[],
+  options: Parameters<typeof generateAlibabaChat>[2] = {},
+): AsyncGenerator<Event> {
+  if (routeForModel(modelId) !== "openai_chat") {
+    const result = await generateAlibabaChat(modelId, messages, options);
+    if (result.reasoning) yield { type: "reasoning-delta", text: result.reasoning };
+    if (result.text) yield { type: "text-delta", text: result.text };
+    yield { type: "done", finishReason: result.finishReason || "stop", usage: result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+    return;
+  }
+
+  const bases = basesForModel(modelId);
+  const request = buildAlibabaChatBody(modelId, messages, {
+    wire: "openai_chat",
+    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+    ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
+    ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+    ...(options.customParams ? { customParams: options.customParams } : {}),
+  });
+  const existingStreamOptions = asRecord(request.body.stream_options) || {};
+  const response = await fetch(`${bases.compatibleBase}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${credential()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      ...request.body,
+      stream: true,
+      stream_options: { ...existingStreamOptions, include_usage: true },
+    }),
+    signal: options.signal,
+  });
+  const tools = new Map<number, AlibabaToolAccumulator>();
+  let usage: Usage | undefined;
+  let finishReason = "";
+
+  for await (const chunk of alibabaSseJson(response)) {
+    usage = normalizeOpenAIUsage(chunk.usage) || usage;
+    const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+    for (const rawChoice of choices) {
+      const choice = asRecord(rawChoice);
+      const delta = asRecord(choice?.delta);
+      if (typeof delta?.content === "string" && delta.content) {
+        yield { type: "text-delta", text: delta.content };
+      }
+      if (typeof delta?.reasoning_content === "string" && delta.reasoning_content) {
+        yield { type: "reasoning-delta", text: delta.reasoning_content };
+      }
+      for (const rawCall of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
+        const call = asRecord(rawCall);
+        if (!call) continue;
+        const index = typeof call.index === "number" ? call.index : 0;
+        const fn = asRecord(call.function);
+        const id = clean(call.id);
+        const name = typeof fn?.name === "string" ? fn.name : "";
+        const argumentsDelta = typeof fn?.arguments === "string" ? fn.arguments : "";
+        const current = tools.get(index) || { id: id || `call_${index}`, name: "", arguments: "", index };
+        if (id) current.id = id;
+        current.name += name;
+        current.arguments += argumentsDelta;
+        tools.set(index, current);
+        yield {
+          type: "tool-call-delta",
+          toolCallDelta: {
+            index,
+            ...(id ? { id } : {}),
+            ...(name ? { name } : {}),
+            ...(argumentsDelta ? { arguments: argumentsDelta } : {}),
+          },
+        };
+      }
+      const reason = clean(choice?.finish_reason);
+      if (reason) finishReason = reason;
+    }
+  }
+
+  for (const call of [...tools.values()].sort((left, right) => left.index - right.index)) {
+    yield { type: "tool-call", toolCall: { ...call, arguments: call.arguments || "{}" } };
+  }
+  if (!usage) throw new Error(`Alibaba stream returned no authoritative usage for ${modelId}`);
+  yield {
+    type: "done",
+    finishReason: tools.size > 0 || finishReason === "tool_calls" ? "tool-calls" : finishReason || "stop",
+    usage,
   };
 }
 

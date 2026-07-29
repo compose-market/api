@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { NetworkId } from "./configs/chains.js";
 
 import {
   valkeyExpire,
@@ -39,7 +40,7 @@ export interface ChargeEvidence {
   sessionBudgetIntentId?: string;
   paymentChannelId?: string;
   paymentCumulativeAmountWei?: string;
-  chainId?: number;
+  network?: NetworkId;
   settledAt?: number;
 }
 
@@ -100,7 +101,7 @@ function fields(input: Required<Pick<ChargeEvidence, "id">> & ChargeEvidence): R
     sessionBudgetIntentId: clean(input.sessionBudgetIntentId),
     paymentChannelId: clean(input.paymentChannelId),
     paymentCumulativeAmountWei: clean(input.paymentCumulativeAmountWei),
-    chainId: input.chainId ? String(input.chainId) : "",
+    network: input.network || "",
     settledAt: String(input.settledAt ?? Date.now()),
   };
 }
@@ -133,7 +134,7 @@ function parse(data: Record<string, string>): ChargeEvidence | null {
     ...(data.sessionBudgetIntentId ? { sessionBudgetIntentId: data.sessionBudgetIntentId } : {}),
     ...(data.paymentChannelId ? { paymentChannelId: data.paymentChannelId } : {}),
     ...(data.paymentCumulativeAmountWei ? { paymentCumulativeAmountWei: data.paymentCumulativeAmountWei } : {}),
-    ...(data.chainId ? { chainId: Number.parseInt(data.chainId, 10) } : {}),
+    ...(data.network ? { network: data.network as NetworkId } : {}),
     settledAt: data.settledAt ? Number.parseInt(data.settledAt, 10) : Date.now(),
   };
 }
@@ -196,7 +197,7 @@ export async function markBatchEvidenceSettled(input: {
   claimedAmountWei: string;
   claimTxHash?: string;
   settleTxHash?: string;
-  chainId?: number;
+  network?: NetworkId;
 }): Promise<number> {
   const ids = await valkeySMembers(channelKey(input.channelId));
   let updated = 0;
@@ -213,7 +214,7 @@ export async function markBatchEvidenceSettled(input: {
       settlementStatus: input.settleTxHash ? "settled" : "claimed",
       ...(input.claimTxHash ? { claimTxHash: input.claimTxHash } : {}),
       ...(input.settleTxHash ? { settleTxHash: input.settleTxHash, txHash: input.settleTxHash } : {}),
-      ...(input.chainId ? { chainId: String(input.chainId) } : {}),
+      ...(input.network ? { network: input.network } : {}),
       settledAt: String(Date.now()),
     });
     updated += 1;
@@ -225,7 +226,7 @@ export async function markIntentEvidenceSettled(input: {
   paymentIntentId?: string;
   sessionBudgetIntentId?: string;
   txHash: string;
-  chainId?: number;
+  network?: NetworkId;
 }): Promise<number> {
   const ids = new Set<string>();
   if (input.paymentIntentId) {
@@ -248,7 +249,7 @@ export async function markIntentEvidenceSettled(input: {
     await valkeyHSet(key(id), {
       settlementStatus: "settled",
       txHash: input.txHash,
-      ...(input.chainId ? { chainId: String(input.chainId) } : {}),
+      ...(input.network ? { network: input.network } : {}),
       settledAt: String(Date.now()),
     });
     updated += 1;

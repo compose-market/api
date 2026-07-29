@@ -209,14 +209,14 @@ test("handler rejects legacy numeric dispenser inputs", async () => {
   const claim = await handler(
     createEvent("POST", "/api/dispenser/claim", {
       address: "0x1111111111111111111111111111111111111111",
-      chainId: 43113,
+      chainId: 5042002,
     }),
     {},
   );
   assert.equal(claim.statusCode, 400);
   assert.match(JSON.parse(claim.body).error, /chainId is not supported/i);
 
-  const status = await handler(createEvent("GET", "/api/dispenser/status/43113"), {});
+  const status = await handler(createEvent("GET", "/api/dispenser/status/5042002"), {});
   assert.equal(status.statusCode, 400);
   assert.match(JSON.parse(status.body).error, /CAIP-2 network/i);
 });
@@ -340,7 +340,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
   const { handler } = await import("../handler.js");
 
   const userAddress = randomWalletAddress();
-  const network = "eip155:43113" as const;
+  const network = "eip155:5042002" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   try {
@@ -401,7 +401,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
 test("handler rejects malformed header wallet identity when creating a key", async () => {
   const { handler } = await import("../handler.js");
 
-  const network = "eip155:43113" as const;
+  const network = "eip155:5042002" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   await assert.rejects(
@@ -428,7 +428,7 @@ test("handler rejects api key creation when the tied wallet lacks the required U
   const { handler } = await import("../handler.js");
 
   const userAddress = randomWalletAddress();
-  const network = "eip155:43113" as const;
+  const network = "eip155:5042002" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   try {

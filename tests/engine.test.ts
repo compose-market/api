@@ -10,11 +10,11 @@ test("inference engine resolves models without loading provider adapters", async
 
   try {
     const engine = await import("../inference/engine.js");
-    const resolved = engine.resolve({ model: "o4-mini-deep-research" });
+    const resolved = engine.resolve({ model: "openai/gpt-5.4" });
 
     assert.equal(resolved.known, true);
     assert.equal(resolved.provider, "openai");
-    assert.equal(resolved.modelId, "o4-mini-deep-research");
+    assert.equal(resolved.modelId, "openai/gpt-5.4");
   } finally {
     console.warn = originalWarn;
   }

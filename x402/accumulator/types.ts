@@ -6,7 +6,8 @@
  * @module shared/x402/accumulator/types
  */
 
-import type { PaymentIntent } from "../session-budget.js";
+import type { PaymentIntent } from "../session/budget.js";
+import type { NetworkId } from "../configs/chains.js";
 
 export { PaymentIntent };
 
@@ -15,7 +16,7 @@ export { PaymentIntent };
  */
 export interface BatchSettlementResult {
     userAddress: string;
-    chainId: number;
+    network: NetworkId;
     totalSettledWei: string;
     intentCount: number;
     txHash: string;

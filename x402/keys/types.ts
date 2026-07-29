@@ -7,6 +7,8 @@
  * @module shared/keys/types
  */
 
+import type { NetworkId } from "../configs/chains.js";
+
 // =============================================================================
 // JWT Payload
 // =============================================================================
@@ -20,6 +22,8 @@ export interface KeyPayload {
     sub: string;
     /** Key ID (UUID) */
     keyId: string;
+    /** CAIP-2 network bound to this key */
+    network: NetworkId;
     /** Budget allowed for this key in USDC wei (6 decimals) */
     budgetLimit: number;
     /** Budget already used in USDC wei */
@@ -62,8 +66,8 @@ export interface KeyRecord {
     name?: string;
     /** Last usage timestamp */
     lastUsedAt?: number;
-    /** Chain ID for multi-chain support */
-    chainId?: number;
+    /** CAIP-2 network bound to this key */
+    network: NetworkId;
 }
 
 // =============================================================================
@@ -82,8 +86,8 @@ export interface CreateKeyRequest {
     purpose: KeyPurpose;
     /** Optional name */
     name?: string;
-    /** Optional chain ID */
-    chainId?: number;
+    /** Required CAIP-2 network */
+    network: NetworkId;
 }
 
 /**
@@ -96,6 +100,8 @@ export interface CreateKeyResponse {
     token: string;
     /** Key purpose */
     purpose: KeyPurpose;
+    /** CAIP-2 network */
+    network: NetworkId;
     /** Budget limit */
     budgetLimit: number;
     /** Expiration */
@@ -128,7 +134,7 @@ export type SessionInactiveReason =
     | "expired"
     | "budget_exhausted"
     | "revoked"
-    | "chain_mismatch"
+    | "network_mismatch"
     | "missing_budget_state";
 
 export interface ActiveSessionRecord {
@@ -139,7 +145,7 @@ export interface ActiveSessionRecord {
     budgetLocked: number;
     budgetRemaining: number;
     expiresAt: number;
-    chainId?: number;
+    network: NetworkId;
     name?: string;
 }
 
@@ -153,7 +159,7 @@ export interface ActiveSessionStatus {
         budgetLocked: number;
         budgetRemaining: number;
         expiresAt: number;
-        chainId?: number;
+        network: NetworkId;
         name?: string;
         revokedAt?: number;
     };

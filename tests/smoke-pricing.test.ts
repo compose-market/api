@@ -179,12 +179,28 @@ function pricingUnits(card: ModelCard): string[] {
 
 let total = 0;
 let failed = 0;
+let skippedFreeOnly = 0;
+
+function hasPositivePrice(value: unknown): boolean {
+    if (typeof value === "number") return Number.isFinite(value) && value > 0;
+    if (Array.isArray(value)) return value.some(hasPositivePrice);
+    if (!value || typeof value !== "object") return false;
+    return Object.values(value as Record<string, unknown>).some(hasPositivePrice);
+}
 
 for (const card of models) {
     total++;
     const modality = deduceModality(card);
     const units = pricingUnits(card);
     const subject = `${card.provider}:${card.modelId}`;
+
+    // Paid settlement requires a positive amount. Free-only products such as
+    // OpenAI moderation are catalogued but intentionally not paid-smoke inputs.
+    if (card.provider === "openai" && card.modelId === "omni-moderation-latest" && !hasPositivePrice(card.pricing)) {
+        skippedFreeOnly++;
+        results.push({ modelId: card.modelId, provider: card.provider, modality, units, ok: true });
+        continue;
+    }
 
     if (!modality) {
         results.push({ modelId: card.modelId, provider: card.provider, modality: null, units, ok: false, error: "no modality classified" });
@@ -224,6 +240,7 @@ for (const card of models) {
 
 console.log("=== TOTALS ===");
 console.log(`  total: ${total}`);
+console.log(`  free-only skipped: ${skippedFreeOnly}`);
 console.log(`  ok:    ${total - failed}`);
 console.log(`  fail:  ${failed}`);
 

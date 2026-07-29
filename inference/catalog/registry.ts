@@ -14,6 +14,7 @@ import {
     type CanonicalModality,
     type CanonicalOperation,
 } from "./modalities/index.js";
+import { protocolCapabilities as moonshotProtocolCapabilities } from "./families/moonshot.js";
 
 // Re-export types for external use
 export type { ModelCard, ModelProvider, CompiledModelsData, ModelPricing };
@@ -56,16 +57,19 @@ export function getModelProtocolProfile(model: ModelCard): ModelProtocolProfile 
     const capabilities = new Set(Array.isArray(semantics?.capabilityKeys) ? semantics.capabilityKeys : []);
     const parameters = new Set(Array.isArray(semantics?.parameterKeys) ? semantics.parameterKeys : []);
     const toolCalls = [...TOOL_CAPABILITIES].some((key) => capabilities.has(key));
+    const family = typeof semantics?.family === "string" ? semantics.family : undefined;
+    const familyReasoning = family === "moonshot"
+        && moonshotProtocolCapabilities(model.upstreamModelId || model.modelId).reasoning;
 
     return {
-        ...(typeof semantics?.family === "string" ? { family: semantics.family } : {}),
+        ...(family ? { family } : {}),
         operations,
         inputModalities: inputs,
         outputModalities: outputs,
         interactiveText: outputs.includes("text") && operations.some((operation) => INTERACTIVE_TEXT_OPERATIONS.has(operation)),
         toolCalls,
         parallelToolCalls: toolCalls && parameters.has("parallel_tool_calls"),
-        reasoning: [...REASONING_CAPABILITIES].some((key) => capabilities.has(key)),
+        reasoning: familyReasoning || [...REASONING_CAPABILITIES].some((key) => capabilities.has(key)),
         streamable: semantics?.streamable === true,
     };
 }

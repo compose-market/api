@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Receipt } from "../http/request-context.js";
 
 const ORIGINAL_ENV = {
@@ -35,6 +37,23 @@ test("gateway module does not export duplicate modality execution helpers", asyn
   assert.equal("checkVideoJobStatus" in gateway, false);
 });
 
+test("inference terminal event, DONE, and EOF are contiguous before settlement", async () => {
+  const source = await readFile(join(process.cwd(), "inference/gateway.ts"), "utf8");
+  const closeStart = source.indexOf("function closeEventStream");
+  const closeEnd = source.indexOf("function openEventStream", closeStart);
+  const closeBody = source.slice(closeStart, closeEnd);
+  assert.ok(closeBody.indexOf("res.write(formatCoreSSEDone())") < closeBody.indexOf("res.end()"));
+  assert.doesNotMatch(closeBody, /await /);
+
+  const terminalStart = source.indexOf("const terminalEvent = pendingDoneEvent");
+  const settlementStart = source.indexOf("if (realtimeStream)", terminalStart);
+  const terminalBody = source.slice(terminalStart, settlementStart);
+  assert.match(terminalBody, /writeResponsesEvents|toChatStreamEvent/);
+  assert.match(terminalBody, /closeEventStream\(args\.res\)/);
+  assert.match(terminalBody, /lifecycle\.done\(\)/);
+  assert.doesNotMatch(terminalBody, /await /);
+});
+
 test("gateway receipt JSON helpers preserve canonical settlement data without unit flattening", async () => {
   const gateway = await importGatewayModule();
   const receiptForJsonBody = gateway.receiptForJsonBody as (
@@ -67,7 +86,7 @@ test("gateway receipt JSON helpers preserve canonical settlement data without un
     platformFeeWei: "79",
     finalAmountWei: "579",
     txHash: "0xabc",
-    network: "eip155:43113",
+    network: "eip155:5042002",
     settledAt: 1_778_888_001,
   };
 
@@ -93,7 +112,7 @@ test("gateway receipt JSON helpers preserve canonical settlement data without un
     platform_fee_wei: "79",
     final_amount_wei: "579",
     tx_hash: "0xabc",
-    network: "eip155:43113",
+    network: "eip155:5042002",
     settled_at: 1_778_888_001,
   });
 

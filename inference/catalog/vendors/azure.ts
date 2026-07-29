@@ -11,7 +11,7 @@
 
 import { getModelById } from "../registry.js";
 import { pricingHasTokenSections } from "../../telemetry.js";
-import type { Call, Choice, Format, Message, ResponsesOutputItem, Tool, Usage } from "../../core.js";
+import type { Call, Choice, Event, Format, Message, ResponsesOutputItem, Tool, Usage } from "../../core.js";
 import {
   buildBodyChat,
   buildBodyResponses,
@@ -64,6 +64,7 @@ type AzureRoute =
 
 export interface AzureChatResult {
   text: string;
+  reasoning?: string;
   usage?: Usage;
   finishReason?: string;
   toolCalls?: Call[];
@@ -193,8 +194,9 @@ function postAzure(
   path: string,
   body: Record<string, unknown>,
   auth: "api-key" | "bearer" = "api-key",
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return postJson(azureUrl(credential, path), body, azureHeaders(credential, auth));
+  return postJson(azureUrl(credential, path), body, azureHeaders(credential, auth), signal);
 }
 
 async function postAzureForm(
@@ -262,7 +264,7 @@ function audioFormat(mimeType: string): string {
   return "wav";
 }
 
-async function inlineAudio(messages: Message[]): Promise<Message[]> {
+async function inlineAudio(messages: Message[], signal?: AbortSignal): Promise<Message[]> {
   let changed = false;
   const mapped: Message[] = [];
 
@@ -288,7 +290,7 @@ async function inlineAudio(messages: Message[]): Promise<Message[]> {
         continue;
       }
 
-      const media = await bufferFromPayload(locator, "audio/wav");
+      const media = await bufferFromPayload(locator, "audio/wav", signal);
       content.push({
         type: "input_audio",
         input_audio: {
@@ -371,7 +373,7 @@ function callsFromChat(raw: unknown): Call[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-function chatText(raw: unknown): { text: string; finishReason?: string; usage?: Usage; toolCalls?: Call[] } {
+function chatText(raw: unknown): { text: string; reasoning?: string; finishReason?: string; usage?: Usage; toolCalls?: Call[] } {
   const root = asRecord(raw) || {};
   const choices = Array.isArray(root.choices) ? root.choices : [];
   const first = asRecord(choices[0]) || {};
@@ -379,6 +381,7 @@ function chatText(raw: unknown): { text: string; finishReason?: string; usage?: 
   const toolCalls = callsFromChat(raw);
   return {
     text: clean(message.content),
+    ...(clean(message.reasoning_content) ? { reasoning: clean(message.reasoning_content) } : {}),
     finishReason: toolCalls ? "tool-calls" : clean(first.finish_reason) || undefined,
     usage: normalizeOpenAIUsage(root.usage),
     ...(toolCalls ? { toolCalls } : {}),
@@ -409,6 +412,7 @@ export async function generateAzureResponses(
     responseFormat?: Format;
     customParams?: Record<string, unknown>;
     inputItems?: Array<Record<string, unknown>>;
+    signal?: AbortSignal;
   },
 ): Promise<AzureChatResult> {
   const credential = credentialForModel(modelId);
@@ -421,7 +425,7 @@ export async function generateAzureResponses(
     ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
     customParams: omit(options.customParams, ["stream", "stream_options"]),
   });
-  const raw = await postAzure(credential, "/openai/v1/responses", body);
+  const raw = await postAzure(credential, "/openai/v1/responses", body, "api-key", options.signal);
   const root = asRecord(raw) || {};
   const toolCalls = callsFromResponses(raw);
   const outputItems = (Array.isArray(root.output) ? root.output : [])
@@ -553,6 +557,7 @@ export async function generateAzureChat(
     customParams?: Record<string, unknown>;
     operation?: string;
     inputItems?: Array<Record<string, unknown>>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<AzureChatResult> {
   const route = routeForModel(modelId, options.operation);
@@ -568,7 +573,7 @@ export async function generateAzureChat(
   }
   const joined = `${modelId} ${deploymentMetadata(modelId).deploymentName || ""} ${deploymentMetadata(modelId).modelName || ""}`.toLowerCase();
   const omitMaxCompletionTokens = joined.includes("grok-4-20-non-reasoning") || joined.includes("mistral-large-3");
-  const wireMessages = await inlineAudio(messages);
+  const wireMessages = await inlineAudio(messages, options.signal);
   const raw = await postAzure(credential, "/openai/v1/chat/completions", buildBodyChat(modelId, wireMessages, {
     wireModelId: deploymentNameForModel(modelId),
     ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
@@ -578,8 +583,350 @@ export async function generateAzureChat(
     ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
     ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
     customParams: omit(options.customParams, ["stream", "stream_options"]),
-  }));
+  }), "api-key", options.signal);
   return { ...chatText(raw), raw };
+}
+
+interface AzureToolAccumulator {
+  id: string;
+  itemId?: string;
+  callId?: string;
+  name: string;
+  arguments: string;
+  index: number;
+}
+
+type AzureChatOptions = NonNullable<Parameters<typeof generateAzureChat>[2]>;
+
+async function* sseJson(response: Response): AsyncGenerator<Record<string, unknown>> {
+  if (!response.ok || !response.body) {
+    const detail = await response.text();
+    throw new Error(`Azure stream HTTP ${response.status}: ${detail.slice(0, 1000)}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let dataLines: string[] = [];
+
+  const parse = (lines: string[]): Record<string, unknown> | null | "done" => {
+    if (lines.length === 0) return null;
+    const data = lines.join("\n");
+    if (data.trim() === "[DONE]") return "done";
+    try {
+      return JSON.parse(data) as Record<string, unknown>;
+    } catch {
+      throw new Error(`Azure stream returned invalid SSE JSON: ${data.slice(0, 500)}`);
+    }
+  };
+
+  let reachedEof = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        let line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line === "") {
+          const parsed = parse(dataLines);
+          dataLines = [];
+          if (parsed === "done") {
+            try { await reader.cancel(); } catch { /* best effort */ }
+            return;
+          }
+          if (parsed) yield parsed;
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).replace(/^ /, ""));
+        }
+        newline = buffer.indexOf("\n");
+      }
+      if (done) {
+        reachedEof = true;
+        break;
+      }
+    }
+
+    if (buffer.endsWith("\r")) buffer = buffer.slice(0, -1);
+    if (buffer.startsWith("data:")) dataLines.push(buffer.slice(5).replace(/^ /, ""));
+    const parsed = parse(dataLines);
+    if (parsed && parsed !== "done") yield parsed;
+  } finally {
+    if (!reachedEof) {
+      try { await reader.cancel(); } catch { /* best effort */ }
+    }
+    try { reader.releaseLock(); } catch { /* best effort */ }
+  }
+}
+
+function streamFinishReason(value: unknown, hasTools: boolean): string {
+  const reason = clean(value).toLowerCase();
+  if (hasTools || reason === "tool_calls" || reason === "tool-calls") return "tool-calls";
+  if (!reason || reason === "completed" || reason === "stop") return "stop";
+  if (reason === "incomplete") return "length";
+  if (reason === "content_filter") return "content-filter";
+  return reason;
+}
+
+async function* streamAzureChatWire(
+  modelId: string,
+  messages: Message[],
+  options: AzureChatOptions,
+  credential: AzureCredential,
+): AsyncGenerator<Event> {
+  const joined = `${modelId} ${deploymentMetadata(modelId).deploymentName || ""} ${deploymentMetadata(modelId).modelName || ""}`.toLowerCase();
+  const omitMaxCompletionTokens = joined.includes("grok-4-20-non-reasoning") || joined.includes("mistral-large-3");
+  const wireMessages = await inlineAudio(messages, options.signal);
+  const baseBody = buildBodyChat(modelId, wireMessages, {
+    wireModelId: deploymentNameForModel(modelId),
+    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+    ...(typeof options.maxTokens === "number" && !omitMaxCompletionTokens ? { maxTokens: options.maxTokens } : {}),
+    maxTokensField: "max_completion_tokens",
+    ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+    customParams: omit(options.customParams, ["stream", "stream_options"]),
+  });
+  const response = await fetch(azureUrl(credential, "/openai/v1/chat/completions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...azureHeaders(credential, "api-key") },
+    body: JSON.stringify({
+      ...baseBody,
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
+    signal: options.signal,
+  });
+  const tools = new Map<number, AzureToolAccumulator>();
+  let usage: Usage | undefined;
+  let finishReason: unknown;
+
+  for await (const chunk of sseJson(response)) {
+    usage = normalizeOpenAIUsage(chunk.usage) || usage;
+    const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+    for (const rawChoice of choices) {
+      const choice = asRecord(rawChoice);
+      const delta = asRecord(choice?.delta);
+      if (typeof delta?.content === "string" && delta.content) {
+        yield { type: "text-delta", text: delta.content };
+      }
+      if (typeof delta?.reasoning_content === "string" && delta.reasoning_content) {
+        yield { type: "reasoning-delta", text: delta.reasoning_content };
+      }
+      for (const rawCall of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
+        const call = asRecord(rawCall);
+        if (!call) continue;
+        const index = typeof call.index === "number" ? call.index : 0;
+        const fn = asRecord(call.function);
+        const id = clean(call.id);
+        const name = typeof fn?.name === "string" ? fn.name : "";
+        const argumentsDelta = typeof fn?.arguments === "string" ? fn.arguments : "";
+        const current = tools.get(index) || { id: id || `call_${index}`, name: "", arguments: "", index };
+        if (id) current.id = id;
+        current.name += name;
+        current.arguments += argumentsDelta;
+        tools.set(index, current);
+        yield {
+          type: "tool-call-delta",
+          toolCallDelta: {
+            index,
+            ...(id ? { id } : {}),
+            ...(name ? { name } : {}),
+            ...(argumentsDelta ? { arguments: argumentsDelta } : {}),
+          },
+        };
+      }
+      if (choice?.finish_reason != null) finishReason = choice.finish_reason;
+    }
+  }
+
+  for (const call of [...tools.values()].sort((left, right) => left.index - right.index)) {
+    yield { type: "tool-call", toolCall: { ...call, arguments: call.arguments || "{}" } };
+  }
+  if (!usage) throw new Error(`Azure chat stream returned no authoritative usage for ${modelId}`);
+  yield { type: "done", finishReason: streamFinishReason(finishReason, tools.size > 0), usage };
+}
+
+async function* streamAzureResponsesWire(
+  modelId: string,
+  messages: Message[],
+  options: AzureChatOptions,
+  credential: AzureCredential,
+): AsyncGenerator<Event> {
+  const body = buildBodyResponses(
+    modelId,
+    options.inputItems?.length ? options.inputItems : mapMessagesForResponsesWire(messages),
+    {
+      wireModelId: deploymentNameForModel(modelId),
+      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+      ...(typeof options.maxTokens === "number" ? { maxOutputTokens: options.maxTokens } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+      customParams: omit(options.customParams, ["stream", "stream_options"]),
+      stream: true,
+    },
+  );
+  const response = await fetch(azureUrl(credential, "/openai/v1/responses"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...azureHeaders(credential, "api-key") },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  const tools = new Map<number, AzureToolAccumulator>();
+  const outputItems = new Map<number, ResponsesOutputItem>();
+  let usage: Usage | undefined;
+  let status: unknown;
+
+  for await (const event of sseJson(response)) {
+    usage = normalizeOpenAIUsage(event.usage) || usage;
+    const type = clean(event.type);
+    const outputIndex = typeof event.output_index === "number" ? event.output_index : 0;
+    if (type === "response.output_text.delta" && typeof event.delta === "string" && event.delta) {
+      yield { type: "text-delta", text: event.delta, itemId: clean(event.item_id) || undefined, outputIndex };
+      continue;
+    }
+    if ((type === "response.reasoning_text.delta" || type === "response.reasoning_summary_text.delta") && typeof event.delta === "string" && event.delta) {
+      yield { type: "reasoning-delta", text: event.delta, itemId: clean(event.item_id) || undefined, outputIndex };
+      continue;
+    }
+    if (type === "response.output_item.added" || type === "response.output_item.done") {
+      const item = asRecord(event.item);
+      if (item && (clean(item.type) === "function_call" || clean(item.type) === "tool_call")) {
+        const current = tools.get(outputIndex) || { id: `call_${outputIndex}`, name: "", arguments: "", index: outputIndex };
+        current.itemId = clean(item.id) || current.itemId || `fc_${outputIndex}`;
+        current.callId = clean(item.call_id) || current.callId || `call_${outputIndex}`;
+        current.id = current.callId;
+        current.name = clean(item.name) || current.name;
+        if (typeof item.arguments === "string" && item.arguments) current.arguments = item.arguments;
+        tools.set(outputIndex, current);
+      }
+      if (type === "response.output_item.done" && item && typeof item.type === "string") {
+        outputItems.set(outputIndex, { ...item } as ResponsesOutputItem);
+      }
+      continue;
+    }
+    if (type === "response.function_call_arguments.delta") {
+      const delta = typeof event.delta === "string" ? event.delta : "";
+      const current = tools.get(outputIndex) || {
+        id: `call_${outputIndex}`,
+        itemId: clean(event.item_id) || `fc_${outputIndex}`,
+        callId: `call_${outputIndex}`,
+        name: "",
+        arguments: "",
+        index: outputIndex,
+      };
+      current.arguments += delta;
+      tools.set(outputIndex, current);
+      yield {
+        type: "tool-call-delta",
+        toolCallDelta: {
+          index: outputIndex,
+          id: current.id,
+          itemId: current.itemId,
+          callId: current.callId,
+          ...(current.name ? { name: current.name } : {}),
+          ...(delta ? { arguments: delta } : {}),
+        },
+      };
+      continue;
+    }
+    if (type === "response.function_call_arguments.done") {
+      const current = tools.get(outputIndex) || {
+        id: `call_${outputIndex}`,
+        itemId: clean(event.item_id) || `fc_${outputIndex}`,
+        callId: `call_${outputIndex}`,
+        name: "",
+        arguments: "",
+        index: outputIndex,
+      };
+      current.name = clean(event.name) || current.name;
+      if (typeof event.arguments === "string") current.arguments = event.arguments;
+      tools.set(outputIndex, current);
+      continue;
+    }
+    if (type === "response.completed" || type === "response.incomplete") {
+      const completed = asRecord(event.response);
+      usage = normalizeOpenAIUsage(completed?.usage) || usage;
+      status = completed?.status;
+      for (const [index, rawItem] of (Array.isArray(completed?.output) ? completed.output : []).entries()) {
+        const item = asRecord(rawItem);
+        if (!item || typeof item.type !== "string") continue;
+        outputItems.set(index, { ...item } as ResponsesOutputItem);
+        if (clean(item.type) === "function_call" || clean(item.type) === "tool_call") {
+          const current = tools.get(index) || { id: `call_${index}`, name: "", arguments: "", index };
+          current.itemId = clean(item.id) || current.itemId || `fc_${index}`;
+          current.callId = clean(item.call_id) || current.callId || `call_${index}`;
+          current.id = current.callId;
+          current.name = clean(item.name) || current.name;
+          if (typeof item.arguments === "string") current.arguments = item.arguments;
+          tools.set(index, current);
+        }
+      }
+      continue;
+    }
+    if (type === "response.failed" || type === "error") {
+      const root = asRecord(event.response) || event;
+      const error = asRecord(root.error) || root;
+      throw new Error(clean(error.message) || "Azure Responses stream failed");
+    }
+  }
+
+  for (const call of [...tools.values()].sort((left, right) => left.index - right.index)) {
+    yield {
+      type: "tool-call",
+      toolCall: {
+        id: call.id,
+        itemId: call.itemId,
+        callId: call.callId,
+        name: call.name,
+        arguments: call.arguments || "{}",
+        index: call.index,
+      },
+    };
+  }
+  for (const [outputIndex, item] of [...outputItems.entries()].sort(([left], [right]) => left - right)) {
+    yield { type: "output-item", outputIndex, item };
+  }
+  if (!usage) throw new Error(`Azure Responses stream returned no authoritative usage for ${modelId}`);
+  yield { type: "done", finishReason: streamFinishReason(status, tools.size > 0), usage };
+}
+
+export async function* streamAzureChat(
+  modelId: string,
+  messages: Message[],
+  options: AzureChatOptions = {},
+): AsyncGenerator<Event> {
+  const route = routeForModel(modelId, options.operation);
+  const credential = credentialForModel(modelId);
+  const capabilities = asRecord(getModelById(modelId, "azure")?.capabilities) || {};
+  const nativeResponsesStream = route === "openai_responses" || capabilities.responses === true;
+  if (route === "cohere_rerank") {
+    const result = await generateAzureChat(modelId, messages, options);
+    if (result.reasoning) yield { type: "reasoning-delta", text: result.reasoning };
+    if (result.text) yield { type: "text-delta", text: result.text };
+    for (const [index, call] of (result.toolCalls || []).entries()) {
+      yield {
+        type: "tool-call",
+        toolCall: {
+          ...call,
+          id: call.id || `call_${index}`,
+          arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
+          index: call.outputIndex ?? index,
+        },
+      };
+    }
+    yield { type: "done", finishReason: result.finishReason || "stop", usage: result.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+    return;
+  }
+  if (!nativeResponsesStream) {
+    yield* streamAzureChatWire(modelId, messages, options, credential);
+    return;
+  }
+
+  yield* streamAzureResponsesWire(modelId, messages, options, credential);
 }
 
 export async function generateAzureEmbeddings(modelId: string, input: string[]): Promise<AzureEmbeddingResult> {

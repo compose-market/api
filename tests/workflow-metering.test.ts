@@ -18,8 +18,8 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
     byType: {},
     models: [
       {
-        modelId: "o4-mini-deep-research",
-        name: "O4 Mini Deep Research",
+        modelId: "openai/gpt-5.4",
+        name: "GPT-5.4",
         provider: "openai",
         type: "chat-completions",
         description: null,
@@ -63,7 +63,7 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
   const usageRecords: UsageRecord[] = [
     {
       agentWallet: "coordinator",
-      model: "o4-mini-deep-research",
+      model: "openai/gpt-5.4",
       inputTokens: 2_000,
       outputTokens: 500,
       totalTokens: 2_500,
@@ -87,16 +87,16 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
   assert.equal(metered.subject, "workflow:0xabc");
   assert.deepEqual(metered.meter.lineItems, [
     {
-      key: "openai:o4-mini-deep-research:input_tokens",
+      key: "openai:openai/gpt-5.4:input_tokens",
       unit: "usd_per_1m_tokens",
       quantity: 2_000,
-      unitPriceUsd: 1,
+      unitPriceUsd: 2.5,
     },
     {
-      key: "openai:o4-mini-deep-research:output_tokens",
+      key: "openai:openai/gpt-5.4:output_tokens",
       unit: "usd_per_1m_tokens",
       quantity: 500,
-      unitPriceUsd: 4,
+      unitPriceUsd: 15,
     },
     {
       key: "gemini:gemini-2.5-flash:input_tokens",
@@ -111,9 +111,9 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
       unitPriceUsd: 2.5,
     },
   ]);
-  assert.equal(metered.providerAmountWei, "4800");
-  assert.equal(metered.platformFeeWei, "48");
-  assert.equal(metered.finalAmountWei, "4848");
+  assert.equal(metered.providerAmountWei, "13300");
+  assert.equal(metered.platformFeeWei, "133");
+  assert.equal(metered.finalAmountWei, "13433");
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
