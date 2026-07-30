@@ -41,7 +41,9 @@ export async function getValkeyClient(): Promise<ValkeyClientType> {
 }
 
 async function connect(): Promise<ValkeyClientType> {
-    const uri = process.env.VALKEY_KEYS_SERVICE_URI;
+    const uri = process.env.VALKEY_KEYS_SERVICE_URI?.trim();
+    const password = process.env.VALKEY_KEYS_PASSWORD?.trim();
+    const tls = process.env.VALKEY_TLS === "true";
 
     if (!uri) {
         throw new Error("ValKey configuration missing: VALKEY_KEYS_SERVICE_URI required");
@@ -58,6 +60,8 @@ async function connect(): Promise<ValkeyClientType> {
         enableAutoPipelining: true,
         lazyConnect: true,
         keepAlive: VALKEY_KEEP_ALIVE_MS,
+        ...(password ? { password: password } : {}),
+        ...(tls ? { tls: {} } : {}),
     });
 
     instance.on("error", (err) => {

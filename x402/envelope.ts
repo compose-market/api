@@ -1,5 +1,6 @@
 import type { PaymentPayload } from "@x402/core/types";
 import { randomUUID } from "node:crypto";
+import type { NetworkId } from "./configs/chains.js";
 
 import {
   valkeyDel,
@@ -24,7 +25,7 @@ const LOCK_DELAY_MS = 25;
 export interface RawEnvelope {
   rootRunId: string;
   maxAmountWei: string;
-  chainId: number;
+  network: NetworkId;
   paymentPayload: PaymentPayload;
   usedWei: string;
   payer?: string;
@@ -36,9 +37,8 @@ function key(rootRunId: string): string {
   return `${PREFIX}:${rootRunId}`;
 }
 
-function payerKey(payer: string, chainId?: number): string {
-  const normalized = payer.trim().toLowerCase();
-  return chainId ? `${PREFIX}:payer:${normalized}:${chainId}` : `${PREFIX}:payer:${normalized}`;
+function payerKey(payer: string, network?: NetworkId): string {
+  return network ? `${PREFIX}:payer:${network}:${payer}` : `${PREFIX}:payer:${payer}`;
 }
 
 function lockKey(rootRunId: string): string {
@@ -71,13 +71,13 @@ async function lock<T>(rootRunId: string, fn: () => Promise<T>): Promise<T> {
 }
 
 function parse(data: Record<string, string>): RawEnvelope | null {
-  if (!data.rootRunId || !data.maxAmountWei || !data.chainId || !data.paymentPayload) {
+  if (!data.rootRunId || !data.maxAmountWei || !data.network || !data.paymentPayload) {
     return null;
   }
   return {
     rootRunId: data.rootRunId,
     maxAmountWei: data.maxAmountWei,
-    chainId: Number.parseInt(data.chainId, 10),
+    network: data.network as NetworkId,
     paymentPayload: JSON.parse(data.paymentPayload) as PaymentPayload,
     usedWei: data.usedWei || "0",
     ...(data.payer ? { payer: data.payer } : {}),
@@ -89,7 +89,7 @@ function parse(data: Record<string, string>): RawEnvelope | null {
 export async function saveRawEnvelope(input: {
   rootRunId: string;
   maxAmountWei: string;
-  chainId: number;
+  network: NetworkId;
   paymentPayload: PaymentPayload;
   payer?: string;
 }): Promise<void> {
@@ -99,16 +99,16 @@ export async function saveRawEnvelope(input: {
   if (existing) {
     await valkeyExpire(target, TTL_SECONDS);
     if (existing.payer) {
-      await index(input.rootRunId, existing.payer, existing.chainId);
+      await index(input.rootRunId, existing.payer, existing.network);
     }
     return;
   }
   const current = Date.now();
-  const payer = input.payer?.trim().toLowerCase();
+  const payer = input.payer?.trim();
   await valkeyHSet(target, {
     rootRunId: input.rootRunId,
     maxAmountWei: input.maxAmountWei,
-    chainId: String(input.chainId),
+    network: input.network,
     paymentPayload: JSON.stringify(input.paymentPayload),
     usedWei: "0",
     ...(payer ? { payer } : {}),
@@ -117,7 +117,7 @@ export async function saveRawEnvelope(input: {
   });
   await valkeyExpire(target, TTL_SECONDS);
   if (payer) {
-    await index(input.rootRunId, payer, input.chainId);
+    await index(input.rootRunId, payer, input.network);
   }
 }
 
@@ -126,15 +126,15 @@ export async function readRawEnvelope(rootRunId: string): Promise<RawEnvelope | 
   return parse(await valkeyHGetAll(key(rootRunId)));
 }
 
-async function index(rootRunId: string, payer: string, chainId: number): Promise<void> {
-  const normalized = payer.trim().toLowerCase();
+async function index(rootRunId: string, payer: string, network: NetworkId): Promise<void> {
+  const normalized = payer.trim();
   await Promise.all([
     valkeySAdd(payerKey(normalized), rootRunId),
-    valkeySAdd(payerKey(normalized, chainId), rootRunId),
+    valkeySAdd(payerKey(normalized, network), rootRunId),
   ]);
   await Promise.all([
     valkeyExpire(payerKey(normalized), TTL_SECONDS),
-    valkeyExpire(payerKey(normalized, chainId), TTL_SECONDS),
+    valkeyExpire(payerKey(normalized, network), TTL_SECONDS),
   ]);
 }
 
@@ -148,11 +148,11 @@ function active(envelope: RawEnvelope): boolean {
 
 export async function readActiveRawEnvelope(input: {
   payer: string;
-  chainId?: number;
+  network?: NetworkId;
 }): Promise<RawEnvelope | null> {
-  const normalized = input.payer.trim().toLowerCase();
-  if (!/^0x[a-f0-9]{40}$/u.test(normalized)) return null;
-  const setKey = payerKey(normalized, input.chainId);
+  const normalized = input.payer.trim();
+  if (!normalized) return null;
+  const setKey = payerKey(normalized, input.network);
   const ids = await valkeySMembers(setKey);
   if (ids.length === 0) return null;
 
@@ -166,8 +166,8 @@ export async function readActiveRawEnvelope(input: {
     .map(([, envelope]) => envelope)
     .filter((envelope): envelope is RawEnvelope => Boolean(
       envelope
-      && envelope.payer?.toLowerCase() === normalized
-      && (!input.chainId || envelope.chainId === input.chainId)
+      && envelope.payer === normalized
+      && (!input.network || envelope.network === input.network)
       && active(envelope),
     ))
     .sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0));
@@ -192,7 +192,7 @@ export async function reserveRawEnvelope(rootRunId: string, amountWei: string): 
     await valkeyHSet(target, "updatedAt", String(Date.now()));
     await valkeyExpire(target, TTL_SECONDS);
     if (envelope.payer) {
-      await index(rootRunId, envelope.payer, envelope.chainId);
+      await index(rootRunId, envelope.payer, envelope.network);
     }
     return { ...envelope, usedWei };
   });
@@ -207,7 +207,7 @@ export async function releaseRawEnvelope(rootRunId: string, amountWei: string): 
     await valkeyHSet(target, "updatedAt", String(Date.now()));
     await valkeyExpire(target, TTL_SECONDS);
     if (envelope.payer) {
-      await index(rootRunId, envelope.payer, envelope.chainId);
+      await index(rootRunId, envelope.payer, envelope.network);
     }
   });
 }

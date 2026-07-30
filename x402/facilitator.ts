@@ -17,28 +17,57 @@ import type {
     PaymentPayload,
     PaymentRequired,
     PaymentRequirements,
+    SchemeNetworkFacilitator,
     SettleResponse,
     SupportedResponse,
     VerifyResponse,
 } from "@x402/core/types";
-import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
-import { UptoEvmScheme as UptoEvmFacilitatorScheme } from "@x402/evm/upto/facilitator";
-import { BatchSettlementEvmScheme as BatchSettlementFacilitatorScheme } from "@x402/evm/batch-settlement/facilitator";
+import { ExactEvmScheme as ExactEvmFacilitator } from "@x402/evm/exact/facilitator";
+import { UptoEvmScheme as UptoEvmFacilitator } from "@x402/evm/upto/facilitator";
+import { BatchSettlementEvmScheme as BatchSettlementEvmFacilitator } from "@x402/evm/batch-settlement/facilitator";
 import { toFacilitatorEvmSigner } from "@x402/evm";
+import { toFacilitatorSvmSigner } from "@x402/svm";
+import { ExactSvmScheme as ExactSvmFacilitator } from "@x402/svm/exact/facilitator";
+import {
+    createKeyPairSignerFromBytes,
+    address as solanaAddress,
+    createSolanaRpc,
+    devnet,
+    getBase58Encoder,
+    getPublicKeyFromAddress,
+    getUtf8Encoder,
+    mainnet,
+    signatureBytes,
+    verifySignature,
+} from "@solana/kit";
+import { base58 } from "@scure/base";
 import { createPublicClient, createWalletClient, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import {
-    CHAIN_CONFIG,
-    type ChainId,
-    getChainConfig,
-    getRpcUrl,
-    getSupportedChainIds,
-    getUsdcAddress,
+    type EvmNetworkId,
+    type NetworkId,
+    NETWORK_IDS,
+    evmChainId,
+    getNetwork,
+    getNetworkRpcUrl,
+    getSupportedNetworks,
     getViemChain,
+    isEvmNetwork,
+    isSolanaNetwork,
+    type SolanaNetworkId,
 } from "./configs/chains.js";
-import { createBatchPaymentExtra, isBatchSettlementScheme } from "./batch.js";
-import { merchantWalletAddress } from "./wallets.js";
+import {
+    commitSvmBatchCharge,
+    createBatchPaymentExtra,
+    isBatchSettlementScheme,
+    validateSvmBatchPayment,
+} from "./batch.js";
+import { settleKeyPaymentForNetwork, type SettlementResult } from "./settlement.js";
+import {
+    valkeyExists,
+    valkeySetNXEX,
+} from "./keys/valkey.js";
 
 export const COMPOSE_METERING_EXTENSION_KEY = "compose-metering-v1";
 export const COMPOSE_PAYMENT_INTENT_EXTENSION_KEY = "compose-payment-intent-v1";
@@ -56,9 +85,17 @@ const facilitatorExtensions: FacilitatorExtension[] = [
     { key: COMPOSE_PAYMENT_INTENT_EXTENSION_KEY },
 ];
 
-const signerCache = new Map<ChainId, ReturnType<typeof toFacilitatorEvmSigner>>();
-const batchSchemeCache = new Map<ChainId, BatchSettlementFacilitatorScheme>();
+const signerCache = new Map<EvmNetworkId, ReturnType<typeof toFacilitatorEvmSigner>>();
+const batchSchemeCache = new Map<EvmNetworkId, BatchSettlementEvmFacilitator>();
 let facilitatorSingleton: x402Facilitator | null = null;
+
+function requireEnv(name: string): string {
+    const value = process.env[name]?.trim();
+    if (!value) {
+        throw new Error(`${name} environment variable is required`);
+    }
+    return value;
+}
 
 function assertCaip2Network(network: string): `${string}:${string}` {
     if (!network.includes(":")) {
@@ -115,9 +152,9 @@ function parseV2PaymentPayload(input: unknown): PaymentPayload {
 }
 
 function getFacilitatorAccount() {
-    const privateKey = process.env.DEPLOYER_KEY;
+    const privateKey = process.env.FACILITATOR_KEY;
     if (!privateKey) {
-        throw new Error("DEPLOYER_KEY environment variable is required for the Compose facilitator");
+        throw new Error("FACILITATOR_KEY environment variable is required for the Compose facilitator");
     }
 
     return privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
@@ -136,21 +173,20 @@ function getReceiverAuthorizer() {
     };
 }
 
-function getConfiguredFacilitatorChainIds(): ChainId[] {
-    return getSupportedChainIds().filter((chainId) => {
-        const config = CHAIN_CONFIG[chainId];
-        return Boolean(config && process.env[config.rpcEnvVar]);
-    });
+function getConfiguredFacilitatorNetworks(): NetworkId[] {
+    return getSupportedNetworks()
+        .filter((definition) => Boolean(process.env[definition.rpcEnvVar]))
+        .map((definition) => definition.id);
 }
 
-function createExactSchemeForChain(chainId: ChainId) {
-    const cached = signerCache.get(chainId);
+function createExactSchemeForChain(network: EvmNetworkId) {
+    const cached = signerCache.get(network);
     if (cached) {
-        return new ExactEvmScheme(cached);
+        return new ExactEvmFacilitator(cached);
     }
 
-    const chain = getViemChain(chainId);
-    const rpcUrl = getRpcUrl(chainId);
+    const chain = getViemChain(network);
+    const rpcUrl = getNetworkRpcUrl(network);
     const account = getFacilitatorAccount();
     const publicClient = createPublicClient({
         chain,
@@ -189,46 +225,463 @@ function createExactSchemeForChain(chainId: ChainId) {
         getCode: (args) => publicClient.getCode(args),
     });
 
-    signerCache.set(chainId, signer);
-    return new ExactEvmScheme(signer);
+    signerCache.set(network, signer);
+    return new ExactEvmFacilitator(signer);
 }
 
-function createUptoSchemeForChain(chainId: ChainId) {
-    const cached = signerCache.get(chainId);
+function createUptoSchemeForChain(network: EvmNetworkId) {
+    const cached = signerCache.get(network);
     if (cached) {
-        return new UptoEvmFacilitatorScheme(cached);
+        return new UptoEvmFacilitator(cached);
     }
 
-    createExactSchemeForChain(chainId);
-    const signer = signerCache.get(chainId);
+    createExactSchemeForChain(network);
+    const signer = signerCache.get(network);
     if (!signer) {
-        throw new Error(`Compose facilitator signer missing for chain ${chainId}`);
+        throw new Error(`Compose facilitator signer missing for network ${network}`);
     }
 
-    return new UptoEvmFacilitatorScheme(signer);
+    return new UptoEvmFacilitator(signer);
 }
 
-function createBatchSchemeForChain(chainId: ChainId) {
-    const cached = batchSchemeCache.get(chainId);
+function createBatchSchemeForChain(network: EvmNetworkId) {
+    const cached = batchSchemeCache.get(network);
     if (cached) {
         return cached;
     }
 
-    createExactSchemeForChain(chainId);
-    const signer = signerCache.get(chainId);
+    createExactSchemeForChain(network);
+    const signer = signerCache.get(network);
     if (!signer) {
-        throw new Error(`Compose facilitator signer missing for chain ${chainId}`);
+        throw new Error(`Compose facilitator signer missing for network ${network}`);
     }
 
-    const scheme = new BatchSettlementFacilitatorScheme(signer, getReceiverAuthorizer());
-    batchSchemeCache.set(chainId, scheme);
+    const scheme = new BatchSettlementEvmFacilitator(signer, getReceiverAuthorizer());
+    batchSchemeCache.set(network, scheme);
     return scheme;
 }
 
-function createFacilitator(): x402Facilitator {
-    const chainIds = getConfiguredFacilitatorChainIds();
-    if (chainIds.length === 0) {
-        throw new Error("Compose facilitator has no configured EVM chains");
+type SvmAuthorization = {
+    scheme: "upto";
+    network: SolanaNetworkId;
+    asset: string;
+    payTo: string;
+    resource: string;
+    payer: string;
+    maxAmount: string;
+    nonce: string;
+    deadline: string | number;
+};
+
+type SvmNonceStore = {
+    has: (key: string) => Promise<boolean>;
+    consume: (key: string, ttlSeconds: number) => Promise<boolean>;
+};
+
+type SvmSettlement = (
+    userAddress: string,
+    amountWei: string,
+    network: NetworkId,
+) => Promise<SettlementResult>;
+
+const svmUtf8Encoder = getUtf8Encoder();
+const svmBase58Encoder = getBase58Encoder();
+
+function orderedRecord(input: Record<string, unknown>): Record<string, unknown> {
+    return Object.keys(input)
+        .filter((key) => input[key] !== undefined)
+        .sort()
+        .reduce<Record<string, unknown>>((acc, key) => {
+            const value = input[key];
+            acc[key] = value && typeof value === "object" && !Array.isArray(value)
+                ? orderedRecord(value as Record<string, unknown>)
+                : value;
+            return acc;
+        }, {});
+}
+
+function canonicalJson(input: Record<string, unknown>): string {
+    return JSON.stringify(orderedRecord(input));
+}
+
+function utf8Bytes(value: string): Uint8Array {
+    return new Uint8Array(svmUtf8Encoder.encode(value));
+}
+
+function signatureFromBase58(value: string) {
+    return signatureBytes(new Uint8Array(svmBase58Encoder.encode(value)));
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function stringField(input: Record<string, unknown>, field: string): string | null {
+    const value = input[field];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function positiveInteger(value: string): boolean {
+    return /^\d+$/u.test(value) && BigInt(value) > 0n;
+}
+
+function validateSolanaAddress(value: string): boolean {
+    try {
+        solanaAddress(value);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function parseSvmAuthorization(payload: PaymentPayload): {
+    authorization: SvmAuthorization;
+    signature: string;
+} | { error: string } {
+    const raw = record(payload.payload);
+    const authorizationRaw = raw ? record(raw.authorization) : null;
+    const signature = raw ? stringField(raw, "signature") : null;
+    if (!authorizationRaw || !signature) {
+        return { error: "invalid_svm_upto_payload" };
+    }
+
+    const scheme = stringField(authorizationRaw, "scheme");
+    const network = stringField(authorizationRaw, "network");
+    const asset = stringField(authorizationRaw, "asset");
+    const payTo = stringField(authorizationRaw, "payTo");
+    const resource = stringField(authorizationRaw, "resource");
+    const payer = stringField(authorizationRaw, "payer");
+    const maxAmount = stringField(authorizationRaw, "maxAmount");
+    const nonce = stringField(authorizationRaw, "nonce");
+    const deadlineValue = authorizationRaw.deadline;
+    const deadline = typeof deadlineValue === "string" || typeof deadlineValue === "number"
+        ? deadlineValue
+        : null;
+
+    if (
+        scheme !== "upto"
+        || !network
+        || !isSolanaNetwork(network as NetworkId)
+        || !asset
+        || !payTo
+        || !resource
+        || !payer
+        || !maxAmount
+        || !nonce
+        || deadline === null
+    ) {
+        return { error: "invalid_svm_upto_authorization" };
+    }
+
+    return {
+        authorization: {
+            scheme,
+            network: network as SolanaNetworkId,
+            asset,
+            payTo,
+            resource,
+            payer,
+            maxAmount,
+            nonce,
+            deadline,
+        },
+        signature,
+    };
+}
+
+function svmAuthorizationMessage(authorization: SvmAuthorization): Uint8Array {
+    return utf8Bytes(canonicalJson({
+        asset: authorization.asset,
+        deadline: String(authorization.deadline),
+        maxAmount: authorization.maxAmount,
+        network: authorization.network,
+        nonce: authorization.nonce,
+        payTo: authorization.payTo,
+        payer: authorization.payer,
+        resource: authorization.resource,
+        scheme: authorization.scheme,
+    }));
+}
+
+function nonceKey(authorization: SvmAuthorization): string {
+    return [
+        "x402",
+        "svm",
+        "upto",
+        "nonce",
+        authorization.network,
+        authorization.payer,
+        authorization.nonce,
+    ].join(":");
+}
+
+const valkeySvmNonceStore: SvmNonceStore = {
+    has: (key) => valkeyExists(key),
+    consume: (key, ttlSeconds) => valkeySetNXEX(key, "1", ttlSeconds),
+};
+
+function settleFailure(
+    network: NetworkId,
+    payer: string,
+    errorReason: string,
+    errorMessage?: string,
+): SettleResponse {
+    return {
+        success: false,
+        transaction: "",
+        network,
+        payer,
+        errorReason,
+        ...(errorMessage ? { errorMessage } : {}),
+    };
+}
+
+class UptoSvmFacilitator implements SchemeNetworkFacilitator {
+    readonly caipFamily = "solana:*";
+    readonly scheme = "upto";
+
+    constructor(
+        private readonly feePayer: string,
+        private readonly settleKeyPayment: SvmSettlement = settleKeyPaymentForNetwork,
+        private readonly nonceStore: SvmNonceStore = valkeySvmNonceStore,
+    ) { }
+
+    getExtra(network: string): Record<string, unknown> | undefined {
+        assertCaip2Network(network);
+        return { feePayer: this.feePayer };
+    }
+
+    getSigners(network: string): string[] {
+        assertCaip2Network(network);
+        return [this.feePayer];
+    }
+
+    async verify(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<VerifyResponse> {
+        const parsed = parseSvmAuthorization(payload);
+        if ("error" in parsed) {
+            return { isValid: false, invalidReason: parsed.error, payer: "" };
+        }
+        const { authorization, signature } = parsed;
+        const payer = authorization.payer;
+
+        if (payload.accepted.scheme !== "upto" || requirements.scheme !== "upto") {
+            return { isValid: false, invalidReason: "unsupported_scheme", payer };
+        }
+        if (payload.accepted.network !== requirements.network || authorization.network !== requirements.network) {
+            return { isValid: false, invalidReason: "network_mismatch", payer };
+        }
+        if (!isSolanaNetwork(requirements.network as NetworkId)) {
+            return { isValid: false, invalidReason: "unsupported_network", payer };
+        }
+        if (payload.accepted.asset !== requirements.asset || authorization.asset !== requirements.asset) {
+            return { isValid: false, invalidReason: "asset_mismatch", payer };
+        }
+        if (payload.accepted.payTo !== requirements.payTo || authorization.payTo !== requirements.payTo) {
+            return { isValid: false, invalidReason: "pay_to_mismatch", payer };
+        }
+        if (payload.resource?.url !== authorization.resource) {
+            return { isValid: false, invalidReason: "resource_mismatch", payer };
+        }
+        if (
+            !positiveInteger(requirements.amount)
+            || !positiveInteger(payload.accepted.amount)
+            || !positiveInteger(authorization.maxAmount)
+        ) {
+            return { isValid: false, invalidReason: "invalid_amount", payer };
+        }
+        if (BigInt(requirements.amount) > BigInt(authorization.maxAmount)) {
+            return { isValid: false, invalidReason: "amount_exceeds_authorization", payer };
+        }
+        if (BigInt(requirements.amount) > BigInt(payload.accepted.amount)) {
+            return { isValid: false, invalidReason: "amount_exceeds_accepted", payer };
+        }
+        const deadline = BigInt(String(authorization.deadline));
+        if (deadline < BigInt(Math.floor(Date.now() / 1000))) {
+            return { isValid: false, invalidReason: "authorization_expired", payer };
+        }
+        if (!validateSolanaAddress(payer) || !validateSolanaAddress(requirements.asset) || !validateSolanaAddress(requirements.payTo)) {
+            return { isValid: false, invalidReason: "invalid_solana_address", payer };
+        }
+        if (await this.nonceStore.has(nonceKey(authorization))) {
+            return { isValid: false, invalidReason: "duplicate_authorization", payer };
+        }
+
+        try {
+            const valid = await verifySignature(
+                await getPublicKeyFromAddress(solanaAddress(payer)),
+                signatureFromBase58(signature),
+                svmAuthorizationMessage(authorization),
+            );
+            if (!valid) {
+                return { isValid: false, invalidReason: "invalid_signature", payer };
+            }
+        } catch {
+            return { isValid: false, invalidReason: "invalid_signature", payer };
+        }
+
+        return {
+            isValid: true,
+            payer,
+            extra: {
+                nonce: authorization.nonce,
+                maxAmount: authorization.maxAmount,
+            },
+        };
+    }
+
+    async settle(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<SettleResponse> {
+        const verification = await this.verify(payload, requirements);
+        const payer = verification.payer || "";
+        if (!verification.isValid) {
+            return settleFailure(
+                requirements.network as NetworkId,
+                payer,
+                verification.invalidReason || "verification_failed",
+                verification.invalidMessage,
+            );
+        }
+
+        const parsed = parseSvmAuthorization(payload);
+        if ("error" in parsed) {
+            return settleFailure(requirements.network as NetworkId, payer, parsed.error);
+        }
+        const ttlSeconds = Math.max(
+            1,
+            Number(BigInt(String(parsed.authorization.deadline)) - BigInt(Math.floor(Date.now() / 1000))),
+        );
+        const consumed = await this.nonceStore.consume(nonceKey(parsed.authorization), ttlSeconds);
+        if (!consumed) {
+            return settleFailure(requirements.network as NetworkId, payer, "duplicate_authorization");
+        }
+
+        const result = await this.settleKeyPayment(
+            payer,
+            requirements.amount,
+            requirements.network as NetworkId,
+        );
+        if (!result.success || !result.txHash) {
+            return settleFailure(
+                requirements.network as NetworkId,
+                payer,
+                "transaction_failed",
+                result.error || "SVM settlement failed",
+            );
+        }
+
+        return {
+            success: true,
+            transaction: result.txHash,
+            network: requirements.network,
+            amount: requirements.amount,
+            payer,
+        };
+    }
+}
+
+class BatchSettlementSvmFacilitator implements SchemeNetworkFacilitator {
+    readonly caipFamily = "solana:*";
+    readonly scheme = "batch-settlement";
+
+    constructor(
+        private readonly feePayer: string,
+        private readonly commitBatch: typeof commitSvmBatchCharge = commitSvmBatchCharge,
+    ) { }
+
+    getExtra(network: string): Record<string, unknown> | undefined {
+        assertCaip2Network(network);
+        return { feePayer: this.feePayer };
+    }
+
+    getSigners(network: string): string[] {
+        assertCaip2Network(network);
+        return [this.feePayer];
+    }
+
+    async verify(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<VerifyResponse> {
+        const validation = await validateSvmBatchPayment(payload, requirements);
+        if (!validation.valid) {
+            return {
+                isValid: false,
+                invalidReason: validation.invalidReason,
+                payer: validation.payer || "",
+            };
+        }
+        return {
+            isValid: true,
+            payer: validation.payer,
+            extra: {
+                channelId: validation.channelId,
+                maxClaimableAmount: validation.maxClaimableAmount,
+                chargedCumulativeAmount: validation.chargedCumulativeAmount,
+            },
+        };
+    }
+
+    async settle(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<SettleResponse> {
+        const verification = await this.verify(payload, requirements);
+        const payer = verification.payer || "";
+        if (!verification.isValid) {
+            return settleFailure(
+                requirements.network as NetworkId,
+                payer,
+                verification.invalidReason || "verification_failed",
+                verification.invalidMessage,
+            );
+        }
+
+        const batch = await this.commitBatch(payload, requirements.amount, requirements);
+        return {
+            success: true,
+            transaction: "",
+            network: requirements.network,
+            amount: requirements.amount,
+            payer,
+            extra: {
+                settlementStatus: "queued",
+                channelId: batch.channelId,
+                cumulativeAmountWei: batch.cumulativeAmountWei,
+            },
+        };
+    }
+}
+
+async function registerSvmSchemes(facilitator: x402Facilitator, networks: NetworkId[]): Promise<void> {
+    const svmNetworks = networks.filter(isSolanaNetwork);
+    if (svmNetworks.length === 0) return;
+    const privateKey = requireEnv("SVM_FACILITATOR_KEY");
+    const keypair = await createKeyPairSignerFromBytes(base58.decode(privateKey));
+    const signer = toFacilitatorSvmSigner(keypair, {
+        [NETWORK_IDS.solanaDevnet]: createSolanaRpc(devnet(getNetworkRpcUrl(NETWORK_IDS.solanaDevnet))),
+        // [NETWORK_IDS.solana]: createSolanaRpc(mainnet(getNetworkRpcUrl(NETWORK_IDS.solana))),
+    });
+    const feePayer = requireEnv("SVM_TREASURY_SERVER_WALLET_PUBLIC");
+    if (!signer.getAddresses().map(String).includes(feePayer)) {
+        throw new Error("SVM_TREASURY_SERVER_WALLET_PUBLIC must match SVM_FACILITATOR_KEY signer address");
+    }
+    const exact = new ExactSvmFacilitator(signer);
+    facilitator.register(svmNetworks, exact);
+    facilitator.register(svmNetworks, new UptoSvmFacilitator(feePayer));
+    facilitator.register(svmNetworks, new BatchSettlementSvmFacilitator(feePayer));
+}
+
+async function createFacilitator(): Promise<x402Facilitator> {
+    const networks = getConfiguredFacilitatorNetworks();
+    if (networks.length === 0) {
+        throw new Error("Compose facilitator has no configured networks");
     }
 
     const facilitator = new x402Facilitator();
@@ -236,26 +689,30 @@ function createFacilitator(): x402Facilitator {
         facilitator.registerExtension(extension);
     }
 
-    for (const chainId of chainIds) {
-        facilitator.register(`eip155:${chainId}`, createExactSchemeForChain(chainId));
-        facilitator.register(`eip155:${chainId}`, createUptoSchemeForChain(chainId));
-        facilitator.register(`eip155:${chainId}`, createBatchSchemeForChain(chainId));
+    for (const network of networks.filter(isEvmNetwork)) {
+        facilitator.register(network, createExactSchemeForChain(network));
+        facilitator.register(network, createUptoSchemeForChain(network));
+        facilitator.register(network, createBatchSchemeForChain(network));
     }
+    await registerSvmSchemes(facilitator, networks);
 
     return facilitator;
 }
 
-export function getFacilitator(): x402Facilitator {
+let facilitatorPromise: Promise<x402Facilitator> | null = null;
+
+export async function getFacilitator(): Promise<x402Facilitator> {
     if (!facilitatorSingleton) {
-        facilitatorSingleton = createFacilitator();
+        facilitatorPromise ??= createFacilitator();
+        facilitatorSingleton = await facilitatorPromise;
     }
     return facilitatorSingleton;
 }
 
-export function getFacilitatorSupported(): SupportedResponse {
-    const supported = getFacilitator().getSupported();
+export async function getFacilitatorSupported(): Promise<SupportedResponse> {
+    const supported = (await getFacilitator()).getSupported();
     return {
-        kinds: supported.kinds.map((kind) => ({
+        kinds: supported.kinds.filter((kind) => kind.x402Version === 2 && kind.network.includes(":")).map((kind) => ({
             x402Version: kind.x402Version,
             scheme: kind.scheme,
             network: assertCaip2Network(kind.network),
@@ -282,9 +739,9 @@ export function createPaymentExtensions(): Record<string, unknown> {
 
 export function createPaymentRequirement(input: {
     amountWei: number | string;
-    chainId: number;
+    network: NetworkId;
     scheme?: "exact" | "upto" | "batch-settlement";
-    payTo?: `0x${string}`;
+    payTo?: string;
     maxTimeoutSeconds?: number;
 }): PaymentRequirements {
     const scheme = input.scheme === "upto" || input.scheme === "batch-settlement" ? input.scheme : "exact";
@@ -295,20 +752,28 @@ export function createPaymentRequirement(input: {
         },
     };
 
-    if (scheme === "upto") {
+    if (scheme === "upto" && isEvmNetwork(input.network)) {
         extra.assetTransferMethod = "permit2";
         extra.facilitatorAddress = getFacilitatorAccount().address;
     }
-    if (isBatchSettlementScheme(scheme)) {
-        Object.assign(extra, createBatchPaymentExtra(input.chainId, getReceiverAuthorizer().address));
+    if (isBatchSettlementScheme(scheme) && isEvmNetwork(input.network)) {
+        Object.assign(extra, createBatchPaymentExtra(evmChainId(input.network), getReceiverAuthorizer().address));
     }
+    if (isSolanaNetwork(input.network)) {
+        extra.feePayer = requireEnv("SVM_TREASURY_SERVER_WALLET_PUBLIC");
+    }
+
+    const definition = getNetwork(input.network);
+    const payTo = input.payTo ?? (isSolanaNetwork(input.network)
+        ? requireEnv("SVM_MERCHANT_WALLET_ADDRESS")
+        : requireEnv("MERCHANT_WALLET_ADDRESS"));
 
     return parseV2PaymentRequirements({
         scheme,
-        network: `eip155:${input.chainId}`,
+        network: input.network,
         amount: String(input.amountWei),
-        asset: getUsdcAddress(input.chainId),
-        payTo: input.payTo || merchantWalletAddress || (process.env.MERCHANT_WALLET_ADDRESS as `0x${string}`),
+        asset: definition.asset.address,
+        payTo,
         maxTimeoutSeconds: input.maxTimeoutSeconds ?? 300,
         extra,
     });
@@ -316,7 +781,7 @@ export function createPaymentRequirement(input: {
 
 export function createPaymentRequired(input: {
     amountWei: number | string;
-    chainId: number;
+    network: NetworkId;
     scheme?: "exact" | "upto" | "batch-settlement";
     resourceUrl: string;
     description: string;
@@ -333,7 +798,7 @@ export function createPaymentRequired(input: {
         },
         accepts: [createPaymentRequirement({
             amountWei: input.amountWei,
-            chainId: input.chainId,
+            network: input.network,
             scheme: input.scheme,
         })],
         extensions: createPaymentExtensions(),
@@ -352,32 +817,30 @@ export function decodePaymentSignatureHeader(paymentData: string): PaymentPayloa
     return parseV2PaymentPayload(decodePaymentSignatureHeader_x402(paymentData));
 }
 
-export function getChainIdFromPaymentPayload(paymentPayload: PaymentPayload): number {
+export function getNetworkFromPaymentPayload(paymentPayload: PaymentPayload): NetworkId {
     if (paymentPayload.x402Version !== 2) {
         throw new Error(`Unsupported x402 version: ${paymentPayload.x402Version}`);
     }
 
-    const [, chainIdPart] = paymentPayload.accepted.network.split(":");
-    const chainId = Number.parseInt(chainIdPart || "", 10);
-    if (!Number.isInteger(chainId) || chainId <= 0) {
+    const network = paymentPayload.accepted.network;
+    if (!getSupportedNetworks().some((entry) => entry.id === network)) {
         throw new Error(`Invalid payment network: ${paymentPayload.accepted.network}`);
     }
-
-    return chainId;
+    return network as NetworkId;
 }
 
 export async function verifyPayment(
     paymentPayload: PaymentPayload,
     paymentRequirements: PaymentRequirements,
 ): Promise<VerifyResponse> {
-    return getFacilitator().verify(paymentPayload, paymentRequirements);
+    return (await getFacilitator()).verify(paymentPayload, paymentRequirements);
 }
 
 export async function settlePayment(
     paymentPayload: PaymentPayload,
     paymentRequirements: PaymentRequirements,
 ): Promise<SettleResponse> {
-    return getFacilitator().settle(paymentPayload, paymentRequirements);
+    return (await getFacilitator()).settle(paymentPayload, paymentRequirements);
 }
 
 export function parseFacilitatorVerifyRequest(body: unknown): {
@@ -402,14 +865,24 @@ export function parseFacilitatorSettleRequest(body: unknown): {
     };
 }
 
-export function getFacilitatorChainMetadata(): Array<{
-    chainId: number;
+export async function getFacilitatorChainMetadata(): Promise<Array<{
     name: string;
-    network: `eip155:${number}`;
-}> {
-    return getConfiguredFacilitatorChainIds().map((chainId) => ({
-        chainId,
-        name: getChainConfig(chainId).name,
-        network: `eip155:${chainId}`,
+    network: NetworkId;
+    schemes: string[];
+}>> {
+    const supported = await getFacilitatorSupported();
+    const schemesByNetwork = new Map<NetworkId, string[]>();
+    for (const kind of supported.kinds) {
+        const network = kind.network as NetworkId;
+        const schemes = schemesByNetwork.get(network) ?? [];
+        if (!schemes.includes(kind.scheme)) {
+            schemes.push(kind.scheme);
+            schemesByNetwork.set(network, schemes);
+        }
+    }
+    return getConfiguredFacilitatorNetworks().map((network) => ({
+        name: getNetwork(network).name,
+        network,
+        schemes: schemesByNetwork.get(network) ?? [],
     }));
 }

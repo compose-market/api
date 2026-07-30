@@ -18,7 +18,7 @@ import {
     markIntentsSettled,
     markSettled,
     unlockBudget,
-} from "./session-budget.js";
+} from "./session/budget.js";
 import {
     valkeyDel,
     valkeyExpire,
@@ -33,10 +33,11 @@ import {
     createPaymentRequired,
     encodePaymentRequiredHeader,
 } from "./facilitator.js";
+import { isNetworkId, type NetworkId } from "./configs/chains.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
-const KEY_LOCK_PREFIX = "compose-key-lock:";
+const KEY_LOCK_PREFIX = "key-lock:";
 const IDEMPOTENCY_PREFIX = "payment-intent-idem:";
 const INTENT_TTL_SECONDS = 15 * 60;
 const LOCK_TTL_SECONDS = 15;
@@ -47,7 +48,7 @@ export type PaymentIntentStatus = "authorized" | "settling" | "settled" | "abort
 
 export interface AuthorizePaymentIntentInput {
     authorization: string;
-    chainId: number;
+    network: NetworkId;
     service: string;
     action: string;
     resource: string;
@@ -79,7 +80,7 @@ export interface PaymentIntentRecord {
     keyId: string;
     purpose: KeyPurpose;
     userAddress: string;
-    chainId: number;
+    network: NetworkId;
     service: string;
     action: string;
     resource: string;
@@ -128,6 +129,7 @@ export interface AuthorizedPaymentIntentBody {
 
 export interface SettledPaymentIntentBody {
     paymentIntentId: string;
+    network: NetworkId;
     maxAmountWei: string;
     finalAmountWei: string;
     status: PaymentIntentStatus;
@@ -157,7 +159,7 @@ function keyLockKey(keyId: string): string {
 }
 
 function keyRecordKey(keyId: string): string {
-    return `compose-key:${keyId}`;
+    return `key:${keyId}`;
 }
 
 function idempotencyValkeyKey(keyId: string, idempotencyKey: string): string {
@@ -167,7 +169,7 @@ function idempotencyValkeyKey(keyId: string, idempotencyKey: string): string {
 async function settleKeyPaymentOnChain(
     userAddress: string,
     amountWei: string,
-    chainId: number,
+    network: NetworkId,
 ) {
     if (process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH) {
         return {
@@ -176,8 +178,8 @@ async function settleKeyPaymentOnChain(
         };
     }
 
-    const { settleKeyPayment } = await import("./settlement.js");
-    return settleKeyPayment(userAddress, amountWei, chainId);
+    const { settleKeyPaymentForNetwork } = await import("./settlement.js");
+    return settleKeyPaymentForNetwork(userAddress, amountWei, network);
 }
 
 function failure(
@@ -198,13 +200,13 @@ function failure(
 
 function buildPaymentRequiredFailure(input: {
     resourceUrl: string;
-    chainId: number;
+    network: NetworkId;
     amountWei: string;
     error: string;
 }): PaymentIntentFailure {
     const paymentRequired = createPaymentRequired({
         amountWei: input.amountWei,
-        chainId: input.chainId,
+        network: input.network,
         scheme: "exact",
         resourceUrl: input.resourceUrl,
         description: "Compose.Market resource payment",
@@ -342,8 +344,8 @@ function validateAuthorizeInput(input: AuthorizePaymentIntentInput): void {
     if (!input.authorization) {
         throw new Error("authorization is required");
     }
-    if (!Number.isInteger(input.chainId) || input.chainId <= 0) {
-        throw new Error("chainId must be a positive integer");
+    if (!isNetworkId(input.network)) {
+        throw new Error("network must be a supported CAIP-2 network");
     }
     if (!input.service) {
         throw new Error("service is required");
@@ -428,7 +430,7 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         keyId: data.keyId,
         purpose: data.purpose === "session" ? "session" : "api",
         userAddress: data.userAddress,
-        chainId: parseInt(data.chainId, 10),
+        network: data.network as NetworkId,
         service: data.service,
         action: data.action,
         resource: data.resource,
@@ -474,9 +476,9 @@ async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>
 
 async function buildSessionBudgetHeaders(
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
 ): Promise<Record<string, string>> {
-    const budgetInfo = await getSessionBudgetInfo(userAddress, chainId);
+    const budgetInfo = await getSessionBudgetInfo(userAddress, network);
     if (!budgetInfo) {
         return {};
     }
@@ -493,10 +495,10 @@ async function buildPaymentBudgetHeaders(input: {
     keyId: string;
     purpose: KeyPurpose;
     userAddress: string;
-    chainId: number;
+    network: NetworkId;
 }): Promise<Record<string, string>> {
     if (input.purpose === "session") {
-        return buildSessionBudgetHeaders(input.userAddress, input.chainId);
+        return buildSessionBudgetHeaders(input.userAddress, input.network);
     }
 
     return buildBudgetHeaders(input.keyId);
@@ -534,16 +536,10 @@ export async function authorizePaymentIntent(
             return failure(401, validation.error || "Invalid Compose key");
         }
 
-        const chainId = Number.isInteger(input.chainId) && input.chainId > 0
-            ? input.chainId
-            : validation.record.chainId ?? Number.NaN;
+        const network = input.network;
 
-        if (!Number.isInteger(chainId) || chainId <= 0) {
-            return failure(400, "x-chain-id header is required");
-        }
-
-        if (validation.record.chainId && validation.record.chainId !== chainId) {
-            return failure(409, "Compose key chainId does not match request chainId");
+        if (validation.record.network !== network) {
+            return failure(409, "Compose key network does not match request network");
         }
 
         // Idempotency: if the caller provided an X-Idempotency-Key, a second
@@ -579,7 +575,7 @@ export async function authorizePaymentIntent(
 
         const normalizedInput = {
             ...input,
-            chainId,
+            network,
         };
         validateAuthorizeInput(normalizedInput);
         const authorizationAmount = resolveAuthorizationAmount(normalizedInput);
@@ -595,7 +591,7 @@ export async function authorizePaymentIntent(
 
             if (record.purpose === "session") {
                 const requestedAmountWei = authorizationAmount.useBudgetCap
-                    ? (await getSessionBudgetInfo(validation.payload!.sub, chainId))?.availableWei
+                    ? (await getSessionBudgetInfo(validation.payload!.sub, network))?.availableWei
                     : authorizationAmount.maxAmountWei;
 
                 if (!requestedAmountWei) {
@@ -614,7 +610,7 @@ export async function authorizePaymentIntent(
                 if (!authorizationAmount.useBudgetCap) {
                     const reservation = await lockBudget(
                         validation.payload!.sub,
-                        chainId,
+                        network,
                         requestedAmountWei,
                         merchantWalletAddress,
                         paymentIntentId,
@@ -636,7 +632,7 @@ export async function authorizePaymentIntent(
                     keyId: validation.payload!.keyId,
                     purpose: "session",
                     userAddress: validation.payload!.sub.toLowerCase(),
-                    chainId: String(chainId),
+                    network: String(network),
                     service: normalizedInput.service,
                     action: normalizedInput.action,
                     resource: normalizedInput.resource,
@@ -692,7 +688,7 @@ export async function authorizePaymentIntent(
                 keyId: validation.payload!.keyId,
                 purpose: "api",
                 userAddress: validation.payload!.sub.toLowerCase(),
-                chainId: String(chainId),
+                network: String(network),
                 service: normalizedInput.service,
                 action: normalizedInput.action,
                 resource: normalizedInput.resource,
@@ -720,7 +716,7 @@ export async function authorizePaymentIntent(
                 keyId: validation.payload.keyId,
                 purpose,
                 userAddress: validation.payload.sub.toLowerCase(),
-                chainId,
+                network,
             });
             return {
                 ok: false,
@@ -734,7 +730,7 @@ export async function authorizePaymentIntent(
             keyId: validation.payload.keyId,
             purpose,
             userAddress: validation.payload.sub.toLowerCase(),
-            chainId,
+            network,
         });
         headers["x-payment-intent-id"] = paymentIntentId;
 
@@ -793,6 +789,7 @@ export async function settlePaymentIntent(
                     status: 200,
                     body: {
                         paymentIntentId: intent.paymentIntentId,
+                        network: intent.network,
                         maxAmountWei: intent.maxAmountWei,
                         finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
                         status: intent.status,
@@ -820,7 +817,7 @@ export async function settlePaymentIntent(
             if (intent.purpose === "session" && !sessionBudgetIntentId) {
                 const exactReservation = await lockBudget(
                     intent.userAddress,
-                    intent.chainId,
+                    intent.network,
                     finalAmountStr,
                     merchantWalletAddress,
                     intent.paymentIntentId,
@@ -895,12 +892,18 @@ export async function settlePaymentIntent(
                 }),
             });
 
-            const settlement = await settleKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.chainId);
+            const settlement = await settleKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.network);
 
-            if (!settlement.success) {
+            const settlementError = !settlement.success
+                ? settlement.error || "Payment settlement failed"
+                : !settlement.txHash
+                    ? "Payment settlement did not return transaction hash"
+                    : null;
+
+            if (settlementError) {
                 if (intent.purpose === "session") {
                     if (sessionBudgetIntentId) {
-                        await cancelBudgetIntent(sessionBudgetIntentId, settlement.error || "Payment settlement failed");
+                        await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
                     }
                 } else {
                     await withValkeyLock(keyLockKey(intent.keyId), async () => {
@@ -917,23 +920,23 @@ export async function settlePaymentIntent(
                 await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
                     status: "failed",
                     updatedAt: String(Date.now()),
-                    error: settlement.error || "Payment settlement failed",
+                    error: settlementError,
                 });
 
                 return buildPaymentRequiredFailure({
                     resourceUrl: intent.resource,
-                    chainId: intent.chainId,
+                    network: intent.network,
                     amountWei: finalAmountStr,
-                    error: settlement.error || "Payment settlement failed",
+                    error: settlementError,
                 });
             }
 
             if (intent.purpose === "session") {
                 const unlockedAmount = reservedSessionAmount - finalAmount;
                 if (unlockedAmount > 0n) {
-                    await unlockBudget(intent.userAddress, intent.chainId, unlockedAmount.toString());
+                    await unlockBudget(intent.userAddress, intent.network, unlockedAmount.toString());
                 }
-                await markSettled(intent.userAddress, intent.chainId, finalAmountStr);
+                await markSettled(intent.userAddress, intent.network, finalAmountStr);
                 if (sessionBudgetIntentId) {
                     await markIntentsSettled([sessionBudgetIntentId], settlement.txHash || "");
                 }
@@ -979,6 +982,7 @@ export async function settlePaymentIntent(
                 status: 200,
                 body: {
                     paymentIntentId: intent.paymentIntentId,
+                    network: intent.network,
                     maxAmountWei: intent.maxAmountWei,
                     finalAmountWei: finalAmountStr,
                     status: "settled",

@@ -10,6 +10,7 @@
 import type { Express, Request, Response } from "express";
 import { getActiveSessionStatus } from "./storage.js";
 import type { ActiveSessionStatus } from "./types.js";
+import { isNetworkId, type NetworkId } from "../configs/chains.js";
 
 const SESSION_EVENTS_PATH = "/api/session/events";
 const HEARTBEAT_MS = 25_000;
@@ -35,7 +36,7 @@ export interface SessionEventsConfig {
 interface SessionExpiredEvent {
     action: "session-expired";
     userAddress: string;
-    chainId: number;
+    network: NetworkId;
     message: string;
     reason: string;
     timestamp: number;
@@ -45,7 +46,7 @@ interface SessionExpiredEvent {
 interface SessionLeaseEvent {
     action: "session-events-lease";
     userAddress: string;
-    chainId: number;
+    network: NetworkId;
     message: string;
     reason: "lease-expired";
     timestamp: number;
@@ -62,7 +63,7 @@ interface Alert {
     title: string;
     message: string;
     userAddress: string;
-    chainId: number;
+    network: NetworkId;
     timestamp: number;
     leaseMs: number;
     retryAfterMs: number;
@@ -77,20 +78,17 @@ interface SessionSnapshot {
     budgetUsed: number;
 }
 
-type StatusProvider = (userAddress: string, chainId: number) => Promise<ActiveSessionStatus>;
+type StatusProvider = (userAddress: string, network: NetworkId) => Promise<ActiveSessionStatus>;
 
 function normalizeAddress(value: unknown): string | null {
     if (typeof value !== "string") return null;
-    const normalized = value.trim().toLowerCase();
-    if (!/^0x[a-f0-9]{40}$/.test(normalized)) return null;
-    return normalized;
+    const normalized = value.trim();
+    return normalized || null;
 }
 
-function parseChainId(value: unknown): number | null {
-    if (typeof value !== "string" && typeof value !== "number") return null;
-    const parsed = Number.parseInt(String(value), 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return null;
-    return parsed;
+function parseNetwork(value: unknown): NetworkId | null {
+    if (typeof value !== "string" || !isNetworkId(value)) return null;
+    return value;
 }
 
 function readMs(name: string, fallback: number): number {
@@ -126,14 +124,14 @@ function writeEvent(res: Response, event: string, data: unknown): void {
 function writeExpiredEvent(
     res: Response,
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
     reason: string,
     expiresAt: number | null,
 ): void {
     const payload: SessionExpiredEvent = {
         action: "session-expired",
         userAddress,
-        chainId,
+        network,
         message: "Session expired, create a new session to use our services",
         reason,
         timestamp: Date.now(),
@@ -145,14 +143,14 @@ function writeExpiredEvent(
 function writeLeaseEvent(
     res: Response,
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
     leaseMs: number,
     retryAfterMs: number,
 ): void {
     const payload: SessionLeaseEvent = {
         action: "session-events-lease",
         userAddress,
-        chainId,
+        network,
         message: "Session event stream lease ended; reconnect to continue receiving session updates.",
         reason: "lease-expired",
         timestamp: Date.now(),
@@ -165,7 +163,7 @@ function writeLeaseEvent(
 function writeAlertEvent(
     res: Response,
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
     leaseMs: number,
     retryAfterMs: number,
 ): void {
@@ -178,7 +176,7 @@ function writeAlertEvent(
         title: "Session status stream rotating",
         message: "The session status stream reached its lease and will reconnect.",
         userAddress,
-        chainId,
+        network,
         timestamp: Date.now(),
         leaseMs,
         retryAfterMs,
@@ -196,14 +194,14 @@ function resolveUserAddress(req: Request): string | null {
     return normalizeAddress(headerValue);
 }
 
-function resolveChainId(req: Request): number | null {
-    const queryValue = req.query.chainId;
+function resolveNetwork(req: Request): NetworkId | null {
+    const queryValue = req.query.network;
     if (typeof queryValue === "string") {
-        return parseChainId(queryValue);
+        return parseNetwork(queryValue);
     }
 
-    const headerValue = req.header("x-chain-id");
-    return parseChainId(headerValue);
+    const headerValue = req.header("x-network-id");
+    return parseNetwork(headerValue);
 }
 
 export function createSessionEventsHandler(
@@ -226,11 +224,11 @@ async function handleSessionEvents(
     lease: Lease,
 ): Promise<void> {
     const userAddress = resolveUserAddress(req);
-    const chainId = resolveChainId(req);
+    const network = resolveNetwork(req);
 
-    if (!userAddress || !chainId) {
+    if (!userAddress || !network) {
         res.status(400).json({
-            error: "Invalid or missing userAddress/chainId",
+            error: "Invalid or missing userAddress/network",
         });
         return;
     }
@@ -300,12 +298,12 @@ async function handleSessionEvents(
         if (closed || res.writableEnded) return;
 
         try {
-            const active = await status(userAddress, chainId);
+            const active = await status(userAddress, network);
             if (!active.session) {
                 writeExpiredEvent(
                     res,
                     userAddress,
-                    chainId,
+                    network,
                     active.reason,
                     active.latestKey?.expiresAt ?? null,
                 );
@@ -334,7 +332,7 @@ async function handleSessionEvents(
                 scheduleExpiryCheck(active.session.expiresAt);
                 writeEvent(res, "session-active", {
                     userAddress,
-                    chainId,
+                    network,
                     expiresAt: active.session.expiresAt,
                     budgetLimit: active.session.budgetLimit,
                     budgetUsed: active.session.budgetUsed,
@@ -365,8 +363,8 @@ async function handleSessionEvents(
 
     leaseTimer = setTimeout(() => {
         if (closed || res.writableEnded) return;
-        writeAlertEvent(res, userAddress, chainId, lease.leaseMs, retryAfterMs);
-        writeLeaseEvent(res, userAddress, chainId, lease.leaseMs, retryAfterMs);
+        writeAlertEvent(res, userAddress, network, lease.leaseMs, retryAfterMs);
+        writeLeaseEvent(res, userAddress, network, lease.leaseMs, retryAfterMs);
         closeStream();
     }, lease.leaseMs);
 

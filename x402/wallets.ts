@@ -1,73 +1,16 @@
-/**
- * Wallet addresses and payment chain configuration.
- *
- * SDK-agnostic wallet configuration.
- * Only reads environment variables and exposes typed constants.
- *
- * @module shared/x402/wallets
- */
+import { getDefaultNetwork, getNetwork, type NetworkId } from "./configs/chains.js";
+import { decodePaymentSignatureHeader, getNetworkFromPaymentPayload } from "./facilitator.js";
 
-import {
-    getActiveChainId,
-    getUsdcAddress,
-    VIEM_CHAIN_MAP,
-} from "./configs/chains.js";
-import { decodePaymentSignatureHeader, getChainIdFromPaymentPayload } from "./facilitator.js";
-
-// =============================================================================
-// Wallet Addresses
-// =============================================================================
-
-/**
- * Server wallet address (facilitator for x402)
- */
 export const serverWalletAddress = process.env.THIRDWEB_SERVER_WALLET_ADDRESS as `0x${string}`;
-
-/**
- * Merchant wallet that receives payments
- */
 export const merchantWalletAddress = process.env.MERCHANT_WALLET_ADDRESS as `0x${string}`;
-
-/**
- * Treasury wallet used for session-key settlements
- */
 export const treasuryWalletAddress = process.env.TREASURY_SERVER_WALLET_PUBLIC as `0x${string}`;
+export const svmMerchantWalletAddress = process.env.SVM_MERCHANT_WALLET_ADDRESS as string;
+export const svmTreasuryWalletAddress = process.env.SVM_TREASURY_SERVER_WALLET_PUBLIC as string;
 
-// =============================================================================
-// Payment Chain Configuration
-// =============================================================================
+export const paymentNetwork = getDefaultNetwork();
+export const paymentAsset = getNetwork(paymentNetwork).asset;
 
-/**
- * Active payment chain ID (determined by DEFAULT_CHAIN and USE_MAINNET env)
- */
-export const paymentChainId = getActiveChainId();
-
-/**
- * Active payment chain object (viem)
- */
-export const paymentChain = VIEM_CHAIN_MAP[paymentChainId];
-
-/**
- * USDC token configuration for active chain
- */
-export const paymentAsset = {
-    address: getUsdcAddress(paymentChainId),
-    symbol: "USDC",
-    decimals: 6,
-};
-
-/**
- * Extract chain ID from x402 payment data header
- */
-export function getChainIdFromPaymentData(paymentData: string | null): number {
-    if (!paymentData) {
-        return getActiveChainId();
-    }
-
-    try {
-        const paymentPayload = decodePaymentSignatureHeader(paymentData);
-        return getChainIdFromPaymentPayload(paymentPayload);
-    } catch {
-        return getActiveChainId();
-    }
+export function getNetworkFromPaymentData(paymentData: string | null): NetworkId {
+    if (!paymentData) return paymentNetwork;
+    return getNetworkFromPaymentPayload(decodePaymentSignatureHeader(paymentData));
 }

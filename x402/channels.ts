@@ -4,7 +4,7 @@ import { type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { getBatchAsset, getBatchChannelStorage } from "./batch.js";
-import { CHAIN_CONFIG, getActiveChainId, type ChainId } from "./configs/chains.js";
+import { NETWORK_IDS, evmChainId, isEvmNetwork, isNetworkId, type EvmNetworkId } from "./configs/chains.js";
 import { getFacilitator } from "./facilitator.js";
 import { markBatchEvidenceSettled } from "./evidence.js";
 import { markBatchReceiptsSettled } from "./receipts.js";
@@ -13,8 +13,8 @@ import { merchantWalletAddress } from "./wallets.js";
 const WITHDRAW_DELAY_SECONDS = 900;
 
 type ChainResult = {
-  chainId: ChainId;
-  network: `eip155:${number}`;
+  chainId: number;
+  network: EvmNetworkId;
   claimCount: number;
   claimTxHashes: string[];
   settleTxHash?: string;
@@ -39,9 +39,9 @@ let scheme: BatchSettlementEvmScheme | null = null;
 let client: FacilitatorClient | null = null;
 
 function receiverAuthorizer() {
-  const privateKey = process.env.DEPLOYER_KEY;
+  const privateKey = process.env.FACILITATOR_KEY;
   if (!privateKey) {
-    throw new Error("DEPLOYER_KEY environment variable is required for native batch settlement");
+    throw new Error("FACILITATOR_KEY environment variable is required for native batch settlement");
   }
 
   const account = privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
@@ -72,30 +72,29 @@ function facilitatorClient(): FacilitatorClient {
     return client;
   }
 
-  const facilitator = getFacilitator();
   const created: FacilitatorClient = {
     verify: (paymentPayload, paymentRequirements) =>
-      facilitator.verify(paymentPayload, paymentRequirements),
+      getFacilitator().then((facilitator) => facilitator.verify(paymentPayload, paymentRequirements)),
     settle: (paymentPayload, paymentRequirements) =>
-      facilitator.settle(paymentPayload, paymentRequirements),
+      getFacilitator().then((facilitator) => facilitator.settle(paymentPayload, paymentRequirements)),
     getSupported: async () =>
-      facilitator.getSupported() as Awaited<ReturnType<FacilitatorClient["getSupported"]>>,
+      (await getFacilitator()).getSupported() as Awaited<ReturnType<FacilitatorClient["getSupported"]>>,
   };
   client = created;
   return created;
 }
 
-function chains(): ChainId[] {
-  const configured = (process.env.BATCH_SETTLEMENT_CHAIN_IDS || "")
+function networks(): EvmNetworkId[] {
+  const configured = (process.env.BATCH_SETTLEMENT_NETWORKS || "")
     .split(",")
-    .map((value) => Number.parseInt(value.trim(), 10))
-    .filter((value): value is ChainId => Number.isFinite(value) && value in CHAIN_CONFIG);
+    .map((value) => value.trim())
+    .filter((value): value is EvmNetworkId => isNetworkId(value) && isEvmNetwork(value));
 
-  return configured.length > 0 ? configured : [getActiveChainId()];
+  return configured.length > 0 ? configured : [NETWORK_IDS.arcTestnet];
 }
 
-async function settleChain(chainId: ChainId): Promise<ChainResult> {
-  const network = `eip155:${chainId}` as `eip155:${number}`;
+async function settleChain(network: EvmNetworkId): Promise<ChainResult> {
+  const chainId = evmChainId(network);
   const asset = getBatchAsset(chainId);
   const storage = getBatchChannelStorage();
   const manager = new BatchSettlementChannelManager({
@@ -138,7 +137,7 @@ async function settleChain(chainId: ChainId): Promise<ChainResult> {
         claimedAmountWei: target.claimedAmountWei,
         ...(claimTxHash ? { claimTxHash } : {}),
         ...(result.settle?.transaction ? { settleTxHash: result.settle.transaction } : {}),
-        chainId,
+        network,
       });
     }
   }
@@ -159,13 +158,13 @@ export async function runNativeBatchSettlement(): Promise<NativeBatchSettlementS
   const runId = `native-batch-${startedAt}`;
   const results: ChainResult[] = [];
 
-  for (const chainId of chains()) {
+  for (const network of networks()) {
     try {
-      results.push(await settleChain(chainId));
+      results.push(await settleChain(network));
     } catch (error) {
       results.push({
-        chainId,
-        network: `eip155:${chainId}`,
+        chainId: evmChainId(network),
+        network,
         claimCount: 0,
         claimTxHashes: [],
         error: error instanceof Error ? error.message : String(error),

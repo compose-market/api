@@ -69,6 +69,7 @@ export interface MeteredModelQuote extends MeteredAmountBreakdown {
   provider: ModelProvider;
   known: boolean;
   meter: MeteredAuthorizationInput | MeteredSettlementInput;
+  telemetry?: ReturnType<typeof buildAuthoritativeBilling>;
 }
 
 export interface UsageRecord {
@@ -244,6 +245,7 @@ export function buildResolvedAuthorizationMeter(args: {
     provider: args.resolved.provider,
     known: args.resolved.known,
     meter,
+    telemetry: billing,
     ...quoteMeteredAuthorization(meter),
   };
 }
@@ -280,6 +282,7 @@ export function buildResolvedSettlementMeter(args: SettlementMeterArgs): Metered
     provider: args.resolved.provider,
     known: args.resolved.known,
     meter,
+    telemetry: billing,
     ...quoteMeteredSettlement(meter),
   };
 }

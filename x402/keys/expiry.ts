@@ -17,7 +17,7 @@ import {
 } from "./valkey.js";
 
 const USER_KEYS_PREFIX = "user-keys:";
-const KEY_PREFIX = "compose-key:";
+const KEY_PREFIX = "key:";
 
 export async function expiryWorker(
     _event: ScheduledEvent,

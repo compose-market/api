@@ -5,7 +5,7 @@
  * Triggered by CloudWatch Events (every 2 minutes) or $1 threshold.
  * 
  * SETTLEMENT FLOW:
- * 1. Read all pending intents from ValKey (grouped by user + chain)
+ * 1. Read all pending intents from ValKey (grouped by user + network)
  * 2. For each user, calculate total amount to settle
  * 3. Execute single USDC.transferFrom per user (from locked allowance)
  * 4. Mark intents as settled on success
@@ -21,8 +21,9 @@ import {
     markSettled,
     unlockBudget,
     type PaymentIntent,
-} from "../session-budget.js";
-import { settleKeyPayment } from "../settlement.js";
+} from "../session/budget.js";
+import { settleKeyPaymentForNetwork } from "../settlement.js";
+import type { NetworkId } from "../configs/chains.js";
 import { syncBudgetAfterSettlement } from "../keys/index.js";
 import { markIntentEvidenceSettled } from "../evidence.js";
 import { markIntentReceiptsSettled } from "../receipts.js";
@@ -61,22 +62,20 @@ export async function runBatchSettlement(
     let totalValueWei = 0n;
 
     try {
-        // Get all pending intents grouped by user:chain
+        // Get all pending intents grouped by user:network
         const grouped = await getPendingIntentsGrouped();
 
-        console.log(`[batch-settlement] Found ${grouped.size} user:chain groups with pending intents`);
+        console.log(`[batch-settlement] Found ${grouped.size} network groups with pending intents`);
 
-        // Process each user:chain group
-        for (const [key, intents] of grouped.entries()) {
+        // Process each user:network group
+        for (const [network, byUser] of grouped.entries()) {
+          for (const [userAddress, intents] of byUser.entries()) {
             if (intents.length === 0) continue;
-
-            const [userAddress, chainIdStr] = key.split(":");
-            const chainId = parseInt(chainIdStr);
 
             totalIntents += intents.length;
 
             try {
-                const result = await settleUserBatch(userAddress, chainId, intents);
+                const result = await settleUserBatch(userAddress, network, intents);
                 results.push(result);
 
                 if (result.error) {
@@ -86,11 +85,11 @@ export async function runBatchSettlement(
                     totalValueWei += BigInt(result.totalSettledWei);
                 }
             } catch (error) {
-                console.error(`[batch-settlement] Failed to settle batch for ${key}:`, error);
+                console.error(`[batch-settlement] Failed to settle batch for ${network}:${userAddress}:`, error);
 
                 results.push({
                     userAddress,
-                    chainId,
+                    network,
                     totalSettledWei: "0",
                     intentCount: intents.length,
                     txHash: "",
@@ -99,6 +98,7 @@ export async function runBatchSettlement(
 
                 failCount++;
             }
+          }
         }
 
     } catch (error) {
@@ -131,14 +131,14 @@ export async function runBatchSettlement(
 }
 
 /**
- * Settle batch of intents for a single user on a single chain
+ * Settle batch of intents for a single user on a single network
  */
 export async function settleUserBatch(
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
     intents: PaymentIntent[],
 ): Promise<BatchSettlementResult> {
-    console.log(`[batch-settlement] Settling ${intents.length} intents for ${userAddress} on chain ${chainId}`);
+    console.log(`[batch-settlement] Settling ${intents.length} intents for ${userAddress} on network ${network}`);
 
     // Calculate total amount to settle
     const totalAmount = intents.reduce(
@@ -152,63 +152,68 @@ export async function settleUserBatch(
 
     try {
         // Execute single on-chain settlement for all intents
-        const settlementResult = await settleKeyPayment(
+        const settlementResult = await settleKeyPaymentForNetwork(
             userAddress,
             totalAmount.toString(),
-            chainId,
+            network,
         );
+        const settlementError = !settlementResult.success
+            ? settlementResult.error || "Unknown error"
+            : !settlementResult.txHash
+                ? "Payment settlement did not return transaction hash"
+                : null;
 
-        if (!settlementResult.success) {
-            console.error(`[batch-settlement] Settlement failed for ${userAddress}:`, settlementResult.error);
+        if (settlementError) {
+            console.error(`[batch-settlement] Settlement failed for ${userAddress}:`, settlementError);
 
             // Fallback: Try to settle individually or requeue
-            await handleSettlementFailure(userAddress, chainId, intents, settlementResult.error || "Unknown error");
+            await handleSettlementFailure(userAddress, network, intents, settlementError);
 
             return {
                 userAddress,
-                chainId,
+                network,
                 totalSettledWei: "0",
                 intentCount: intents.length,
                 txHash: "",
-                error: settlementResult.error,
+                error: settlementError,
             };
         }
 
+        const txHash = settlementResult.txHash as string;
+
         // Success - mark all intents as settled
-        await markIntentsSettled(intentIds, settlementResult.txHash || "");
-        if (settlementResult.txHash) {
-            await Promise.all(intentIds.map((sessionBudgetIntentId) => Promise.all([
-                markIntentEvidenceSettled({
-                    sessionBudgetIntentId,
-                    txHash: settlementResult.txHash!,
-                    chainId,
-                }),
-                markIntentReceiptsSettled({
-                    sessionBudgetIntentId,
-                    txHash: settlementResult.txHash!,
-                }),
-            ])));
-        }
+        await markIntentsSettled(intentIds, txHash);
+        await Promise.all(intentIds.map((sessionBudgetIntentId) => Promise.all([
+            markIntentEvidenceSettled({
+                sessionBudgetIntentId,
+                txHash,
+                network,
+            }),
+            markIntentReceiptsSettled({
+                sessionBudgetIntentId,
+                txHash,
+            }),
+        ])));
 
         // Update session budget: move from locked to used
-        await markSettled(userAddress, chainId, totalAmount.toString());
+        await markSettled(userAddress, network, totalAmount.toString());
 
         // Sync storage.ts for UI consistency - use session-budget.ts usedBudgetWei
-        const { getSessionBudget } = await import("../session-budget.js");
-        const budget = await getSessionBudget(userAddress, chainId);
+        const { getSessionBudget } = await import("../session/budget.js");
+        const budget = await getSessionBudget(userAddress, network);
         if (budget) {
-            await syncBudgetAfterSettlement(userAddress, chainId, budget.usedBudgetWei);
+            await syncBudgetAfterSettlement(userAddress, network, budget.usedBudgetWei);
             console.log(`[batch-settlement] Synced storage.ts budgetUsed to ${budget.usedBudgetWei} for ${userAddress}`);
         }
 
-        console.log(`[batch-settlement] Successfully settled ${intents.length} intents for ${userAddress}, tx: ${settlementResult.txHash}`);
+        console.log(`[batch-settlement] Successfully settled ${intents.length} intents for ${userAddress}, tx: ${txHash}`);
 
         return {
             userAddress,
-            chainId,
+            network,
             totalSettledWei: totalAmount.toString(),
             intentCount: intents.length,
-            txHash: settlementResult.txHash || "",
+            txHash,
         };
 
     } catch (error) {
@@ -216,14 +221,14 @@ export async function settleUserBatch(
 
         await handleSettlementFailure(
             userAddress,
-            chainId,
+            network,
             intents,
             error instanceof Error ? error.message : String(error),
         );
 
         return {
             userAddress,
-            chainId,
+            network,
             totalSettledWei: "0",
             intentCount: intents.length,
             txHash: "",
@@ -237,7 +242,7 @@ export async function settleUserBatch(
  */
 async function handleSettlementFailure(
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
     intents: PaymentIntent[],
     errorMessage: string,
 ): Promise<void> {
@@ -256,7 +261,7 @@ async function handleSettlementFailure(
         0n
     );
 
-    await unlockBudget(userAddress, chainId, totalAmount.toString());
+    await unlockBudget(userAddress, network, totalAmount.toString());
 
     console.log(`[batch-settlement] Unlocked ${totalAmount.toString()} wei for ${userAddress} after failure`);
 
@@ -268,20 +273,19 @@ async function handleSettlementFailure(
  */
 export async function triggerImmediateSettlement(
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
 ): Promise<BatchSettlementResult | null> {
-    console.log(`[batch-settlement] Triggering immediate settlement for ${userAddress} on chain ${chainId}`);
+    console.log(`[batch-settlement] Triggering immediate settlement for ${userAddress} on network ${network}`);
 
     // Get pending intents for this user
     const grouped = await getPendingIntentsGrouped();
-    const key = `${userAddress.toLowerCase()}:${chainId}`;
-    const intents = grouped.get(key);
+    const intents = grouped.get(network)?.get(userAddress);
 
     if (!intents || intents.length === 0) {
-        console.log(`[batch-settlement] No pending intents for ${userAddress} on chain ${chainId}`);
+        console.log(`[batch-settlement] No pending intents for ${userAddress} on network ${network}`);
         return null;
     }
 
     // Settle immediately
-    return await settleUserBatch(userAddress, chainId, intents);
+    return await settleUserBatch(userAddress, network, intents);
 }

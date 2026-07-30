@@ -7,22 +7,20 @@
 
 import type { Request, Response } from "express";
 import type { PaymentRequired } from "@x402/core/types";
+import { publicResourceUrl } from "../http/public-origin.js";
 import {
-    paymentChain,
     paymentAsset,
     merchantWalletAddress,
     serverWalletAddress,
 } from "./wallets.js";
-import {
-    getActiveChainId,
-} from "./configs/chains.js";
+import { getDefaultNetwork, isNetworkId, type NetworkId } from "./configs/chains.js";
 import {
     createPaymentRequired,
     createPaymentRequirement,
     decodePaymentSignatureHeader,
     encodePaymentRequiredHeader,
     encodePaymentResponseHeader,
-    getChainIdFromPaymentPayload,
+    getNetworkFromPaymentPayload,
     settlePayment,
     verifyPayment,
 } from "./facilitator.js";
@@ -37,7 +35,7 @@ import {
 // Compose Session Budget (locked/used tracking for settlement)
 import {
     lockBudget,
-} from "./session-budget.js";
+} from "./session/budget.js";
 import {
     quoteMeteredAuthorization,
     quoteMeteredSettlement,
@@ -75,6 +73,7 @@ type SettlementCycleResult = {
     reason: string;
     skipped?: boolean;
     native: Awaited<ReturnType<typeof import("./channels.js").runNativeBatchSettlement>> | null;
+    svm: Awaited<ReturnType<typeof import("./batch.js").runSvmBatchSettlement>> | null;
     intents: Awaited<ReturnType<typeof import("./accumulator/index.js").runBatchSettlement>> | null;
 };
 
@@ -96,6 +95,35 @@ function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function runSettlementCycleStep<T>(
+    label: "native" | "svm" | "intents",
+    reason: string,
+    fn: () => Promise<T>,
+): Promise<{ succeeded: true; value: T } | { succeeded: false; value: null }> {
+    try {
+        return {
+            succeeded: true,
+            value: await fn(),
+        };
+    } catch (error) {
+        console.error(`[batch-settlement] ${label} settlement cycle failed`, {
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+        });
+        return {
+            succeeded: false,
+            value: null,
+        };
+    }
+}
+
+function settlementCycleStepValue<T>(
+    step: PromiseSettledResult<T>,
+): T | { succeeded: false; value: null } {
+    if ("value" in step) return step.value;
+    return { succeeded: false, value: null };
+}
+
 function shouldKickSettlement(settlement: {
     finalAmountWei?: string;
     settlementStatus?: "queued" | "claimed" | "settled" | "failed";
@@ -109,7 +137,6 @@ function shouldKickSettlement(settlement: {
     if (settlement.settlementStatus !== "queued" && settlement.settlementStatus !== "claimed") return false;
     return Boolean(
         settlement.txHash
-        || settlement.paymentIntentId
         || settlement.sessionBudgetIntentId
         || (settlement.paymentChannelId && settlement.paymentCumulativeAmountWei)
     );
@@ -120,35 +147,50 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
 
     activeSettlementCycle = (async () => {
         const owner = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-        const locked = await valkeySetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 600));
-        if (!locked) {
-            console.log("[batch-settlement] skipped; another settlement cycle is active", { reason });
-            return {
-                reason,
-                skipped: true,
-                native: null,
-                intents: null,
-            };
-        }
-
+        let locked = false;
         try {
+            locked = await valkeySetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 600));
+            if (!locked) {
+                console.log("[batch-settlement] skipped; another settlement cycle is active", { reason });
+                return {
+                    reason,
+                    skipped: true,
+                    native: null,
+                    svm: null,
+                    intents: null,
+                };
+            }
+
             console.log("[batch-settlement] cycle started", { reason });
-            const [{ runNativeBatchSettlement }, { runBatchSettlement }] = await Promise.all([
+            const [{ runNativeBatchSettlement }, { runSvmBatchSettlement }, { runBatchSettlement }] = await Promise.all([
                 import("./channels.js"),
+                import("./batch.js"),
                 import("./accumulator/index.js"),
             ]);
-            const native = await runNativeBatchSettlement();
-            const intents = await runBatchSettlement();
+            const [nativeStepResult, svmStepResult, intentsStepResult] = await Promise.allSettled([
+                runSettlementCycleStep("native", reason, runNativeBatchSettlement),
+                runSettlementCycleStep("svm", reason, runSvmBatchSettlement),
+                runSettlementCycleStep("intents", reason, runBatchSettlement),
+            ]);
+            const nativeStep = settlementCycleStepValue(nativeStepResult);
+            const svmStep = settlementCycleStepValue(svmStepResult);
+            const intentsStep = settlementCycleStepValue(intentsStepResult);
+            const native = nativeStep.succeeded ? nativeStep.value : null;
+            const svm = svmStep.succeeded ? svmStep.value : null;
+            const intents = intentsStep.succeeded ? intentsStep.value : null;
             console.log("[batch-settlement] cycle completed", {
                 reason,
-                nativeRunId: native.runId,
-                intentRunId: intents.runId,
+                nativeRunId: native?.runId,
+                svmRunId: svm?.runId,
+                intentRunId: intents?.runId,
             });
-            return { reason, native, intents };
+            return { reason, native, svm, intents };
         } finally {
-            const current = await valkeyGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
-            if (current === owner) {
-                await valkeyDel(SETTLEMENT_RUN_LOCK_KEY).catch(() => false);
+            if (locked) {
+                const current = await valkeyGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
+                if (current === owner) {
+                    await valkeyDel(SETTLEMENT_RUN_LOCK_KEY).catch(() => false);
+                }
             }
             activeSettlementCycle = null;
         }
@@ -248,8 +290,6 @@ function getSessionInvalidReason(error: string | undefined): string {
     return "invalid_key";
 }
 
-// getActiveChainId imported from chains.js above
-
 // =============================================================================
 // x402-compatible 402 Response Helper
 // =============================================================================
@@ -262,13 +302,13 @@ export function createPaymentRequired402Response(params: {
     errorMessage?: string;
     amountWei: number;
     resourceUrl?: string;
-    chainId?: number;
+    network?: NetworkId;
 }): PaymentRequired {
-    const chainId = params.chainId || getActiveChainId();
+    const network = params.network || getDefaultNetwork();
 
     return createPaymentRequired({
         amountWei: params.amountWei,
-        chainId,
+        network,
         resourceUrl: params.resourceUrl || "",
         description: "Compose.Market AI Agent Inference",
         mimeType: "application/json",
@@ -295,6 +335,7 @@ export type InferenceSettlementInput =
 
 interface InferencePaymentSettlementResult {
     success: boolean;
+    userAddress?: string;
     txHash?: string;
     settlementStatus?: "queued" | "claimed" | "settled" | "failed";
     claimTxHash?: string;
@@ -314,7 +355,7 @@ interface InferencePaymentSettlementResult {
         unitPriceUsd: number;
         amountWei: string;
     }>;
-    chainId?: number;
+    network?: NetworkId;
     settledAt?: number;
     evidenceOnly?: boolean;
     error?: string;
@@ -331,14 +372,13 @@ export interface PreparedInferencePayment {
     applyHeaders: (res: Response, settlement?: InferencePaymentSettlementResult) => void;
 }
 
-export function getChainIdFromRequest(req: Request): number | undefined {
-    const chainIdHeader = req.get?.("x-chain-id") || req.headers["x-chain-id"];
-    if (!chainIdHeader) {
+export function getNetworkFromRequest(req: Request): NetworkId | undefined {
+    const networkHeader = req.get?.("x-network-id") || req.headers["x-network-id"];
+    if (!networkHeader) {
         return undefined;
     }
 
-    const parsed = parseInt(String(chainIdHeader), 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return isNetworkId(String(networkHeader)) ? String(networkHeader) as NetworkId : undefined;
 }
 
 export function getPaymentSignatureFromRequest(req: Request): string | null {
@@ -398,18 +438,18 @@ function getIdempotencyKeyFromRequest(req: Request): string | undefined {
     return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function rawRuntimeHeaders(chainId: number, maxAmountWei: string): Record<string, string> {
+function rawRuntimeHeaders(network: NetworkId, maxAmountWei: string): Record<string, string> {
     return {
         "x-session-active": "false",
         "x-session-budget-remaining": maxAmountWei,
-        "x-chain-id": String(chainId),
+        "x-network-id": network,
         "x-x402-max-amount-wei": maxAmountWei,
     };
 }
 
 function runtimeHeaders(input: {
     authorization: string;
-    chainId: number;
+    network: NetworkId;
     userAddress: string;
     maxAmountWei: string;
     sessionActive: boolean;
@@ -419,17 +459,13 @@ function runtimeHeaders(input: {
     return {
         Authorization: input.authorization,
         "x-session-active": input.sessionActive ? "true" : "false",
-        "x-session-user-address": input.userAddress.toLowerCase(),
+        "x-session-user-address": input.userAddress,
         "x-session-budget-remaining": input.maxAmountWei,
-        "x-chain-id": String(input.chainId),
+        "x-network-id": input.network,
         "x-x402-max-amount-wei": input.maxAmountWei,
         ...(input.paymentIntentId ? { "x-payment-intent-id": input.paymentIntentId } : {}),
         ...(input.idempotencyKey ? { "x-idempotency-key": input.idempotencyKey } : {}),
     };
-}
-
-function publicResourceUrl(req: Request): string {
-    return `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
 }
 
 function resolveInferenceSettlement(
@@ -478,7 +514,7 @@ function resolveInferenceSettlement(
  * a single chat turn including a multi-tool loop, while still bounding the
  * blast radius of a misbehaving server.
  */
-function getDefaultUptoEnvelopeWei(): string {
+export function getDefaultUptoEnvelopeWei(): string {
     const raw = process.env.INFERENCE_DEFAULT_UPTO_ENVELOPE_WEI?.trim();
     if (raw && /^\d+$/u.test(raw) && BigInt(raw) > 0n) {
         return raw;
@@ -527,13 +563,17 @@ async function prepareRawInferenceX402Payment(
     authorizationInput: InferenceAuthorizationInput,
 ): Promise<PreparedInferencePayment | null> {
     const requirement = resolveInferenceAuthorizationRequirement(req, authorizationInput);
-    const requiredChainId = getChainIdFromRequest(req) ?? getActiveChainId();
-    const resourceUrl = `https://${req.get?.("host") || "api.compose.market"}${req.originalUrl || req.url}`;
+    const requiredNetwork = getNetworkFromRequest(req);
+    if (!requiredNetwork) {
+        res.status(400).json({ error: "x-network-id header is required" });
+        return null;
+    }
+    const resourceUrl = publicResourceUrl(req);
     const runId = getRunIdFromRequest(req);
 
-    const buildPaymentRequired = (chainId: number, error?: string) => createPaymentRequired({
+    const buildPaymentRequired = (network: NetworkId, error?: string) => createPaymentRequired({
         amountWei: requirement.maxAmountWei,
-        chainId,
+        network,
         scheme: requirement.scheme,
         resourceUrl,
         description: "Compose.Market AI Agent Inference",
@@ -549,10 +589,10 @@ async function prepareRawInferenceX402Payment(
             || req.headers["x-parent-run-id"];
         if (runId && inheritedExecutionId) {
             const inherited = await readRawEnvelope(runId);
-            if (inherited && inherited.chainId !== requiredChainId) {
+            if (inherited && inherited.network !== requiredNetwork) {
                 const paymentRequired = buildPaymentRequired(
-                    requiredChainId,
-                    `Inherited x402 envelope chain ${inherited.chainId} does not match required chain ${requiredChainId}`,
+                    requiredNetwork,
+                    `Inherited x402 envelope network ${inherited.network} does not match required network ${requiredNetwork}`,
                 );
                 res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
                 res.status(402).json(paymentRequired);
@@ -561,7 +601,7 @@ async function prepareRawInferenceX402Payment(
             if (inherited) {
                 return {
                     maxAmountWei: inherited.maxAmountWei,
-                    runtimeHeaders: rawRuntimeHeaders(requiredChainId, inherited.maxAmountWei),
+                    runtimeHeaders: rawRuntimeHeaders(requiredNetwork, inherited.maxAmountWei),
                     settle: async (settlementInput) => {
                         let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
                         let finalAmountWei: string;
@@ -593,9 +633,18 @@ async function prepareRawInferenceX402Payment(
                         }
 
                         await reserveRawEnvelope(runId, finalAmountWei);
-                        if (isBatchSettlementScheme(inherited.paymentPayload.accepted.scheme)) {
+                        const inheritedBatchPayload = getBatchPayload(inherited.paymentPayload);
+                        if (inheritedBatchPayload) {
                             try {
-                                const batch = await commitBatchCharge(inherited.paymentPayload, finalAmountWei);
+                                const batch = await commitBatchCharge(
+                                    inherited.paymentPayload,
+                                    finalAmountWei,
+                                    createPaymentRequirement({
+                                        amountWei: finalAmountWei,
+                                        network: requiredNetwork,
+                                        scheme: "batch-settlement",
+                                    }),
+                                );
                                 return {
                                     success: true,
                                     finalAmountWei,
@@ -603,7 +652,8 @@ async function prepareRawInferenceX402Payment(
                                     platformFeeWei,
                                     meterSubject,
                                     lineItems,
-                                    chainId: requiredChainId,
+                                    userAddress: inherited.payer,
+                                    network: requiredNetwork,
                                     settledAt: Date.now(),
                                     settlementStatus: "queued",
                                     paymentChannelId: batch.channelId,
@@ -622,7 +672,7 @@ async function prepareRawInferenceX402Payment(
                             inherited.paymentPayload,
                             createPaymentRequirement({
                                 amountWei: finalAmountWei,
-                                chainId: requiredChainId,
+                                network: requiredNetwork,
                                 scheme: inherited.paymentPayload.accepted.scheme === "upto" ? "upto" : "exact",
                             }),
                         );
@@ -642,7 +692,8 @@ async function prepareRawInferenceX402Payment(
                             platformFeeWei,
                             meterSubject,
                             lineItems,
-                            chainId: requiredChainId,
+                            userAddress: inherited.payer,
+                            network: requiredNetwork,
                             settledAt: Date.now(),
                             settlementStatus: settled.transaction ? "settled" : "queued",
                         };
@@ -652,20 +703,20 @@ async function prepareRawInferenceX402Payment(
                 };
             }
         }
-        const paymentRequired = buildPaymentRequired(requiredChainId);
+        const paymentRequired = buildPaymentRequired(requiredNetwork);
         res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
         return null;
     }
 
     let paymentPayload;
-    let paymentChainId: number;
+    let paymentNetwork: NetworkId;
     try {
         paymentPayload = decodePaymentSignatureHeader(paymentSignature);
-        paymentChainId = getChainIdFromPaymentPayload(paymentPayload);
+        paymentNetwork = getNetworkFromPaymentPayload(paymentPayload);
     } catch (error) {
         const paymentRequired = buildPaymentRequired(
-            requiredChainId,
+            requiredNetwork,
             error instanceof Error ? error.message : "Invalid payment payload",
         );
         res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
@@ -673,10 +724,10 @@ async function prepareRawInferenceX402Payment(
         return null;
     }
 
-    if (paymentChainId !== requiredChainId) {
+    if (paymentNetwork !== requiredNetwork) {
         const paymentRequired = buildPaymentRequired(
-            requiredChainId,
-            `Payment chain ${paymentChainId} does not match required chain ${requiredChainId}`,
+            requiredNetwork,
+            `Payment network ${paymentNetwork} does not match required network ${requiredNetwork}`,
         );
         res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
@@ -685,20 +736,21 @@ async function prepareRawInferenceX402Payment(
 
     const verificationRequirement = createPaymentRequirement({
         amountWei: requirement.maxAmountWei,
-        chainId: requiredChainId,
+        network: requiredNetwork,
         scheme: requirement.scheme,
     });
     const verifyResult = await verifyPayment(paymentPayload, verificationRequirement);
     if (!verifyResult.isValid) {
         const paymentRequired = buildPaymentRequired(
-            requiredChainId,
+            requiredNetwork,
             verifyResult.invalidMessage || verifyResult.invalidReason || "Payment verification failed",
         );
         res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
         return null;
     }
-    if (isBatchSettlementScheme(paymentPayload.accepted.scheme)) {
+    const verifiedBatchPayload = getBatchPayload(paymentPayload);
+    if (verifiedBatchPayload) {
         await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
     }
 
@@ -706,17 +758,18 @@ async function prepareRawInferenceX402Payment(
         await saveRawEnvelope({
             rootRunId: runId,
             maxAmountWei: requirement.maxAmountWei,
-            chainId: requiredChainId,
+            network: requiredNetwork,
             paymentPayload,
             payer: verifyResult.payer,
         });
     }
 
     let currentHeaders: Record<string, string> = {};
+    const rawPayer = verifyResult.payer || undefined;
 
     return {
         maxAmountWei: requirement.maxAmountWei,
-        runtimeHeaders: rawRuntimeHeaders(requiredChainId, requirement.maxAmountWei),
+        runtimeHeaders: rawRuntimeHeaders(requiredNetwork, requirement.maxAmountWei),
         settle: async (settlementInput) => {
             let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
             let finalAmountWei: string;
@@ -763,7 +816,8 @@ async function prepareRawInferenceX402Payment(
                     platformFeeWei,
                     meterSubject,
                     lineItems,
-                    chainId: requiredChainId,
+                    userAddress: rawPayer,
+                    network: requiredNetwork,
                     settledAt: Date.now(),
                 };
             }
@@ -782,12 +836,13 @@ async function prepareRawInferenceX402Payment(
 
             const settlementRequirement = createPaymentRequirement({
                 amountWei: finalAmountWei,
-                chainId: requiredChainId,
+                network: requiredNetwork,
                 scheme: requirement.scheme,
             });
             let settled;
             let batch;
-            if (isBatchSettlementScheme(paymentPayload.accepted.scheme) && getBatchPayload(paymentPayload)?.type === "voucher") {
+            const batchPayload = getBatchPayload(paymentPayload);
+            if (batchPayload?.type === "voucher") {
                 try {
                     batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
                     settled = queuedBatchSettlement(finalAmountWei, settlementRequirement.network);
@@ -805,7 +860,7 @@ async function prepareRawInferenceX402Payment(
                     paymentPayload,
                     settlementRequirement,
                 );
-                if (isBatchSettlementScheme(paymentPayload.accepted.scheme) && settled.success) {
+                if (batchPayload && settled.success) {
                     batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
                 }
             }
@@ -835,9 +890,10 @@ async function prepareRawInferenceX402Payment(
                 platformFeeWei,
                 meterSubject,
                 lineItems,
-                chainId: requiredChainId,
+                userAddress: rawPayer,
+                network: requiredNetwork,
                 settledAt: Date.now(),
-                settlementStatus: isBatchSettlementScheme(paymentPayload.accepted.scheme)
+                settlementStatus: batch
                     ? "queued"
                     : (settled.transaction ? "settled" : "queued"),
                 paymentChannelId: batch?.channelId,
@@ -862,22 +918,26 @@ export async function prepareInferencePayment(
     authorizationInput: InferenceAuthorizationInput,
 ): Promise<PreparedInferencePayment | null> {
     const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-    const composeKeyToken = extractKeyFromHeader(authorization);
-    if (!composeKeyToken) {
+    const keyToken = extractKeyFromHeader(authorization);
+    if (!keyToken) {
         return prepareRawInferenceX402Payment(req, res, authorizationInput);
     }
 
-    const validation = await validateKey(composeKeyToken, 0);
+    const validation = await validateKey(keyToken, 0);
     if (!validation.valid || !validation.payload || !validation.record) {
         setSessionInvalidHeader(res, getSessionInvalidReason(validation.error));
         res.status(401).json({ error: validation.error || "Invalid Compose key" });
         return null;
     }
 
-    const chainId = getChainIdFromRequest(req) ?? validation.record.chainId ?? getActiveChainId();
-    if (validation.record.chainId && validation.record.chainId !== chainId) {
+    const network = getNetworkFromRequest(req);
+    if (!network) {
+        res.status(400).json({ error: "x-network-id header is required" });
+        return null;
+    }
+    if (validation.record.network !== network) {
         setSessionInvalidHeader(res, "invalid_key");
-        res.status(409).json({ error: "Compose key chainId does not match request chainId" });
+        res.status(409).json({ error: "Compose key network does not match request network" });
         return null;
     }
 
@@ -887,11 +947,11 @@ export async function prepareInferencePayment(
     let sessionMaxAmountWei: string | null = null;
 
     if (purpose === "session") {
-        const sessionStatus = await getActiveSessionStatus(userAddress, chainId);
+        const sessionStatus = await getActiveSessionStatus(userAddress, network);
         const session = sessionStatus.session;
         if (!session || session.keyId !== keyId) {
             setSessionInvalidHeader(res, session ? "invalid_key" : sessionStatus.reason);
-            res.status(401).json({ error: "The compose-key session is inactive or expired." });
+            res.status(401).json({ error: "The key session is inactive or expired." });
             return null;
         }
         sessionMaxAmountWei = String(Math.max(0, session.budgetRemaining));
@@ -907,7 +967,7 @@ export async function prepareInferencePayment(
     if (purpose !== "session") {
         const authorizationResult = await authorizePaymentIntent({
             authorization,
-            chainId,
+            network,
             service: "api",
             action: "inference",
             resource: publicResourceUrl(req),
@@ -936,7 +996,7 @@ export async function prepareInferencePayment(
 
     const resolvedRuntimeHeaders = runtimeHeaders({
         authorization,
-        chainId,
+        network,
         userAddress,
         maxAmountWei,
         sessionActive: purpose === "session",
@@ -979,7 +1039,7 @@ export async function prepareInferencePayment(
                     platformFeeWei,
                     meterSubject,
                     lineItems,
-                    chainId,
+                    network,
                     settledAt: Date.now(),
                     settlementStatus: "queued",
                     ...(paymentIntentId ? { paymentIntentId } : {}),
@@ -992,7 +1052,7 @@ export async function prepareInferencePayment(
                     : `inference-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
                 const lock = await lockBudget(
                     userAddress,
-                    chainId,
+                    network,
                     finalAmountWei,
                     merchantWalletAddress,
                     requestId,
@@ -1023,7 +1083,7 @@ export async function prepareInferencePayment(
                     platformFeeWei,
                     meterSubject,
                     lineItems,
-                    chainId,
+                    network,
                     settledAt: Date.now(),
                     settlementStatus: "queued",
                     sessionBudgetIntentId: lock.intentId,
@@ -1043,7 +1103,7 @@ export async function prepareInferencePayment(
                 paymentIntentSequence += 1;
                 const authorizationResult = await authorizePaymentIntent({
                     authorization,
-                    chainId,
+                    network,
                     service: "api",
                     action: "inference",
                     resource: publicResourceUrl(req),
@@ -1126,7 +1186,7 @@ export async function prepareInferencePayment(
                 platformFeeWei,
                 meterSubject,
                 lineItems,
-                chainId,
+                network,
                 settledAt: Date.now(),
                 settlementStatus: txHash ? "settled" : "queued",
                 paymentIntentId: activePaymentIntentId,
@@ -1166,6 +1226,7 @@ export async function prepareInferencePayment(
 
 export interface InferenceSettlementReceipt {
     finalAmountWei: string;
+    userAddress?: string;
     providerAmountWei?: string;
     platformFeeWei?: string;
     meterSubject?: string;
@@ -1184,7 +1245,7 @@ export interface InferenceSettlementReceipt {
     sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
-    chainId?: number;
+    network?: NetworkId;
     settledAt: number;
     evidenceOnly?: boolean;
 }
@@ -1220,9 +1281,22 @@ export async function settlePreparedInferencePayment(
     if (!settlement.finalAmountWei) {
         return null;
     }
+    if (
+        BigInt(settlement.finalAmountWei || "0") > 0n
+        && settlement.paymentIntentId
+        && !settlement.txHash
+        && !settlement.sessionBudgetIntentId
+        && !(settlement.paymentChannelId && settlement.paymentCumulativeAmountWei)
+    ) {
+        throw Object.assign(
+            new Error("Nonzero direct Compose Key settlement is missing on-chain transaction backing"),
+            { statusCode: 402 },
+        );
+    }
 
     return {
         finalAmountWei: settlement.finalAmountWei,
+        userAddress: settlement.userAddress,
         providerAmountWei: settlement.providerAmountWei,
         platformFeeWei: settlement.platformFeeWei,
         meterSubject: settlement.meterSubject,
@@ -1235,7 +1309,7 @@ export async function settlePreparedInferencePayment(
         sessionBudgetIntentId: settlement.sessionBudgetIntentId,
         paymentChannelId: settlement.paymentChannelId,
         paymentCumulativeAmountWei: settlement.paymentCumulativeAmountWei,
-        chainId: settlement.chainId,
+        network: settlement.network,
         settledAt: settlement.settledAt ?? Date.now(),
         evidenceOnly: settlement.evidenceOnly,
     };
@@ -1243,7 +1317,6 @@ export async function settlePreparedInferencePayment(
 
 // Re-export config for convenience
 export {
-    paymentChain,
     paymentAsset,
     merchantWalletAddress,
     serverWalletAddress,

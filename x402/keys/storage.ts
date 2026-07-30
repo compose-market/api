@@ -23,7 +23,8 @@ import {
     valkeyTTL,
 } from "./valkey.js";
 import { signKey } from "./jwt.js";
-import { getSessionBudget } from "../session-budget.js";
+import { getSessionBudget } from "../session/budget.js";
+import { isEvmNetwork, type NetworkId } from "../configs/chains.js";
 import type {
     KeyRecord,
     KeyPurpose,
@@ -37,16 +38,20 @@ import type {
 // ValKey Key Patterns
 // =============================================================================
 
-const KEY_PREFIX = "compose-key:";
+const KEY_PREFIX = "key:";
 const USER_KEYS_PREFIX = "user-keys:";
-const REVOKED_PREFIX = "compose-key:revoked:";
+const REVOKED_PREFIX = "key:revoked:";
 
 function keyRecordKey(keyId: string): string {
     return `${KEY_PREFIX}${keyId}`;
 }
 
-function userKeysKey(userAddress: string): string {
-    return `${USER_KEYS_PREFIX}${userAddress.toLowerCase()}`;
+function normalizeAddress(userAddress: string, network: NetworkId): string {
+    return isEvmNetwork(network) ? userAddress.toLowerCase() : userAddress;
+}
+
+function userKeysKey(userAddress: string, network: NetworkId): string {
+    return `${USER_KEYS_PREFIX}${network}:${normalizeAddress(userAddress, network)}`;
 }
 
 function revokedKey(keyId: string): string {
@@ -75,7 +80,7 @@ export interface ActiveSessionCandidate {
     budgetRemaining: number;
     expiresAt: number;
     createdAt: number;
-    chainId?: number;
+    network: NetworkId;
     name?: string;
     revokedAt?: number;
     missingBudgetState?: boolean;
@@ -98,7 +103,7 @@ function latestKeySnapshot(candidate: ActiveSessionCandidate): NonNullable<Activ
         budgetLocked: candidate.budgetLocked,
         budgetRemaining: candidate.budgetRemaining,
         expiresAt: candidate.expiresAt,
-        chainId: candidate.chainId,
+        network: candidate.network,
         name: candidate.name,
         revokedAt: candidate.revokedAt,
     };
@@ -156,7 +161,7 @@ function buildActiveSessionCandidate(
         }),
         expiresAt,
         createdAt: parseStoredInteger(data.createdAt) ?? 0,
-        chainId: parseStoredInteger(data.chainId) ?? undefined,
+        network: data.network as NetworkId,
         name: data.name || undefined,
         revokedAt: parseStoredInteger(data.revokedAt) ?? undefined,
     };
@@ -200,7 +205,7 @@ function applySessionBudgetState(
 
 export function selectActiveSessionStatus(
     candidates: ActiveSessionCandidate[],
-    chainId?: number,
+    network?: NetworkId,
     now: number = Date.now(),
 ): ActiveSessionStatus {
     if (candidates.length === 0) {
@@ -215,13 +220,13 @@ export function selectActiveSessionStatus(
         return { session: null, reason: "none" };
     }
 
-    let sawChainMismatch = false;
+    let sawNetworkMismatch = false;
     let firstInvalid: { reason: SessionInactiveReason; key: ActiveSessionCandidate } | null = null;
 
     for (const candidate of sessionCandidates) {
-        const chainMismatch = Boolean(chainId && candidate.chainId && candidate.chainId !== chainId);
-        if (chainMismatch) {
-            sawChainMismatch = true;
+        const networkMismatch = Boolean(network && candidate.network !== network);
+        if (networkMismatch) {
+            sawNetworkMismatch = true;
             continue;
         }
 
@@ -236,7 +241,7 @@ export function selectActiveSessionStatus(
                     budgetLocked: candidate.budgetLocked,
                     budgetRemaining: candidate.budgetRemaining,
                     expiresAt: candidate.expiresAt,
-                    chainId: candidate.chainId,
+                    network: candidate.network,
                     name: candidate.name,
                 },
                 reason: "none",
@@ -260,10 +265,10 @@ export function selectActiveSessionStatus(
         };
     }
 
-    if (sawChainMismatch) {
+    if (sawNetworkMismatch) {
         return {
             session: null,
-            reason: "chain_mismatch",
+            reason: "network_mismatch",
             latestKey: latestKeySnapshot(sessionCandidates[0]),
         };
     }
@@ -288,7 +293,7 @@ export async function createKey(
 ): Promise<CreateKeyResponse> {
     const keyId = randomUUID();
     const now = Date.now();
-    const normalizedAddress = userAddress.toLowerCase();
+    const normalizedAddress = normalizeAddress(userAddress, request.network);
 
     const record: KeyRecord = {
         keyId,
@@ -300,13 +305,14 @@ export async function createKey(
         createdAt: now,
         expiresAt: request.expiresAt,
         name: request.name,
-        chainId: request.chainId,
+        network: request.network,
     };
 
     // Generate token
     const token = signKey({
         sub: normalizedAddress,
         keyId,
+        network: request.network,
         budgetLimit: request.budgetLimit,
         budgetUsed: 0,
         exp: Math.floor(request.expiresAt / 1000), // Convert to seconds
@@ -323,7 +329,7 @@ export async function createKey(
         createdAt: String(record.createdAt),
         expiresAt: String(record.expiresAt),
         ...(record.name ? { name: record.name } : {}),
-        ...(record.chainId ? { chainId: String(record.chainId) } : {}),
+        network: record.network,
         token,
     });
 
@@ -334,16 +340,17 @@ export async function createKey(
     }
 
     // Add to user's key set
-    await valkeySAdd(userKeysKey(normalizedAddress), keyId);
-    const indexTtlSeconds = await valkeyTTL(userKeysKey(normalizedAddress));
+    await valkeySAdd(userKeysKey(normalizedAddress, request.network), keyId);
+    const indexTtlSeconds = await valkeyTTL(userKeysKey(normalizedAddress, request.network));
     if (ttlSeconds > 0 && (indexTtlSeconds < 0 || indexTtlSeconds < ttlSeconds)) {
-        await valkeyExpire(userKeysKey(normalizedAddress), ttlSeconds);
+        await valkeyExpire(userKeysKey(normalizedAddress, request.network), ttlSeconds);
     }
 
     return {
         keyId,
         token,
         purpose: request.purpose,
+        network: request.network,
         budgetLimit: request.budgetLimit,
         expiresAt: request.expiresAt,
         name: request.name,
@@ -377,16 +384,16 @@ export async function getKeyRecord(keyId: string): Promise<KeyRecord | null> {
         revokedAt: data.revokedAt ? parseInt(data.revokedAt, 10) : undefined,
         name: data.name || undefined,
         lastUsedAt: data.lastUsedAt ? parseInt(data.lastUsedAt, 10) : undefined,
-        chainId: data.chainId ? parseInt(data.chainId, 10) : undefined,
+        network: data.network as NetworkId,
     };
 }
 
 /**
  * List all keys for a user
  */
-export async function listUserKeys(userAddress: string): Promise<KeyRecord[]> {
-    const normalizedAddress = userAddress.toLowerCase();
-    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress));
+export async function listUserKeys(userAddress: string, network: NetworkId): Promise<KeyRecord[]> {
+    const normalizedAddress = normalizeAddress(userAddress, network);
+    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress, network));
     const records = (await Promise.all(keyIds.map((keyId) => getKeyRecord(keyId))))
         .filter((record): record is KeyRecord => record !== null);
 
@@ -433,20 +440,20 @@ export async function recordKeyUsage(keyId: string, amountWei: number): Promise<
  * Updates storage.ts budgetUsed to match settled amount
  * 
  * @param userAddress - User wallet address
- * @param chainId - Chain ID
+ * @param network - CAIP-2 network
  * @param totalUsedWei - Total USDC wei settled on-chain
  */
 export async function syncBudgetAfterSettlement(
     userAddress: string,
-    chainId: number,
+    network: NetworkId,
     totalUsedWei: string,
 ): Promise<void> {
-    const addr = userAddress.toLowerCase();
-    const keyIds = await valkeySMembers(userKeysKey(addr));
+    const addr = normalizeAddress(userAddress, network);
+    const keyIds = await valkeySMembers(userKeysKey(addr, network));
 
     for (const keyId of keyIds) {
         const record = await getKeyRecord(keyId);
-        if (record && record.chainId === chainId) {
+        if (record && record.network === network) {
             const recordKey = keyRecordKey(keyId);
             await valkeyHSet(recordKey, "budgetUsed", totalUsedWei);
             return;
@@ -515,16 +522,16 @@ export async function getKeyReservedBudget(keyId: string): Promise<number> {
  * Returns the key WITH token for session restoration
  * 
  * @param userAddress - User's wallet address
- * @param chainId - Optional chain ID filter
+ * @param network - CAIP-2 network
  * @returns Active session with token, or null if none found
  */
 export async function getActiveSessionStatus(
     userAddress: string,
-    chainId?: number,
+    network: NetworkId,
 ): Promise<ActiveSessionStatus> {
-    const normalizedAddress = userAddress.toLowerCase();
-    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress));
-    const userKeyIndex = userKeysKey(normalizedAddress);
+    const normalizedAddress = normalizeAddress(userAddress, network);
+    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress, network));
+    const userKeyIndex = userKeysKey(normalizedAddress, network);
     const loadedRecords = await Promise.all(
         keyIds.map(async (keyId) => [keyId, await valkeyHGetAll(keyRecordKey(keyId))] as const),
     );
@@ -547,29 +554,29 @@ export async function getActiveSessionStatus(
         })
         .filter((candidate): candidate is ActiveSessionCandidate => candidate !== null);
 
-    const sessionChainIds = [...new Set(
+    const sessionNetworks = [...new Set(
         candidates
-            .filter((candidate) => candidate.purpose === "session" && typeof candidate.chainId === "number")
-            .map((candidate) => candidate.chainId as number),
+            .filter((candidate) => candidate.purpose === "session")
+            .map((candidate) => candidate.network),
     )];
 
-    const sessionBudgets = new Map<number, Awaited<ReturnType<typeof getSessionBudget>> | undefined>();
+    const sessionBudgets = new Map<NetworkId, Awaited<ReturnType<typeof getSessionBudget>> | undefined>();
     const sessionBudgetEntries = await Promise.all(
-        sessionChainIds.map(async (candidateChainId) => (
-            [candidateChainId, await getSessionBudget(normalizedAddress, candidateChainId)] as const
+        sessionNetworks.map(async (candidateNetwork) => (
+            [candidateNetwork, await getSessionBudget(normalizedAddress, candidateNetwork)] as const
         )),
     );
-    for (const [candidateChainId, budget] of sessionBudgetEntries) {
-        sessionBudgets.set(candidateChainId, budget);
+    for (const [candidateNetwork, budget] of sessionBudgetEntries) {
+        sessionBudgets.set(candidateNetwork, budget);
     }
 
     const resolvedCandidates = candidates.map((candidate) => {
-        if (candidate.purpose !== "session" || typeof candidate.chainId !== "number") {
+        if (candidate.purpose !== "session") {
             return candidate;
         }
 
-        return applySessionBudgetState(candidate, sessionBudgets.get(candidate.chainId));
+        return applySessionBudgetState(candidate, sessionBudgets.get(candidate.network));
     });
 
-    return selectActiveSessionStatus(resolvedCandidates, chainId);
+    return selectActiveSessionStatus(resolvedCandidates, network);
 }

@@ -6,10 +6,11 @@ import {
   encodeReceiptHeader,
   RECEIPT_HEADER,
   type Receipt,
-  type ReceiptBill,
-  type ReceiptLineItem,
+  type Bill,
+  type LineItem,
 } from "../http/request-context.js";
 import type { InferenceSettlementReceipt } from "./index.js";
+import type { NetworkId } from "./configs/chains.js";
 import {
   valkeyExpire,
   valkeyGet,
@@ -36,8 +37,8 @@ export type RouteSettlement =
     providerAmountWei?: string;
     platformFeeWei?: string;
     meterSubject?: string;
-    lineItems?: ReceiptLineItem[];
-    bills?: ReceiptBill[];
+    lineItems?: LineItem[];
+    bills?: Bill[];
     evidence?: {
       kind: "agent" | "model" | "tool" | "search" | "memory" | "connector";
       rootRunId: string;
@@ -59,12 +60,12 @@ export interface ReceiptContext {
   action?: string;
   resource?: string;
   userAddress?: string;
-  chainId?: number;
+  network?: NetworkId;
 }
 
 export interface ReceiptListResult {
   userAddress: string;
-  chainId: number;
+  network: NetworkId;
   cumulative: {
     totalAmountWei: string;
     providerAmountWei: string;
@@ -102,12 +103,6 @@ type HeaderSink = {
 const RECEIPT_TTL_SECONDS = 60 * 60 * 24 * 180;
 const RECEIPT_KEY_PREFIX = "x402:receipt";
 
-function network(chainId: number | undefined): `eip155:${number}` | null {
-  return typeof chainId === "number" && Number.isFinite(chainId)
-    ? `eip155:${chainId}` as `eip155:${number}`
-    : null;
-}
-
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -118,12 +113,12 @@ function receiptKey(receiptId: string): string {
   return `${RECEIPT_KEY_PREFIX}:${receiptId}`;
 }
 
-function userReceiptsKey(userAddress: string, chainId: number): string {
-  return `${RECEIPT_KEY_PREFIX}:user:${userAddress.toLowerCase()}:${chainId}`;
+function userReceiptsKey(userAddress: string, network: NetworkId): string {
+  return `${RECEIPT_KEY_PREFIX}:user:${network}:${userAddress}`;
 }
 
-function userAggregateKey(userAddress: string, chainId: number): string {
-  return `${RECEIPT_KEY_PREFIX}:aggregate:${userAddress.toLowerCase()}:${chainId}`;
+function userAggregateKey(userAddress: string, network: NetworkId): string {
+  return `${RECEIPT_KEY_PREFIX}:aggregate:${network}:${userAddress}`;
 }
 
 function batchReceiptsKey(channelId: string): string {
@@ -149,8 +144,8 @@ function scope(prefix: string, lineItems: MeterLineItem[]): MeterLineItem[] {
   }));
 }
 
-function parseNestedBill(item: ReceiptLineItem): {
-  kind: ReceiptBill["kind"];
+function parseNestedBill(item: LineItem): {
+  kind: Bill["kind"];
   source?: string;
   subject?: string;
 } | null {
@@ -159,13 +154,13 @@ function parseNestedBill(item: ReceiptLineItem): {
     return null;
   }
   return {
-    kind: match[1] as ReceiptBill["kind"],
+    kind: match[1] as Bill["kind"],
     source: match[2],
     subject: match[3],
   };
 }
 
-function billKeyForItem(item: ReceiptLineItem, receipt: Receipt): string {
+function billKeyForItem(item: LineItem, receipt: Receipt): string {
   const parsed = parseNestedBill(item);
   if (parsed) {
     return [parsed.kind, parsed.source, parsed.subject].filter(Boolean).join(":");
@@ -174,9 +169,9 @@ function billKeyForItem(item: ReceiptLineItem, receipt: Receipt): string {
   return [kind, receipt.action, receipt.subject].filter(Boolean).join(":");
 }
 
-export function buildReceiptBills(receipt: Receipt): ReceiptBill[] {
+export function buildBills(receipt: Receipt): Bill[] {
   const lineItems = receipt.lineItems || [];
-  const grouped = new Map<string, ReceiptBill>();
+  const grouped = new Map<string, Bill>();
 
   for (const item of lineItems) {
     const parsed = parseNestedBill(item);
@@ -204,8 +199,8 @@ export function buildReceiptBills(receipt: Receipt): ReceiptBill[] {
   return [...grouped.values()];
 }
 
-async function cumulativeFor(userAddress: string, chainId: number): Promise<Receipt["cumulative"]> {
-  const aggregate = await valkeyHGetAll(userAggregateKey(userAddress, chainId));
+async function cumulativeFor(userAddress: string, network: NetworkId): Promise<Receipt["cumulative"]> {
+  const aggregate = await valkeyHGetAll(userAggregateKey(userAddress, network));
   return {
     totalAmountWei: aggregate.totalAmountWei || "0",
     providerAmountWei: aggregate.providerAmountWei || "0",
@@ -219,24 +214,19 @@ export async function storeReceipt(receipt: Receipt): Promise<Receipt> {
     return receipt;
   }
 
-  const [, chainIdPart] = receipt.network.split(":");
-  const chainId = Number.parseInt(chainIdPart, 10);
-  if (!Number.isFinite(chainId)) {
-    return receipt;
-  }
-
-  const userAddress = receipt.userAddress.toLowerCase();
+  const userAddress = receipt.userAddress;
+  const network = receipt.network as NetworkId;
   const id = receipt.id || `rct_${randomUUID().replace(/-/g, "")}`;
   const full: Receipt = {
     ...receipt,
     id,
     userAddress,
-    bills: receipt.bills && receipt.bills.length > 0 ? receipt.bills : buildReceiptBills(receipt),
+    bills: receipt.bills && receipt.bills.length > 0 ? receipt.bills : buildBills(receipt),
   };
 
   await valkeySet(receiptKey(id), JSON.stringify(full), RECEIPT_TTL_SECONDS);
-  await valkeySAdd(userReceiptsKey(userAddress, chainId), id);
-  await valkeyExpire(userReceiptsKey(userAddress, chainId), RECEIPT_TTL_SECONDS);
+  await valkeySAdd(userReceiptsKey(userAddress, network), id);
+  await valkeyExpire(userReceiptsKey(userAddress, network), RECEIPT_TTL_SECONDS);
   if (full.paymentChannelId) {
     await valkeySAdd(batchReceiptsKey(full.paymentChannelId), id);
     await valkeyExpire(batchReceiptsKey(full.paymentChannelId), RECEIPT_TTL_SECONDS);
@@ -250,7 +240,7 @@ export async function storeReceipt(receipt: Receipt): Promise<Receipt> {
     await valkeyExpire(sessionReceiptsKey(full.sessionBudgetIntentId), RECEIPT_TTL_SECONDS);
   }
 
-  const aggregateKey = userAggregateKey(userAddress, chainId);
+  const aggregateKey = userAggregateKey(userAddress, network);
   await valkeyHIncrByAmount(aggregateKey, "totalAmountWei", full.finalAmountWei);
   if (full.providerAmountWei) {
     await valkeyHIncrByAmount(aggregateKey, "providerAmountWei", full.providerAmountWei);
@@ -267,7 +257,7 @@ export async function storeReceipt(receipt: Receipt): Promise<Receipt> {
 
   return {
     ...full,
-    cumulative: await cumulativeFor(userAddress, chainId),
+    cumulative: await cumulativeFor(userAddress, network),
   };
 }
 
@@ -284,20 +274,20 @@ export async function finalizeReceipt(
     service: context.service ?? receipt.service,
     action: context.action ?? receipt.action,
     resource: context.resource ?? receipt.resource,
-    userAddress: context.userAddress?.toLowerCase() ?? receipt.userAddress,
+    userAddress: context.userAddress ?? receipt.userAddress,
   };
-  full.bills = full.bills && full.bills.length > 0 ? full.bills : buildReceiptBills(full);
+  full.bills = full.bills && full.bills.length > 0 ? full.bills : buildBills(full);
   return storeReceipt(full);
 }
 
 export async function listReceipts(input: {
   userAddress: string;
-  chainId: number;
+  network: NetworkId;
   limit?: number;
 }): Promise<ReceiptListResult> {
-  const userAddress = input.userAddress.toLowerCase();
-  const cumulative = await cumulativeFor(userAddress, input.chainId);
-  const ids = await valkeySMembers(userReceiptsKey(userAddress, input.chainId));
+  const userAddress = input.userAddress;
+  const cumulative = await cumulativeFor(userAddress, input.network);
+  const ids = await valkeySMembers(userReceiptsKey(userAddress, input.network));
   const receipts = (await Promise.all(
     ids.map(async (id) => {
       const raw = await valkeyGet(receiptKey(id));
@@ -310,7 +300,7 @@ export async function listReceipts(input: {
 
   return {
     userAddress,
-    chainId: input.chainId,
+    network: input.network,
     cumulative: {
       totalAmountWei: cumulative?.totalAmountWei || "0",
       providerAmountWei: cumulative?.providerAmountWei || "0",
@@ -454,13 +444,13 @@ function combinedMeter(
 
 export function receiptFromInferenceSettlement(
   settlement: InferenceSettlementReceipt | null,
-  chainId?: number,
+  network?: NetworkId,
 ): Receipt | null {
   if (!settlement) {
     return null;
   }
 
-  const resolvedNetwork = network(settlement.chainId ?? chainId);
+  const resolvedNetwork = settlement.network ?? network;
   if (!resolvedNetwork) {
     return null;
   }
@@ -469,6 +459,7 @@ export function receiptFromInferenceSettlement(
     finalAmountWei: settlement.finalAmountWei,
     network: resolvedNetwork,
     settledAt: settlement.settledAt,
+    ...(settlement.userAddress ? { userAddress: settlement.userAddress } : {}),
     ...(settlement.meterSubject ? { subject: settlement.meterSubject } : {}),
     ...(settlement.lineItems && settlement.lineItems.length > 0 ? { lineItems: settlement.lineItems } : {}),
     ...(settlement.providerAmountWei ? { providerAmountWei: settlement.providerAmountWei } : {}),
@@ -486,13 +477,13 @@ export function receiptFromInferenceSettlement(
 
 export function receiptFromSettledIntentBody(
   body: SettledIntentReceiptBody,
-  chainId?: number,
+  network?: NetworkId,
 ): Receipt | null {
   if (!body.finalAmountWei) {
     return null;
   }
 
-  const resolvedNetwork = network(chainId);
+  const resolvedNetwork = network;
   if (!resolvedNetwork) {
     return null;
   }
