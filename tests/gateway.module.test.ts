@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { Receipt } from "../http/request-context.js";
 
 const ORIGINAL_ENV = {
@@ -99,6 +101,7 @@ test("gateway receipt JSON helpers preserve canonical settlement data without un
     finalAmountWei: "579",
     txHash: "0xabc",
     network: "eip155:5042002",
+    network: "eip155:5042002",
     settledAt: 1_778_888_001,
   };
 
@@ -124,6 +127,7 @@ test("gateway receipt JSON helpers preserve canonical settlement data without un
     platform_fee_wei: "79",
     final_amount_wei: "579",
     tx_hash: "0xabc",
+    network: "eip155:5042002",
     network: "eip155:5042002",
     settled_at: 1_778_888_001,
   });

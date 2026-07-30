@@ -13,6 +13,7 @@ import type {
 import * as openaiFamily from "./families/openai.js";
 import * as googleFamily from "./families/google.js";
 import * as moonshotFamily from "./families/moonshot.js";
+import * as moonshotFamily from "./families/moonshot.js";
 import {
   generateImage as googleGenerateImage,
   streamImage as googleStreamImage,
@@ -48,6 +49,7 @@ import {
   generateAzureEmbeddings,
   generateAzureImage,
   streamAzureChat,
+  streamAzureChat,
 } from "./vendors/azure.js";
 import {
   generateAlibabaChat,
@@ -55,6 +57,7 @@ import {
   generateAlibabaImage,
   generateAlibabaSpeech,
   retrieveAlibabaVideo,
+  streamAlibabaChat,
   streamAlibabaChat,
   submitAlibabaVideo,
   transcribeAlibabaAudio,
@@ -121,6 +124,7 @@ import { bufferFromPayload } from "./shared/media.js";
 export interface AdapterTarget {
   modelId: string;
   provider: ModelProvider;
+  family?: string;
   family?: string;
   signal?: AbortSignal;
   params?: Record<string, unknown>;
@@ -363,6 +367,15 @@ function openaiCompatEndpointFor(provider: ModelProvider): openaiFamily.OpenAIWi
     default:
       throw new Error(`No OpenAI-compatible endpoint configured for provider: ${provider}`);
   }
+}
+
+function usesSharedOpenAICompatTransport(provider: ModelProvider): boolean {
+  return provider === "openai"
+    || provider === "cloudflare"
+    || provider === "fireworks"
+    || provider === "deepinfra"
+    || provider === "asicloud"
+    || provider === "hugging face";
 }
 
 function usesSharedOpenAICompatTransport(provider: ModelProvider): boolean {
@@ -885,6 +898,12 @@ function supportsTranscriptionPrompt(card: ReturnType<typeof getModelById>): boo
     return modelId === "whisper-1" || /gpt-4o(?:-mini)?-transcribe/.test(modelId);
   }
   const description = catalogParamDescription(card, "prompt");
+  if (modelId.includes("transcribe-diarize")) return false;
+  const params = asRecord(card?.params);
+  if (!asRecord(params?.prompt)) {
+    return modelId === "whisper-1" || /gpt-4o(?:-mini)?-transcribe/.test(modelId);
+  }
+  const description = catalogParamDescription(card, "prompt");
   return !(modelId && description.includes(modelId) && /not supported/i.test(description));
 }
 
@@ -1142,6 +1161,10 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
     return invokeMoonshotText(request, target);
   }
 
+  if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
+    return invokeMoonshotText(request, target);
+  }
+
   if (target.provider === "roboflow") {
     const prompt = getPrimaryText(request.messages);
     const imageUrl = findUrl(request.messages, "image_url");
@@ -1203,11 +1226,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       operation: request.operation,
       inputItems: request.mode === "responses" ? request.inputItems : undefined,
       signal: target.signal,
+      signal: target.signal,
     });
 
     return {
       modality: "text",
       content: result.text,
+      ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       usage: result.usage || {
         promptTokens: 0,
@@ -1229,11 +1254,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       responseFormat: request.responseFormat,
       customParams: request.customParams,
       signal: target.signal,
+      signal: target.signal,
     });
 
     return {
       modality: "text",
       content: result.text,
+      ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       usage: result.usage || {
         promptTokens: 0,
@@ -1362,13 +1389,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
         ? request.inputItems
         : openaiFamily.mapMessagesForResponsesWire(request.messages),
       {
-      ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
-      ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
-      ...(request.tools ? { tools: request.tools } : {}),
-      ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
-      ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
-      customParams: request.customParams,
-      signal: target.signal,
+        ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+        ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
+        ...(request.tools ? { tools: request.tools } : {}),
+        ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+        ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+        customParams: request.customParams,
+        signal: target.signal,
       },
     );
   }
@@ -2337,6 +2364,7 @@ export async function* streamWithTools(
             yield {
               type: "image-partial",
               outputIndex: 0,
+              outputIndex: 0,
               image: {
                 base64: event.b64,
                 index: event.index,
@@ -2358,6 +2386,7 @@ export async function* streamWithTools(
           const generatedUnits = generatedImageCount(request);
           yield {
             type: "image-complete",
+            outputIndex: 0,
             outputIndex: 0,
             image: {
               base64: event.b64,
@@ -2419,6 +2448,7 @@ export async function* streamWithTools(
           yield {
             type: "image-partial",
             outputIndex: 0,
+            outputIndex: 0,
             image: {
               base64: event.base64,
               index: event.index,
@@ -2439,6 +2469,7 @@ export async function* streamWithTools(
         const generatedUnits = generatedImageCount(request);
         yield {
           type: "image-complete",
+          outputIndex: 0,
           outputIndex: 0,
           image: {
             base64: event.base64,
@@ -2473,6 +2504,11 @@ export async function* streamWithTools(
 
   if (request.modality !== "text") {
     throw new Error(`Streaming is only supported for text and image modalities. Requested: ${request.modality}`);
+  }
+
+  if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
+    yield* streamMoonshotText(request, target);
+    return;
   }
 
   if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
@@ -2582,15 +2618,18 @@ export async function* streamWithTools(
 
   if (target.provider === "azure") {
     yield* streamAzureChat(target.modelId, request.messages, {
-      temperature: request.temperature,
-      maxTokens: request.maxTokens,
-      tools: request.tools,
-      toolChoice: request.toolChoice,
-      responseFormat: request.responseFormat,
-      previousResponseId: request.previousResponseId,
-      customParams: request.customParams,
-      operation: request.operation,
-      inputItems: request.mode === "responses" ? request.inputItems : undefined,
+      yield* streamAzureChat(target.modelId, request.messages, {
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
+        responseFormat: request.responseFormat,
+        previousResponseId: request.previousResponseId,
+        customParams: request.customParams,
+        operation: request.operation,
+        inputItems: request.mode === "responses" ? request.inputItems : undefined,
+        signal: target.signal,
+      });
       signal: target.signal,
     });
     return;
@@ -2598,12 +2637,15 @@ export async function* streamWithTools(
 
   if (target.provider === "alibaba") {
     yield* streamAlibabaChat(target.modelId, request.messages, {
-      temperature: request.temperature,
-      maxTokens: request.maxTokens,
-      tools: request.tools,
-      toolChoice: request.toolChoice,
-      responseFormat: request.responseFormat,
-      customParams: request.customParams,
+      yield* streamAlibabaChat(target.modelId, request.messages, {
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
+        responseFormat: request.responseFormat,
+        customParams: request.customParams,
+        signal: target.signal,
+      });
       signal: target.signal,
     });
     return;
@@ -2642,13 +2684,13 @@ export async function* streamWithTools(
         ? request.inputItems
         : openaiFamily.mapMessagesForResponsesWire(request.messages),
       {
-      ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
-      ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
-      ...(request.tools ? { tools: request.tools } : {}),
-      ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
-      ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
-      customParams: request.customParams,
-      signal: target.signal,
+        ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+        ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
+        ...(request.tools ? { tools: request.tools } : {}),
+        ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+        ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+        customParams: request.customParams,
+        signal: target.signal,
       },
     );
     return;

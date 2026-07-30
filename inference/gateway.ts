@@ -1460,6 +1460,7 @@ function outputToAssistantMessage(output: Output): CoreMessage | null {
     role: "assistant",
     content: output.content || "",
     ...(output.reasoning !== undefined ? { reasoning_content: output.reasoning } : {}),
+    ...(output.reasoning !== undefined ? { reasoning_content: output.reasoning } : {}),
     ...(output.toolCalls?.length
       ? {
         tool_calls: output.toolCalls.map((call, index) => ({
@@ -1550,6 +1551,8 @@ function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unkn
     ...(message.name ? { name: message.name } : {}),
     ...(message.reasoning_content !== undefined ? { reasoning_content: message.reasoning_content } : {}),
     ...(message.partial === true ? { partial: true } : {}),
+    ...(message.reasoning_content !== undefined ? { reasoning_content: message.reasoning_content } : {}),
+    ...(message.partial === true ? { partial: true } : {}),
   }));
 }
 
@@ -1557,6 +1560,32 @@ function writeResponsesEvents(res: Res, encoder: ResponsesStreamEncoder, event: 
   for (const payload of encoder.push(event)) {
     res.write(formatCoreSSE(payload));
   }
+}
+
+function writeResponsesPayloads(res: Res, payloads: Array<Record<string, unknown>>): void {
+  for (const payload of payloads) {
+    res.write(formatCoreSSE(payload));
+  }
+}
+
+function closeEventStream(res: Res): void {
+  if (res.writableEnded) return;
+  res.write(formatCoreSSEDone());
+  res.end();
+}
+
+const INFERENCE_SSE_OPEN_PADDING = " ".repeat(2048);
+
+function openEventStream(res: Res, responseId: string): void {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("x-response-id", responseId);
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  res.write(`: open ${INFERENCE_SSE_OPEN_PADDING}\n\n`);
+  const flush = (res as Res & { flush?: () => void }).flush;
+  if (typeof flush === "function") flush.call(res);
 }
 
 function writeResponsesPayloads(res: Res, payloads: Array<Record<string, unknown>>): void {
@@ -1727,589 +1756,640 @@ export async function executeRequest(args: {
   try {
     let baseRecordSave: Promise<unknown> | null = null;
     if (request.stream) {
-      applyRoutingHeaders(args.res, {
-        attempts: 1,
-        fallbackUsed: false,
-        primary: { modelId },
-        final: { modelId },
-      });
-      paid.payment.applyHeaders(args.res);
-      if (!externalCompatibility) {
-        openEventStream(args.res, request.responseId);
-        baseRecordSave = saveResponseRecord(baseRecord).then(
-          () => null,
-          (error) => error,
-        );
-      }
-    } else {
-      await saveResponseRecord(baseRecord);
-    }
-
-    if (request.stream && args.shape === "responses" && !usesProviderStream(request)) {
-      const responsesEncoder = new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt);
-      if (!externalCompatibility) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
-
-      try {
-        const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
-        const keepalive = setInterval(() => {
-          if (!args.res.writableEnded) {
-            args.res.write(": ping\n\n");
-          }
-        }, 15_000);
-        let routed: Awaited<ReturnType<typeof generateEngine>>;
-        try {
-          routed = await generateEngine(request, {
-            signal: direct?.signal || lifecycle.signal,
-            retriesPerTarget: externalCompatibility ? 0 : undefined,
-          });
-        } finally {
-          clearInterval(keepalive);
-          direct?.cleanup();
-        }
-        const output = routed.result.output;
-        if (externalCompatibility) {
+      let baseRecordSave: Promise<unknown> | null = null;
+      if (request.stream) {
+        applyRoutingHeaders(args.res, {
+          attempts: 1,
+          fallbackUsed: false,
+          primary: { modelId },
+          final: { modelId },
+        });
+        paid.payment.applyHeaders(args.res);
+        if (!externalCompatibility) {
           openEventStream(args.res, request.responseId);
-          writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+          baseRecordSave = saveResponseRecord(baseRecord).then(
+            () => null,
+            (error) => error,
+          );
         }
-        markInferenceFirstOutput(telemetry);
-        let finalOutput = output;
-
-        writeDirectResponsesOutput(args.res, responsesEncoder, output);
-
-        const jobId = output.media?.jobId;
-        if (output.modality === "video" && jobId && output.media?.status !== "completed") {
-          const startedAt = Date.now();
-          const timeoutMs = 1_800_000;
-          const pollIntervalMs = 2_000;
-          let outputIndex = toResponsesOutputItems(output).length;
-
-          while (!args.res.writableEnded && !lifecycle.aborted()) {
-            const status = await retrieveDirectAdapter(jobId);
-            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
-              type: "video-status",
-              videoStatus: {
-                jobId,
-                status: status.status,
-                progress: status.progress,
-                url: status.url,
-                error: status.error,
-              },
-            })));
-
-            if (status.status === "completed") {
-              finalOutput = {
-                ...output,
-                media: {
-                  ...output.media,
-                  mimeType: output.media!.mimeType,
-                  status: "completed",
-                  ...(status.url ? { url: status.url } : {}),
-                  ...(typeof status.progress === "number" ? { progress: status.progress } : { progress: 100 }),
-                },
-              };
-              for (const item of toResponsesOutputItems(finalOutput)) {
-                writeResponsesEvents(args.res, responsesEncoder, {
-                  type: "output-item",
-                  outputIndex,
-                  item,
-                });
-                outputIndex += 1;
-              }
-              break;
-            }
-
-            if (status.status === "failed") {
-              finalOutput = {
-                ...output,
-                media: {
-                  ...output.media,
-                  mimeType: output.media!.mimeType,
-                  status: "failed",
-                  ...(typeof status.progress === "number" ? { progress: status.progress } : {}),
-                },
-              };
-              args.res.write(toErrorStreamEvent({
-                code: "upstream_error",
-                message: status.error || `Video job ${jobId} failed`,
-              }));
-              break;
-            }
-
-            if (Date.now() - startedAt >= timeoutMs) {
-              args.res.write(toErrorStreamEvent({
-                code: "upstream_timeout",
-                message: `Video job ${jobId} did not complete within ${timeoutMs}ms`,
-              }));
-              break;
-            }
-
-            await wait(pollIntervalMs, lifecycle.signal);
-          }
-
-          if (lifecycle.aborted()) {
-            throw abortError(lifecycle.signal);
-          }
-        }
-
-        writeResponsesEvents(args.res, responsesEncoder, {
-          type: "done",
-          finishReason: finalOutput.finishReason || "stop",
-          usage: finalOutput.usage,
-        });
-        finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
-        closeEventStream(args.res);
-        lifecycle.done();
-
-        await settleOutput(finalOutput);
-        const stateError = await baseRecordSave;
-        if (stateError) throw stateError;
-
-        await saveResponseRecord({
-          ...baseRecord,
-          status: finalOutput.media?.status === "failed"
-            ? "failed"
-            : finalOutput.media?.jobId && finalOutput.media.status && finalOutput.media.status !== "completed"
-              ? "in_progress"
-              : "completed",
-          output: finalOutput,
-          ...(finalOutput.media?.jobId ? { jobId: finalOutput.media.jobId } : {}),
-          ...(finalOutput.media?.status === "failed" ? { error: finalOutput.media.status } : {}),
-        });
-        await finishTelemetry(finalOutput.media?.status === "failed" ? "failed" : "succeeded");
-      } catch (error) {
-        try {
-          await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
-        } catch { /* best-effort */ }
-        if (externalCompatibility && !args.res.headersSent) throw error;
-        try {
-          writeResponsesEvents(args.res, responsesEncoder, {
-            type: "error",
-            error: streamErrorPayload(error),
-          });
-          if (externalCompatibility) args.res.end();
-          else closeEventStream(args.res);
-        } catch { /* best-effort */ }
-        throw error;
+      } else {
+        await saveResponseRecord(baseRecord);
       }
 
-      return;
-    }
+      if (request.stream && args.shape === "responses" && !usesProviderStream(request)) {
+        const responsesEncoder = new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt);
+        if (!externalCompatibility) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
-    if (request.stream && usesProviderStream(request)) {
-      const routed = await streamEngine(request, {
-        signal: lifecycle.signal,
-        retriesPerTarget: externalCompatibility ? 0 : undefined,
-      });
-
-      const responsesEncoder = args.shape === "responses"
-        ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
-        : null;
-      const iterator = routed.result.stream[Symbol.asyncIterator]();
-      let firstEvent: IteratorResult<Event> | null = null;
-      if (externalCompatibility) {
-        firstEvent = await iterator.next();
-        if (firstEvent.done) throw new Error("upstream stream ended without output");
-        if (firstEvent.value.type === "error") {
-          throw Object.assign(new Error(firstEvent.value.error?.message || "upstream_error"), {
-            code: firstEvent.value.error?.code,
-          });
-        }
-        openEventStream(args.res, request.responseId);
-      }
-      if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
-      const events = async function* (): AsyncGenerator<Event> {
-        if (firstEvent && !firstEvent.done) yield firstEvent.value;
-        while (true) {
-          const event = await iterator.next();
-          if (event.done) return;
-          yield event.value;
-        }
-      };
-
-      let isFirstToken = true;
-      let aggregatedText = "";
-      let aggregatedReasoning = "";
-      let lastUsage: Output["usage"] | undefined;
-      let finishReason = "stop";
-      let streamedImage: {
-        base64: string;
-        mimeType?: string;
-        revisedPrompt?: string;
-        duration?: number;
-        generatedUnits?: number;
-        billingMetrics?: Record<string, unknown>;
-      } | null = null;
-      let pendingImageCompleteEvent: Event | null = null;
-      let pendingDoneEvent: Event | null = null;
-      const externalChatToolDeltaIndexes = new Set<number>();
-      let lastMedia: Output["media"] | undefined;
-      const realtimeStream = request.modality === "realtime";
-      let settledUsage: Output["usage"] | undefined;
-      let settledMedia: Output["media"] | undefined;
-      let realtimeSettlements = 0;
-      let settlementFailure: unknown = null;
-      let settlementChain: Promise<void> = Promise.resolve();
-      const scheduleRealtimeSettlement = () => {
-        if (!realtimeStream) return;
-        const deltaUsage = usageDelta(lastUsage, settledUsage);
-        const deltaMedia = mediaDelta(lastMedia, settledMedia);
-        if (!deltaUsage && !deltaMedia) return;
-        settledUsage = lastUsage;
-        settledMedia = lastMedia;
-
-        const output: Output = {
-          modality: "realtime",
-          content: "",
-          ...(deltaUsage ? { usage: deltaUsage } : {}),
-          ...(deltaMedia ? { media: deltaMedia } : {}),
-          finishReason: "stop",
-        };
-
-        settlementChain = settlementChain
-          .then(async () => {
-            if (settlementFailure) return;
-            const receipt = await settleOutput(output);
-            if (!receipt || BigInt(receipt.finalAmountWei || "0") <= 0n) {
-              throw Object.assign(new Error("Realtime settlement produced no backed nonzero receipt"), { statusCode: 402 });
-            }
-            realtimeSettlements += 1;
+        try {
+          const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
+          const keepalive = setInterval(() => {
             if (!args.res.writableEnded) {
-              args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
+              args.res.write(": ping\n\n");
             }
-          })
-          .catch((error) => {
-            settlementFailure = error;
-            try {
-              args.res.write(toErrorStreamEvent({
-                code: "payment_settlement_failed",
-                message: error instanceof Error ? error.message : String(error),
-              }));
-            } catch { /* best-effort */ }
-            void closeRealtimeEngine(request.responseId).catch(() => undefined);
-          });
-      };
-
-      try {
-        for await (const event of externalCompatibility ? events() : routed.result.stream) {
+          }, 15_000);
+          let routed: Awaited<ReturnType<typeof generateEngine>>;
+          try {
+            routed = await generateEngine(request, {
+              signal: direct?.signal || lifecycle.signal,
+              retriesPerTarget: externalCompatibility ? 0 : undefined,
+            });
+          } finally {
+            clearInterval(keepalive);
+            direct?.cleanup();
+          }
+          const output = routed.result.output;
+          if (externalCompatibility) {
+            openEventStream(args.res, request.responseId);
+            writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+          }
           markInferenceFirstOutput(telemetry);
-          if (event.type === "text-delta") {
-            aggregatedText += event.text || "";
-            if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, event);
-            else args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
-            isFirstToken = false;
-            continue;
-          }
+          let finalOutput = output;
 
-          if (event.type === "thinking" || event.type === "reasoning-delta") {
-            if (event.type === "thinking" || event.type === "reasoning-delta") {
-              aggregatedReasoning += event.thinking || event.text || "";
-            }
-            if (responsesEncoder) {
-              writeResponsesEvents(args.res, responsesEncoder, event);
-            } else {
-              args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
-            }
-            isFirstToken = false;
-            continue;
-          }
+          writeDirectResponsesOutput(args.res, responsesEncoder, output);
 
-          if (event.type === "tool-call-delta") {
-            if (externalCompatibility && typeof event.toolCallDelta?.index === "number") {
-              externalChatToolDeltaIndexes.add(event.toolCallDelta.index);
-            }
-            if (responsesEncoder) {
-              writeResponsesEvents(args.res, responsesEncoder, event);
-            } else {
-              args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
-            }
-            isFirstToken = false;
-            continue;
-          }
+          const jobId = output.media?.jobId;
+          if (output.modality === "video" && jobId && output.media?.status !== "completed") {
+            const startedAt = Date.now();
+            const timeoutMs = 1_800_000;
+            const pollIntervalMs = 2_000;
+            let outputIndex = toResponsesOutputItems(output).length;
 
-          if (event.type === "tool-call") {
-            if (responsesEncoder) {
-              writeResponsesEvents(args.res, responsesEncoder, event);
-            } else {
-              const index = event.toolCall?.index ?? event.outputIndex ?? 0;
-              if (!externalCompatibility || !externalChatToolDeltaIndexes.has(index)) {
-                args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+            while (!args.res.writableEnded && !lifecycle.aborted()) {
+              const status = await retrieveDirectAdapter(jobId);
+              args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+                type: "video-status",
+                videoStatus: {
+                  jobId,
+                  status: status.status,
+                  progress: status.progress,
+                  url: status.url,
+                  error: status.error,
+                },
+              })));
+
+              if (status.status === "completed") {
+                finalOutput = {
+                  ...output,
+                  media: {
+                    ...output.media,
+                    mimeType: output.media!.mimeType,
+                    status: "completed",
+                    ...(status.url ? { url: status.url } : {}),
+                    ...(typeof status.progress === "number" ? { progress: status.progress } : { progress: 100 }),
+                  },
+                };
+                for (const item of toResponsesOutputItems(finalOutput)) {
+                  writeResponsesEvents(args.res, responsesEncoder, {
+                    type: "output-item",
+                    outputIndex,
+                    item,
+                  });
+                  outputIndex += 1;
+                }
+                break;
               }
-            }
-            isFirstToken = false;
-            continue;
-          }
 
-          if (event.type === "output-item") {
-            if (responsesEncoder) {
-              writeResponsesEvents(args.res, responsesEncoder, event);
-            }
-            continue;
-          }
-
-          if (event.type === "image-partial") {
-            const payload = toResponsesStreamEvent(request.responseId, modelId, event);
-            args.res.write(formatCoreSSE(payload));
-            continue;
-          }
-
-          if (
-            event.type === "citation"
-            || event.type === "warning"
-            || event.type === "error"
-            || event.type === "audio-chunk"
-            || event.type === "subtitle"
-            || event.type === "status"
-            || event.type === "video-status"
-            || event.type === "video-complete"
-          ) {
-            if (event.usage) {
-              lastUsage = event.usage;
-            }
-            if (event.media) {
-              lastMedia = event.media;
-            }
-            if (event.type === "error") {
-              throw Object.assign(new Error(event.error?.message || "upstream_error"), {
-                code: event.error?.code,
-              });
-            }
-            const payload = args.shape === "chat"
-              ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
-              : toResponsesStreamEvent(request.responseId, modelId, event);
-            args.res.write(formatCoreSSE(payload));
-            scheduleRealtimeSettlement();
-            isFirstToken = false;
-            continue;
-          }
-
-          if (event.type === "image-complete") {
-            streamedImage = event.image
-              ? {
-                base64: event.image.base64,
-                ...(event.image.mimeType ? { mimeType: event.image.mimeType } : {}),
-                ...(event.image.revisedPrompt ? { revisedPrompt: event.image.revisedPrompt } : {}),
-                ...(typeof event.image.duration === "number" ? { duration: event.image.duration } : {}),
-                ...(typeof event.image.generatedUnits === "number" ? { generatedUnits: event.image.generatedUnits } : {}),
-                ...(event.image.billingMetrics ? { billingMetrics: event.image.billingMetrics } : {}),
+              if (status.status === "failed") {
+                finalOutput = {
+                  ...output,
+                  media: {
+                    ...output.media,
+                    mimeType: output.media!.mimeType,
+                    status: "failed",
+                    ...(typeof status.progress === "number" ? { progress: status.progress } : {}),
+                  },
+                };
+                args.res.write(toErrorStreamEvent({
+                  code: "upstream_error",
+                  message: status.error || `Video job ${jobId} failed`,
+                }));
+                break;
               }
-              : null;
-            if (event.usage) {
-              lastUsage = event.usage;
+
+              if (Date.now() - startedAt >= timeoutMs) {
+                args.res.write(toErrorStreamEvent({
+                  code: "upstream_timeout",
+                  message: `Video job ${jobId} did not complete within ${timeoutMs}ms`,
+                }));
+                break;
+              }
+
+              await wait(pollIntervalMs, lifecycle.signal);
             }
-            pendingImageCompleteEvent = event;
-            continue;
+
+            if (lifecycle.aborted()) {
+              throw abortError(lifecycle.signal);
+            }
           }
 
-          if (event.type === "done") {
-            if (event.usage) {
-              lastUsage = event.usage;
-            }
-            if (event.media) {
-              lastMedia = event.media;
-            }
-            finishReason = event.finishReason || "stop";
-            pendingDoneEvent = event;
-            scheduleRealtimeSettlement();
-            continue;
-          }
-        }
-
-        if (!lastUsage && !(request.modality === "realtime" && lastMedia)) {
-          await abortPaidInference("missing_stream_evidence");
-          await finishTelemetry("failed", new Error("missing_stream_evidence"));
-          args.res.end();
-          return;
-        }
-
-        let finalOutput: Output = {
-          modality: streamedImage ? "image" : request.modality === "realtime" ? "realtime" : "text",
-          ...(streamedImage
-            ? {
-              media: {
-                mimeType: streamedImage.mimeType || "image/png",
-                base64: streamedImage.base64,
-                ...(streamedImage.revisedPrompt ? { revisedPrompt: streamedImage.revisedPrompt } : {}),
-                ...(typeof streamedImage.duration === "number" ? { duration: streamedImage.duration } : {}),
-                ...(typeof streamedImage.generatedUnits === "number" ? { generatedUnits: streamedImage.generatedUnits } : {}),
-                ...(streamedImage.billingMetrics ? { billingMetrics: streamedImage.billingMetrics } : {}),
-                status: "completed" as const,
-              },
-            }
-            : {
-              content: aggregatedText,
-              ...(aggregatedReasoning ? { reasoning: aggregatedReasoning } : {}),
-              ...(request.modality === "realtime" && lastMedia ? { media: lastMedia } : {}),
-            }),
-          ...(lastUsage ? { usage: lastUsage } : {}),
-          finishReason,
-          ...(responsesEncoder && !streamedImage ? { outputItems: responsesEncoder.items() } : {}),
-          ...(responsesEncoder?.calls().length ? { toolCalls: responsesEncoder.calls() } : {}),
-        };
-
-        if (pendingImageCompleteEvent) {
-          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
-          if (responsesEncoder) {
-            writeDirectResponsesOutput(args.res, responsesEncoder, finalOutput);
-            finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
-          }
-        }
-
-        if (responsesEncoder) {
-          writeResponsesPayloads(args.res, responsesEncoder.finishItems());
+          writeResponsesEvents(args.res, responsesEncoder, {
+            type: "done",
+            finishReason: finalOutput.finishReason || "stop",
+            usage: finalOutput.usage,
+          });
           finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
-        }
+          closeEventStream(args.res);
+          lifecycle.done();
 
-        const terminalEvent = pendingDoneEvent ?? {
-          type: "done" as const,
-          usage: lastUsage,
-          finishReason,
-        };
-        if (responsesEncoder) {
-          writeResponsesEvents(args.res, responsesEncoder, terminalEvent);
-        } else {
-          args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, terminalEvent)));
-          if (terminalEvent.usage) {
-            args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, terminalEvent.usage)));
-          }
-        }
-        closeEventStream(args.res);
-        lifecycle.done();
-
-        if (realtimeStream) {
-          await settlementChain;
-          if (settlementFailure) {
-            throw settlementFailure;
-          }
-          if (realtimeSettlements <= 0) {
-            throw new Error("missing_realtime_settlement_evidence");
-          }
-        } else {
           await settleOutput(finalOutput);
-        }
-        const stateError = await baseRecordSave;
-        if (stateError) throw stateError;
+          const stateError = await baseRecordSave;
+          if (stateError) throw stateError;
+          closeEventStream(args.res);
+          lifecycle.done();
 
-        await saveResponseRecord({
-          ...baseRecord,
-          status: "completed",
-          output: finalOutput,
-        });
-        await finishTelemetry("succeeded");
-      } catch (error) {
-        try {
-          await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
-        } catch { /* best-effort */ }
-        if (!args.res.headersSent) {
-          // Let the outer Express error handler send the JSON error response.
-        } else {
-          // Emit structured error frame before propagating so clients know why
-          // the stream closed without a final `done` event.
+          await settleOutput(finalOutput);
+          const stateError = await baseRecordSave;
+          if (stateError) throw stateError;
+
+          await saveResponseRecord({
+            ...baseRecord,
+            status: finalOutput.media?.status === "failed"
+              ? "failed"
+              : finalOutput.media?.jobId && finalOutput.media.status && finalOutput.media.status !== "completed"
+                ? "in_progress"
+                : "completed",
+            output: finalOutput,
+            ...(finalOutput.media?.jobId ? { jobId: finalOutput.media.jobId } : {}),
+            ...(finalOutput.media?.status === "failed" ? { error: finalOutput.media.status } : {}),
+          });
+          await finishTelemetry(finalOutput.media?.status === "failed" ? "failed" : "succeeded");
+        } catch (error) {
           try {
-            if (responsesEncoder) {
-              writeResponsesEvents(args.res, responsesEncoder, {
-                type: "error",
-                error: streamErrorPayload(error),
-              });
-            } else {
-              args.res.write(toErrorStreamEvent(streamErrorPayload(error)));
-            }
+            await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
           } catch { /* best-effort */ }
+          if (externalCompatibility && !args.res.headersSent) throw error;
           try {
+            writeResponsesEvents(args.res, responsesEncoder, {
+              type: "error",
+              error: streamErrorPayload(error),
+            });
             if (externalCompatibility) args.res.end();
             else closeEventStream(args.res);
           } catch { /* best-effort */ }
+          throw error;
         }
-        throw error;
+
+        return;
       }
 
-      return;
-    }
-
-    let routed: Awaited<ReturnType<typeof generateEngine>>;
-    const runDirect = async (nextRequest: Request) => {
-      const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
-      try {
-        return await generateEngine(nextRequest, {
-          signal: direct?.signal || lifecycle.signal,
+      if (request.stream && usesProviderStream(request)) {
+        const routed = await streamEngine(request, {
+          signal: lifecycle.signal,
           retriesPerTarget: externalCompatibility ? 0 : undefined,
         });
-      } finally {
-        direct?.cleanup();
+
+        const responsesEncoder = args.shape === "responses"
+          ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
+          : null;
+        const iterator = routed.result.stream[Symbol.asyncIterator]();
+        let firstEvent: IteratorResult<Event> | null = null;
+        if (externalCompatibility) {
+          firstEvent = await iterator.next();
+          if (firstEvent.done) throw new Error("upstream stream ended without output");
+          if (firstEvent.value.type === "error") {
+            throw Object.assign(new Error(firstEvent.value.error?.message || "upstream_error"), {
+              code: firstEvent.value.error?.code,
+            });
+          }
+          openEventStream(args.res, request.responseId);
+        }
+        if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+        const events = async function* (): AsyncGenerator<Event> {
+          if (firstEvent && !firstEvent.done) yield firstEvent.value;
+          while (true) {
+            const event = await iterator.next();
+            if (event.done) return;
+            yield event.value;
+          }
+        };
+
+        let isFirstToken = true;
+        let aggregatedText = "";
+        let aggregatedReasoning = "";
+        let aggregatedReasoning = "";
+        let lastUsage: Output["usage"] | undefined;
+        let finishReason = "stop";
+        let streamedImage: {
+          base64: string;
+          mimeType?: string;
+          revisedPrompt?: string;
+          duration?: number;
+          generatedUnits?: number;
+          billingMetrics?: Record<string, unknown>;
+        } | null = null;
+        let pendingImageCompleteEvent: Event | null = null;
+        let pendingDoneEvent: Event | null = null;
+        const externalChatToolDeltaIndexes = new Set<number>();
+        let lastMedia: Output["media"] | undefined;
+        const realtimeStream = request.modality === "realtime";
+        let settledUsage: Output["usage"] | undefined;
+        let settledMedia: Output["media"] | undefined;
+        let realtimeSettlements = 0;
+        let settlementFailure: unknown = null;
+        let settlementChain: Promise<void> = Promise.resolve();
+        const scheduleRealtimeSettlement = () => {
+          if (!realtimeStream) return;
+          const deltaUsage = usageDelta(lastUsage, settledUsage);
+          const deltaMedia = mediaDelta(lastMedia, settledMedia);
+          if (!deltaUsage && !deltaMedia) return;
+          settledUsage = lastUsage;
+          settledMedia = lastMedia;
+
+          const output: Output = {
+            modality: "realtime",
+            content: "",
+            ...(deltaUsage ? { usage: deltaUsage } : {}),
+            ...(deltaMedia ? { media: deltaMedia } : {}),
+            finishReason: "stop",
+          };
+
+          settlementChain = settlementChain
+            .then(async () => {
+              if (settlementFailure) return;
+              const receipt = await settleOutput(output);
+              if (!receipt || BigInt(receipt.finalAmountWei || "0") <= 0n) {
+                throw Object.assign(new Error("Realtime settlement produced no backed nonzero receipt"), { statusCode: 402 });
+              }
+              realtimeSettlements += 1;
+              if (!args.res.writableEnded) {
+                args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
+              }
+            })
+            .catch((error) => {
+              settlementFailure = error;
+              try {
+                args.res.write(toErrorStreamEvent({
+                  code: "payment_settlement_failed",
+                  message: error instanceof Error ? error.message : String(error),
+                }));
+              } catch { /* best-effort */ }
+              void closeRealtimeEngine(request.responseId).catch(() => undefined);
+            });
+        };
+
+        try {
+          for await (const event of externalCompatibility ? events() : routed.result.stream) {
+            markInferenceFirstOutput(telemetry);
+            if (event.type === "text-delta") {
+              aggregatedText += event.text || "";
+              if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, event);
+              else args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+              isFirstToken = false;
+              continue;
+            }
+
+            if (event.type === "thinking" || event.type === "reasoning-delta") {
+              if (event.type === "thinking" || event.type === "reasoning-delta") {
+                aggregatedReasoning += event.thinking || event.text || "";
+              }
+              if (responsesEncoder) {
+                writeResponsesEvents(args.res, responsesEncoder, event);
+              } else {
+                args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+              }
+              isFirstToken = false;
+              continue;
+            }
+
+            if (event.type === "tool-call-delta") {
+              if (externalCompatibility && typeof event.toolCallDelta?.index === "number") {
+                externalChatToolDeltaIndexes.add(event.toolCallDelta.index);
+              }
+              if (responsesEncoder) {
+                writeResponsesEvents(args.res, responsesEncoder, event);
+              } else {
+                args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+              }
+              isFirstToken = false;
+              continue;
+            }
+
+            if (event.type === "tool-call") {
+              if (responsesEncoder) {
+                writeResponsesEvents(args.res, responsesEncoder, event);
+              } else {
+                const index = event.toolCall?.index ?? event.outputIndex ?? 0;
+                if (!externalCompatibility || !externalChatToolDeltaIndexes.has(index)) {
+                  args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, event, isFirstToken)));
+                }
+              }
+              isFirstToken = false;
+              continue;
+            }
+
+            if (event.type === "output-item") {
+              if (responsesEncoder) {
+                writeResponsesEvents(args.res, responsesEncoder, event);
+              }
+              continue;
+            }
+
+            if (event.type === "image-partial") {
+              const payload = toResponsesStreamEvent(request.responseId, modelId, event);
+              args.res.write(formatCoreSSE(payload));
+              continue;
+            }
+
+            if (
+              event.type === "citation"
+              || event.type === "warning"
+              || event.type === "error"
+              || event.type === "audio-chunk"
+              || event.type === "subtitle"
+              || event.type === "status"
+              || event.type === "video-status"
+              || event.type === "video-complete"
+            ) {
+              if (event.usage) {
+                lastUsage = event.usage;
+              }
+              if (event.media) {
+                lastMedia = event.media;
+              }
+              if (event.type === "error") {
+                throw Object.assign(new Error(event.error?.message || "upstream_error"), {
+                  code: event.error?.code,
+                });
+              }
+              const payload = args.shape === "chat"
+                ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
+                : toResponsesStreamEvent(request.responseId, modelId, event);
+              args.res.write(formatCoreSSE(payload));
+              scheduleRealtimeSettlement();
+              isFirstToken = false;
+              continue;
+            }
+
+            if (event.type === "image-complete") {
+              streamedImage = event.image
+                ? {
+                  base64: event.image.base64,
+                  ...(event.image.mimeType ? { mimeType: event.image.mimeType } : {}),
+                  ...(event.image.revisedPrompt ? { revisedPrompt: event.image.revisedPrompt } : {}),
+                  ...(typeof event.image.duration === "number" ? { duration: event.image.duration } : {}),
+                  ...(typeof event.image.generatedUnits === "number" ? { generatedUnits: event.image.generatedUnits } : {}),
+                  ...(event.image.billingMetrics ? { billingMetrics: event.image.billingMetrics } : {}),
+                }
+                : null;
+              if (event.usage) {
+                lastUsage = event.usage;
+              }
+              pendingImageCompleteEvent = event;
+              continue;
+            }
+
+            if (event.type === "done") {
+              if (event.usage) {
+                lastUsage = event.usage;
+              }
+              if (event.media) {
+                lastMedia = event.media;
+              }
+              finishReason = event.finishReason || "stop";
+              pendingDoneEvent = event;
+              scheduleRealtimeSettlement();
+              continue;
+              pendingDoneEvent = event;
+              scheduleRealtimeSettlement();
+              continue;
+            }
+          }
+
+          if (!lastUsage && !(request.modality === "realtime" && lastMedia)) {
+            await abortPaidInference("missing_stream_evidence");
+            await finishTelemetry("failed", new Error("missing_stream_evidence"));
+            args.res.end();
+            return;
+          }
+
+          let finalOutput: Output = {
+            modality: streamedImage ? "image" : request.modality === "realtime" ? "realtime" : "text",
+            ...(streamedImage
+              ? {
+                media: {
+                  mimeType: streamedImage.mimeType || "image/png",
+                  base64: streamedImage.base64,
+                  ...(streamedImage.revisedPrompt ? { revisedPrompt: streamedImage.revisedPrompt } : {}),
+                  ...(typeof streamedImage.duration === "number" ? { duration: streamedImage.duration } : {}),
+                  ...(typeof streamedImage.generatedUnits === "number" ? { generatedUnits: streamedImage.generatedUnits } : {}),
+                  ...(streamedImage.billingMetrics ? { billingMetrics: streamedImage.billingMetrics } : {}),
+                  status: "completed" as const,
+                },
+              }
+              : {
+                content: aggregatedText,
+                ...(aggregatedReasoning ? { reasoning: aggregatedReasoning } : {}),
+                ...(aggregatedReasoning ? { reasoning: aggregatedReasoning } : {}),
+                ...(request.modality === "realtime" && lastMedia ? { media: lastMedia } : {}),
+              }),
+            ...(lastUsage ? { usage: lastUsage } : {}),
+            finishReason,
+            ...(responsesEncoder && !streamedImage ? { outputItems: responsesEncoder.items() } : {}),
+            ...(responsesEncoder?.calls().length ? { toolCalls: responsesEncoder.calls() } : {}),
+          };
+
+          if (pendingImageCompleteEvent) {
+            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
+            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
+            if (responsesEncoder) {
+              writeDirectResponsesOutput(args.res, responsesEncoder, finalOutput);
+              finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
+            }
+          }
+
+          if (responsesEncoder) {
+            writeResponsesPayloads(args.res, responsesEncoder.finishItems());
+            finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
+          }
+
+          const terminalEvent = pendingDoneEvent ?? {
+            type: "done" as const,
+            usage: lastUsage,
+            finishReason,
+          };
+          if (responsesEncoder) {
+            writeResponsesEvents(args.res, responsesEncoder, terminalEvent);
+          } else {
+            args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, terminalEvent)));
+            if (terminalEvent.usage) {
+              args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, terminalEvent.usage)));
+            }
+          }
+          closeEventStream(args.res);
+          lifecycle.done();
+
+          if (realtimeStream) {
+            await settlementChain;
+            if (settlementFailure) {
+              throw settlementFailure;
+            }
+            if (realtimeSettlements <= 0) {
+              throw new Error("missing_realtime_settlement_evidence");
+            }
+          } else {
+            await settleOutput(finalOutput);
+          }
+          const stateError = await baseRecordSave;
+          if (stateError) throw stateError;
+        }
+        }
+
+      if (responsesEncoder) {
+        writeResponsesPayloads(args.res, responsesEncoder.finishItems());
+        finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
       }
-    };
-    try {
-      routed = await runDirect(request);
-    } catch (error) {
-      if (!contextPlan?.enabled || !isContextOverflowError(error)) throw error;
-      const retryPlan = manageContext({
-        request,
-        model: contextModel,
-        defaultEnabled: true,
-        aggressive: true,
+
+      const terminalEvent = pendingDoneEvent ?? {
+        type: "done" as const,
+        usage: lastUsage,
+        finishReason,
+      };
+      if (responsesEncoder) {
+        writeResponsesEvents(args.res, responsesEncoder, terminalEvent);
+      } else {
+        args.res.write(formatCoreSSE(toChatStreamEvent(request.responseId, modelId, terminalEvent)));
+        if (terminalEvent.usage) {
+          args.res.write(formatCoreSSE(toChatUsageStreamEvent(request.responseId, modelId, terminalEvent.usage)));
+        }
+      }
+      closeEventStream(args.res);
+      lifecycle.done();
+
+      if (realtimeStream) {
+        await settlementChain;
+        if (settlementFailure) {
+          throw settlementFailure;
+        }
+        if (realtimeSettlements <= 0) {
+          throw new Error("missing_realtime_settlement_evidence");
+        }
+      } else {
+        await settleOutput(finalOutput);
+      }
+      const stateError = await baseRecordSave;
+      if (stateError) throw stateError;
+
+      await saveResponseRecord({
+        ...baseRecord,
+        status: "completed",
+        output: finalOutput,
       });
-      if (!retryPlan.compacted || retryPlan.effectiveEstimatedTokens >= contextPlan.effectiveEstimatedTokens) throw error;
-      request = retryPlan.request;
-      contextPlan = retryPlan;
+      await finishTelemetry("succeeded");
+    } catch (error) {
+      try {
+        await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
+      } catch { /* best-effort */ }
       if (!args.res.headersSent) {
-        args.res.setHeader("x-context-management", "truncated-retry");
-        args.res.setHeader("x-context-effective-estimated-tokens", String(retryPlan.effectiveEstimatedTokens));
+        // Let the outer Express error handler send the JSON error response.
+      } else {
+        // Emit structured error frame before propagating so clients know why
+        // the stream closed without a final `done` event.
+        try {
+          if (responsesEncoder) {
+            writeResponsesEvents(args.res, responsesEncoder, {
+              type: "error",
+              error: streamErrorPayload(error),
+            });
+          } else {
+            args.res.write(toErrorStreamEvent(streamErrorPayload(error)));
+          }
+        } catch { /* best-effort */ }
+        try {
+          if (externalCompatibility) args.res.end();
+          else closeEventStream(args.res);
+        } catch { /* best-effort */ }
       }
-      routed = await runDirect(request);
+      throw error;
     }
 
-    applyRoutingHeaders(args.res, routed.route);
-
-    const output = routed.result.output;
-    markInferenceFirstOutput(telemetry);
-    const jsonReceipt = await settleOutput(output);
-    applyReceiptHeader(args.res, jsonReceipt);
-
-    const record: StoredResponseRecord = {
-      ...baseRecord,
-      status: output.media?.jobId && output.media.status && output.media.status !== "completed" ? "in_progress" : "completed",
-      output,
-      ...(output.media?.jobId ? { jobId: output.media.jobId } : {}),
-    };
-    await saveResponseRecord(record);
-    await finishTelemetry("succeeded");
-
-    if (args.shape === "chat") {
-      const body = toChatCompletionsResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
-      args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
-      return;
-    }
-
-    if (args.shape === "embeddings") {
-      const body = toEmbeddingsResponse(modelId, output) as unknown as Record<string, unknown>;
-      args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
-      return;
-    }
-
-    const payload = toResponsesResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
-    if (record.status !== "completed") {
-      payload.status = record.status;
-    }
-    if (record.jobId) {
-      payload.job_id = record.jobId;
-    }
-    args.res.status(200).json(attachReceiptToJsonBody(payload, jsonReceipt));
-  } catch (error) {
-    await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
-    await saveResponseRecord({
-      ...baseRecord,
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
-    if (externalCompatibility && !args.res.headersSent) {
-      writeAdaptedError(args.res, error, 500);
-      return;
-    }
-    throw error;
-  } finally {
-    lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);
-    lifecycle.cleanup();
+    return;
   }
+
+    let routed: Awaited<ReturnType<typeof generateEngine>>;
+  const runDirect = async (nextRequest: Request) => {
+    const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
+    try {
+      return await generateEngine(nextRequest, {
+        signal: direct?.signal || lifecycle.signal,
+        retriesPerTarget: externalCompatibility ? 0 : undefined,
+      });
+    } finally {
+      direct?.cleanup();
+    }
+  };
+  try {
+    routed = await runDirect(request);
+  } catch (error) {
+    if (!contextPlan?.enabled || !isContextOverflowError(error)) throw error;
+    const retryPlan = manageContext({
+      request,
+      model: contextModel,
+      defaultEnabled: true,
+      aggressive: true,
+    });
+    if (!retryPlan.compacted || retryPlan.effectiveEstimatedTokens >= contextPlan.effectiveEstimatedTokens) throw error;
+    request = retryPlan.request;
+    contextPlan = retryPlan;
+    if (!args.res.headersSent) {
+      args.res.setHeader("x-context-management", "truncated-retry");
+      args.res.setHeader("x-context-effective-estimated-tokens", String(retryPlan.effectiveEstimatedTokens));
+    }
+    routed = await runDirect(request);
+  }
+
+  applyRoutingHeaders(args.res, routed.route);
+
+  const output = routed.result.output;
+  markInferenceFirstOutput(telemetry);
+  const jsonReceipt = await settleOutput(output);
+  applyReceiptHeader(args.res, jsonReceipt);
+
+  const record: StoredResponseRecord = {
+    ...baseRecord,
+    status: output.media?.jobId && output.media.status && output.media.status !== "completed" ? "in_progress" : "completed",
+    output,
+    ...(output.media?.jobId ? { jobId: output.media.jobId } : {}),
+  };
+  await saveResponseRecord(record);
+  await finishTelemetry("succeeded");
+
+  if (args.shape === "chat") {
+    const body = toChatCompletionsResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
+    args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
+    return;
+  }
+
+  if (args.shape === "embeddings") {
+    const body = toEmbeddingsResponse(modelId, output) as unknown as Record<string, unknown>;
+    args.res.status(200).json(attachReceiptToJsonBody(body, jsonReceipt));
+    return;
+  }
+
+  const payload = toResponsesResponse(modelId, request.responseId, output) as unknown as Record<string, unknown>;
+  if (record.status !== "completed") {
+    payload.status = record.status;
+  }
+  if (record.jobId) {
+    payload.job_id = record.jobId;
+  }
+  args.res.status(200).json(attachReceiptToJsonBody(payload, jsonReceipt));
+} catch (error) {
+  await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
+  await saveResponseRecord({
+    ...baseRecord,
+    status: "failed",
+    error: error instanceof Error ? error.message : String(error),
+  });
+  await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
+  if (externalCompatibility && !args.res.headersSent) {
+    writeAdaptedError(args.res, error, 500);
+    return;
+  }
+  throw error;
+} finally {
+  lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);
+  lifecycle.cleanup();
+}
 }
 
 export async function handleResponses(req: Req, res: Res): Promise<void> {
@@ -3346,6 +3426,7 @@ export async function handleVideoStatus(req: Req, res: Res): Promise<void> {
 /**
  * Server-Sent Events stream that polls the video job until it reaches a
  * terminal state and forwards every intermediate status update as a
+ * `video.status` event. Not billable — the inference charge happens
  * `video.status` event. Not billable — the inference charge happens
  * on /v1/videos/generations submission.
  *

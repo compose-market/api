@@ -19,6 +19,7 @@ import {
     markSettled,
     unlockBudget,
 } from "./session/budget.js";
+} from "./session/budget.js";
 import {
     valkeyCompareAndDelete,
     valkeyCommitReservedBudget,
@@ -37,9 +38,11 @@ import {
     encodePaymentRequiredHeader,
 } from "./facilitator.js";
 import { isNetworkId, type NetworkId } from "./configs/chains.js";
+import { isNetworkId, type NetworkId } from "./configs/chains.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
+const KEY_LOCK_PREFIX = "key-lock:";
 const KEY_LOCK_PREFIX = "key-lock:";
 const IDEMPOTENCY_PREFIX = "payment-intent-idem:";
 const INTENT_TTL_SECONDS = 15 * 60;
@@ -51,6 +54,7 @@ export type PaymentIntentStatus = "authorized" | "settling" | "settled" | "abort
 
 export interface AuthorizePaymentIntentInput {
     authorization: string;
+    network: NetworkId;
     network: NetworkId;
     service: string;
     action: string;
@@ -83,6 +87,7 @@ export interface PaymentIntentRecord {
     keyId: string;
     purpose: KeyPurpose;
     userAddress: string;
+    network: NetworkId;
     network: NetworkId;
     service: string;
     action: string;
@@ -133,6 +138,7 @@ export interface AuthorizedPaymentIntentBody {
 export interface SettledPaymentIntentBody {
     paymentIntentId: string;
     network: NetworkId;
+    network: NetworkId;
     maxAmountWei: string;
     finalAmountWei: string;
     status: PaymentIntentStatus;
@@ -163,6 +169,7 @@ function keyLockKey(keyId: string): string {
 
 function keyRecordKey(keyId: string): string {
     return `key:${keyId}`;
+    return `key:${keyId}`;
 }
 
 function idempotencyValkeyKey(keyId: string, idempotencyKey: string): string {
@@ -173,6 +180,7 @@ async function settleKeyPaymentOnChain(
     userAddress: string,
     amountWei: string,
     network: NetworkId,
+    network: NetworkId,
 ) {
     if (process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH) {
         return {
@@ -181,6 +189,8 @@ async function settleKeyPaymentOnChain(
         };
     }
 
+    const { settleKeyPaymentForNetwork } = await import("./settlement.js");
+    return settleKeyPaymentForNetwork(userAddress, amountWei, network);
     const { settleKeyPaymentForNetwork } = await import("./settlement.js");
     return settleKeyPaymentForNetwork(userAddress, amountWei, network);
 }
@@ -204,11 +214,13 @@ function failure(
 function buildPaymentRequiredFailure(input: {
     resourceUrl: string;
     network: NetworkId;
+    network: NetworkId;
     amountWei: string;
     error: string;
 }): PaymentIntentFailure {
     const paymentRequired = createPaymentRequired({
         amountWei: input.amountWei,
+        network: input.network,
         network: input.network,
         scheme: "exact",
         resourceUrl: input.resourceUrl,
@@ -349,732 +361,755 @@ function validateAuthorizeInput(input: AuthorizePaymentIntentInput): void {
     }
     if (!isNetworkId(input.network)) {
         throw new Error("network must be a supported CAIP-2 network");
-    }
-    if (!input.service) {
-        throw new Error("service is required");
-    }
-    if (!input.action) {
-        throw new Error("action is required");
-    }
-    if (!input.resource) {
-        throw new Error("resource is required");
-    }
-    if (!input.method) {
-        throw new Error("method is required");
-    }
-    const modes = Number(typeof input.maxAmountWei === "string")
-        + Number(Boolean(input.meter))
-        + Number(input.useBudgetCap === true);
-    if (modes !== 1) {
-        throw new Error("Provide exactly one of maxAmountWei, meter, or useBudgetCap");
-    }
-}
-
-function validateSettleInput(input: SettlePaymentIntentInput): void {
-    if (!input.paymentIntentId) {
-        throw new Error("paymentIntentId is required");
-    }
-    if ((typeof input.finalAmountWei === "string") === Boolean(input.meter)) {
-        throw new Error("Provide exactly one of finalAmountWei or meter");
-    }
-    if (typeof input.finalAmountWei === "string") {
-        parsePositiveIntegerString(input.finalAmountWei, "finalAmountWei");
-        if (typeof input.providerAmountWei === "string") {
-            parsePositiveIntegerString(input.providerAmountWei, "providerAmountWei");
+        if (!isNetworkId(input.network)) {
+            throw new Error("network must be a supported CAIP-2 network");
         }
-        if (typeof input.platformFeeWei === "string") {
-            parsePositiveIntegerString(input.platformFeeWei, "platformFeeWei");
+        if (!input.service) {
+            throw new Error("service is required");
+        }
+        if (!input.action) {
+            throw new Error("action is required");
+        }
+        if (!input.resource) {
+            throw new Error("resource is required");
+        }
+        if (!input.method) {
+            throw new Error("method is required");
+        }
+        const modes = Number(typeof input.maxAmountWei === "string")
+            + Number(Boolean(input.meter))
+            + Number(input.useBudgetCap === true);
+        if (modes !== 1) {
+            throw new Error("Provide exactly one of maxAmountWei, meter, or useBudgetCap");
         }
     }
-}
 
-function validateAbortInput(input: AbortPaymentIntentInput): void {
-    if (!input.paymentIntentId) {
-        throw new Error("paymentIntentId is required");
-    }
-    if (!input.reason) {
-        throw new Error("reason is required");
-    }
-}
-
-async function withValkeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const owner = randomUUID();
-    let acquired = false;
-    for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
-        acquired = await valkeySetNXEX(key, owner, LOCK_TTL_SECONDS);
-        if (acquired) {
-            break;
+    function validateSettleInput(input: SettlePaymentIntentInput): void {
+        if (!input.paymentIntentId) {
+            throw new Error("paymentIntentId is required");
         }
-        await new Promise((resolve) => setTimeout(resolve, LOCK_DELAY_MS + Math.floor(Math.random() * LOCK_DELAY_MS)));
+        if ((typeof input.finalAmountWei === "string") === Boolean(input.meter)) {
+            throw new Error("Provide exactly one of finalAmountWei or meter");
+        }
+        if (typeof input.finalAmountWei === "string") {
+            parsePositiveIntegerString(input.finalAmountWei, "finalAmountWei");
+            if (typeof input.providerAmountWei === "string") {
+                parsePositiveIntegerString(input.providerAmountWei, "providerAmountWei");
+            }
+            if (typeof input.platformFeeWei === "string") {
+                parsePositiveIntegerString(input.platformFeeWei, "platformFeeWei");
+            }
+        }
     }
 
-    if (!acquired) {
-        throw Object.assign(new Error(`Lock busy: ${key}`), { statusCode: 429 });
+    function validateAbortInput(input: AbortPaymentIntentInput): void {
+        if (!input.paymentIntentId) {
+            throw new Error("paymentIntentId is required");
+        }
+        if (!input.reason) {
+            throw new Error("reason is required");
+        }
     }
 
-    try {
-        return await fn();
-    } finally {
-        await valkeyCompareAndDelete(key, owner);
-    }
-}
-
-async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntentRecord | null> {
-    const data = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
-    if (!data || Object.keys(data).length === 0) {
-        return null;
-    }
-
-    return {
-        paymentIntentId: data.paymentIntentId,
-        keyId: data.keyId,
-        purpose: data.purpose === "session" ? "session" : "api",
-        userAddress: data.userAddress,
-        network: data.network as NetworkId,
-        service: data.service,
-        action: data.action,
-        resource: data.resource,
-        method: data.method,
-        maxAmountWei: data.maxAmountWei,
-        finalAmountWei: data.finalAmountWei || undefined,
-        status: data.status as PaymentIntentStatus,
-        runId: data.runId || undefined,
-        idempotencyKey: data.idempotencyKey || undefined,
-        meterSubject: data.meterSubject || undefined,
-        meterLineItems: parseMeterLineItems(data.meterLineItems),
-        providerAmountWei: data.providerAmountWei || undefined,
-        platformFeeWei: data.platformFeeWei || undefined,
-        sessionBudgetIntentId: data.sessionBudgetIntentId || undefined,
-        useBudgetCap: data.useBudgetCap === "true",
-        reservedAmountWei: data.reservedAmountWei || undefined,
-        txHash: data.txHash || undefined,
-        error: data.error || undefined,
-        createdAt: parseInt(data.createdAt, 10),
-        updatedAt: parseInt(data.updatedAt, 10),
-        settledAt: data.settledAt ? parseInt(data.settledAt, 10) : undefined,
-        abortedAt: data.abortedAt ? parseInt(data.abortedAt, 10) : undefined,
-    };
-}
-
-async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>> {
-    const budgetInfo = await getKeyBudgetInfo(keyId);
-    const reserved = await getKeyReservedBudget(keyId);
-
-    if (!budgetInfo) {
-        return {};
-    }
-
-    const budgetRemaining = Math.max(0, budgetInfo.budgetLimit - budgetInfo.budgetUsed - reserved);
-
-    return {
-        "x-key-budget-limit": String(budgetInfo.budgetLimit),
-        "x-key-budget-used": String(budgetInfo.budgetUsed),
-        "x-key-budget-reserved": String(reserved),
-        "x-key-budget-remaining": String(budgetRemaining),
-    };
-}
-
-async function buildSessionBudgetHeaders(
-    userAddress: string,
-    network: NetworkId,
-): Promise<Record<string, string>> {
-    const budgetInfo = await getSessionBudgetInfo(userAddress, network);
-    if (!budgetInfo) {
-        return {};
-    }
-
-    return {
-        "x-session-budget-limit": budgetInfo.totalWei,
-        "x-session-budget-used": budgetInfo.usedWei,
-        "x-session-budget-locked": budgetInfo.lockedWei,
-        "x-session-budget-remaining": budgetInfo.availableWei,
-    };
-}
-
-async function buildPaymentBudgetHeaders(input: {
-    keyId: string;
-    purpose: KeyPurpose;
-    userAddress: string;
-    network: NetworkId;
-}): Promise<Record<string, string>> {
-    if (input.purpose === "session") {
-        return buildSessionBudgetHeaders(input.userAddress, input.network);
-    }
-
-    return buildBudgetHeaders(input.keyId);
-}
-
-function appendSettlementAmountHeaders(
-    headers: Record<string, string>,
-    input: {
-        finalAmountWei?: string;
-        txHash?: string;
-    },
-): Record<string, string> {
-    if (input.finalAmountWei) {
-        headers["x-key-final-amount-wei"] = input.finalAmountWei;
-    }
-    if (input.txHash) {
-        headers["x-key-tx-hash"] = input.txHash;
-        headers["X-Transaction-Hash"] = input.txHash;
-    }
-    return headers;
-}
-
-export async function authorizePaymentIntent(
-    input: AuthorizePaymentIntentInput,
-): Promise<PaymentIntentResult<AuthorizedPaymentIntentBody>> {
-    try {
-        const token = extractKeyFromHeader(input.authorization);
-
-        if (!token) {
-            return failure(401, "Compose key authorization is required");
+    async function withValkeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+        const owner = randomUUID();
+        let acquired = false;
+        for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+            acquired = await valkeySetNXEX(key, owner, LOCK_TTL_SECONDS);
+            if (acquired) {
+                break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, LOCK_DELAY_MS + Math.floor(Math.random() * LOCK_DELAY_MS)));
         }
 
-        const validation = await validateKey(token, 0);
-        if (!validation.valid || !validation.payload || !validation.record) {
-            return failure(401, validation.error || "Invalid Compose key");
+        if (!acquired) {
+            throw Object.assign(new Error(`Lock busy: ${key}`), { statusCode: 429 });
         }
 
-        const network = input.network;
+        try {
+            return await fn();
+        } finally {
+            await valkeyCompareAndDelete(key, owner);
+        }
+    }
 
-        if (validation.record.network !== network) {
-            return failure(409, "Compose key network does not match request network");
+    async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntentRecord | null> {
+        const data = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
+        if (!data || Object.keys(data).length === 0) {
+            return null;
         }
 
-        // Idempotency: if the caller provided an X-Idempotency-Key, a second
-        // authorize with the same (keyId, idempotencyKey) must return the
-        // exact intent created by the first call instead of creating a new
-        // reservation. We key the dedupe slot on (keyId, idempotencyKey) so
-        // different keys with the same client-chosen idempotency key do not
-        // collide across wallets.
-        if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
-            const idemKey = idempotencyValkeyKey(validation.payload.keyId, input.idempotencyKey.trim());
-            const existingIntentId = await valkeyGet(idemKey);
-            if (existingIntentId) {
-                const existing = await readPaymentIntent(existingIntentId);
-                if (existing) {
-                    const headers = await buildPaymentBudgetHeaders(existing);
-                    headers["x-payment-intent-id"] = existing.paymentIntentId;
-                    headers["x-idempotent-replay"] = "true";
+        return {
+            paymentIntentId: data.paymentIntentId,
+            keyId: data.keyId,
+            purpose: data.purpose === "session" ? "session" : "api",
+            userAddress: data.userAddress,
+            network: data.network as NetworkId,
+            network: data.network as NetworkId,
+            service: data.service,
+            action: data.action,
+            resource: data.resource,
+            method: data.method,
+            maxAmountWei: data.maxAmountWei,
+            finalAmountWei: data.finalAmountWei || undefined,
+            status: data.status as PaymentIntentStatus,
+            runId: data.runId || undefined,
+            idempotencyKey: data.idempotencyKey || undefined,
+            meterSubject: data.meterSubject || undefined,
+            meterLineItems: parseMeterLineItems(data.meterLineItems),
+            providerAmountWei: data.providerAmountWei || undefined,
+            platformFeeWei: data.platformFeeWei || undefined,
+            sessionBudgetIntentId: data.sessionBudgetIntentId || undefined,
+            useBudgetCap: data.useBudgetCap === "true",
+            reservedAmountWei: data.reservedAmountWei || undefined,
+            txHash: data.txHash || undefined,
+            error: data.error || undefined,
+            createdAt: parseInt(data.createdAt, 10),
+            updatedAt: parseInt(data.updatedAt, 10),
+            settledAt: data.settledAt ? parseInt(data.settledAt, 10) : undefined,
+            abortedAt: data.abortedAt ? parseInt(data.abortedAt, 10) : undefined,
+        };
+    }
+
+    async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>> {
+        const budgetInfo = await getKeyBudgetInfo(keyId);
+        const reserved = await getKeyReservedBudget(keyId);
+
+        if (!budgetInfo) {
+            return {};
+        }
+
+        const budgetRemaining = Math.max(0, budgetInfo.budgetLimit - budgetInfo.budgetUsed - reserved);
+
+        return {
+            "x-key-budget-limit": String(budgetInfo.budgetLimit),
+            "x-key-budget-used": String(budgetInfo.budgetUsed),
+            "x-key-budget-reserved": String(reserved),
+            "x-key-budget-remaining": String(budgetRemaining),
+        };
+    }
+
+    async function buildSessionBudgetHeaders(
+        userAddress: string,
+        network: NetworkId,
+        network: NetworkId,
+    ): Promise<Record<string, string>> {
+        const budgetInfo = await getSessionBudgetInfo(userAddress, network);
+        const budgetInfo = await getSessionBudgetInfo(userAddress, network);
+        if (!budgetInfo) {
+            return {};
+        }
+
+        return {
+            "x-session-budget-limit": budgetInfo.totalWei,
+            "x-session-budget-used": budgetInfo.usedWei,
+            "x-session-budget-locked": budgetInfo.lockedWei,
+            "x-session-budget-remaining": budgetInfo.availableWei,
+        };
+    }
+
+    async function buildPaymentBudgetHeaders(input: {
+        keyId: string;
+        purpose: KeyPurpose;
+        userAddress: string;
+        network: NetworkId;
+        network: NetworkId;
+    }): Promise<Record<string, string>> {
+        if (input.purpose === "session") {
+            return buildSessionBudgetHeaders(input.userAddress, input.network);
+            return buildSessionBudgetHeaders(input.userAddress, input.network);
+        }
+
+        return buildBudgetHeaders(input.keyId);
+    }
+
+    function appendSettlementAmountHeaders(
+        headers: Record<string, string>,
+        input: {
+            finalAmountWei?: string;
+            txHash?: string;
+        },
+    ): Record<string, string> {
+        if (input.finalAmountWei) {
+            headers["x-key-final-amount-wei"] = input.finalAmountWei;
+        }
+        if (input.txHash) {
+            headers["x-key-tx-hash"] = input.txHash;
+            headers["X-Transaction-Hash"] = input.txHash;
+        }
+        return headers;
+    }
+
+    export async function authorizePaymentIntent(
+        input: AuthorizePaymentIntentInput,
+    ): Promise<PaymentIntentResult<AuthorizedPaymentIntentBody>> {
+        try {
+            const token = extractKeyFromHeader(input.authorization);
+
+            if (!token) {
+                return failure(401, "Compose key authorization is required");
+            }
+
+            const validation = await validateKey(token, 0);
+            if (!validation.valid || !validation.payload || !validation.record) {
+                return failure(401, validation.error || "Invalid Compose key");
+            }
+
+            const network = input.network;
+            const network = input.network;
+
+            if (validation.record.network !== network) {
+                return failure(409, "Compose key network does not match request network");
+                if (validation.record.network !== network) {
+                    return failure(409, "Compose key network does not match request network");
+                }
+
+                // Idempotency: if the caller provided an X-Idempotency-Key, a second
+                // authorize with the same (keyId, idempotencyKey) must return the
+                // exact intent created by the first call instead of creating a new
+                // reservation. We key the dedupe slot on (keyId, idempotencyKey) so
+                // different keys with the same client-chosen idempotency key do not
+                // collide across wallets.
+                if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
+                    const idemKey = idempotencyValkeyKey(validation.payload.keyId, input.idempotencyKey.trim());
+                    const existingIntentId = await valkeyGet(idemKey);
+                    if (existingIntentId) {
+                        const existing = await readPaymentIntent(existingIntentId);
+                        if (existing) {
+                            const headers = await buildPaymentBudgetHeaders(existing);
+                            headers["x-payment-intent-id"] = existing.paymentIntentId;
+                            headers["x-idempotent-replay"] = "true";
+                            return {
+                                ok: true,
+                                status: 200,
+                                body: {
+                                    paymentIntentId: existing.paymentIntentId,
+                                    maxAmountWei: existing.maxAmountWei,
+                                    status: "authorized",
+                                },
+                                headers,
+                            };
+                        }
+                        // Stale slot — the intent expired before the replay arrived.
+                        // Fall through and create a fresh one; we rewrite the slot below.
+                    }
+                }
+
+                const normalizedInput = {
+                    ...input,
+                    network,
+                    network,
+                };
+                validateAuthorizeInput(normalizedInput);
+                const authorizationAmount = resolveAuthorizationAmount(normalizedInput);
+                const paymentIntentId = randomUUID();
+                const recordKey = keyRecordKey(validation.payload.keyId);
+                const purpose = validation.record.purpose;
+
+                const authorizationLockKey = purpose === "api"
+                    ? paymentIntentLockKey(paymentIntentId)
+                    : keyLockKey(validation.payload.keyId);
+                const budgetState = await withValkeyLock(authorizationLockKey, async () => {
+                    const record = await getKeyRecord(validation.payload!.keyId);
+                    if (!record) {
+                        throw new Error("Compose key record not found");
+                    }
+
+                    if (record.purpose === "session") {
+                        const requestedAmountWei = authorizationAmount.useBudgetCap
+                            ? (await getSessionBudgetInfo(validation.payload!.sub, network))?.availableWei
+                                ? (await getSessionBudgetInfo(validation.payload!.sub, network))?.availableWei
+                                : authorizationAmount.maxAmountWei;
+
+                        if (!requestedAmountWei) {
+                            return {
+                                ok: false as const,
+                            };
+                        }
+
+                        if (BigInt(requestedAmountWei) <= 0n) {
+                            return {
+                                ok: false as const,
+                            };
+                        }
+
+                        const reservation = await lockBudget(
+                            validation.payload!.sub,
+                            network,
+                            requestedAmountWei,
+                            merchantWalletAddress,
+                            paymentIntentId,
+                            authorizationAmount.metering?.subject,
+                        );
+
+                        if (!reservation.success) {
+                            return {
+                                ok: false as const,
+                            };
+                        }
+
+                        const resolvedSessionBudgetIntentId = reservation.intentId || "";
+
+                        const now = Date.now();
+                        await valkeyHSet(paymentIntentKey(paymentIntentId), {
+                            paymentIntentId,
+                            keyId: validation.payload!.keyId,
+                            purpose: "session",
+                            userAddress: validation.payload!.sub.toLowerCase(),
+                            network: String(network),
+                            network: String(network),
+                            service: normalizedInput.service,
+                            action: normalizedInput.action,
+                            resource: normalizedInput.resource,
+                            method: normalizedInput.method,
+                            maxAmountWei: requestedAmountWei,
+                            status: "authorized",
+                            runId: toOptionalString(normalizedInput.runId || ""),
+                            idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
+                            sessionBudgetIntentId: toOptionalString(resolvedSessionBudgetIntentId || ""),
+                            useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
+                            reservedAmountWei: requestedAmountWei,
+                            ...meteringValkeyFields(authorizationAmount.metering),
+                            createdAt: String(now),
+                            updatedAt: String(now),
+                        });
+                        await valkeyExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
+
+                        return {
+                            ok: true as const,
+                            reservedAmountWei: requestedAmountWei,
+                        };
+                    }
+
+                    const reserved = BigInt(await getKeyReservedBudget(validation.payload!.keyId));
+                    const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - reserved;
+                    if (available <= 0n) {
+                        return {
+                            ok: false as const,
+                            available,
+                        };
+                    }
+
+                    const maxAmountWei = authorizationAmount.useBudgetCap
+                        ? available.toString()
+                        : authorizationAmount.maxAmountWei!;
+                    const reservedAmountWei = maxAmountWei;
+                    const reservedAmount = BigInt(reservedAmountWei);
+
+                    if (reservedAmount <= 0n || reservedAmount > available) {
+                        return {
+                            ok: false as const,
+                            available,
+                        };
+                    }
+
+                    const reservedBudget = await valkeyTryReserveBudget({
+                        budgetKey: recordKey,
+                        intentKey: paymentIntentKey(paymentIntentId),
+                        amount: reservedAmount,
+                    });
+                    if (!reservedBudget) {
+                        return {
+                            ok: false as const,
+                            available,
+                        };
+                    }
+
+                    const sessionReservation = await lockBudget(
+                        validation.payload!.sub,
+                        network,
+                        reservedAmountWei,
+                        merchantWalletAddress,
+                        paymentIntentId,
+                        authorizationAmount.metering?.subject,
+                    );
+                    if (!sessionReservation.success || !sessionReservation.intentId) {
+                        await valkeyReleaseReservedBudget({
+                            budgetKey: recordKey,
+                            intentKey: paymentIntentKey(paymentIntentId),
+                            reservedAmount,
+                            intentFields: {
+                                status: "failed",
+                                updatedAt: String(Date.now()),
+                                error: sessionReservation.error || "Session budget exhausted",
+                            },
+                        });
+                        return {
+                            ok: false as const,
+                            available,
+                        };
+                    }
+
+                    const now = Date.now();
+                    await valkeyHSet(paymentIntentKey(paymentIntentId), {
+                        paymentIntentId,
+                        keyId: validation.payload!.keyId,
+                        purpose: "api",
+                        userAddress: validation.payload!.sub.toLowerCase(),
+                        network: String(network),
+                        network: String(network),
+                        service: normalizedInput.service,
+                        action: normalizedInput.action,
+                        resource: normalizedInput.resource,
+                        method: normalizedInput.method,
+                        maxAmountWei,
+                        status: "authorized",
+                        runId: toOptionalString(normalizedInput.runId || ""),
+                        idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
+                        sessionBudgetIntentId: sessionReservation.intentId,
+                        useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
+                        reservedAmountWei,
+                        ...meteringValkeyFields(authorizationAmount.metering),
+                        createdAt: String(now),
+                        updatedAt: String(now),
+                    });
+                    await valkeyExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
+
+                    return {
+                        ok: true as const,
+                        reservedAmountWei: maxAmountWei,
+                    };
+                });
+
+                if (!budgetState.ok) {
+                    const headers = await buildPaymentBudgetHeaders({
+                        keyId: validation.payload.keyId,
+                        purpose,
+                        userAddress: validation.payload.sub.toLowerCase(),
+                        network,
+                        network,
+                    });
+                    return {
+                        ok: false,
+                        status: 402,
+                        body: { error: "Compose key budget exhausted" },
+                        headers,
+                    };
+                }
+
+                const headers = await buildPaymentBudgetHeaders({
+                    keyId: validation.payload.keyId,
+                    purpose,
+                    userAddress: validation.payload.sub.toLowerCase(),
+                    network,
+                    network,
+                });
+                headers["x-payment-intent-id"] = paymentIntentId;
+
+                // Record the idempotency slot so a retried authorize with the same
+                // idempotency key resolves to this intent instead of creating a new one.
+                if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
+                    await valkeySetNXEX(
+                        idempotencyValkeyKey(validation.payload.keyId, input.idempotencyKey.trim()),
+                        paymentIntentId,
+                        INTENT_TTL_SECONDS,
+                    );
+                }
+
+                return {
+                    ok: true,
+                    status: 200,
+                    body: {
+                        paymentIntentId,
+                        maxAmountWei: budgetState.reservedAmountWei,
+                        status: "authorized",
+                    },
+                    headers,
+                };
+            } catch (error) {
+                const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+                const status = typeof record?.statusCode === "number" ? record.statusCode : 400;
+                return failure(status, error instanceof Error ? error.message : "Invalid payment authorization request");
+            }
+        }
+
+export async function settlePaymentIntent(
+            input: SettlePaymentIntentInput,
+        ): Promise<PaymentIntentResult<SettledPaymentIntentBody>> {
+            try {
+                validateSettleInput(input);
+                const settlementResolved = resolveSettlementAmount(input);
+                const finalAmountStr = settlementResolved.finalAmountWei;
+                const finalAmount = parsePositiveIntegerString(finalAmountStr, "finalAmountWei");
+
+                return await withValkeyLock(paymentIntentLockKey(input.paymentIntentId), async () => {
+                    const intent = await readPaymentIntent(input.paymentIntentId);
+                    if (!intent) {
+                        return failure(404, "Payment intent not found");
+                    }
+
+                    if (intent.status === "settled") {
+                        const headers = appendSettlementAmountHeaders(
+                            await buildPaymentBudgetHeaders(intent),
+                            {
+                                finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
+                                txHash: intent.txHash,
+                            },
+                        );
+                        return {
+                            ok: true,
+                            status: 200,
+                            body: {
+                                paymentIntentId: intent.paymentIntentId,
+                                network: intent.network,
+                                network: intent.network,
+                                maxAmountWei: intent.maxAmountWei,
+                                finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
+                                status: intent.status,
+                                meterSubject: intent.meterSubject,
+                                lineItems: intent.meterLineItems,
+                                providerAmountWei: intent.providerAmountWei,
+                                platformFeeWei: intent.platformFeeWei,
+                                txHash: intent.txHash,
+                            },
+                            headers,
+                        };
+                    }
+
+                    if (intent.status !== "authorized") {
+                        return failure(409, `Payment intent cannot be settled from status ${intent.status}`);
+                    }
+
+                    const maxAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
+                    if (finalAmount > maxAmount) {
+                        return failure(409, "finalAmountWei cannot exceed the reserved amount");
+                    }
+
+                    const sessionBudgetIntentId = intent.sessionBudgetIntentId;
+                    let reservedSessionAmount = maxAmount;
+                    if (intent.purpose === "session" && !sessionBudgetIntentId) {
+                        return failure(409, "Session payment intent is missing its authorization reservation");
+                    }
+
+                    const apiReservedAmount = intent.reservedAmountWei
+                        ? BigInt(intent.reservedAmountWei)
+                        : 0n;
+                    if (intent.purpose === "api" && apiReservedAmount <= 0n) {
+                        return failure(409, "API payment intent is missing its authorization reservation");
+                    }
+
+                    await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
+                        status: "settling",
+                        updatedAt: String(Date.now()),
+                        finalAmountWei: finalAmountStr,
+                        ...meteringValkeyFields(settlementResolved.metering ?? {
+                            subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
+                            lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
+                            providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
+                            platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
+                            finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
+                        }),
+                    });
+
+                    const settlement = await settleKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.network);
+                    const settlement = await settleKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.network);
+
+                    const settlementError = !settlement.success
+                        ? settlement.error || "Payment settlement failed"
+                        : !settlement.txHash
+                            ? "Payment settlement did not return transaction hash"
+                            : null;
+
+                    if (settlementError) {
+                        if (sessionBudgetIntentId) {
+                            await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
+                        }
+                        if (intent.purpose === "api" && apiReservedAmount > 0n) {
+                            await valkeyReleaseReservedBudget({
+                                budgetKey: keyRecordKey(intent.keyId),
+                                intentKey: paymentIntentKey(intent.paymentIntentId),
+                                reservedAmount: apiReservedAmount,
+                                intentFields: {
+                                    status: "failed",
+                                    updatedAt: String(Date.now()),
+                                    error: settlementError,
+                                },
+                            });
+                        }
+
+                        if (intent.purpose === "session") {
+                            await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
+                                status: "failed",
+                                updatedAt: String(Date.now()),
+                                error: settlementError,
+                            });
+                        }
+
+                        return buildPaymentRequiredFailure({
+                            resourceUrl: intent.resource,
+                            network: intent.network,
+                            network: intent.network,
+                            amountWei: finalAmountStr,
+                            error: settlementError,
+                            error: settlementError,
+                        });
+                    }
+
+                    if (sessionBudgetIntentId) {
+                        const unlockedAmount = reservedSessionAmount - finalAmount;
+                        if (unlockedAmount > 0n) {
+                            await unlockBudget(intent.userAddress, intent.network, unlockedAmount.toString());
+                            await unlockBudget(intent.userAddress, intent.network, unlockedAmount.toString());
+                        }
+                        await markSettled(intent.userAddress, intent.network, finalAmountStr);
+                        await markSettled(intent.userAddress, intent.network, finalAmountStr);
+                        if (sessionBudgetIntentId) {
+                            await markIntentsSettled([sessionBudgetIntentId], settlement.txHash || "");
+                        }
+                        await valkeyHSet(keyRecordKey(intent.keyId), "lastUsedAt", String(Date.now()));
+                    }
+                    const settledAt = Date.now();
+                    const settledFields = {
+                        status: "settled",
+                        updatedAt: String(settledAt),
+                        settledAt: String(settledAt),
+                        finalAmountWei: finalAmountStr,
+                        txHash: settlement.txHash || "",
+                        error: "",
+                        ...meteringValkeyFields(settlementResolved.metering ?? {
+                            subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
+                            lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
+                            providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
+                            platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
+                            finalAmountWei: finalAmountStr,
+                        }),
+                    };
+                    if (intent.purpose === "api") {
+                        await valkeyCommitReservedBudget({
+                            budgetKey: keyRecordKey(intent.keyId),
+                            intentKey: paymentIntentKey(intent.paymentIntentId),
+                            reservedAmount: apiReservedAmount,
+                            finalAmount,
+                            lastUsedAt: settledAt,
+                            intentFields: settledFields,
+                        });
+                    } else {
+                        await valkeyHSet(paymentIntentKey(intent.paymentIntentId), settledFields);
+                    }
+
+                    const headers = appendSettlementAmountHeaders(
+                        await buildPaymentBudgetHeaders(intent),
+                        {
+                            finalAmountWei: finalAmountStr,
+                            txHash: settlement.txHash,
+                        },
+                    );
+
                     return {
                         ok: true,
                         status: 200,
                         body: {
-                            paymentIntentId: existing.paymentIntentId,
-                            maxAmountWei: existing.maxAmountWei,
-                            status: "authorized",
+                            paymentIntentId: intent.paymentIntentId,
+                            network: intent.network,
+                            network: intent.network,
+                            maxAmountWei: intent.maxAmountWei,
+                            finalAmountWei: finalAmountStr,
+                            status: "settled",
+                            meterSubject: settlementResolved.metering?.subject || settlementResolved.explicit?.meterSubject || intent.meterSubject,
+                            lineItems: settlementResolved.metering?.lineItems || settlementResolved.explicit?.lineItems || intent.meterLineItems,
+                            providerAmountWei: settlementResolved.metering?.providerAmountWei || settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei,
+                            platformFeeWei: settlementResolved.metering?.platformFeeWei || settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei,
+                            txHash: settlement.txHash,
                         },
                         headers,
                     };
-                }
-                // Stale slot — the intent expired before the replay arrived.
-                // Fall through and create a fresh one; we rewrite the slot below.
-            }
-        }
-
-        const normalizedInput = {
-            ...input,
-            network,
-        };
-        validateAuthorizeInput(normalizedInput);
-        const authorizationAmount = resolveAuthorizationAmount(normalizedInput);
-        const paymentIntentId = randomUUID();
-        const recordKey = keyRecordKey(validation.payload.keyId);
-        const purpose = validation.record.purpose;
-
-        const authorizationLockKey = purpose === "api"
-            ? paymentIntentLockKey(paymentIntentId)
-            : keyLockKey(validation.payload.keyId);
-        const budgetState = await withValkeyLock(authorizationLockKey, async () => {
-            const record = await getKeyRecord(validation.payload!.keyId);
-            if (!record) {
-                throw new Error("Compose key record not found");
-            }
-
-            if (record.purpose === "session") {
-                const requestedAmountWei = authorizationAmount.useBudgetCap
-                    ? (await getSessionBudgetInfo(validation.payload!.sub, network))?.availableWei
-                    : authorizationAmount.maxAmountWei;
-
-                if (!requestedAmountWei) {
-                    return {
-                        ok: false as const,
-                    };
-                }
-
-                if (BigInt(requestedAmountWei) <= 0n) {
-                    return {
-                        ok: false as const,
-                    };
-                }
-
-                const reservation = await lockBudget(
-                    validation.payload!.sub,
-                    network,
-                    requestedAmountWei,
-                    merchantWalletAddress,
-                    paymentIntentId,
-                    authorizationAmount.metering?.subject,
-                );
-
-                if (!reservation.success) {
-                    return {
-                        ok: false as const,
-                    };
-                }
-
-                const resolvedSessionBudgetIntentId = reservation.intentId || "";
-
-                const now = Date.now();
-                await valkeyHSet(paymentIntentKey(paymentIntentId), {
-                    paymentIntentId,
-                    keyId: validation.payload!.keyId,
-                    purpose: "session",
-                    userAddress: validation.payload!.sub.toLowerCase(),
-                    network: String(network),
-                    service: normalizedInput.service,
-                    action: normalizedInput.action,
-                    resource: normalizedInput.resource,
-                    method: normalizedInput.method,
-                    maxAmountWei: requestedAmountWei,
-                    status: "authorized",
-                    runId: toOptionalString(normalizedInput.runId || ""),
-                    idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
-                    sessionBudgetIntentId: toOptionalString(resolvedSessionBudgetIntentId || ""),
-                    useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
-                    reservedAmountWei: requestedAmountWei,
-                    ...meteringValkeyFields(authorizationAmount.metering),
-                    createdAt: String(now),
-                    updatedAt: String(now),
                 });
-                await valkeyExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
-
-                return {
-                    ok: true as const,
-                    reservedAmountWei: requestedAmountWei,
-                };
-            }
-
-            const reserved = BigInt(await getKeyReservedBudget(validation.payload!.keyId));
-            const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - reserved;
-            if (available <= 0n) {
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
-
-            const maxAmountWei = authorizationAmount.useBudgetCap
-                ? available.toString()
-                : authorizationAmount.maxAmountWei!;
-            const reservedAmountWei = maxAmountWei;
-            const reservedAmount = BigInt(reservedAmountWei);
-
-            if (reservedAmount <= 0n || reservedAmount > available) {
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
-
-            const reservedBudget = await valkeyTryReserveBudget({
-                budgetKey: recordKey,
-                intentKey: paymentIntentKey(paymentIntentId),
-                amount: reservedAmount,
-            });
-            if (!reservedBudget) {
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
-
-            const sessionReservation = await lockBudget(
-                validation.payload!.sub,
-                network,
-                reservedAmountWei,
-                merchantWalletAddress,
-                paymentIntentId,
-                authorizationAmount.metering?.subject,
-            );
-            if (!sessionReservation.success || !sessionReservation.intentId) {
-                await valkeyReleaseReservedBudget({
-                    budgetKey: recordKey,
-                    intentKey: paymentIntentKey(paymentIntentId),
-                    reservedAmount,
-                    intentFields: {
-                        status: "failed",
-                        updatedAt: String(Date.now()),
-                        error: sessionReservation.error || "Session budget exhausted",
-                    },
+            } catch (error) {
+                const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
+                    ? (error as { statusCode: number }).statusCode
+                    : 400;
+                return failure(status, error instanceof Error ? error.message : "Invalid payment settlement request", {
+                    headers: status === 429 ? { "Retry-After": "1" } : {},
                 });
-                return {
-                    ok: false as const,
-                    available,
-                };
             }
-
-            const now = Date.now();
-            await valkeyHSet(paymentIntentKey(paymentIntentId), {
-                paymentIntentId,
-                keyId: validation.payload!.keyId,
-                purpose: "api",
-                userAddress: validation.payload!.sub.toLowerCase(),
-                network: String(network),
-                service: normalizedInput.service,
-                action: normalizedInput.action,
-                resource: normalizedInput.resource,
-                method: normalizedInput.method,
-                maxAmountWei,
-                status: "authorized",
-                runId: toOptionalString(normalizedInput.runId || ""),
-                idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
-                sessionBudgetIntentId: sessionReservation.intentId,
-                useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
-                reservedAmountWei,
-                ...meteringValkeyFields(authorizationAmount.metering),
-                createdAt: String(now),
-                updatedAt: String(now),
-            });
-            await valkeyExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
-
-            return {
-                ok: true as const,
-                reservedAmountWei: maxAmountWei,
-            };
-        });
-
-        if (!budgetState.ok) {
-            const headers = await buildPaymentBudgetHeaders({
-                keyId: validation.payload.keyId,
-                purpose,
-                userAddress: validation.payload.sub.toLowerCase(),
-                network,
-            });
-            return {
-                ok: false,
-                status: 402,
-                body: { error: "Compose key budget exhausted" },
-                headers,
-            };
         }
 
-        const headers = await buildPaymentBudgetHeaders({
-            keyId: validation.payload.keyId,
-            purpose,
-            userAddress: validation.payload.sub.toLowerCase(),
-            network,
-        });
-        headers["x-payment-intent-id"] = paymentIntentId;
+        export async function abortPaymentIntent(
+            input: AbortPaymentIntentInput,
+        ): Promise<PaymentIntentResult<AbortedPaymentIntentBody>> {
+            try {
+                validateAbortInput(input);
 
-        // Record the idempotency slot so a retried authorize with the same
-        // idempotency key resolves to this intent instead of creating a new one.
-        if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
-            await valkeySetNXEX(
-                idempotencyValkeyKey(validation.payload.keyId, input.idempotencyKey.trim()),
-                paymentIntentId,
-                INTENT_TTL_SECONDS,
-            );
-        }
+                return await withValkeyLock(paymentIntentLockKey(input.paymentIntentId), async () => {
+                    const intent = await readPaymentIntent(input.paymentIntentId);
+                    if (!intent) {
+                        return failure(404, "Payment intent not found");
+                    }
 
-        return {
-            ok: true,
-            status: 200,
-            body: {
-                paymentIntentId,
-                maxAmountWei: budgetState.reservedAmountWei,
-                status: "authorized",
-            },
-            headers,
-        };
-    } catch (error) {
-        const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
-        const status = typeof record?.statusCode === "number" ? record.statusCode : 400;
-        return failure(status, error instanceof Error ? error.message : "Invalid payment authorization request");
-    }
-}
+                    if (intent.status === "aborted") {
+                        const headers = await buildPaymentBudgetHeaders(intent);
+                        return {
+                            ok: true,
+                            status: 200,
+                            body: {
+                                paymentIntentId: intent.paymentIntentId,
+                                status: "aborted",
+                                reason: intent.error || input.reason,
+                            },
+                            headers,
+                        };
+                    }
 
-export async function settlePaymentIntent(
-    input: SettlePaymentIntentInput,
-): Promise<PaymentIntentResult<SettledPaymentIntentBody>> {
-    try {
-        validateSettleInput(input);
-        const settlementResolved = resolveSettlementAmount(input);
-        const finalAmountStr = settlementResolved.finalAmountWei;
-        const finalAmount = parsePositiveIntegerString(finalAmountStr, "finalAmountWei");
+                    if (intent.status === "settled") {
+                        return failure(409, "Settled payment intents cannot be aborted");
+                    }
 
-        return await withValkeyLock(paymentIntentLockKey(input.paymentIntentId), async () => {
-            const intent = await readPaymentIntent(input.paymentIntentId);
-            if (!intent) {
-                return failure(404, "Payment intent not found");
-            }
+                    if (intent.status === "settling") {
+                        return failure(409, "Settling payment intents cannot be aborted");
+                    }
 
-            if (intent.status === "settled") {
-                const headers = appendSettlementAmountHeaders(
-                    await buildPaymentBudgetHeaders(intent),
-                    {
-                        finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
-                        txHash: intent.txHash,
-                    },
-                );
-                return {
-                    ok: true,
-                    status: 200,
-                    body: {
-                        paymentIntentId: intent.paymentIntentId,
-                        network: intent.network,
-                        maxAmountWei: intent.maxAmountWei,
-                        finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
-                        status: intent.status,
-                        meterSubject: intent.meterSubject,
-                        lineItems: intent.meterLineItems,
-                        providerAmountWei: intent.providerAmountWei,
-                        platformFeeWei: intent.platformFeeWei,
-                        txHash: intent.txHash,
-                    },
-                    headers,
-                };
-            }
+                    const reservedAmount = intent.reservedAmountWei
+                        ? BigInt(intent.reservedAmountWei)
+                        : intent.useBudgetCap
+                            ? 0n
+                            : parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
 
-            if (intent.status !== "authorized") {
-                return failure(409, `Payment intent cannot be settled from status ${intent.status}`);
-            }
+                    if (intent.sessionBudgetIntentId) {
+                        await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
+                    }
+                    if (intent.purpose === "api" && reservedAmount > 0n) {
+                        const abortedAt = Date.now();
+                        await valkeyReleaseReservedBudget({
+                            budgetKey: keyRecordKey(intent.keyId),
+                            intentKey: paymentIntentKey(intent.paymentIntentId),
+                            reservedAmount,
+                            intentFields: {
+                                status: "aborted",
+                                updatedAt: String(abortedAt),
+                                abortedAt: String(abortedAt),
+                                error: input.reason,
+                            },
+                        });
+                    }
 
-            const maxAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
-            if (finalAmount > maxAmount) {
-                return failure(409, "finalAmountWei cannot exceed the reserved amount");
-            }
+                    const abortedAt = Date.now();
+                    if (intent.purpose === "session" || reservedAmount === 0n) {
+                        await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
+                            status: "aborted",
+                            updatedAt: String(abortedAt),
+                            abortedAt: String(abortedAt),
+                            error: input.reason,
+                        });
+                    }
 
-            const sessionBudgetIntentId = intent.sessionBudgetIntentId;
-            let reservedSessionAmount = maxAmount;
-            if (intent.purpose === "session" && !sessionBudgetIntentId) {
-                return failure(409, "Session payment intent is missing its authorization reservation");
-            }
-
-            const apiReservedAmount = intent.reservedAmountWei
-                ? BigInt(intent.reservedAmountWei)
-                : 0n;
-            if (intent.purpose === "api" && apiReservedAmount <= 0n) {
-                return failure(409, "API payment intent is missing its authorization reservation");
-            }
-
-            await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                status: "settling",
-                updatedAt: String(Date.now()),
-                finalAmountWei: finalAmountStr,
-                ...meteringValkeyFields(settlementResolved.metering ?? {
-                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
-                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
-                    providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
-                    platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
-                    finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
-                }),
-            });
-
-            const settlement = await settleKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.network);
-
-            const settlementError = !settlement.success
-                ? settlement.error || "Payment settlement failed"
-                : !settlement.txHash
-                    ? "Payment settlement did not return transaction hash"
-                    : null;
-
-            if (settlementError) {
-                if (sessionBudgetIntentId) {
-                    await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
-                }
-                if (intent.purpose === "api" && apiReservedAmount > 0n) {
-                    await valkeyReleaseReservedBudget({
-                        budgetKey: keyRecordKey(intent.keyId),
-                        intentKey: paymentIntentKey(intent.paymentIntentId),
-                        reservedAmount: apiReservedAmount,
-                        intentFields: {
-                            status: "failed",
-                            updatedAt: String(Date.now()),
-                            error: settlementError,
+                    const headers = await buildPaymentBudgetHeaders(intent);
+                    return {
+                        ok: true,
+                        status: 200,
+                        body: {
+                            paymentIntentId: intent.paymentIntentId,
+                            status: "aborted",
+                            reason: input.reason,
                         },
-                    });
-                }
-
-                if (intent.purpose === "session") {
-                    await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                        status: "failed",
-                        updatedAt: String(Date.now()),
-                        error: settlementError,
-                    });
-                }
-
-                return buildPaymentRequiredFailure({
-                    resourceUrl: intent.resource,
-                    network: intent.network,
-                    amountWei: finalAmountStr,
-                    error: settlementError,
+                        headers,
+                    };
+                });
+            } catch (error) {
+                const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
+                    ? (error as { statusCode: number }).statusCode
+                    : 400;
+                return failure(status, error instanceof Error ? error.message : "Invalid payment abort request", {
+                    headers: status === 429 ? { "Retry-After": "1" } : {},
                 });
             }
-
-            if (sessionBudgetIntentId) {
-                const unlockedAmount = reservedSessionAmount - finalAmount;
-                if (unlockedAmount > 0n) {
-                    await unlockBudget(intent.userAddress, intent.network, unlockedAmount.toString());
-                }
-                await markSettled(intent.userAddress, intent.network, finalAmountStr);
-                if (sessionBudgetIntentId) {
-                    await markIntentsSettled([sessionBudgetIntentId], settlement.txHash || "");
-                }
-                await valkeyHSet(keyRecordKey(intent.keyId), "lastUsedAt", String(Date.now()));
-            }
-            const settledAt = Date.now();
-            const settledFields = {
-                status: "settled",
-                updatedAt: String(settledAt),
-                settledAt: String(settledAt),
-                finalAmountWei: finalAmountStr,
-                txHash: settlement.txHash || "",
-                error: "",
-                ...meteringValkeyFields(settlementResolved.metering ?? {
-                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
-                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
-                    providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
-                    platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
-                    finalAmountWei: finalAmountStr,
-                }),
-            };
-            if (intent.purpose === "api") {
-                await valkeyCommitReservedBudget({
-                    budgetKey: keyRecordKey(intent.keyId),
-                    intentKey: paymentIntentKey(intent.paymentIntentId),
-                    reservedAmount: apiReservedAmount,
-                    finalAmount,
-                    lastUsedAt: settledAt,
-                    intentFields: settledFields,
-                });
-            } else {
-                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), settledFields);
-            }
-
-            const headers = appendSettlementAmountHeaders(
-                await buildPaymentBudgetHeaders(intent),
-                {
-                    finalAmountWei: finalAmountStr,
-                    txHash: settlement.txHash,
-                },
-            );
-
-            return {
-                ok: true,
-                status: 200,
-                body: {
-                    paymentIntentId: intent.paymentIntentId,
-                    network: intent.network,
-                    maxAmountWei: intent.maxAmountWei,
-                    finalAmountWei: finalAmountStr,
-                    status: "settled",
-                    meterSubject: settlementResolved.metering?.subject || settlementResolved.explicit?.meterSubject || intent.meterSubject,
-                    lineItems: settlementResolved.metering?.lineItems || settlementResolved.explicit?.lineItems || intent.meterLineItems,
-                    providerAmountWei: settlementResolved.metering?.providerAmountWei || settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei,
-                    platformFeeWei: settlementResolved.metering?.platformFeeWei || settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei,
-                    txHash: settlement.txHash,
-                },
-                headers,
-            };
-        });
-    } catch (error) {
-        const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
-            ? (error as { statusCode: number }).statusCode
-            : 400;
-        return failure(status, error instanceof Error ? error.message : "Invalid payment settlement request", {
-            headers: status === 429 ? { "Retry-After": "1" } : {},
-        });
-    }
-}
-
-export async function abortPaymentIntent(
-    input: AbortPaymentIntentInput,
-): Promise<PaymentIntentResult<AbortedPaymentIntentBody>> {
-    try {
-        validateAbortInput(input);
-
-        return await withValkeyLock(paymentIntentLockKey(input.paymentIntentId), async () => {
-            const intent = await readPaymentIntent(input.paymentIntentId);
-            if (!intent) {
-                return failure(404, "Payment intent not found");
-            }
-
-            if (intent.status === "aborted") {
-                const headers = await buildPaymentBudgetHeaders(intent);
-                return {
-                    ok: true,
-                    status: 200,
-                    body: {
-                        paymentIntentId: intent.paymentIntentId,
-                        status: "aborted",
-                        reason: intent.error || input.reason,
-                    },
-                    headers,
-                };
-            }
-
-            if (intent.status === "settled") {
-                return failure(409, "Settled payment intents cannot be aborted");
-            }
-
-            if (intent.status === "settling") {
-                return failure(409, "Settling payment intents cannot be aborted");
-            }
-
-            const reservedAmount = intent.reservedAmountWei
-                ? BigInt(intent.reservedAmountWei)
-                : intent.useBudgetCap
-                    ? 0n
-                    : parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
-
-            if (intent.sessionBudgetIntentId) {
-                await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
-            }
-            if (intent.purpose === "api" && reservedAmount > 0n) {
-                const abortedAt = Date.now();
-                await valkeyReleaseReservedBudget({
-                    budgetKey: keyRecordKey(intent.keyId),
-                    intentKey: paymentIntentKey(intent.paymentIntentId),
-                    reservedAmount,
-                    intentFields: {
-                        status: "aborted",
-                        updatedAt: String(abortedAt),
-                        abortedAt: String(abortedAt),
-                        error: input.reason,
-                    },
-                });
-            }
-
-            const abortedAt = Date.now();
-            if (intent.purpose === "session" || reservedAmount === 0n) {
-                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                    status: "aborted",
-                    updatedAt: String(abortedAt),
-                    abortedAt: String(abortedAt),
-                    error: input.reason,
-                });
-            }
-
-            const headers = await buildPaymentBudgetHeaders(intent);
-            return {
-                ok: true,
-                status: 200,
-                body: {
-                    paymentIntentId: intent.paymentIntentId,
-                    status: "aborted",
-                    reason: input.reason,
-                },
-                headers,
-            };
-        });
-    } catch (error) {
-        const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
-            ? (error as { statusCode: number }).statusCode
-            : 400;
-        return failure(status, error instanceof Error ? error.message : "Invalid payment abort request", {
-            headers: status === 429 ? { "Retry-After": "1" } : {},
-        });
-    }
-}
+        }

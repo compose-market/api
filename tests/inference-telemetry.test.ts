@@ -723,6 +723,7 @@ test("buildAuthoritativeBilling prefers authoritative image token usage over dup
 test("buildAuthoritativeBilling can settle authoritative media tiers when display pricing exists but token usage is absent", () => {
   const billing = buildAuthoritativeBilling({
     subject: "openai:gpt-image-2",
+    subject: "openai:gpt-image-2",
     modality: "image",
     pricing: {
       sections: [
@@ -792,6 +793,7 @@ test("buildAuthoritativeBilling hard-fails when authoritative media units are mi
     () =>
       buildAuthoritativeBilling({
         subject: "alibaba:wan2.7-t2v",
+        subject: "alibaba:wan2.7-t2v",
         modality: "video",
         pricing,
         media: {},
@@ -854,6 +856,7 @@ test("buildAuthoritativeBilling settles generated audio minute units", () => {
 test("buildRequestBilling selects an unambiguous media pricing tier from custom params", () => {
   const billing = buildRequestBilling({
     subject: "test:dall-e-quality-tiers",
+    subject: "test:dall-e-quality-tiers",
     modality: "image",
     pricing: {
       sections: [
@@ -893,6 +896,7 @@ test("buildRequestBilling selects an unambiguous media pricing tier from custom 
 
 test("buildRequestBilling ignores non-priced image params that share section cardinality", () => {
   const billing = buildRequestBilling({
+    subject: "test:dall-e-quality-tiers",
     subject: "test:dall-e-quality-tiers",
     modality: "image",
     pricing: {
@@ -936,6 +940,7 @@ test("buildRequestBilling ignores non-priced image params that share section car
 
 test("buildRequestBilling accepts authoritative gpt-image quality tiers without treating equal-area sizes as ambiguous", () => {
   const billing = buildRequestBilling({
+    subject: "test:gpt-image-quality-tiers",
     subject: "test:gpt-image-quality-tiers",
     modality: "image",
     pricing: {

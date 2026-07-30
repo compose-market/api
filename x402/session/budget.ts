@@ -33,6 +33,7 @@ import {
 } from "./allowance.js";
 import {
     isEvmNetwork,
+    isSolanaNetwork,
     type NetworkId,
 } from "../configs/chains.js";
 

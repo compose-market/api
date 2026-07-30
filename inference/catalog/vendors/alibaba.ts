@@ -1,5 +1,6 @@
 import { getModelById } from "../registry.js";
 import type { Call, Choice, Event, Message, Tool, Usage } from "../../core.js";
+import type { Call, Choice, Event, Message, Tool, Usage } from "../../core.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { normalizeOpenAIUsage, throwHttpError } from "../shared/index.js";
@@ -28,6 +29,7 @@ type AlibabaRoute =
 
 export interface AlibabaChatResult {
   text: string;
+  reasoning?: string;
   reasoning?: string;
   usage?: Usage;
   finishReason?: string;
@@ -207,668 +209,681 @@ async function postJson(
   extraHeaders: Record<string, string> = {},
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${credential()}`,
-      "Content-Type": "application/json",
-      ...extraHeaders,
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
+  async function postJson(
+    url: string,
+    body: Record<string, unknown>,
+    extraHeaders: Record<string, string> = {},
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential()}`,
+        "Content-Type": "application/json",
+        ...extraHeaders,
+      },
+      body: JSON.stringify(body),
+      signal,
+      signal,
+    });
 
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
-  }
-
-  if (!text) return {};
-  const parsed = JSON.parse(text) as unknown;
-  const record = asRecord(parsed);
-  const code = clean(record?.code);
-  if (code && code.toLowerCase() !== "success" && code.toLowerCase() !== "ok") {
-    throw new Error(`Alibaba provider error ${code}: ${clean(record?.message) || text.slice(0, 500)}`);
-  }
-  return parsed;
-}
-
-async function getJson(url: string): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${credential()}` },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
-  }
-  return text ? JSON.parse(text) : {};
-}
-
-async function postEmptyJson(url: string): Promise<unknown> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${credential()}` },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
-  }
-  return text ? JSON.parse(text) : {};
-}
-
-function usageFromOpenAI(value: unknown): Usage | undefined {
-  const usage = asRecord(value);
-  if (!usage) return undefined;
-  const promptTokens = typeof usage.prompt_tokens === "number"
-    ? usage.prompt_tokens
-    : typeof usage.input_tokens === "number"
-      ? usage.input_tokens
-      : 0;
-  const completionTokens = typeof usage.completion_tokens === "number"
-    ? usage.completion_tokens
-    : typeof usage.output_tokens === "number"
-      ? usage.output_tokens
-      : 0;
-  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : promptTokens + completionTokens;
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens,
-    raw: usage,
-  };
-}
-
-function usageFromDashScope(raw: unknown): Usage | undefined {
-  const root = asRecord(raw);
-  const usage = asRecord(root?.usage) || asRecord(asRecord(root?.output)?.usage);
-  return usageFromOpenAI(usage);
-}
-
-function messageText(message: Message): string {
-  if (typeof message.content === "string") return message.content;
-  if (!Array.isArray(message.content)) return "";
-  return message.content
-    .map((part) => part.type === "text" && typeof part.text === "string" ? part.text : "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-function primaryText(messages: Message[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === "user") {
-      const text = messageText(messages[index]);
-      if (text) return text;
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
     }
-  }
-  return "";
-}
 
-function promptWithReferenceMarkers(modelId: string, prompt: string, mediaCount: number): string {
-  const value = clean(prompt);
-  if (!isHappyHorseReferenceToVideo(modelId) || mediaCount <= 0) return value;
-  if (/\[Image\s+\d+\]/i.test(value)) return value;
-  const refs = Array.from({ length: mediaCount }, (_, index) => `[Image ${index + 1}]`).join(" ");
-  return clean(`${refs} ${value}`) || refs;
-}
-
-function defaultVideoEditPrompt(modelId: string, prompt: string): string {
-  const value = clean(prompt);
-  if (value || !isHappyHorseVideoEdit(modelId)) return value;
-  return "Edit the source media while preserving its main subject and natural motion.";
-}
-
-function urlFromPart(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  const record = asRecord(value);
-  return clean(record?.url) || undefined;
-}
-
-function findUrl(messages: Message[], type: "image_url" | "input_audio" | "video_url"): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const content = messages[index].content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (part.type !== type) continue;
-      if (type === "image_url") return urlFromPart(part.image_url);
-      if (type === "input_audio") return urlFromPart(part.input_audio);
-      return urlFromPart(part.video_url);
+    if (!text) return {};
+    const parsed = JSON.parse(text) as unknown;
+    const record = asRecord(parsed);
+    const code = clean(record?.code);
+    if (code && code.toLowerCase() !== "success" && code.toLowerCase() !== "ok") {
+      throw new Error(`Alibaba provider error ${code}: ${clean(record?.message) || text.slice(0, 500)}`);
     }
+    return parsed;
   }
-  return undefined;
-}
 
-function dashscopeContent(message: Message): Array<Record<string, unknown>> {
-  if (typeof message.content === "string") {
-    return message.content ? [{ text: message.content }] : [];
-  }
-  if (!Array.isArray(message.content)) return [];
-
-  const content: Array<Record<string, unknown>> = [];
-  for (const part of message.content) {
-    if (part.type === "text" && part.text) {
-      content.push({ text: part.text });
-    } else if (part.type === "image_url") {
-      const url = urlFromPart(part.image_url);
-      if (url) content.push({ image: url });
-    } else if (part.type === "input_audio") {
-      const url = urlFromPart(part.input_audio);
-      if (url) content.push({ audio: url });
-    } else if (part.type === "video_url") {
-      const url = urlFromPart(part.video_url);
-      if (url) content.push({ video: url });
+  async function getJson(url: string): Promise<unknown> {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${credential()}` },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
     }
-  }
-  return content;
-}
-
-function dashscopeMessages(messages: Message[]): Array<Record<string, unknown>> {
-  return messages
-    .map((message) => ({
-      role: message.role === "tool" ? "assistant" : message.role,
-      content: dashscopeContent(message),
-    }))
-    .filter((message) => Array.isArray(message.content) && message.content.length > 0);
-}
-
-function textFromOpenAIChat(raw: unknown): {
-  text: string;
-  reasoning?: string;
-  finishReason?: string;
-  usage?: Usage;
-  toolCalls?: Call[];
-} {
-  const root = asRecord(raw) || {};
-  const choices = Array.isArray(root.choices) ? root.choices : [];
-  const first = asRecord(choices[0]) || {};
-  const message = asRecord(first.message) || {};
-  const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-  const toolCalls = rawCalls
-    .map((value, index): Call | null => {
-      const call = asRecord(value);
-      const fn = asRecord(call?.function);
-      const name = clean(fn?.name);
-      if (!name) return null;
-      return {
-        id: clean(call?.id) || `call_${index}`,
-        name,
-        arguments: typeof fn?.arguments === "string" ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
-      };
-    })
-    .filter((call): call is Call => call !== null);
-  return {
-    text: clean(message.content),
-    ...(clean(message.reasoning_content) ? { reasoning: clean(message.reasoning_content) } : {}),
-    finishReason: toolCalls.length > 0
-      ? "tool-calls"
-      : clean(first.finish_reason) || undefined,
-    usage: usageFromOpenAI(root.usage),
-    ...(toolCalls.length > 0 ? { toolCalls } : {}),
-  };
-}
-
-function audioSecondsFromOpenAIUsage(value: unknown): number | undefined {
-  const usage = asRecord(value);
-  const details = asRecord(usage?.prompt_tokens_details) || asRecord(usage?.promptTokensDetails);
-  const audioTokens = readPositiveNumber(details, ["audio_tokens", "audioTokens"]);
-  if (audioTokens === undefined) return undefined;
-  return audioTokens / 25;
-}
-
-function dashscopeContentText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (!Array.isArray(value)) return "";
-  return value
-    .map((part) => {
-      const record = asRecord(part);
-      return clean(record?.text) || clean(record?.content);
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function textFromDashScope(raw: unknown): string {
-  const root = asRecord(raw) || {};
-  const output = asRecord(root.output) || root;
-  const text = clean(output.text) || clean(output.output_text);
-  if (text) return text;
-
-  const choices = Array.isArray(output.choices) ? output.choices : [];
-  const first = asRecord(choices[0]) || {};
-  const message = asRecord(first.message) || {};
-  return clean(message.content) || dashscopeContentText(message.content);
-}
-
-async function bufferFromPayload(payload: string, fallbackMimeType = "application/octet-stream"): Promise<{ buffer: Buffer; mimeType: string }> {
-  if (/^data:/i.test(payload)) {
-    const match = payload.match(/^data:([^;,]+)?;base64,(.+)$/i);
-    if (!match) throw new Error("Alibaba response contained an invalid data URL");
-    return { buffer: Buffer.from(match[2], "base64"), mimeType: match[1] || fallbackMimeType };
+    return text ? JSON.parse(text) : {};
   }
 
-  if (/^https?:\/\//i.test(payload)) {
-    const response = await fetch(payload);
-    if (!response.ok) throw new Error(`Failed to download Alibaba media URL: ${response.status}`);
+  async function postEmptyJson(url: string): Promise<unknown> {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${credential()}` },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
+    }
+    return text ? JSON.parse(text) : {};
+  }
+
+  function usageFromOpenAI(value: unknown): Usage | undefined {
+    const usage = asRecord(value);
+    if (!usage) return undefined;
+    const promptTokens = typeof usage.prompt_tokens === "number"
+      ? usage.prompt_tokens
+      : typeof usage.input_tokens === "number"
+        ? usage.input_tokens
+        : 0;
+    const completionTokens = typeof usage.completion_tokens === "number"
+      ? usage.completion_tokens
+      : typeof usage.output_tokens === "number"
+        ? usage.output_tokens
+        : 0;
+    const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : promptTokens + completionTokens;
     return {
-      buffer: Buffer.from(await response.arrayBuffer()),
-      mimeType: response.headers.get("content-type") || fallbackMimeType,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      raw: usage,
+      raw: usage,
     };
   }
 
-  return { buffer: Buffer.from(payload, "base64"), mimeType: fallbackMimeType };
-}
-
-function findMediaPayload(raw: unknown, keys: string[]): string {
-  const root = asRecord(raw) || {};
-  const output = asRecord(root.output) || root;
-
-  for (const key of keys) {
-    const value = clean(output[key]) || clean(root[key]);
-    if (value) return value;
+  function usageFromDashScope(raw: unknown): Usage | undefined {
+    const root = asRecord(raw);
+    const usage = asRecord(root?.usage) || asRecord(asRecord(root?.output)?.usage);
+    return usageFromOpenAI(usage);
   }
 
-  const data = Array.isArray(root.data) ? root.data : [];
-  for (const item of data) {
-    const record = asRecord(item);
-    if (!record) continue;
+  function messageText(message: Message): string {
+    if (typeof message.content === "string") return message.content;
+    if (!Array.isArray(message.content)) return "";
+    return message.content
+      .map((part) => part.type === "text" && typeof part.text === "string" ? part.text : "")
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function primaryText(messages: Message[]): string {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "user") {
+        const text = messageText(messages[index]);
+        if (text) return text;
+      }
+    }
+    return "";
+  }
+
+  function promptWithReferenceMarkers(modelId: string, prompt: string, mediaCount: number): string {
+    const value = clean(prompt);
+    if (!isHappyHorseReferenceToVideo(modelId) || mediaCount <= 0) return value;
+    if (/\[Image\s+\d+\]/i.test(value)) return value;
+    const refs = Array.from({ length: mediaCount }, (_, index) => `[Image ${index + 1}]`).join(" ");
+    return clean(`${refs} ${value}`) || refs;
+  }
+
+  function defaultVideoEditPrompt(modelId: string, prompt: string): string {
+    const value = clean(prompt);
+    if (value || !isHappyHorseVideoEdit(modelId)) return value;
+    return "Edit the source media while preserving its main subject and natural motion.";
+  }
+
+  function urlFromPart(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    const record = asRecord(value);
+    return clean(record?.url) || undefined;
+  }
+
+  function findUrl(messages: Message[], type: "image_url" | "input_audio" | "video_url"): string | undefined {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const content = messages[index].content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (part.type !== type) continue;
+        if (type === "image_url") return urlFromPart(part.image_url);
+        if (type === "input_audio") return urlFromPart(part.input_audio);
+        return urlFromPart(part.video_url);
+      }
+    }
+    return undefined;
+  }
+
+  function dashscopeContent(message: Message): Array<Record<string, unknown>> {
+    if (typeof message.content === "string") {
+      return message.content ? [{ text: message.content }] : [];
+    }
+    if (!Array.isArray(message.content)) return [];
+
+    const content: Array<Record<string, unknown>> = [];
+    for (const part of message.content) {
+      if (part.type === "text" && part.text) {
+        content.push({ text: part.text });
+      } else if (part.type === "image_url") {
+        const url = urlFromPart(part.image_url);
+        if (url) content.push({ image: url });
+      } else if (part.type === "input_audio") {
+        const url = urlFromPart(part.input_audio);
+        if (url) content.push({ audio: url });
+      } else if (part.type === "video_url") {
+        const url = urlFromPart(part.video_url);
+        if (url) content.push({ video: url });
+      }
+    }
+    return content;
+  }
+
+  function dashscopeMessages(messages: Message[]): Array<Record<string, unknown>> {
+    return messages
+      .map((message) => ({
+        role: message.role === "tool" ? "assistant" : message.role,
+        content: dashscopeContent(message),
+      }))
+      .filter((message) => Array.isArray(message.content) && message.content.length > 0);
+  }
+
+  function textFromOpenAIChat(raw: unknown): {
+    text: string;
+    reasoning?: string;
+    reasoning?: string;
+    finishReason?: string;
+    usage?: Usage;
+    toolCalls?: Call[];
+  } {
+    const root = asRecord(raw) || {};
+    const choices = Array.isArray(root.choices) ? root.choices : [];
+    const first = asRecord(choices[0]) || {};
+    const message = asRecord(first.message) || {};
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const toolCalls = rawCalls
+      .map((value, index): Call | null => {
+        const call = asRecord(value);
+        const fn = asRecord(call?.function);
+        const name = clean(fn?.name);
+        if (!name) return null;
+        return {
+          id: clean(call?.id) || `call_${index}`,
+          name,
+          arguments: typeof fn?.arguments === "string" ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
+        };
+      })
+      .filter((call): call is Call => call !== null);
+    return {
+      text: clean(message.content),
+      ...(clean(message.reasoning_content) ? { reasoning: clean(message.reasoning_content) } : {}),
+      ...(clean(message.reasoning_content) ? { reasoning: clean(message.reasoning_content) } : {}),
+      finishReason: toolCalls.length > 0
+        ? "tool-calls"
+        : clean(first.finish_reason) || undefined,
+      usage: usageFromOpenAI(root.usage),
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    };
+  }
+
+  function audioSecondsFromOpenAIUsage(value: unknown): number | undefined {
+    const usage = asRecord(value);
+    const details = asRecord(usage?.prompt_tokens_details) || asRecord(usage?.promptTokensDetails);
+    const audioTokens = readPositiveNumber(details, ["audio_tokens", "audioTokens"]);
+    if (audioTokens === undefined) return undefined;
+    return audioTokens / 25;
+  }
+
+  function dashscopeContentText(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (!Array.isArray(value)) return "";
+    return value
+      .map((part) => {
+        const record = asRecord(part);
+        return clean(record?.text) || clean(record?.content);
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function textFromDashScope(raw: unknown): string {
+    const root = asRecord(raw) || {};
+    const output = asRecord(root.output) || root;
+    const text = clean(output.text) || clean(output.output_text);
+    if (text) return text;
+
+    const choices = Array.isArray(output.choices) ? output.choices : [];
+    const first = asRecord(choices[0]) || {};
+    const message = asRecord(first.message) || {};
+    return clean(message.content) || dashscopeContentText(message.content);
+  }
+
+  async function bufferFromPayload(payload: string, fallbackMimeType = "application/octet-stream"): Promise<{ buffer: Buffer; mimeType: string }> {
+    if (/^data:/i.test(payload)) {
+      const match = payload.match(/^data:([^;,]+)?;base64,(.+)$/i);
+      if (!match) throw new Error("Alibaba response contained an invalid data URL");
+      return { buffer: Buffer.from(match[2], "base64"), mimeType: match[1] || fallbackMimeType };
+    }
+
+    if (/^https?:\/\//i.test(payload)) {
+      const response = await fetch(payload);
+      if (!response.ok) throw new Error(`Failed to download Alibaba media URL: ${response.status}`);
+      return {
+        buffer: Buffer.from(await response.arrayBuffer()),
+        mimeType: response.headers.get("content-type") || fallbackMimeType,
+      };
+    }
+
+    return { buffer: Buffer.from(payload, "base64"), mimeType: fallbackMimeType };
+  }
+
+  function findMediaPayload(raw: unknown, keys: string[]): string {
+    const root = asRecord(raw) || {};
+    const output = asRecord(root.output) || root;
+
     for (const key of keys) {
-      const value = clean(record[key]);
+      const value = clean(output[key]) || clean(root[key]);
       if (value) return value;
     }
-  }
 
-  for (const container of [asRecord(output.audio), asRecord(output.image), asRecord(output.video)]) {
-    if (!container) continue;
-    for (const key of keys) {
-      const value = clean(container[key]);
-      if (value) return value;
-    }
-  }
-
-  const choices = Array.isArray(output.choices) ? output.choices : [];
-  for (const choice of choices) {
-    const message = asRecord(asRecord(choice)?.message);
-    const content = Array.isArray(message?.content) ? message.content : [];
-    for (const part of content) {
-      const record = asRecord(part);
+    const data = Array.isArray(root.data) ? root.data : [];
+    for (const item of data) {
+      const record = asRecord(item);
       if (!record) continue;
       for (const key of keys) {
         const value = clean(record[key]);
         if (value) return value;
       }
     }
+
+    for (const container of [asRecord(output.audio), asRecord(output.image), asRecord(output.video)]) {
+      if (!container) continue;
+      for (const key of keys) {
+        const value = clean(container[key]);
+        if (value) return value;
+      }
+    }
+
+    const choices = Array.isArray(output.choices) ? output.choices : [];
+    for (const choice of choices) {
+      const message = asRecord(asRecord(choice)?.message);
+      const content = Array.isArray(message?.content) ? message.content : [];
+      for (const part of content) {
+        const record = asRecord(part);
+        if (!record) continue;
+        for (const key of keys) {
+          const value = clean(record[key]);
+          if (value) return value;
+        }
+      }
+    }
+
+    return "";
   }
 
-  return "";
-}
-
-function readPositiveNumber(record: Record<string, unknown> | null | undefined, keys: string[]): number | undefined {
-  if (!record) return undefined;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-  }
-  return undefined;
-}
-
-function alibabaSpeechFormat(format: string | undefined): string {
-  const value = clean(format).toLowerCase();
-  return value === "wav" || value === "pcm" || value === "mp3" ? value : "mp3";
-}
-
-function alibabaSpeechMimeType(format: string | undefined): string {
-  switch (alibabaSpeechFormat(format)) {
-    case "wav":
-      return "audio/wav";
-    case "pcm":
-      return "audio/pcm";
-    default:
-      return "audio/mpeg";
-  }
-}
-
-function speechUsage(raw: unknown, fallbackCharacters: number): Usage {
-  const root = asRecord(raw) || {};
-  const usage = asRecord(root.usage) || asRecord(asRecord(root.output)?.usage);
-  const characters = readPositiveNumber(usage, ["characters", "character"]) || fallbackCharacters;
-  return {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    billingMetrics: { character: characters },
-    ...(usage ? { raw: usage } : {}),
-  };
-}
-
-async function synthesizeAlibabaQwenSpeech(
-  modelId: string,
-  text: string,
-  options: {
-    voice?: string;
-    responseFormat?: string;
-    speed?: number;
-    customParams?: Record<string, unknown>;
-  },
-): Promise<{ buffer: Buffer; mimeType: string; usage?: Usage; raw: unknown }> {
-  const bases = basesForModel(modelId);
-  const customParams = options.customParams || {};
-  const voice = options.voice || clean(customParams.voice) || "Cherry";
-  const input: Record<string, unknown> = {
-    text,
-    voice,
-  };
-  for (const key of ["language_type", "language", "instructions", "emotion"]) {
-    const value = customParams[key];
-    if (typeof value === "string" && value.trim()) input[key] = value.trim();
+  function readPositiveNumber(record: Record<string, unknown> | null | undefined, keys: string[]): number | undefined {
+    if (!record) return undefined;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+    }
+    return undefined;
   }
 
-  const parameters: Record<string, unknown> = {};
-  if (options.responseFormat) parameters.format = options.responseFormat;
-  if (typeof options.speed === "number") parameters.speed = options.speed;
-  for (const [key, value] of Object.entries(customParams)) {
-    if (["voice", "language_type", "language", "instructions", "emotion"].includes(key)) continue;
-    parameters[key] = value;
+  function alibabaSpeechFormat(format: string | undefined): string {
+    const value = clean(format).toLowerCase();
+    return value === "wav" || value === "pcm" || value === "mp3" ? value : "mp3";
   }
 
-  const raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, {
-    model: modelId,
-    input,
-    ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
-  });
-  const payload = findMediaPayload(raw, ["audio", "audio_url", "url"]);
-  if (!payload) throw new Error("Alibaba Qwen TTS returned no audio data");
-  const audio = await bufferFromPayload(payload, alibabaSpeechMimeType(options.responseFormat));
-  return {
-    ...audio,
-    usage: speechUsage(raw, Array.from(text).length),
-    raw,
-  };
-}
-
-function voiceName(customParams: Record<string, unknown>): string {
-  const explicit = clean(customParams.preferred_name) || clean(customParams.voice_id);
-  if (explicit) return explicit.replace(/[^a-z0-9]/gi, "").slice(0, 12) || "VoiceA1";
-  const suffix = randomUUID().replace(/\D/g, "").slice(0, 6).padEnd(6, "0");
-  return `VoiceA${suffix}`;
-}
-
-async function designAlibabaVoice(
-  modelId: string,
-  text: string,
-  options: {
-    responseFormat?: string;
-    customParams?: Record<string, unknown>;
-  },
-): Promise<{ buffer: Buffer; mimeType: string; usage?: Usage; raw: unknown }> {
-  const bases = basesForModel(modelId);
-  const customParams = options.customParams || {};
-  const raw = await postJson(`${bases.apiBase}/services/audio/tts/customization`, {
-    model: modelId,
-    input: {
-      action: "create",
-      target_model: clean(customParams.target_model) || "qwen3-tts-vd-2026-01-26",
-      voice_prompt: text,
-      preview_text: clean(customParams.preview_text) || "Hello, this is a preview of the designed Compose voice.",
-      preferred_name: voiceName(customParams),
-      ...(clean(customParams.language) ? { language: clean(customParams.language) } : {}),
-    },
-  });
-  const output = asRecord(asRecord(raw)?.output) || {};
-  const preview = asRecord(output.preview_audio);
-  const payload = clean(preview?.data) || clean(preview?.url) || clean(output.preview_audio);
-  if (!payload) throw new Error("Alibaba voice design returned no preview audio");
-  const mimeType = clean(preview?.mime_type) || clean(preview?.content_type) || alibabaSpeechMimeType(options.responseFormat);
-  const audio = await bufferFromPayload(payload, mimeType);
-  return {
-    ...audio,
-    usage: {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      billingMetrics: { voice: 1 },
-      ...(asRecord(asRecord(raw)?.usage) ? { raw: asRecord(asRecord(raw)?.usage) as Record<string, unknown> } : {}),
-    },
-    raw,
-  };
-}
-
-function alibabaWebSocketUrl(modelId: string): string {
-  const metadata = sourceMetadata(modelId);
-  const endpoint = asRecord(metadata.endpoint);
-  const origin = clean(endpoint?.origin) || "https://dashscope-intl.aliyuncs.com";
-  return `${origin.replace(/^http/i, "ws")}/api-ws/v1/inference`;
-}
-
-type WebSocketMessage = string | ArrayBuffer | Buffer | Blob;
-
-async function synthesizeAlibabaSpeech(
-  modelId: string,
-  text: string,
-  options: {
-    voice?: string;
-    responseFormat?: string;
-    speed?: number;
-    customParams?: Record<string, unknown>;
-  },
-): Promise<{ buffer: Buffer; usage?: Usage; raw: unknown[] }> {
-  const require = createRequire(`${process.cwd()}/package.json`);
-  const WebSocket = require("ws") as new (
-    url: string,
-    options?: { headers?: Record<string, string> },
-  ) => {
-    binaryType: "arraybuffer";
-    readyState: number;
-    send(data: string): void;
-    close(): void;
-    on(event: "open", listener: () => void): void;
-    on(event: "message", listener: (data: WebSocketMessage, isBinary: boolean) => void): void;
-    on(event: "error", listener: (error: Error) => void): void;
-    on(event: "close", listener: (code: number, reason: Buffer) => void): void;
-  };
-
-  const taskId = randomUUID();
-  const chunks: Buffer[] = [];
-  const events: unknown[] = [];
-  const sourceText = text;
-  const format = alibabaSpeechFormat(options.responseFormat || clean(options.customParams?.format));
-  const customParams = options.customParams || {};
-  const parameters: Record<string, unknown> = {
-    text_type: "PlainText",
-    voice: options.voice || clean(customParams.voice) || "longanyang",
-    format,
-    sample_rate: typeof customParams.sample_rate === "number" ? customParams.sample_rate : 22050,
-    volume: typeof customParams.volume === "number" ? customParams.volume : 50,
-    rate: typeof options.speed === "number" ? options.speed : typeof customParams.rate === "number" ? customParams.rate : 1,
-    pitch: typeof customParams.pitch === "number" ? customParams.pitch : 1,
-    enable_ssml: customParams.enable_ssml === true,
-  };
-  for (const [key, value] of Object.entries(customParams)) {
-    if (!(key in parameters)) {
-      parameters[key] = value;
+  function alibabaSpeechMimeType(format: string | undefined): string {
+    switch (alibabaSpeechFormat(format)) {
+      case "wav":
+        return "audio/wav";
+      case "pcm":
+        return "audio/pcm";
+      default:
+        return "audio/mpeg";
     }
   }
 
-  const ws = new WebSocket(alibabaWebSocketUrl(modelId), {
-    headers: {
-      Authorization: `bearer ${credential()}`,
+  function speechUsage(raw: unknown, fallbackCharacters: number): Usage {
+    const root = asRecord(raw) || {};
+    const usage = asRecord(root.usage) || asRecord(asRecord(root.output)?.usage);
+    const characters = readPositiveNumber(usage, ["characters", "character"]) || fallbackCharacters;
+    return {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      billingMetrics: { character: characters },
+      ...(usage ? { raw: usage } : {}),
+    };
+  }
+
+  async function synthesizeAlibabaQwenSpeech(
+    modelId: string,
+    text: string,
+    options: {
+      voice?: string;
+      responseFormat?: string;
+      speed?: number;
+      customParams?: Record<string, unknown>;
     },
-  });
-  ws.binaryType = "arraybuffer";
+  ): Promise<{ buffer: Buffer; mimeType: string; usage?: Usage; raw: unknown }> {
+    const bases = basesForModel(modelId);
+    const customParams = options.customParams || {};
+    const voice = options.voice || clean(customParams.voice) || "Cherry";
+    const input: Record<string, unknown> = {
+      text,
+      voice,
+    };
+    for (const key of ["language_type", "language", "instructions", "emotion"]) {
+      const value = customParams[key];
+      if (typeof value === "string" && value.trim()) input[key] = value.trim();
+    }
 
-  return await new Promise((resolve, reject) => {
-    let settled = false;
-    const done = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        ws.close();
-      } catch {
-        // Ignore close races after task completion.
+    const parameters: Record<string, unknown> = {};
+    if (options.responseFormat) parameters.format = options.responseFormat;
+    if (typeof options.speed === "number") parameters.speed = options.speed;
+    for (const [key, value] of Object.entries(customParams)) {
+      if (["voice", "language_type", "language", "instructions", "emotion"].includes(key)) continue;
+      parameters[key] = value;
+    }
+
+    const raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, {
+      model: modelId,
+      input,
+      ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
+    });
+    const payload = findMediaPayload(raw, ["audio", "audio_url", "url"]);
+    if (!payload) throw new Error("Alibaba Qwen TTS returned no audio data");
+    const audio = await bufferFromPayload(payload, alibabaSpeechMimeType(options.responseFormat));
+    return {
+      ...audio,
+      usage: speechUsage(raw, Array.from(text).length),
+      raw,
+    };
+  }
+
+  function voiceName(customParams: Record<string, unknown>): string {
+    const explicit = clean(customParams.preferred_name) || clean(customParams.voice_id);
+    if (explicit) return explicit.replace(/[^a-z0-9]/gi, "").slice(0, 12) || "VoiceA1";
+    const suffix = randomUUID().replace(/\D/g, "").slice(0, 6).padEnd(6, "0");
+    return `VoiceA${suffix}`;
+  }
+
+  async function designAlibabaVoice(
+    modelId: string,
+    text: string,
+    options: {
+      responseFormat?: string;
+      customParams?: Record<string, unknown>;
+    },
+  ): Promise<{ buffer: Buffer; mimeType: string; usage?: Usage; raw: unknown }> {
+    const bases = basesForModel(modelId);
+    const customParams = options.customParams || {};
+    const raw = await postJson(`${bases.apiBase}/services/audio/tts/customization`, {
+      model: modelId,
+      input: {
+        action: "create",
+        target_model: clean(customParams.target_model) || "qwen3-tts-vd-2026-01-26",
+        voice_prompt: text,
+        preview_text: clean(customParams.preview_text) || "Hello, this is a preview of the designed Compose voice.",
+        preferred_name: voiceName(customParams),
+        ...(clean(customParams.language) ? { language: clean(customParams.language) } : {}),
+      },
+    });
+    const output = asRecord(asRecord(raw)?.output) || {};
+    const preview = asRecord(output.preview_audio);
+    const payload = clean(preview?.data) || clean(preview?.url) || clean(output.preview_audio);
+    if (!payload) throw new Error("Alibaba voice design returned no preview audio");
+    const mimeType = clean(preview?.mime_type) || clean(preview?.content_type) || alibabaSpeechMimeType(options.responseFormat);
+    const audio = await bufferFromPayload(payload, mimeType);
+    return {
+      ...audio,
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        billingMetrics: { voice: 1 },
+        ...(asRecord(asRecord(raw)?.usage) ? { raw: asRecord(asRecord(raw)?.usage) as Record<string, unknown> } : {}),
+      },
+      raw,
+    };
+  }
+
+  function alibabaWebSocketUrl(modelId: string): string {
+    const metadata = sourceMetadata(modelId);
+    const endpoint = asRecord(metadata.endpoint);
+    const origin = clean(endpoint?.origin) || "https://dashscope-intl.aliyuncs.com";
+    return `${origin.replace(/^http/i, "ws")}/api-ws/v1/inference`;
+  }
+
+  type WebSocketMessage = string | ArrayBuffer | Buffer | Blob;
+
+  async function synthesizeAlibabaSpeech(
+    modelId: string,
+    text: string,
+    options: {
+      voice?: string;
+      responseFormat?: string;
+      speed?: number;
+      customParams?: Record<string, unknown>;
+    },
+  ): Promise<{ buffer: Buffer; usage?: Usage; raw: unknown[] }> {
+    const require = createRequire(`${process.cwd()}/package.json`);
+    const WebSocket = require("ws") as new (
+      url: string,
+      options?: { headers?: Record<string, string> },
+    ) => {
+      binaryType: "arraybuffer";
+      readyState: number;
+      send(data: string): void;
+      close(): void;
+      on(event: "open", listener: () => void): void;
+      on(event: "message", listener: (data: WebSocketMessage, isBinary: boolean) => void): void;
+      on(event: "error", listener: (error: Error) => void): void;
+      on(event: "close", listener: (code: number, reason: Buffer) => void): void;
+    };
+
+    const taskId = randomUUID();
+    const chunks: Buffer[] = [];
+    const events: unknown[] = [];
+    const sourceText = text;
+    const format = alibabaSpeechFormat(options.responseFormat || clean(options.customParams?.format));
+    const customParams = options.customParams || {};
+    const parameters: Record<string, unknown> = {
+      text_type: "PlainText",
+      voice: options.voice || clean(customParams.voice) || "longanyang",
+      format,
+      sample_rate: typeof customParams.sample_rate === "number" ? customParams.sample_rate : 22050,
+      volume: typeof customParams.volume === "number" ? customParams.volume : 50,
+      rate: typeof options.speed === "number" ? options.speed : typeof customParams.rate === "number" ? customParams.rate : 1,
+      pitch: typeof customParams.pitch === "number" ? customParams.pitch : 1,
+      enable_ssml: customParams.enable_ssml === true,
+    };
+    for (const [key, value] of Object.entries(customParams)) {
+      if (!(key in parameters)) {
+        parameters[key] = value;
       }
-      fn();
-    };
-    const fail = (error: Error): void => done(() => reject(error));
-    const timer = setTimeout(() => fail(new Error("Alibaba speech synthesis timed out")), 90_000);
+    }
 
-    const send = (action: string, payload: Record<string, unknown>): void => {
-      ws.send(JSON.stringify({
-        header: { action, task_id: taskId, streaming: "duplex" },
-        payload,
-      }));
-    };
+    const ws = new WebSocket(alibabaWebSocketUrl(modelId), {
+      headers: {
+        Authorization: `bearer ${credential()}`,
+      },
+    });
+    ws.binaryType = "arraybuffer";
 
-    ws.on("open", () => {
-      send("run-task", {
-        task_group: "audio",
-        task: "tts",
-        function: "SpeechSynthesizer",
-        model: modelId,
-        parameters,
-        input: {},
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const done = (fn: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws.close();
+        } catch {
+          // Ignore close races after task completion.
+        }
+        fn();
+      };
+      const fail = (error: Error): void => done(() => reject(error));
+      const timer = setTimeout(() => fail(new Error("Alibaba speech synthesis timed out")), 90_000);
+
+      const send = (action: string, payload: Record<string, unknown>): void => {
+        ws.send(JSON.stringify({
+          header: { action, task_id: taskId, streaming: "duplex" },
+          payload,
+        }));
+      };
+
+      ws.on("open", () => {
+        send("run-task", {
+          task_group: "audio",
+          task: "tts",
+          function: "SpeechSynthesizer",
+          model: modelId,
+          parameters,
+          input: {},
+        });
+      });
+
+      ws.on("message", async (data, isBinary) => {
+        if (typeof data === "string" || isBinary === false) {
+          const messageText = typeof data === "string"
+            ? data
+            : data instanceof Blob
+              ? await data.text()
+              : data instanceof ArrayBuffer
+                ? Buffer.from(new Uint8Array(data)).toString("utf8")
+                : Buffer.from(data).toString("utf8");
+          const event = JSON.parse(messageText) as unknown;
+          events.push(event);
+          const header = asRecord(asRecord(event)?.header);
+          const name = clean(header?.event);
+          if (name === "task-started") {
+            send("continue-task", { input: { text: sourceText } });
+            send("finish-task", { input: {} });
+            return;
+          }
+          if (name === "task-failed") {
+            const payload = asRecord(asRecord(event)?.payload);
+            const message = clean(payload?.message) || clean(payload?.error_message) || clean(asRecord(event)?.message);
+            fail(new Error(`Alibaba speech synthesis failed: ${message || messageText}`));
+            return;
+          }
+          if (name === "task-finished") {
+            const usage = events
+              .map((item) => asRecord(asRecord(item)?.payload))
+              .map((payload) => asRecord(payload?.usage))
+              .filter((usageRecord): usageRecord is Record<string, unknown> => Boolean(usageRecord))
+              .at(-1);
+            const characters = readPositiveNumber(usage, ["characters", "character"]) || Array.from(sourceText).length;
+            done(() => resolve({
+              buffer: Buffer.concat(chunks),
+              usage: {
+                promptTokens: 0,
+                completionTokens: 0,
+                totalTokens: 0,
+                billingMetrics: { character: characters },
+                raw: usage,
+              },
+              raw: events,
+            }));
+          }
+          return;
+        }
+
+        if (data instanceof Blob) {
+          chunks.push(Buffer.from(await data.arrayBuffer()));
+        } else if (data instanceof ArrayBuffer) {
+          chunks.push(Buffer.from(data));
+        } else {
+          chunks.push(Buffer.from(data));
+        }
+      });
+
+      ws.on("error", fail);
+      ws.on("close", (code, reason) => {
+        if (!settled && code !== 1000) {
+          fail(new Error(`Alibaba speech synthesis WebSocket closed: ${code} ${reason.toString()}`.trim()));
+        }
       });
     });
-
-    ws.on("message", async (data, isBinary) => {
-      if (typeof data === "string" || isBinary === false) {
-        const messageText = typeof data === "string"
-          ? data
-          : data instanceof Blob
-            ? await data.text()
-            : data instanceof ArrayBuffer
-              ? Buffer.from(new Uint8Array(data)).toString("utf8")
-              : Buffer.from(data).toString("utf8");
-        const event = JSON.parse(messageText) as unknown;
-        events.push(event);
-        const header = asRecord(asRecord(event)?.header);
-        const name = clean(header?.event);
-        if (name === "task-started") {
-          send("continue-task", { input: { text: sourceText } });
-          send("finish-task", { input: {} });
-          return;
-        }
-        if (name === "task-failed") {
-          const payload = asRecord(asRecord(event)?.payload);
-          const message = clean(payload?.message) || clean(payload?.error_message) || clean(asRecord(event)?.message);
-          fail(new Error(`Alibaba speech synthesis failed: ${message || messageText}`));
-          return;
-        }
-        if (name === "task-finished") {
-          const usage = events
-            .map((item) => asRecord(asRecord(item)?.payload))
-            .map((payload) => asRecord(payload?.usage))
-            .filter((usageRecord): usageRecord is Record<string, unknown> => Boolean(usageRecord))
-            .at(-1);
-          const characters = readPositiveNumber(usage, ["characters", "character"]) || Array.from(sourceText).length;
-          done(() => resolve({
-            buffer: Buffer.concat(chunks),
-            usage: {
-              promptTokens: 0,
-              completionTokens: 0,
-              totalTokens: 0,
-              billingMetrics: { character: characters },
-              raw: usage,
-            },
-            raw: events,
-          }));
-        }
-        return;
-      }
-
-      if (data instanceof Blob) {
-        chunks.push(Buffer.from(await data.arrayBuffer()));
-      } else if (data instanceof ArrayBuffer) {
-        chunks.push(Buffer.from(data));
-      } else {
-        chunks.push(Buffer.from(data));
-      }
-    });
-
-    ws.on("error", fail);
-    ws.on("close", (code, reason) => {
-      if (!settled && code !== 1000) {
-        fail(new Error(`Alibaba speech synthesis WebSocket closed: ${code} ${reason.toString()}`.trim()));
-      }
-    });
-  });
-}
-
-function transcriptionText(value: unknown): string {
-  const record = asRecord(value);
-  if (!record) return "";
-  const direct = clean(record.text) || clean(record.content);
-  if (direct) return direct;
-
-  const transcripts = Array.isArray(record.transcripts) ? record.transcripts : [];
-  return transcripts
-    .map((item) => clean(asRecord(item)?.text))
-    .filter(Boolean)
-    .join("\n");
-}
-
-function transcriptionSeconds(value: unknown): number | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const properties = asRecord(record.properties);
-  const originalMs = readPositiveNumber(properties, ["original_duration_in_milliseconds", "originalDurationInMilliseconds"]);
-  if (originalMs !== undefined) return originalMs / 1000;
-  const transcripts = Array.isArray(record.transcripts) ? record.transcripts : [];
-  let maxMs = 0;
-  for (const transcript of transcripts) {
-    const transcriptRecord = asRecord(transcript);
-    const duration = readPositiveNumber(transcriptRecord, ["content_duration_in_milliseconds", "contentDurationInMilliseconds"]);
-    if (duration !== undefined) maxMs = Math.max(maxMs, duration);
-  }
-  return maxMs > 0 ? maxMs / 1000 : undefined;
-}
-
-function dashscopeImageSize(size: string | undefined): string | undefined {
-  const value = clean(size);
-  if (!value) return undefined;
-  return value.replace(/^(\d+)x(\d+)$/i, "$1*$2");
-}
-
-export async function generateAlibabaChat(
-  modelId: string,
-  messages: Message[],
-  options: {
-    temperature?: number;
-    maxTokens?: number;
-    tools?: Tool[];
-    toolChoice?: Choice;
-    responseFormat?: unknown;
-    customParams?: Record<string, unknown>;
-    signal?: AbortSignal;
-  } = {},
-): Promise<AlibabaChatResult> {
-  const route = routeForModel(modelId);
-  if (route === "dashscope_rerank") {
-    return generateAlibabaRerank(modelId, messages, options.customParams);
   }
 
-  const bases = basesForModel(modelId);
-  if (route === "openai_chat") {
-    const request = buildAlibabaChatBody(modelId, messages, {
-      wire: "openai_chat",
-      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-      ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
-      ...(options.tools ? { tools: options.tools } : {}),
-      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-      ...(options.customParams ? { customParams: options.customParams } : {}),
-    });
-    const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body, {}, options.signal);
-    return { ...textFromOpenAIChat(raw), raw };
+  function transcriptionText(value: unknown): string {
+    const record = asRecord(value);
+    if (!record) return "";
+    const direct = clean(record.text) || clean(record.content);
+    if (direct) return direct;
+
+    const transcripts = Array.isArray(record.transcripts) ? record.transcripts : [];
+    return transcripts
+      .map((item) => clean(asRecord(item)?.text))
+      .filter(Boolean)
+      .join("\n");
   }
 
-  const raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, {
-    model: modelId,
-    input: { messages: dashscopeMessages(messages) },
-    parameters: {
-      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-      ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
-      ...(options.customParams || {}),
-    },
-  }, {}, options.signal);
+  function transcriptionSeconds(value: unknown): number | undefined {
+    const record = asRecord(value);
+    if (!record) return undefined;
+    const properties = asRecord(record.properties);
+    const originalMs = readPositiveNumber(properties, ["original_duration_in_milliseconds", "originalDurationInMilliseconds"]);
+    if (originalMs !== undefined) return originalMs / 1000;
+    const transcripts = Array.isArray(record.transcripts) ? record.transcripts : [];
+    let maxMs = 0;
+    for (const transcript of transcripts) {
+      const transcriptRecord = asRecord(transcript);
+      const duration = readPositiveNumber(transcriptRecord, ["content_duration_in_milliseconds", "contentDurationInMilliseconds"]);
+      if (duration !== undefined) maxMs = Math.max(maxMs, duration);
+    }
+    return maxMs > 0 ? maxMs / 1000 : undefined;
+  }
+
+  function dashscopeImageSize(size: string | undefined): string | undefined {
+    const value = clean(size);
+    if (!value) return undefined;
+    return value.replace(/^(\d+)x(\d+)$/i, "$1*$2");
+  }
+
+  export async function generateAlibabaChat(
+    modelId: string,
+    messages: Message[],
+    options: {
+      temperature?: number;
+      maxTokens?: number;
+      tools?: Tool[];
+      toolChoice?: Choice;
+      responseFormat?: unknown;
+      customParams?: Record<string, unknown>;
+      signal?: AbortSignal;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<AlibabaChatResult> {
+    const route = routeForModel(modelId);
+    if (route === "dashscope_rerank") {
+      return generateAlibabaRerank(modelId, messages, options.customParams);
+    }
+
+    const bases = basesForModel(modelId);
+    if (route === "openai_chat") {
+      const request = buildAlibabaChatBody(modelId, messages, {
+        wire: "openai_chat",
+        ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+        ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
+        ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+        ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+        ...(options.customParams ? { customParams: options.customParams } : {}),
+      });
+      const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body, {}, options.signal);
+      const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body, {}, options.signal);
+      return { ...textFromOpenAIChat(raw), raw };
+    }
+
+    const raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, {
+      model: modelId,
+      input: { messages: dashscopeMessages(messages) },
+      parameters: {
+        ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+        ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
+        ...(options.customParams || {}),
+      },
+    }, {}, options.signal);
+  }, { }, options.signal);
 
   const text = textFromDashScope(raw);
   return {

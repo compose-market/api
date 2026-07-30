@@ -212,11 +212,15 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
     assert.ok(externalBody.data.find((entry) => entry.id === "openai/gpt-5.5"));
 
     const cloudflare = "llama-3.3-70b-instruct-fp8-fast";
+    const cloudflare = "llama-3.3-70b-instruct-fp8-fast";
     const modelResponse = await fetch(`${baseUrl}/external/v1/models/${encodeURIComponent(cloudflare)}`);
     assert.equal(modelResponse.status, 200);
     const modelBody = await modelResponse.json() as { id: string; owned_by: string; metadata?: { model_id?: string; upstream_model_id?: string } };
+    const modelBody = await modelResponse.json() as { id: string; owned_by: string; metadata?: { model_id?: string; upstream_model_id?: string } };
     assert.equal(modelBody.id, cloudflare);
     assert.equal(modelBody.owned_by, "cloudflare");
+    assert.equal(modelBody.metadata?.model_id, "llama-3.3-70b-instruct-fp8-fast");
+    assert.equal(modelBody.metadata?.upstream_model_id, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
     assert.equal(modelBody.metadata?.model_id, "llama-3.3-70b-instruct-fp8-fast");
     assert.equal(modelBody.metadata?.upstream_model_id, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
 

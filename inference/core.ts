@@ -161,6 +161,7 @@ export interface Output {
   modality: Modality;
   content?: string;
   reasoning?: string;
+  reasoning?: string;
   usage?: Usage;
   finishReason?: string;
   toolCalls?: Call[];
@@ -399,6 +400,7 @@ const PASS = [
   "multi_label",
   "parallel_tool_calls",
   "partial",
+  "partial",
   "presence_penalty",
   "prompt_cache_key",
   "prompt_cache_options",
@@ -407,14 +409,17 @@ const PASS = [
   "reasoning",
   "reasoning_effort",
   "reasoning_history",
+  "reasoning_history",
   "return_documents",
   "seed",
   "service_tier",
+  "safety_identifier",
   "safety_identifier",
   "store",
   "stream_options",
   "texts",
   "threshold",
+  "thinking",
   "thinking",
   "text",
   "top_k",
@@ -449,11 +454,36 @@ function validatedCustomParams(value: unknown): Record<string, unknown> | null {
   };
 }
 
+function safeIntegerParam(name: string, value: unknown): unknown {
+  if (name !== "seed" || value === undefined) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+    const parsed = BigInt(value.trim());
+    if (parsed >= BigInt(Number.MIN_SAFE_INTEGER) && parsed <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      return Number(parsed);
+    }
+  }
+  throw Object.assign(new Error("seed must be a safe integer"), {
+    statusCode: 400,
+    code: "unsafe_seed",
+  });
+}
+
+function validatedCustomParams(value: unknown): Record<string, unknown> | null {
+  const custom = asRecord(value);
+  if (!custom) return null;
+  return {
+    ...custom,
+    ...(custom.seed !== undefined ? { seed: safeIntegerParam("seed", custom.seed) } : {}),
+  };
+}
+
 function params(body: Record<string, unknown>): Record<string, unknown> | null {
   const output: Record<string, unknown> = {};
   for (const key of PASS) {
     const value = body[key];
     if (value !== undefined) {
+      output[key] = safeIntegerParam(key, value);
       output[key] = safeIntegerParam(key, value);
     }
   }
@@ -1008,6 +1038,7 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
   const messages: Message[] = [];
   let parts: Part[] = [];
   let pendingReasoning: string | undefined;
+  let pendingReasoning: string | undefined;
   const flushParts = () => {
     if (parts.length > 0) {
       messages.push({ role: "user", content: parts });
@@ -1030,6 +1061,12 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
         pendingReasoning = undefined;
       }
       messages.push(...normalized);
+      const normalized = normalizeMessages([record]);
+      if (pendingReasoning !== undefined && normalized[0]?.role === "assistant") {
+        normalized[0].reasoning_content = pendingReasoning;
+        pendingReasoning = undefined;
+      }
+      messages.push(...normalized);
       continue;
     }
 
@@ -1046,6 +1083,7 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
         role: "assistant",
         content: null,
         ...(pendingReasoning !== undefined ? { reasoning_content: pendingReasoning } : {}),
+        ...(pendingReasoning !== undefined ? { reasoning_content: pendingReasoning } : {}),
         tool_calls: [{
           id: callId,
           type: "function",
@@ -1055,6 +1093,7 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
           },
         }],
       });
+      pendingReasoning = undefined;
       pendingReasoning = undefined;
       continue;
     }
@@ -1074,6 +1113,11 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
 
     if (type === "reasoning") {
       flushParts();
+      const summary = Array.isArray(record.summary) ? record.summary : [];
+      pendingReasoning = summary
+        .map((part) => asRecord(part)?.text)
+        .filter((value): value is string => typeof value === "string")
+        .join("");
       const summary = Array.isArray(record.summary) ? record.summary : [];
       pendingReasoning = summary
         .map((part) => asRecord(part)?.text)
@@ -1426,6 +1470,7 @@ export function normalizeChatRequest(body: Record<string, unknown>): Request {
     normalizeAttachmentList(body),
   );
   const rawCustomParams = validatedCustomParams(body.custom_params);
+  const rawCustomParams = validatedCustomParams(body.custom_params);
   const merged = {
     ...(params(body) || {}),
     ...(rawCustomParams || {}),
@@ -1488,6 +1533,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
   const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
   const previousResponseId =
     typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
+  const rawCustomParams = validatedCustomParams(body.custom_params);
   const rawCustomParams = validatedCustomParams(body.custom_params);
   const passParams = params(body);
   const resolvedModelParams = resolveOptionalModelParamValues(model, modality, body);
@@ -1680,6 +1726,14 @@ export function toResponsesOutputItems(output: Output): ResponsesOutputItem[] {
       summary: [{ type: "summary_text", text: output.reasoning }],
     });
   }
+  if (output.reasoning) {
+    items.push({
+      id: toItemId("rs"),
+      type: "reasoning",
+      status: "completed",
+      summary: [{ type: "summary_text", text: output.reasoning }],
+    });
+  }
   const text = output.content || "";
   if (text.length > 0) {
     items.push({
@@ -1741,6 +1795,7 @@ export function toChatCompletionsResponse(model: string, requestId: string, outp
         message: {
           role: "assistant",
           content: output.content || "",
+          ...(output.reasoning !== undefined ? { reasoning_content: output.reasoning } : {}),
           ...(output.reasoning !== undefined ? { reasoning_content: output.reasoning } : {}),
           ...(output.toolCalls?.length
             ? {
@@ -1834,6 +1889,7 @@ export function formatSSEDone(): string {
  *   data: <json>
  *
  * Used for out-of-band events like `receipt`, `compose.error`,
+ * `video.status`, and `compose.budget` that are semantically distinct
  * `video.status`, and `compose.budget` that are semantically distinct
  * from regular streaming deltas and which integrator SDKs should recognise
  * via `event:` rather than by parsing the shape of the JSON body.
@@ -1942,6 +1998,7 @@ export function toVideoStatusStreamEvent(payload: {
   error?: string;
 }): string {
   return formatSSENamedEvent("video.status", payload);
+  return formatSSENamedEvent("video.status", payload);
 }
 
 export function toResponsesStreamEvent(requestId: string, model: string, event: Event): Record<string, unknown> {
@@ -2040,6 +2097,7 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       response_id: requestId,
       model,
       output_index: event.outputIndex ?? 0,
+      output_index: event.outputIndex ?? 0,
       partial_image_index: event.image?.index ?? 0,
       partial_image_b64: event.image?.base64 || "",
     };
@@ -2051,6 +2109,7 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       type: "response.image_generation_call.completed",
       response_id: requestId,
       model,
+      output_index: event.outputIndex ?? 0,
       output_index: event.outputIndex ?? 0,
       image_b64: event.image?.base64 || "",
       mime_type: event.image?.mimeType,
