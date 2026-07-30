@@ -14,11 +14,11 @@ test("normalizeFeedbackInput accepts a model rating with payment and request con
     context: {
       requestId: "req_feedback_1",
       paymentIntentId: "pi_123",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       modelId: "openai/dall-e-3",
       provider: "openai",
       receipt: {
-        network: "eip155:43113",
+        network: "eip155:5042002",
         txHash: `0x${"12".repeat(32)}`,
         finalAmountWei: "12000",
       },
@@ -71,7 +71,7 @@ test("toPublicFeedback omits reviewer address but preserves verification kind", 
     reviewer: {
       kind: "compose_key",
       address: "0x0000000000000000000000000000000000000002",
-      network: "eip155:43113",
+      network: "eip155:5042002",
     },
     createdAt: 1_700_000_000_000,
   };

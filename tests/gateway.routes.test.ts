@@ -24,7 +24,7 @@ const TEXT_MODEL_ID = "gpt-4o";
 const TEXT_MODEL_PROVIDER = "azure";
 const EMBEDDING_MODEL_ID = "text-embedding-3-small";
 const IMAGE_EMBEDDING_MODEL_ID = "roboflow/clip/embed-image";
-const AUDIO_MODEL_ID = "@cf/deepgram/aura-1";
+const AUDIO_MODEL_ID = "aura-1";
 const STT_MODEL_ID = "qwen3-asr-flash";
 const IMAGE_ANALYSIS_MODEL_ID = "roboflow/rfdetr-small";
 const RERANK_MODEL_ID = "qwen3-rerank";
@@ -182,7 +182,7 @@ test("registerInferenceRoutes issues a 402 upto challenge with default envelope 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:421614",
+        "X-Network-ID": "eip155:5042002",
       },
       body: JSON.stringify({
         model: TEXT_MODEL_ID,
@@ -197,7 +197,7 @@ test("registerInferenceRoutes issues a 402 upto challenge with default envelope 
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:421614");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
     // Default envelope is 1 USDC (1_000_000 atomic units)
     assert.equal(paymentRequired.accepts[0]?.amount, "1000000");
   });
@@ -216,7 +216,7 @@ test("registerInferenceRoutes challenges chat completions before provider execut
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Network-ID": "eip155:421614",
+          "X-Network-ID": "eip155:5042002",
         },
         body: JSON.stringify({
           model: TEXT_MODEL_ID,
@@ -230,7 +230,7 @@ test("registerInferenceRoutes challenges chat completions before provider execut
 
       const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
       assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-      assert.equal(paymentRequired.accepts[0]?.network, "eip155:421614");
+      assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
       assert.equal(paymentRequired.accepts[0]?.amount, "1000000");
     });
   } finally {
@@ -249,7 +249,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for deterministic
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:43113",
+        "X-Network-ID": "eip155:5042002",
       },
       body: JSON.stringify({
         model: AUDIO_MODEL_ID,
@@ -263,7 +263,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for deterministic
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:43113");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
     assert.ok(Number(paymentRequired.accepts[0]?.amount || "0") > 0);
   });
 });
@@ -289,7 +289,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for token-metered
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:43113",
+        "X-Network-ID": "eip155:5042002",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -304,7 +304,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for token-metered
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:43113");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
     assert.equal(paymentRequired.accepts[0]?.amount, "250000");
   });
 });
@@ -315,7 +315,7 @@ test("registerInferenceRoutes accepts image-only universal embedding requests be
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:43113",
+        "X-Network-ID": "eip155:5042002",
       },
       body: JSON.stringify({
         model: IMAGE_EMBEDDING_MODEL_ID,
@@ -375,7 +375,7 @@ test("catalog classifiers emit operation-specific input and output shapes", () =
     && capability.output.includes("text")
   ));
 
-  const fireworksEmbedding = capabilitiesFor("accounts/fireworks/models/qwen3-reranker-8b");
+  const fireworksEmbedding = capabilitiesFor("qwen3-reranker-8b");
   assert.equal(fireworksEmbedding.some((capability) => capability.operation === "rerank"), false);
   assert.ok(fireworksEmbedding.some((capability) =>
     capability.modality === "embedding"
@@ -413,7 +413,7 @@ test("normalizeResponsesRequest carries catalog operation through universal rout
   assert.equal(realtime.operation, "realtime-omni");
 
   const dualMode = normalizeResponsesRequest({
-    model: "@cf/deepgram/nova-3",
+    model: "nova-3",
     input: [{ type: "input_audio", audio_url: "https://cdn.example.com/meeting.wav" }],
   });
 
@@ -432,7 +432,7 @@ test("normalizeResponsesRequest carries catalog operation through universal rout
   assert.equal(imageAnalysis.operation, "object-detection");
 
   const visionChat = normalizeResponsesRequest({
-    model: "@cf/llava-hf/llava-1.5-7b-hf",
+    model: "llava-1.5-7b-hf",
     input: [
       { type: "input_text", text: "Describe the scene." },
       { type: "input_image", image_url: "https://cdn.example.com/scene.jpg" },
@@ -476,7 +476,7 @@ test("realtime-only REST calls enter paid inference instead of legacy websocket 
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-network-id": "eip155:43113" },
+      headers: { "Content-Type": "application/json", "x-network-id": "eip155:5042002" },
       body: JSON.stringify({
         model: "gpt-realtime-2",
         input: [{ type: "input_text", text: "Start a voice session." }],
@@ -548,7 +548,7 @@ test("adaptError preserves x402 payment-required negotiation metadata from settl
   const { encodePaymentRequiredHeader } = await import("../x402/facilitator.js");
 
   const paymentRequired = createPaymentRequired402Response({
-    network: "eip155:43113",
+    network: "eip155:5042002",
     amountWei: 25_000_000,
     resourceUrl: "https://api.compose.market/v1/responses",
     errorMessage: "Session expired or insufficient allowance",
@@ -672,7 +672,7 @@ test("registerInferenceRoutes rejects non-boolean stream flags before payment ne
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:43113",
+        "X-Network-ID": "eip155:5042002",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -700,7 +700,7 @@ test("registerInferenceRoutes exposes universal response streams to payment nego
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:43113",
+        "X-Network-ID": "eip155:5042002",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -716,7 +716,7 @@ test("registerInferenceRoutes exposes universal response streams to payment nego
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:43113");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
     assert.equal(paymentRequired.accepts[0]?.amount, "250000");
   });
 });
@@ -836,16 +836,15 @@ test("normalizeResponsesRequest carries authoritative character metrics for audi
   assert.equal(request.modality, "audio");
   assert.deepEqual(request.billingMetrics, {
     request: 1,
-    output_format: "mp3",
     character: Array.from("Speak this aloud.").length,
   });
 });
 
-test("normalizeResponsesRequest injects lowest-cost ElevenLabs music defaults into billing", () => {
+test("normalizeResponsesRequest follows current ElevenLabs music params without synthetic defaults", () => {
   const params = resolveModelParams("music_v1", "audio");
   assert.ok(params);
-  assert.equal(params.params.music_length_ms?.type, "integer");
-  assert.equal(params.defaults.music_length_ms, 3000);
+  assert.deepEqual(params.params, {});
+  assert.deepEqual(params.defaults, {});
 
   const request = normalizeResponsesRequest({
     model: "music_v1",
@@ -854,14 +853,15 @@ test("normalizeResponsesRequest injects lowest-cost ElevenLabs music defaults in
   });
 
   assert.equal(request.customParams?.music_length_ms, undefined);
-  assert.equal(request.billingMetrics?.music_length_ms, 3000);
-  assert.equal(request.billingMetrics?.duration, 3);
-  assert.equal(request.billingMetrics?.generated_audio_minute, 0.05);
+  assert.deepEqual(request.billingMetrics, {
+    request: 1,
+    character: Array.from("Warm synth-pop intro sound for Northstar Objects.").length,
+  });
 });
 
-test("normalizeResponsesRequest injects lowest-cost video defaults into generation billing", () => {
+test("normalizeResponsesRequest uses current generated video params without synthetic duration defaults", () => {
   const textToVideo = normalizeResponsesRequest({
-    model: "sora-2",
+    model: "wan2.7-t2v",
     modalities: ["video"],
     input: [{ type: "input_text", text: "A camera move through a neon arcade." }],
   });
@@ -870,17 +870,15 @@ test("normalizeResponsesRequest injects lowest-cost video defaults into generati
   assert.equal(textToVideo.videoOptions?.resolution, undefined);
   assert.deepEqual(textToVideo.billingMetrics, {
     request: 1,
-    duration: 4,
-    aspect_ratio: "16:9",
-    output_format: "mp4",
-    second: 4,
-    minute: 4 / 60,
+    ratio: "16:9",
+    prompt_extend: "true",
+    watermark: "false",
     video: 1,
     generation: 1,
   });
 
   const imageToVideo = normalizeResponsesRequest({
-    model: "sora-2",
+    model: "wan2.7-i2v",
     modalities: ["video"],
     input: [
       { type: "input_text", text: "The subject turns toward camera." },
@@ -899,8 +897,8 @@ test("normalizeResponsesRequest injects lowest-cost video defaults into generati
 
   assert.equal(pricedWan.videoOptions?.duration, undefined);
   assert.equal(pricedWan.videoOptions?.resolution, undefined);
-  assert.equal(pricedWan.billingMetrics?.duration, 4);
-  assert.equal(pricedWan.billingMetrics?.second, 4);
+  assert.equal(pricedWan.billingMetrics?.duration, undefined);
+  assert.equal(pricedWan.billingMetrics?.second, undefined);
 
   const veo = normalizeResponsesRequest({
     model: "veo-3.1-generate-preview",
@@ -909,16 +907,17 @@ test("normalizeResponsesRequest injects lowest-cost video defaults into generati
   });
 
   assert.equal(veo.videoOptions?.duration, undefined);
-  assert.equal(veo.billingMetrics?.duration, 5);
-  assert.equal(veo.billingMetrics?.second, 5);
+  assert.equal(veo.billingMetrics?.duration, undefined);
+  assert.equal(veo.billingMetrics?.second, undefined);
 });
 
 test("resolveModelParams uses per-model card.params, not modality catalogs", () => {
   const transcription = resolveModelParams("gpt-4o-mini-transcribe");
   assert.ok(transcription);
   assert.equal(transcription.type, "text");
-  assert.ok(transcription.params.file);
-  assert.equal(transcription.params.file.type, "string");
+  assert.equal(transcription.params.file, undefined);
+  assert.equal(transcription.params.response_format?.type, "string");
+  assert.equal(transcription.defaults.response_format, "json");
 
   const wan = resolveModelParams("wan2.1-i2v-plus", "video");
   assert.ok(wan);
@@ -928,7 +927,7 @@ test("resolveModelParams uses per-model card.params, not modality catalogs", () 
 
 test("normalizeResponsesRequest coerces model param numeric strings before billing", () => {
   const request = normalizeResponsesRequest({
-    model: "minimax/hailuo-02",
+    model: "wan2.7-t2v",
     modalities: ["video"],
     input: [{ type: "input_text", text: "A fast river through a valley." }],
     custom_params: {
@@ -940,6 +939,12 @@ test("normalizeResponsesRequest coerces model param numeric strings before billi
   assert.equal(request.customParams?.duration, 10);
   assert.equal(request.billingMetrics?.duration, 10);
   assert.equal(request.billingMetrics?.second, 10);
+});
+
+test("model parameter defaults never synthesize unsafe integer minima", () => {
+  const deepinfra = resolveModelParams("gemma-3-27b-it");
+  assert.ok(deepinfra);
+  assert.equal(deepinfra.defaults.seed, undefined);
 });
 
 
@@ -1033,42 +1038,42 @@ test("chat completion helpers preserve OpenAI-compatible streamed tool-call sema
 });
 
 test("registerInferenceRoutes correctly resolves and serves newly-added DeepInfra models", () => {
-  const textModel = getModelById("google/gemma-3-27b-it");
+  const textModel = getModelById("gemma-3-27b-it");
   assert.ok(textModel);
   assert.equal(textModel.provider, "deepinfra");
   assert.equal(textModel.type, "text generation");
 
-  const embedModel = getModelById("thenlper/gte-base");
+  const embedModel = getModelById("gte-base");
   assert.ok(embedModel);
   assert.equal(embedModel.provider, "deepinfra");
   assert.equal(embedModel.type, "embeddings");
 
-  const imageModel = getModelById("black-forest-labs/FLUX-1-dev");
+  const imageModel = getModelById("FLUX-1-dev");
   assert.ok(imageModel);
   assert.equal(imageModel.provider, "deepinfra");
   assert.equal(imageModel.type, "image generation");
 
-  const speechModel = getModelById("hexgrad/Kokoro-82M");
+  const speechModel = getModelById("Kokoro-82M");
   assert.ok(speechModel);
   assert.equal(speechModel.provider, "deepinfra");
   assert.equal(speechModel.type, "speech");
 
-  const sttModel = getModelById("openai/whisper-large-v3");
+  const sttModel = getModelById("whisper-large-v3");
   assert.ok(sttModel);
   assert.equal(sttModel.provider, "deepinfra");
   assert.equal(sttModel.type, "speech");
 
-  const videoModel = getModelById("Pixverse/Pixverse-6-T2V");
+  const videoModel = getModelById("Pixverse-6-T2V");
   assert.ok(videoModel);
   assert.equal(videoModel.provider, "deepinfra");
   assert.equal(videoModel.type, "video generation");
 
-  const rerankModel = getModelById("Qwen/Qwen3-Reranker-4B");
+  const rerankModel = getModelById("Qwen3-Reranker-4B");
   assert.ok(rerankModel);
   assert.equal(rerankModel.provider, "deepinfra");
   assert.equal(rerankModel.type, "reranker");
 
-  const musicModel = getModelById("ACE-Step/acestep-v15-xl-sft");
+  const musicModel = getModelById("acestep-v15-xl-sft");
   assert.ok(musicModel);
   assert.equal(musicModel.provider, "deepinfra");
 });

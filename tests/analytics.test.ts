@@ -37,7 +37,7 @@ test("analytics requires the validated wallet session header before storage", as
     const missing = await fetch(`http://127.0.0.1:${port}/api/analytics/inference`);
     assert.equal(missing.status, 401);
     const malformed = await fetch(`http://127.0.0.1:${port}/api/analytics/inference`, {
-      headers: { "x-session-user-address": "not-a-wallet", "x-network-id": "eip155:43113" },
+      headers: { "x-session-user-address": "not-a-wallet", "x-network-id": "eip155:5042002" },
     });
     assert.equal(malformed.status, 401);
   } finally {

@@ -161,7 +161,7 @@ test("buildError + statusForCode produce the canonical envelope", () => {
 test("GET /api/session returns the active compose-<jwt> token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const network = "eip155:43113" as const;
+    const network = "eip155:5042002" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
     let seededKeyId: string | null = null;
 
@@ -220,7 +220,7 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
 test("GET /api/session returns active raw x402 envelope metadata by payer", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const network = "eip155:43113" as const;
+    const network = "eip155:5042002" as const;
     const rootRunId = `raw-${randomUUID()}`;
 
     try {
@@ -274,7 +274,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
     const attacker = randomWalletAddress();
-    const network = "eip155:43113" as const;
+    const network = "eip155:5042002" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     try {
@@ -377,7 +377,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
 test("GET /api/keys/:keyId requires possession and returns key metadata without the token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const network = "eip155:43113" as const;
+    const network = "eip155:5042002" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
     try {

@@ -544,12 +544,12 @@ test("buildResolvedAuthorizationInput defers embeddings to budget cap", () => {
 
 test("buildResolvedAuthorizationInput defers per-image authorization to budget cap", () => {
   const resolved: ResolvedBillingModel = {
-    modelId: "chatgpt-image-latest",
+    modelId: "openai/gpt-image-2",
     provider: "openai",
     known: true,
     card: {
-      modelId: "chatgpt-image-latest",
-      name: "ChatGPT Image Latest",
+      modelId: "openai/gpt-image-2",
+      name: "GPT Image 2",
       provider: "openai",
       type: "image-generation",
       description: null,
@@ -580,7 +580,7 @@ test("buildResolvedAuthorizationInput defers per-image authorization to budget c
   const authorization = buildResolvedAuthorizationInput({
     request: {
       mode: "responses",
-      model: "chatgpt-image-latest",
+      model: "openai/gpt-image-2",
       stream: false,
       modality: "image",
       messages: [{ role: "user", content: "Generate a skyline" }],
@@ -650,13 +650,13 @@ test("buildResolvedAuthorizationInput defers per-step media authorization to bud
 
 test("buildResolvedAuthorizationInput defers duration billing when video duration is omitted", () => {
   const resolved: ResolvedBillingModel = {
-    modelId: "sora-2",
-    provider: "openai",
+    modelId: "wan2.7-t2v",
+    provider: "alibaba",
     known: true,
     card: {
-      modelId: "sora-2",
-      name: "Sora 2",
-      provider: "openai",
+      modelId: "wan2.7-t2v",
+      name: "Wan2.7 T2V",
+      provider: "alibaba",
       type: "text-to-video",
       description: null,
       input: ["text"],
@@ -686,7 +686,7 @@ test("buildResolvedAuthorizationInput defers duration billing when video duratio
   const authorization = buildResolvedAuthorizationInput({
     request: {
       mode: "responses",
-      model: "sora-2",
+      model: "wan2.7-t2v",
       stream: false,
       modality: "video",
       messages: [{ role: "user", content: "Generate a short clip" }],
@@ -797,13 +797,13 @@ test("buildResolvedAuthorizationInput defers token-priced audio to budget cap", 
 
 test("buildResolvedSettlementMeter hard-fails when authoritative media units are missing", () => {
   const resolved: ResolvedBillingModel = {
-    modelId: "openai/sora-2-t2v",
-    provider: "openai",
+    modelId: "wan2.7-t2v",
+    provider: "alibaba",
     known: true,
     card: {
-      modelId: "openai/sora-2-t2v",
-      name: "Sora 2",
-      provider: "openai",
+      modelId: "wan2.7-t2v",
+      name: "Wan2.7 T2V",
+      provider: "alibaba",
       type: "videos",
       description: null,
       input: ["text"],

@@ -16,7 +16,7 @@ import {
   cancelBudgetIntent,
 } from "../x402/session/budget.js";
 
-const TEST_NETWORK = "eip155:43113" as const;
+const TEST_NETWORK = "eip155:5042002" as const;
 const TEST_BUDGET_WEI = 1_000_000;
 const TEST_LOCK_WEI = 25_000;
 const TEST_MERCHANT = "0x058271e764154c322f3d3ddc18af44f7d91b1c80";

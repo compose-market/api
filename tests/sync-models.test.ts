@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { aggregateCanonicalFamily, dedupeModels, transformHuggingFaceModel, type NormalizedModel } from "../inference/scripts/sync-models.js";
+import { aggregateCanonicalFamily, dedupeModels, disambiguateDuplicateModelIds, normalizePublicModelId, transformHuggingFaceModel, type NormalizedModel } from "../inference/scripts/sync-models.js";
 
 function model(parts: {
     provider?: string;
@@ -9,10 +9,12 @@ function model(parts: {
     resource?: string;
     capacity?: number;
     state?: string;
+    family?: string;
 }): NormalizedModel {
     return {
         name: parts.modelId ?? "gpt-4o",
         modelId: parts.modelId ?? "gpt-4o",
+        ...(parts.family ? { family: parts.family } : {}),
         description: null,
         type: "text generation",
         provider: parts.provider ?? "azure",
@@ -118,10 +120,10 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["gpt-5.4", "openai"],
         ["o1", "openai"],
         ["o3-mini", "openai"],
-        ["o4-mini-deep-research", "openai"],
+        ["gpt-5.6-sol", "openai"],
         ["dall-e-3", "openai"],
-        ["sora-2", "openai"],
-        ["chatgpt-image-latest", "openai"],
+        ["gpt-audio-1.5", "openai"],
+        ["gpt-image-2", "openai"],
         ["tts-1-hd", "openai"],
         ["text-embedding-3-large", "openai"],
         ["gpt-oss-120b", "openai"],
@@ -198,4 +200,74 @@ test("music generation source types normalize to the catalog writer type", () =>
     });
 
     assert.equal(transformed?.type, "music generation");
+});
+
+test("normalizePublicModelId strips upstream decorations into upstreamModelId", () => {
+    const cases = [
+        ["fireworks", "accounts/fireworks/models/kimi-k3", "kimi-k3"],
+        ["cloudflare", "@cf/moonshotai/kimi-k2.6", "kimi-k2.6"],
+        ["deepinfra", "meta-llama/llama-3.3-70b-instruct", "llama-3.3-70b-instruct"],
+        ["asicloud", "google/gemma-3-27b-it", "gemma-3-27b-it"],
+    ] as const;
+
+    for (const [provider, decorated, clean] of cases) {
+        const normalized = normalizePublicModelId(model({ provider, modelId: decorated }));
+        assert.equal(normalized.modelId, clean, decorated);
+        assert.equal(normalized.upstreamModelId, decorated, decorated);
+    }
+});
+
+test("normalizePublicModelId leaves clean and non-decorated provider IDs untouched", () => {
+    const cases = [
+        ["azure", "gpt-5.5"],
+        ["alibaba", "qwen-max"],
+        ["asicloud", "asi1-mini"],
+        ["deepgram", "deepgram/aura-2-apollo-en"],
+        ["roboflow", "roboflow/box"],
+        ["openai", "gpt-5.5"],
+    ] as const;
+
+    for (const [provider, modelId] of cases) {
+        const normalized = normalizePublicModelId(model({ provider, modelId }));
+        assert.equal(normalized.modelId, modelId, modelId);
+        assert.equal(normalized.upstreamModelId, undefined, modelId);
+    }
+});
+
+test("dedupeModels keeps rows that share a cleaned slug but keep distinct upstream IDs", () => {
+    const rows = dedupeModels([
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "qwen/qwen3-32b" })),
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "other/qwen3-32b" })),
+    ]);
+
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => row.upstreamModelId).sort(), ["other/qwen3-32b", "qwen/qwen3-32b"]);
+});
+
+test("disambiguateDuplicateModelIds aliases duplicates by family and preserves upstreamModelId", () => {
+    const rows = disambiguateDuplicateModelIds([
+        model({ provider: "alibaba", modelId: "deepseek-v4-flash", family: "deepseek" }),
+        normalizePublicModelId(model({ provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v4-flash", family: "deepseek" })),
+    ]);
+
+    const primary = rows.find((row) => row.provider === "alibaba");
+    const aliased = rows.find((row) => row.provider === "fireworks");
+
+    assert.equal(primary?.modelId, "deepseek-v4-flash");
+    assert.equal(primary?.upstreamModelId, undefined);
+    assert.equal(aliased?.modelId, "deepseek/deepseek-v4-flash");
+    assert.equal(aliased?.upstreamModelId, "accounts/fireworks/models/deepseek-v4-flash");
+});
+
+test("disambiguateDuplicateModelIds keeps openai family aliases for shared gpt rows", () => {
+    const rows = disambiguateDuplicateModelIds([
+        model({ provider: "azure", modelId: "gpt-5.5", family: "openai" }),
+        model({ provider: "openai", modelId: "gpt-5.5", family: "openai" }),
+    ]);
+
+    const primary = rows.find((row) => row.provider === "azure");
+    const aliased = rows.find((row) => row.provider === "openai");
+
+    assert.equal(primary?.modelId, "gpt-5.5");
+    assert.equal(aliased?.modelId, "openai/gpt-5.5");
 });

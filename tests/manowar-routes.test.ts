@@ -369,17 +369,19 @@ test("workflow price passthrough uses RUNTIME_URL without payment bypass headers
   }
 });
 
-test("payable stream routes settle terminal SSE usage before waiting for runtime EOF", () => {
-  const branchStart = ROUTES_SOURCE.indexOf("if (sawTerminalSettlement && settlement)");
+test("payable stream routes close terminal SSE before settlement", () => {
+  const branchStart = ROUTES_SOURCE.indexOf("if (sawTerminalSettlement && terminalSettlementPromise)");
   const fallback = ROUTES_SOURCE.indexOf("if (buffer.trim().length > 0)", branchStart);
   const branch = ROUTES_SOURCE.slice(branchStart, fallback);
   const terminal = ROUTES_SOURCE.indexOf('markTiming("terminal_settlement_event")');
-  const earlyReceipt = branch.indexOf("const receipt = await settleOnce();\n            writeReceipt(receipt);");
+  const close = branch.indexOf("res.end();");
+  const settle = branch.indexOf("await settleOnce();");
   const cancelReader = branch.indexOf("await reader.cancel()");
 
   assert.ok(terminal > 0, "terminal settlement timing marker is required");
-  assert.ok(earlyReceipt > 0, "terminal events must trigger settlement immediately");
-  assert.ok(cancelReader > earlyReceipt, "runtime reader must be released after terminal settlement");
+  assert.ok(close > 0, "terminal events must close the client stream");
+  assert.ok(cancelReader > close, "runtime reader must be released after client close");
+  assert.ok(settle > cancelReader, "settlement must run after client close and reader release");
   assert.ok(branchStart > 0 && fallback > branchStart, "settlement branch must be before EOF buffer handling");
 });
 
@@ -467,15 +469,16 @@ test("payable stream routes fail closed when terminal metering cannot be priced"
   assert.ok(abortBranch.includes("event: error"));
 });
 
-test("payable stream routes write receipt before DONE when both arrive in one chunk", () => {
+test("payable stream routes write DONE and close before settlement", () => {
+  const start = ROUTES_SOURCE.indexOf("if (sawTerminalSettlement && terminalSettlementPromise)");
   const terminalBranch = ROUTES_SOURCE.slice(
-    ROUTES_SOURCE.indexOf("if (sawTerminalSettlement && settlement)"),
-    ROUTES_SOURCE.indexOf("try {\n              await reader.cancel()", ROUTES_SOURCE.indexOf("if (sawTerminalSettlement && settlement)")),
+    start,
+    ROUTES_SOURCE.indexOf('\n          markTiming("first_downstream_write");\n          res.write', start),
   );
 
-  assert.ok(terminalBranch.includes('const doneIndex = text.indexOf("data: [DONE]")'));
-  assert.ok(terminalBranch.indexOf("res.write(beforeDone)") < terminalBranch.indexOf("writeReceipt(receipt)"));
-  assert.ok(terminalBranch.indexOf("writeReceipt(receipt)") < terminalBranch.indexOf("res.write(text.slice(doneIndex))"));
+  assert.ok(terminalBranch.includes('!text.includes("data: [DONE]")'));
+  assert.ok(terminalBranch.indexOf('res.write("data: [DONE]') < terminalBranch.indexOf("res.end()"));
+  assert.ok(terminalBranch.indexOf("res.end()") < terminalBranch.indexOf("await settleOnce()"));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -647,7 +650,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       budgetLimit: 1_000_000,
       expiresAt: Date.now() + 10 * 60 * 1000,
       purpose: "api",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       name: "agent-wrapper-fee-test",
     });
     keyId = created.keyId;
@@ -663,7 +666,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       feeWei: "10",
       finalAmountWei: "1010",
       txHash: "0xmodel",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       settledAt: Date.now(),
     });
     await recordChargeEvidence({
@@ -677,7 +680,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       feeWei: "5",
       finalAmountWei: "505",
       txHash: "0xmemory",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       settledAt: Date.now(),
     });
     await recordChargeEvidence({
@@ -695,7 +698,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       creatorFeeWei: "50",
       finalAmountWei: "100",
       txHash: "0xchildagent",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       settledAt: Date.now(),
     });
 
@@ -704,7 +707,7 @@ test("agent stream settlement charges parent wrapper fees over direct and child-
       headers: {
         authorization: `Bearer ${created.token}`,
         "content-type": "application/json",
-        "x-network-id": "eip155:43113",
+        "x-network-id": "eip155:5042002",
         "x-run-id": rootRunId,
       },
       body: JSON.stringify({
@@ -821,7 +824,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       budgetLimit: 1_000_000,
       expiresAt: Date.now() + 10 * 60 * 1000,
       purpose: "api",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       name: "agent-unpaid-evidence-test",
     });
     keyId = created.keyId;
@@ -836,7 +839,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       providerAmountWei: "1000",
       feeWei: "10",
       finalAmountWei: "1010",
-      network: "eip155:43113",
+      network: "eip155:5042002",
       settledAt: Date.now(),
     });
 
@@ -845,7 +848,7 @@ test("agent stream settlement does not fold direct model evidence into the wrapp
       headers: {
         authorization: `Bearer ${created.token}`,
         "content-type": "application/json",
-        "x-network-id": "eip155:43113",
+        "x-network-id": "eip155:5042002",
         "x-run-id": rootRunId,
       },
       body: JSON.stringify({

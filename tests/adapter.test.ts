@@ -3004,3 +3004,10 @@ test("isOpenAIImageStreamingUnsupportedError detects DALL-E stream rejection pay
   )), true);
   assert.equal(isOpenAIImageStreamingUnsupportedError(new Error("OpenAI image streaming failed: 401 - unauthorized")), false);
 });
+
+test("OpenAI image streaming capability follows endpoint and partial-images schema", async () => {
+  const { supportsOpenAINativeImageStreaming } = await import("../inference/catalog/modalities/image.js");
+  const { getModelById } = await import("../inference/catalog/registry.js");
+  assert.equal(supportsOpenAINativeImageStreaming(getModelById("openai/gpt-image-2", "openai")), true);
+  assert.equal(supportsOpenAINativeImageStreaming(getModelById("gpt-4.1", "openai")), false);
+});

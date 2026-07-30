@@ -28,7 +28,7 @@ const BATCH_SOURCE = readFileSync(new URL("../x402/batch.ts", import.meta.url), 
 test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requirements with compose extensions", () => {
   const body = createPaymentRequired402Response({
     amountWei: 1122,
-    network: "eip155:43113",
+    network: "eip155:5042002",
     resourceUrl: "https://api.compose.market/agent/test/stream",
     errorMessage: "Payment required",
   });
@@ -38,7 +38,7 @@ test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requ
   assert.equal(body.x402Version, 2);
   assert.equal(body.resource.url, "https://api.compose.market/agent/test/stream");
   assert.equal(body.accepts[0]?.scheme, "exact");
-  assert.equal(body.accepts[0]?.network, "eip155:43113");
+  assert.equal(body.accepts[0]?.network, "eip155:5042002");
   assert.equal(body.accepts[0]?.amount, "1122");
   assert.equal("maxAmountRequired" in body.accepts[0]!, false);
   assert.deepEqual(body.extensions, {
@@ -76,7 +76,7 @@ test("PriceLookupParams uses canonical mcp source naming only", () => {
 test("prepareInferencePayment emits PAYMENT-REQUIRED header that matches the spec body", async () => {
   const headers: Record<string, string> = {
     host: "api.compose.market",
-    "x-network-id": "eip155:43113",
+    "x-network-id": "eip155:5042002",
   };
   const req = {
     headers,
@@ -178,7 +178,7 @@ test("SVM parity lives in the existing global x402 modules without scheme rewrit
 test("settlePreparedInferencePayment preserves x402 payment-required negotiation details on settlement failures", async () => {
   const paymentRequired = createPaymentRequired402Response({
     amountWei: 76,
-    network: "eip155:43113",
+    network: "eip155:5042002",
     resourceUrl: "https://api.compose.market/v1/audio/speech",
     errorMessage: "Session expired or insufficient allowance",
   });
@@ -244,7 +244,7 @@ test("settlePreparedInferencePayment preserves granular metered receipt fields",
         platformFeeWei: quoted.platformFeeWei,
         meterSubject: quoted.subject,
         lineItems: quoted.lineItems,
-        network: "eip155:43113",
+        network: "eip155:5042002",
         settledAt: 1_778_888_001,
       }),
       abort: async () => undefined,
@@ -300,7 +300,7 @@ test("settlePreparedInferencePayment preserves settlement chain id for stream re
       settle: async () => ({
         success: true,
         finalAmountWei: "8836",
-        network: "eip155:43113",
+        network: "eip155:5042002",
         txHash: "0xagentsettlement",
       }),
       abort: async () => undefined,
@@ -311,7 +311,7 @@ test("settlePreparedInferencePayment preserves settlement chain id for stream re
   );
 
   assert.equal(receipt?.finalAmountWei, "8836");
-  assert.equal(receipt?.network, "eip155:43113");
+  assert.equal(receipt?.network, "eip155:5042002");
   assert.equal(receipt?.txHash, "0xagentsettlement");
 });
 
