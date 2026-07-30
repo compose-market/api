@@ -193,9 +193,23 @@ export function imageBillingMetricsFromOutput(args: {
 }
 
 export function supportsOpenAINativeImageStreaming(card: ModelCard | null): boolean {
-  if (!card?.type) return false;
-  const types = Array.isArray(card.type) ? card.type : [card.type];
-  return types.some((type) => typeof type === "string" && type.toLowerCase() === "responses");
+  if (!card) return false;
+  const params = card.params && typeof card.params === "object" && !Array.isArray(card.params)
+    ? card.params as Record<string, unknown>
+    : {};
+  const source = card.sourceMetadata && typeof card.sourceMetadata === "object" && !Array.isArray(card.sourceMetadata)
+    ? card.sourceMetadata as Record<string, unknown>
+    : {};
+  const openai = source.openai && typeof source.openai === "object" && !Array.isArray(source.openai)
+    ? source.openai as Record<string, unknown>
+    : {};
+  const endpoints = Array.isArray(openai.endpoints) ? openai.endpoints : [];
+  const supportsImages = endpoints.some((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const endpoint = value as Record<string, unknown>;
+    return endpoint.name === "Image generation" && endpoint.supported === true;
+  });
+  return supportsImages && "partial_images" in params;
 }
 
 // ===========================================================================
