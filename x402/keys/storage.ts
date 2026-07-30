@@ -23,7 +23,7 @@ import {
     valkeyTTL,
 } from "./valkey.js";
 import { signKey } from "./jwt.js";
-import { getSessionBudget } from "../session/budget.js";
+import { getBudgetInfo as getSessionBudgetInfo, getSessionBudget } from "../session/budget.js";
 import { isEvmNetwork, type NetworkId } from "../configs/chains.js";
 import type {
     KeyRecord,
@@ -170,8 +170,9 @@ function buildActiveSessionCandidate(
 function applySessionBudgetState(
     candidate: ActiveSessionCandidate,
     budget: Awaited<ReturnType<typeof getSessionBudget>> | undefined,
+    info: Awaited<ReturnType<typeof getSessionBudgetInfo>> | undefined,
 ): ActiveSessionCandidate {
-    if (!budget) {
+    if (!budget || !info) {
         return {
             ...candidate,
             missingBudgetState: true,
@@ -180,11 +181,12 @@ function applySessionBudgetState(
         };
     }
 
-    const budgetLimit = parseStoredInteger(budget.totalBudgetWei);
-    const budgetUsed = parseStoredInteger(budget.usedBudgetWei);
-    const budgetLocked = parseStoredInteger(budget.lockedBudgetWei);
+    const budgetLimit = parseStoredInteger(info.totalWei);
+    const budgetUsed = parseStoredInteger(info.usedWei);
+    const budgetLocked = parseStoredInteger(info.lockedWei);
+    const budgetRemaining = parseStoredInteger(info.availableWei);
 
-    if (budgetLimit === null || budgetUsed === null || budgetLocked === null) {
+    if (budgetLimit === null || budgetUsed === null || budgetLocked === null || budgetRemaining === null) {
         return {
             ...candidate,
             missingBudgetState: true,
@@ -198,7 +200,7 @@ function applySessionBudgetState(
         budgetLimit,
         budgetUsed,
         budgetLocked,
-        budgetRemaining: Math.max(0, budgetLimit - budgetUsed - budgetLocked),
+        budgetRemaining: Math.max(0, budgetRemaining),
         expiresAt: budget.expiresAt,
     };
 }
@@ -561,13 +563,19 @@ export async function getActiveSessionStatus(
     )];
 
     const sessionBudgets = new Map<NetworkId, Awaited<ReturnType<typeof getSessionBudget>> | undefined>();
+    const sessionBudgetInfo = new Map<NetworkId, Awaited<ReturnType<typeof getSessionBudgetInfo>> | undefined>();
     const sessionBudgetEntries = await Promise.all(
-        sessionNetworks.map(async (candidateNetwork) => (
-            [candidateNetwork, await getSessionBudget(normalizedAddress, candidateNetwork)] as const
-        )),
+        sessionNetworks.map(async (candidateNetwork) => {
+            const [budget, info] = await Promise.all([
+                getSessionBudget(normalizedAddress, candidateNetwork),
+                getSessionBudgetInfo(normalizedAddress, candidateNetwork),
+            ]);
+            return [candidateNetwork, budget, info] as const;
+        }),
     );
-    for (const [candidateNetwork, budget] of sessionBudgetEntries) {
+    for (const [candidateNetwork, budget, info] of sessionBudgetEntries) {
         sessionBudgets.set(candidateNetwork, budget);
+        sessionBudgetInfo.set(candidateNetwork, info);
     }
 
     const resolvedCandidates = candidates.map((candidate) => {
@@ -575,7 +583,11 @@ export async function getActiveSessionStatus(
             return candidate;
         }
 
-        return applySessionBudgetState(candidate, sessionBudgets.get(candidate.network));
+        return applySessionBudgetState(
+            candidate,
+            sessionBudgets.get(candidate.network),
+            sessionBudgetInfo.get(candidate.network),
+        );
     });
 
     return selectActiveSessionStatus(resolvedCandidates, network);
