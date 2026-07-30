@@ -67,6 +67,36 @@ test("external Responses shaping preserves official semantic SSE frames", async 
     assert.match(stream, /response\.created/);
     assert.match(stream, /response\.output_text\.delta/);
     assert.match(stream, /response\.completed/);
+    const sequence = stream
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)) as { sequence_number?: number })
+      .map((event) => event.sequence_number);
+    assert.deepEqual(sequence, [0, 1, 2]);
+  });
+});
+
+test("external Responses shaping emits protocol-native sequenced errors", async () => {
+  const app = express();
+  app.get("/stream", shape("responses"), (_req, res) => {
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.write('event: compose.error\ndata: {"code":"context_length_exceeded","message":"too long"}\n\n');
+    res.end();
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/stream`);
+    const stream = await response.text();
+    const line = stream.split("\n").find((value) => value.startsWith("data: "));
+    assert.ok(line);
+    assert.deepEqual(JSON.parse(line.slice(6)), {
+      type: "error",
+      sequence_number: 0,
+      code: "context_length_exceeded",
+      message: "too long",
+      param: null,
+    });
   });
 });
 

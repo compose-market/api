@@ -6,7 +6,6 @@ import test from "node:test";
 import type { Request, Response } from "express";
 
 import { abortPaymentIntent, authorizePaymentIntent, settlePaymentIntent } from "../x402/intents.js";
-import { markIntentEvidenceSettled, recordChargeEvidence } from "../x402/evidence.js";
 import { prepareInferencePayment, settlePreparedInferencePayment } from "../x402/index.js";
 import { createKey, getActiveSessionStatus } from "../x402/keys/storage.js";
 import {
@@ -31,6 +30,7 @@ const PENDING_INTENTS_KEY = "intents:pending";
 
 process.env.NODE_ENV = "test";
 process.env.COMPOSE_SESSION_ALLOWANCE_OVERRIDE_WEI = String(TEST_BUDGET_WEI);
+process.env.COMPOSE_SESSION_BALANCE_OVERRIDE_WEI = String(TEST_BUDGET_WEI);
 process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH = TEST_SETTLEMENT_TX_HASH;
 
 function randomWalletAddress(): `0x${string}` {
@@ -62,7 +62,7 @@ function sessionIntentKey(intentId: string): string {
 }
 
 function userIntentsKey(userAddress: string): string {
-  return `session:budget:${userAddress.toLowerCase()}:intents`;
+  return `session:budget:${TEST_NETWORK}:${userAddress.toLowerCase()}:intents`;
 }
 
 function paymentIntentIdempotencyKey(keyId: string, idempotencyKey: string): string {
@@ -322,7 +322,7 @@ test("aborting a session payment intent releases the live reservation and keeps 
   }
 });
 
-test("session payment intents using budget caps do not lock the whole live session budget up front", async () => {
+test("session payment intents using budget caps lock the live session budget up front", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
@@ -363,13 +363,13 @@ test("session payment intents using budget caps do not lock the whole live sessi
 
     paymentIntentId = prepared.body.paymentIntentId;
     assert.equal(prepared.body.maxAmountWei, String(TEST_BUDGET_WEI));
-    assert.equal(prepared.headers["x-session-budget-locked"], "0");
-    assert.equal(prepared.headers["x-session-budget-remaining"], String(TEST_BUDGET_WEI));
+    assert.equal(prepared.headers["x-session-budget-locked"], String(TEST_BUDGET_WEI));
+    assert.equal(prepared.headers["x-session-budget-remaining"], "0");
 
     const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
-    assert.equal(budgetInfo?.lockedWei, "0");
+    assert.equal(budgetInfo?.lockedWei, String(TEST_BUDGET_WEI));
     assert.equal(budgetInfo?.usedWei, "0");
-    assert.equal(budgetInfo?.availableWei, String(TEST_BUDGET_WEI));
+    assert.equal(budgetInfo?.availableWei, "0");
   } finally {
     if (paymentIntentId) {
       await abortPaymentIntent({
@@ -386,7 +386,7 @@ test("session payment intents using budget caps do not lock the whole live sessi
   }
 });
 
-test("api payment intents using budget caps do not reserve the whole key budget up front", async () => {
+test("api payment intents using budget caps reserve key and session budgets up front", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
@@ -402,6 +402,13 @@ test("api payment intents using budget caps do not reserve the whole key budget 
       name: "opencode-api",
     });
     keyId = created.keyId;
+
+    await initializeSessionBudget(
+      userAddress,
+      TEST_NETWORK,
+      String(TEST_BUDGET_WEI),
+      expiresAt,
+    );
 
     const [first, second] = await Promise.all([
       authorizePaymentIntent({
@@ -424,19 +431,26 @@ test("api payment intents using budget caps do not reserve the whole key budget 
       }),
     ]);
 
-    assert.equal(first.ok, true);
-    assert.equal(second.ok, true);
-    if (!first.ok || !second.ok) {
+    const successful = [first, second].filter((result): result is Extract<typeof result, { ok: true }> => result.ok);
+    const rejected = [first, second].filter((result): result is Extract<typeof result, { ok: false }> => !result.ok);
+    assert.equal(successful.length, 1);
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0]?.status, 402);
+    if (successful.length !== 1) {
       return;
     }
-    paymentIntentIds.push(first.body.paymentIntentId, second.body.paymentIntentId);
+    const authorized = successful[0];
+    paymentIntentIds.push(authorized.body.paymentIntentId);
 
     const recordBeforeSettle = await valkeyHGetAll(keyRecordKey(created.keyId));
-    assert.equal(recordBeforeSettle.budgetReserved, "0");
+    assert.equal(recordBeforeSettle.budgetReserved, String(TEST_BUDGET_WEI));
     assert.equal(recordBeforeSettle.budgetUsed, "0");
+    const budgetBeforeSettle = await getBudgetInfo(userAddress, TEST_NETWORK);
+    assert.equal(budgetBeforeSettle?.lockedWei, String(TEST_BUDGET_WEI));
+    assert.equal(budgetBeforeSettle?.availableWei, "0");
 
     const settled = await settlePaymentIntent({
-      paymentIntentId: first.body.paymentIntentId,
+      paymentIntentId: authorized.body.paymentIntentId,
       finalAmountWei: String(TEST_REQUEST_WEI),
     });
 
@@ -450,16 +464,9 @@ test("api payment intents using budget caps do not reserve the whole key budget 
     const recordAfterSettle = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(recordAfterSettle.budgetReserved, "0");
     assert.equal(recordAfterSettle.budgetUsed, String(TEST_REQUEST_WEI));
-
-    const aborted = await abortPaymentIntent({
-      paymentIntentId: second.body.paymentIntentId,
-      reason: "test-cleanup",
-    });
-    assert.equal(aborted.ok, true);
-
-    const recordAfterAbort = await valkeyHGetAll(keyRecordKey(created.keyId));
-    assert.equal(recordAfterAbort.budgetReserved, "0");
-    assert.equal(recordAfterAbort.budgetUsed, String(TEST_REQUEST_WEI));
+    const budgetAfterSettle = await getBudgetInfo(userAddress, TEST_NETWORK);
+    assert.equal(budgetAfterSettle?.lockedWei, "0");
+    assert.equal(budgetAfterSettle?.usedWei, String(TEST_REQUEST_WEI));
   } finally {
     await cleanupTestState({
       userAddress,
@@ -469,7 +476,7 @@ test("api payment intents using budget caps do not reserve the whole key budget 
   }
 });
 
-test("concurrent API budget-cap settlements cannot overdraw the shared ledger", async () => {
+test("concurrent API reservations preserve fan-out without overdrawing the shared ledger", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
   const settlementCount = 12;
@@ -487,6 +494,13 @@ test("concurrent API budget-cap settlements cannot overdraw the shared ledger", 
     });
     keyId = created.keyId;
 
+    await initializeSessionBudget(
+      userAddress,
+      TEST_NETWORK,
+      String(TEST_BUDGET_WEI),
+      expiresAt,
+    );
+
     const authorizations = await Promise.all(Array.from({ length: settlementCount }, () =>
       authorizePaymentIntent({
         authorization: `Bearer ${created.token}`,
@@ -495,23 +509,28 @@ test("concurrent API budget-cap settlements cannot overdraw the shared ledger", 
         action: "inference",
         resource: "https://api.compose.market/external/v1/chat/completions",
         method: "POST",
-        useBudgetCap: true,
+        maxAmountWei: String(settlementAmountWei),
       }),
     ));
     const successful = authorizations.filter((result): result is Extract<typeof result, { ok: true }> => result.ok);
-    assert.equal(successful.length, settlementCount);
+    const rejected = authorizations.filter((result): result is Extract<typeof result, { ok: false }> => !result.ok);
+    assert.equal(successful.length, TEST_BUDGET_WEI / settlementAmountWei);
+    assert.equal(rejected.length, settlementCount - successful.length);
+    assert.equal(rejected.every((result) => result.status === 402), true);
     paymentIntentIds.push(...successful.map((result) => result.body.paymentIntentId));
 
     const settlements = await Promise.all(successful.map((result) => settlePaymentIntent({
       paymentIntentId: result.body.paymentIntentId,
       finalAmountWei: String(settlementAmountWei),
     })));
-    assert.equal(settlements.filter((result) => result.ok).length, TEST_BUDGET_WEI / settlementAmountWei);
-    assert.equal(settlements.filter((result) => !result.ok).every((result) => result.status === 402), true);
+    assert.equal(settlements.every((result) => result.ok), true);
 
     const record = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(record.budgetReserved, "0");
     assert.equal(record.budgetUsed, String(TEST_BUDGET_WEI));
+    const budget = await getBudgetInfo(userAddress, TEST_NETWORK);
+    assert.equal(budget?.lockedWei, "0");
+    assert.equal(budget?.usedWei, String(TEST_BUDGET_WEI));
   } finally {
     await cleanupTestState({ userAddress, keyId, paymentIntentIds });
   }
@@ -548,6 +567,13 @@ test("native inference key settlement creates and settles a payment intent", asy
       name: "native-inference-api",
     });
     keyId = created.keyId;
+
+    await initializeSessionBudget(
+      userAddress,
+      TEST_NETWORK,
+      String(TEST_BUDGET_WEI),
+      expiresAt,
+    );
 
     const probe = responseProbe();
     const payment = await prepareInferencePayment(
@@ -591,6 +617,9 @@ test("native inference key settlement creates and settles a payment intent", asy
     const record = await valkeyHGetAll(keyRecordKey(created.keyId));
     assert.equal(record.budgetReserved || "0", "0");
     assert.equal(record.budgetUsed, receipt.finalAmountWei);
+    const budget = await getBudgetInfo(userAddress, TEST_NETWORK);
+    assert.equal(budget?.lockedWei, "0");
+    assert.equal(budget?.usedWei, receipt.finalAmountWei);
   } finally {
     await cleanupTestState({
       userAddress,
@@ -601,16 +630,14 @@ test("native inference key settlement creates and settles a payment intent", asy
   }
 });
 
-test("native inference session key locks only the final authoritative settlement amount", async () => {
+test("native inference session reserves the maximum and settles actual usage on-chain", async () => {
   const userAddress = randomWalletAddress();
   const expiresAt = Date.now() + 10 * 60 * 1000;
   const idempotencyKey = "native-inference-direct-session";
-  const fixedNow = 1_700_000_000_000;
   const requestId = "native-session-direct";
-  const sessionIntentId = `${TEST_NETWORK}:${userAddress}-${requestId}-${fixedNow}`;
 
   let keyId: string | null = null;
-  const originalNow = Date.now;
+  let paymentIntentId: string | null = null;
 
   try {
     const created = await createKey(userAddress, {
@@ -636,69 +663,44 @@ test("native inference session key locks only the final authoritative settlement
 
     assert.ok(payment, "native inference session preparation should succeed");
     assert.equal(probe.statusCode, null);
-    assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
+    paymentIntentId = await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey));
+    assert.ok(paymentIntentId);
     assert.equal(payment.maxAmountWei, String(TEST_BUDGET_WEI));
     assert.equal(payment.runtimeHeaders.Authorization, `Bearer ${created.token}`);
     assert.equal(payment.runtimeHeaders["x-session-active"], "true");
     assert.equal(payment.runtimeHeaders["x-session-user-address"], userAddress.toLowerCase());
     assert.equal(payment.runtimeHeaders["x-session-budget-remaining"], String(TEST_BUDGET_WEI));
     assert.equal(payment.runtimeHeaders["x-network-id"], String(TEST_NETWORK));
+    const budgetBeforeSettle = await getBudgetInfo(userAddress, TEST_NETWORK);
+    assert.equal(budgetBeforeSettle?.lockedWei, String(TEST_BUDGET_WEI));
+    assert.equal(budgetBeforeSettle?.availableWei, "0");
 
-    Date.now = () => fixedNow;
     const receipt = await settlePreparedInferencePayment(
       payment,
       probe.res,
       { meter: DIRECT_INFERENCE_METER },
     );
-    Date.now = originalNow;
 
     assert.ok(receipt);
-    assert.equal(receipt.txHash, undefined);
-    assert.equal(receipt.settlementStatus, "queued");
-    assert.equal(receipt.sessionBudgetIntentId, sessionIntentId);
-    assert.equal(probe.headers["x-payment-intent-id"], sessionIntentId);
-    assert.equal(probe.headers["x-session-budget-intent-id"], sessionIntentId);
-    assert.equal(probe.headers["x-settlement"], "queued");
+    assert.equal(receipt.txHash, TEST_SETTLEMENT_TX_HASH);
+    assert.equal(receipt.settlementStatus, "settled");
+    assert.equal(receipt.paymentIntentId, paymentIntentId);
+    assert.equal(probe.headers["x-payment-intent-id"], paymentIntentId);
+    assert.equal(probe.headers["x-settlement"], "settled");
     assert.equal(probe.headers["x-key-final-amount-wei"], receipt.finalAmountWei);
+    assert.equal(probe.headers["x-key-tx-hash"], TEST_SETTLEMENT_TX_HASH);
 
     const budgetInfo = await getBudgetInfo(userAddress, TEST_NETWORK);
-    assert.equal(budgetInfo?.lockedWei, receipt.finalAmountWei);
-    assert.equal(budgetInfo?.usedWei, "0");
-    assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), null);
+    assert.equal(budgetInfo?.lockedWei, "0");
+    assert.equal(budgetInfo?.usedWei, receipt.finalAmountWei);
+    assert.equal(await valkeyGet(paymentIntentIdempotencyKey(created.keyId, idempotencyKey)), paymentIntentId);
 
-    const evidence = await recordChargeEvidence({
-      kind: "model",
-      rootRunId: requestId,
-      executionRunId: requestId,
-      action: "v1-responses",
-      providerAmountWei: "1000",
-      feeWei: "10",
-      finalAmountWei: receipt.finalAmountWei,
-      settlementStatus: "queued",
-      sessionBudgetIntentId: receipt.sessionBudgetIntentId,
-      network: TEST_NETWORK,
-    });
-
-    const updated = await markIntentEvidenceSettled({
-      sessionBudgetIntentId: receipt.sessionBudgetIntentId,
-      txHash: TEST_SETTLEMENT_TX_HASH,
-      network: TEST_NETWORK,
-    });
-    assert.equal(updated, 1);
-
-    const settledEvidence = await valkeyHGetAll(`x402:evidence:charge:${evidence.id}`);
-    assert.equal(settledEvidence?.settlementStatus, "settled");
-    assert.equal(settledEvidence?.txHash, TEST_SETTLEMENT_TX_HASH);
   } finally {
-    Date.now = originalNow;
     await cleanupTestState({
       userAddress,
       keyId,
-      paymentIntentIds: [],
-      extraKeys: [
-        sessionIntentKey(sessionIntentId),
-        ...(keyId ? [paymentIntentIdempotencyKey(keyId, idempotencyKey)] : []),
-      ],
+      paymentIntentIds: paymentIntentId ? [paymentIntentId] : [],
+      extraKeys: keyId ? [paymentIntentIdempotencyKey(keyId, idempotencyKey)] : [],
     });
   }
 });
@@ -893,8 +895,8 @@ test("settling a session budget-cap intent charges on-chain before marking ValKe
 
     paymentIntentId = prepared.body.paymentIntentId;
     assert.equal(prepared.body.maxAmountWei, String(TEST_BUDGET_WEI));
-    assert.equal(prepared.headers["x-session-budget-locked"], "0");
-    assert.equal(prepared.headers["x-session-budget-remaining"], String(TEST_BUDGET_WEI));
+    assert.equal(prepared.headers["x-session-budget-locked"], String(TEST_BUDGET_WEI));
+    assert.equal(prepared.headers["x-session-budget-remaining"], "0");
 
     const settled = await settlePaymentIntent({
       paymentIntentId,
@@ -914,7 +916,7 @@ test("settling a session budget-cap intent charges on-chain before marking ValKe
     assert.equal(settled.headers["x-key-tx-hash"], TEST_SETTLEMENT_TX_HASH);
 
     const paymentIntent = await valkeyHGetAll(paymentIntentKey(paymentIntentId));
-    assert.ok(paymentIntent?.sessionBudgetIntentId, "settlement should create a session-budget intent");
+    assert.ok(paymentIntent?.sessionBudgetIntentId, "authorization should create a session-budget intent");
     assert.equal(paymentIntent.status, "settled");
     assert.equal(paymentIntent.finalAmountWei, String(TEST_REQUEST_WEI));
     assert.equal(paymentIntent.txHash, TEST_SETTLEMENT_TX_HASH);

@@ -81,3 +81,57 @@ test("pinned AI SDK clients accept Responses EOF and Chat usage", async () => {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test("pinned AI SDK retries retryable HTTP admission failures", async () => {
+  let attempts = 0;
+  const server = createServer(async (_req, res) => {
+    attempts += 1;
+    if (attempts < 3) {
+      res.statusCode = 503;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Retry-After", "0");
+      res.end(JSON.stringify({ error: { message: "busy", type: "server_error", code: "server_is_overloaded" } }));
+      return;
+    }
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/event-stream");
+    res.write(`data: ${JSON.stringify({
+      id: "chatcmpl_retry",
+      object: "chat.completion.chunk",
+      created: 123,
+      model: "fixture-model",
+      choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
+    })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+      id: "chatcmpl_retry",
+      object: "chat.completion.chunk",
+      created: 123,
+      model: "fixture-model",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    })}\n\n`);
+    res.write(`data: ${JSON.stringify({
+      id: "chatcmpl_retry",
+      object: "chat.completion.chunk",
+      created: 123,
+      model: "fixture-model",
+      choices: [],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const provider = createOpenAICompatible({
+      name: "compose-market",
+      apiKey: "test",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+    });
+    const result = streamText({ model: provider("fixture-model"), prompt: "hello", maxRetries: 2 });
+    assert.equal(await result.text, "ok");
+    assert.equal(attempts, 3);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});

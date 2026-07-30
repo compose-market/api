@@ -23,6 +23,7 @@ const TEST_MERCHANT = "0x058271e764154c322f3d3ddc18af44f7d91b1c80";
 
 process.env.NODE_ENV = "test";
 process.env.COMPOSE_SESSION_ALLOWANCE_OVERRIDE_WEI = String(TEST_BUDGET_WEI);
+process.env.COMPOSE_SESSION_BALANCE_OVERRIDE_WEI = String(TEST_BUDGET_WEI);
 
 function randomWalletAddress(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
@@ -33,7 +34,7 @@ function sessionBudgetKey(userAddress: string, network: string): string {
 }
 
 function userKeysKey(userAddress: string): string {
-  return `user-keys:${userAddress.toLowerCase()}`;
+  return `user-keys:${TEST_NETWORK}:${userAddress.toLowerCase()}`;
 }
 
 function keyRecordKey(keyId: string): string {
@@ -49,7 +50,7 @@ function intentKey(intentId: string): string {
 }
 
 function userIntentsKey(userAddress: string): string {
-  return `session:budget:${userAddress.toLowerCase()}:intents`;
+  return `session:budget:${TEST_NETWORK}:${userAddress.toLowerCase()}:intents`;
 }
 
 test("getActiveSessionStatus reflects session-budget locks for active session tokens", async () => {

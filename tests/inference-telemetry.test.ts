@@ -8,6 +8,7 @@ import {
   normalizeBillingPrice,
   type BillingPrice,
 } from "../inference/telemetry.js";
+import { quoteMeteredSettlement } from "../x402/metering.js";
 
 test("normalizeBillingPrice accepts raw compiled token sections", () => {
   const pricing = normalizeBillingPrice({
@@ -281,6 +282,41 @@ test("buildAuthoritativeBilling prices cache reads and writes without double-bil
   );
 });
 
+test("unpriced cache-write evidence does not invalidate priced cache reads", () => {
+  const billing = buildAuthoritativeBilling({
+    subject: "fireworks:minimax-m3",
+    modality: "text",
+    pricing: {
+      unit: "usd_per_1m_tokens",
+      values: { input: 0.3, cached_input: 0.06, output: 1.2 },
+    },
+    usage: {
+      promptTokens: 132,
+      completionTokens: 24,
+      totalTokens: 156,
+      cachedInputTokens: 131,
+      cacheWriteTokens: 131,
+    },
+  });
+  assert.deepEqual(billing.lineItems.map(({ key, quantity }) => ({ key, quantity })), [
+    { key: "cached_input_tokens", quantity: 131 },
+    { key: "input_tokens", quantity: 1 },
+    { key: "output_tokens", quantity: 24 },
+  ]);
+});
+
+test("cached-input metrics are never inferred as cache-write usage", () => {
+  const usage = extractAuthoritativeUsage({
+    promptTokens: 132,
+    completionTokens: 20,
+    totalTokens: 152,
+    billingMetrics: { cached_input_tokens: 131 },
+  });
+  assert.equal(usage.cachedInputTokens, 131);
+  assert.equal(usage.cacheWriteTokens, undefined);
+  assert.equal(usage.billingMetrics?.cache_write_input_tokens, undefined);
+});
+
 test("buildAuthoritativeBilling does not double-count reasoning tokens", () => {
   const pricing: BillingPrice = {
     unit: "usd_per_1m_tokens",
@@ -326,6 +362,32 @@ test("buildAuthoritativeBilling does not double-count reasoning tokens", () => {
       source: "provider_response",
     },
   ]);
+});
+
+test("Kimi completion billing includes its authoritative reasoning-token subset onchain", () => {
+  const billing = buildAuthoritativeBilling({
+    subject: "fireworks:kimi-k3",
+    modality: "text",
+    pricing: {
+      unit: "usd_per_1m_tokens",
+      values: { input: 3, output: 15 },
+    },
+    usage: {
+      promptTokens: 18_033,
+      completionTokens: 7_877,
+      reasoningTokens: 7_331,
+      totalTokens: 25_910,
+    },
+  });
+  assert.deepEqual(billing.lineItems.map(({ key, quantity }) => ({ key, quantity })), [
+    { key: "input_tokens", quantity: 18_033 },
+    { key: "output_tokens", quantity: 7_877 },
+  ]);
+  assert.equal(billing.metrics.reasoning_tokens, 7_331);
+  const quote = quoteMeteredSettlement({ subject: billing.subject, lineItems: billing.lineItems });
+  assert.equal(quote.providerAmountWei, "172254");
+  assert.equal(quote.platformFeeWei, "1723");
+  assert.equal(quote.finalAmountWei, "173977");
 });
 
 test("buildAuthoritativeBilling derives image counts from media output", () => {

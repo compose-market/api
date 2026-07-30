@@ -116,12 +116,8 @@ function goodLimit(value: unknown): void {
   if (typeof context !== "number") assert.fail("limit.context must be a number");
   assert.ok(context > 0);
   if (typeof output !== "number") assert.fail("limit.output must be a number");
-  assert.ok(output > 0);
-  if ("input" in limit) {
-    assert.equal(typeof limit.input, "number");
-    assert.ok((limit.input as number) > 0);
-    assert.ok((limit.input as number) <= context);
-  }
+  assert.ok(output >= 0);
+  assert.equal("input" in limit, false);
 }
 
 function goodCost(value: unknown): void {
@@ -592,12 +588,15 @@ test("external OpenCode config is generated from the catalog", async () => {
       assert.equal(Object.keys(models).length, compiled.length);
       for (const model of compiled) {
         assert.ok(models[id(model)]);
+        if (models[id(model)].limit) {
+          assert.equal("input" in (models[id(model)].limit as Record<string, unknown>), false);
+        }
       }
       assert.ok(models["gpt-5.5"]);
       assert.ok(models["openai/gpt-5.5"]);
       assert.equal(models["kimi-k3"]?.reasoning, true);
       assert.equal(models["kimi-k3"]?.family, "moonshot");
-      assert.deepEqual(models["kimi-k3"]?.limit, { context: 1048576, input: 1048576, output: 1048576 });
+      assert.deepEqual(models["kimi-k3"]?.limit, { context: 1048576, output: 1048576 });
       assert.deepEqual(models["kimi-k3"]?.cost, { input: 3, output: 15 });
       assert.deepEqual(models["kimi-k3"]?.modalities, { input: ["text", "image"], output: ["text"] });
       assert.equal(models["kimi-k3"]?.provider, undefined);
@@ -617,7 +616,17 @@ test("external OpenCode config is generated from the catalog", async () => {
       const rawLimit = compiled.find((model) => partialLimit(model as unknown as Record<string, unknown>));
       const rawCost = compiled.find((model) => partialCost(model as unknown as Record<string, unknown>));
       const rawModes = compiled.find((model) => badModes(model as unknown as Record<string, unknown>));
-      if (rawLimit) assert.equal("limit" in models[id(rawLimit)], false);
+      if (rawLimit) {
+        const rawBounds = bounds(rawLimit as unknown as Record<string, unknown>);
+        if (typeof rawBounds?.context === "number") {
+          assert.deepEqual(models[id(rawLimit)].limit, {
+            context: rawBounds.context,
+            output: typeof rawBounds.output === "number" ? rawBounds.output : 0,
+          });
+        } else {
+          assert.equal("limit" in models[id(rawLimit)], false);
+        }
+      }
       if (rawCost) assert.equal("cost" in models[id(rawCost)], false);
       if (rawModes) assert.equal("modalities" in models[id(rawModes)], false);
     }

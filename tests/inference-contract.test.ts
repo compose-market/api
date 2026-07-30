@@ -14,7 +14,11 @@ import {
   buildBodyChat,
   buildBodyResponses,
   mapMessagesForResponsesWire,
+  mapMessagesForOpenAIWire,
 } from "../inference/catalog/families/openai.js";
+import { buildChatBody as buildAlibabaChatBody } from "../inference/catalog/families/alibaba.js";
+import { mapMessagesForAnthropic } from "../inference/catalog/families/anthropic.js";
+import { buildChatBody as buildMoonshotChatBody } from "../inference/catalog/families/moonshot.js";
 
 test("chat normalization accepts the runtime model bridge wire shape", () => {
   const body = {
@@ -63,6 +67,31 @@ test("chat normalization accepts the runtime model bridge wire shape", () => {
   assert.equal(request.messages[1]?.tool_calls?.[0]?.function.name, "price.lookup");
   assert.equal(request.messages[2]?.tool_call_id, "call_1");
   assert.equal(request.tools?.[0]?.parameters?.type, "object");
+});
+
+test("canonical tool history resolves names across Chat and Responses family lowerings", () => {
+  const request = normalizeResponsesRequest({
+    model: "kimi-k3",
+    input: [
+      { type: "function_call", call_id: "call_original", name: "repo.inspect", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_transformed", output: "done" },
+    ],
+  });
+  assert.equal(request.messages[0]?.tool_calls?.[0]?.function.name, "repo.inspect");
+  assert.equal(request.messages[1]?.tool_call_id, "call_transformed");
+  assert.equal(request.messages[1]?.name, "repo.inspect");
+
+  const moonshot = buildMoonshotChatBody("accounts/fireworks/models/kimi-k3", request.messages);
+  assert.equal((moonshot.messages as Array<Record<string, unknown>>)[1]?.name, "repo.inspect");
+
+  const compatible = mapMessagesForOpenAIWire(request.messages);
+  assert.equal(compatible[1]?.name, "repo.inspect");
+
+  const anthropic = mapMessagesForAnthropic(request.messages);
+  assert.equal((anthropic.messages[1]?.content as Array<Record<string, unknown>>)[0]?.tool_use_id, "call_transformed");
+
+  const alibaba = buildAlibabaChatBody("qwen-plus", request.messages, { wire: "openai_chat" });
+  assert.equal((alibaba.body.messages as Array<Record<string, unknown>>)[1]?.name, "repo.inspect");
 });
 
 test("chat normalization keeps the existing conservative passthrough shape", () => {
