@@ -2,7 +2,7 @@ import { getModelById } from "../registry.js";
 import type { Call, Choice, Event, Message, Tool, Usage } from "../../core.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { normalizeOpenAIUsage } from "../shared/index.js";
+import { normalizeOpenAIUsage, throwHttpError } from "../shared/index.js";
 import {
   buildChatBody as buildAlibabaChatBody,
   buildWanVideoSubmission,
@@ -887,12 +887,12 @@ interface AlibabaToolAccumulator {
 }
 
 async function* alibabaSseJson(response: Response): AsyncGenerator<Record<string, unknown>> {
-  if (!response.ok || !response.body) {
-    const detail = await response.text();
-    throw new Error(`Alibaba provider stream HTTP ${response.status}: ${detail.slice(0, 500)}`);
+  if (!response.ok) {
+    await throwHttpError("Alibaba provider stream", response.url || "alibaba-stream", response);
   }
-
-  const reader = response.body.getReader();
+  const body = response.body;
+  if (!body) await throwHttpError("Alibaba provider stream", response.url || "alibaba-stream", response);
+  const reader = body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let dataLines: string[] = [];

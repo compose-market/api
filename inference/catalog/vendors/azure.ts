@@ -33,6 +33,7 @@ import {
   postJson,
   primaryText,
   sizeToDimensions,
+  throwHttpError,
 } from "../shared/index.js";
 
 void _audioMimeType;
@@ -602,12 +603,12 @@ interface AzureToolAccumulator {
 type AzureChatOptions = NonNullable<Parameters<typeof generateAzureChat>[2]>;
 
 async function* sseJson(response: Response): AsyncGenerator<Record<string, unknown>> {
-  if (!response.ok || !response.body) {
-    const detail = await response.text();
-    throw new Error(`Azure stream HTTP ${response.status}: ${detail.slice(0, 1000)}`);
+  if (!response.ok) {
+    await throwHttpError("Azure stream", response.url || "azure-stream", response);
   }
-
-  const reader = response.body.getReader();
+  const body = response.body;
+  if (!body) await throwHttpError("Azure stream", response.url || "azure-stream", response);
+  const reader = body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let dataLines: string[] = [];
@@ -874,7 +875,9 @@ async function* streamAzureResponsesWire(
     if (type === "response.failed" || type === "error") {
       const root = asRecord(event.response) || event;
       const error = asRecord(root.error) || root;
-      throw new Error(clean(error.message) || "Azure Responses stream failed");
+      throw Object.assign(new Error(clean(error.message) || "Azure Responses stream failed"), {
+        ...(clean(error.code) ? { code: clean(error.code) } : {}),
+      });
     }
   }
 
