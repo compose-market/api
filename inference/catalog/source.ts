@@ -29,7 +29,10 @@ function sourceStringList(value: unknown): string[] {
 
 export function getModelSourceShape(model: ModelCard): ModelSourceShape {
   return {
-    sourceTypes: sourceStringList(model.type),
+    sourceTypes: [...new Set([
+      ...sourceStringList(model.type),
+      ...sourceStringList(model.modelType),
+    ])],
     input: sourceStringList(model.input),
     output: sourceStringList(model.output),
   };

@@ -12,6 +12,7 @@ import type {
 } from "../core.js";
 import * as openaiFamily from "./families/openai.js";
 import * as googleFamily from "./families/google.js";
+import * as moonshotFamily from "./families/moonshot.js";
 import {
   generateImage as googleGenerateImage,
   streamImage as googleStreamImage,
@@ -46,6 +47,7 @@ import {
   generateAzureChat,
   generateAzureEmbeddings,
   generateAzureImage,
+  streamAzureChat,
 } from "./vendors/azure.js";
 import {
   generateAlibabaChat,
@@ -53,6 +55,7 @@ import {
   generateAlibabaImage,
   generateAlibabaSpeech,
   retrieveAlibabaVideo,
+  streamAlibabaChat,
   submitAlibabaVideo,
   transcribeAlibabaAudio,
 } from "./vendors/alibaba.js";
@@ -118,6 +121,7 @@ import { bufferFromPayload } from "./shared/media.js";
 export interface AdapterTarget {
   modelId: string;
   provider: ModelProvider;
+  family?: string;
   signal?: AbortSignal;
   params?: Record<string, unknown>;
 }
@@ -361,6 +365,15 @@ function openaiCompatEndpointFor(provider: ModelProvider): openaiFamily.OpenAIWi
   }
 }
 
+function usesSharedOpenAICompatTransport(provider: ModelProvider): boolean {
+  return provider === "openai"
+    || provider === "cloudflare"
+    || provider === "fireworks"
+    || provider === "deepinfra"
+    || provider === "asicloud"
+    || provider === "hugging face";
+}
+
 function hasFunctionTools(request: Request): boolean {
   return Array.isArray(request.tools)
     && request.tools.some((tool) => tool?.type === "function" && Boolean(tool.name));
@@ -390,6 +403,108 @@ function realtimeParams(request: Request): Record<string, unknown> | undefined {
 
 function estimateTokens(text: string): number {
   return Math.ceil((text || "").length / 4);
+}
+
+function moonshotResponseFormat(request: Request): Record<string, unknown> | undefined {
+  const format = request.responseFormat;
+  if (!format || format.type === "text") return undefined;
+  if (format.type === "json_object") return { type: "json_object" };
+  const schema = format.json_schema?.schema;
+  return schema ? {
+    type: "json_schema",
+    json_schema: {
+      name: format.json_schema?.name || "compose_response",
+      schema,
+      ...(typeof format.json_schema?.strict === "boolean" ? { strict: format.json_schema.strict } : {}),
+    },
+  } : { type: "json_object" };
+}
+
+function moonshotOptions(request: Request): moonshotFamily.MoonshotChatOptions {
+  const responseFormat = moonshotResponseFormat(request);
+  return {
+    ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+    ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+    ...(request.tools ? { tools: request.tools } : {}),
+    ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+    ...(responseFormat ? { responseFormat } : {}),
+    customParams: request.customParams,
+  };
+}
+
+async function invokeMoonshotText(request: Request, target: AdapterTarget): Promise<Output> {
+  const endpoint = openaiCompatEndpointFor(target.provider);
+  const response = await fetch(openaiFamily.endpointUrl(endpoint, "chat"), {
+    method: "POST",
+    headers: openaiFamily.endpointHeaders(endpoint, "application/json"),
+    body: JSON.stringify(moonshotFamily.buildChatBody(target.modelId, request.messages, moonshotOptions(request))),
+    signal: target.signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Moonshot chat HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`);
+  }
+  const result = moonshotFamily.parseChatResponse(await response.json());
+  return {
+    modality: "text",
+    content: result.text,
+    ...(result.reasoningContent !== undefined ? { reasoning: result.reasoningContent } : {}),
+    usage: result.usage || {
+      promptTokens: 0,
+      completionTokens: estimateTokens(result.text),
+      totalTokens: estimateTokens(result.text),
+    },
+    finishReason: result.finishReason,
+    ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+  };
+}
+
+async function* streamMoonshotText(request: Request, target: AdapterTarget): AsyncGenerator<Event> {
+  const endpoint = openaiCompatEndpointFor(target.provider);
+  const response = await fetch(openaiFamily.endpointUrl(endpoint, "chat"), {
+    method: "POST",
+    headers: openaiFamily.endpointHeaders(endpoint, "application/json"),
+    body: JSON.stringify(moonshotFamily.buildChatBody(target.modelId, request.messages, moonshotOptions(request), true)),
+    signal: target.signal,
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Moonshot stream HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`);
+  }
+
+  const parser = moonshotFamily.createStreamParser();
+  const calls = new Map<number, { id: string; name: string; arguments: string }>();
+  for await (const data of openaiFamily.readOpenAISSE(response.body.getReader())) {
+    let payload: unknown;
+    try { payload = JSON.parse(data); } catch { continue; }
+    for (const event of parser.feed(payload)) {
+      if (event.type === "text-delta") yield { type: "text-delta", text: event.text };
+      else if (event.type === "reasoning-delta") yield { type: "reasoning-delta", text: event.text };
+      else if (event.type === "tool-call-delta") {
+        const current = calls.get(event.index) || { id: event.id || `call_${event.index}`, name: "", arguments: "" };
+        if (event.id) current.id = event.id;
+        if (event.name) current.name += event.name;
+        if (event.argumentsDelta) current.arguments += event.argumentsDelta;
+        calls.set(event.index, current);
+        yield {
+          type: "tool-call-delta",
+          toolCallDelta: {
+            index: event.index,
+            ...(event.id ? { id: event.id } : {}),
+            ...(event.name ? { name: event.name } : {}),
+            ...(event.argumentsDelta ? { arguments: event.argumentsDelta } : {}),
+          },
+        };
+      }
+    }
+  }
+  for (const [index, call] of [...calls.entries()].sort(([left], [right]) => left - right)) {
+    yield { type: "tool-call", toolCall: { ...call, index, arguments: call.arguments || "{}" } };
+  }
+  const done = parser.finalize();
+  yield {
+    type: "done",
+    finishReason: done.finishReason || (calls.size ? "tool-calls" : "stop"),
+    usage: done.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  };
 }
 
 function vertexGoogleEndpoint(): ReturnType<typeof googleFamily.vertexEndpoint> {
@@ -744,8 +859,13 @@ function catalogParamDescription(card: ReturnType<typeof getModelById>, key: str
 }
 
 function supportsTranscriptionPrompt(card: ReturnType<typeof getModelById>): boolean {
-  const description = catalogParamDescription(card, "prompt");
   const modelId = typeof card?.modelId === "string" ? card.modelId : "";
+  if (modelId.includes("transcribe-diarize")) return false;
+  const params = asRecord(card?.params);
+  if (!asRecord(params?.prompt)) {
+    return modelId === "whisper-1" || /gpt-4o(?:-mini)?-transcribe/.test(modelId);
+  }
+  const description = catalogParamDescription(card, "prompt");
   return !(modelId && description.includes(modelId) && /not supported/i.test(description));
 }
 
@@ -999,6 +1119,10 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
     return transcribe(request, target);
   }
 
+  if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
+    return invokeMoonshotText(request, target);
+  }
+
   if (target.provider === "roboflow") {
     const prompt = getPrimaryText(request.messages);
     const imageUrl = findUrl(request.messages, "image_url");
@@ -1058,11 +1182,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       customParams: request.customParams,
       operation: request.operation,
       inputItems: request.mode === "responses" ? request.inputItems : undefined,
+      signal: target.signal,
     });
 
     return {
       modality: "text",
       content: result.text,
+      ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       usage: result.usage || {
         promptTokens: 0,
         completionTokens: estimateTokens(result.text),
@@ -1082,11 +1208,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
       toolChoice: request.toolChoice,
       responseFormat: request.responseFormat,
       customParams: request.customParams,
+      signal: target.signal,
     });
 
     return {
       modality: "text",
       content: result.text,
+      ...(result.reasoning ? { reasoning: result.reasoning } : {}),
       usage: result.usage || {
         promptTokens: 0,
         completionTokens: estimateTokens(result.text),
@@ -2187,6 +2315,7 @@ export async function* streamWithTools(
           if (event.type === "image-partial") {
             yield {
               type: "image-partial",
+              outputIndex: 0,
               image: {
                 base64: event.b64,
                 index: event.index,
@@ -2208,6 +2337,7 @@ export async function* streamWithTools(
           const generatedUnits = generatedImageCount(request);
           yield {
             type: "image-complete",
+            outputIndex: 0,
             image: {
               base64: event.b64,
               mimeType: "image/png",
@@ -2267,6 +2397,7 @@ export async function* streamWithTools(
         if (event.type === "image-partial") {
           yield {
             type: "image-partial",
+            outputIndex: 0,
             image: {
               base64: event.base64,
               index: event.index,
@@ -2287,6 +2418,7 @@ export async function* streamWithTools(
         const generatedUnits = generatedImageCount(request);
         yield {
           type: "image-complete",
+          outputIndex: 0,
           image: {
             base64: event.base64,
             mimeType: event.mimeType || "image/png",
@@ -2320,6 +2452,11 @@ export async function* streamWithTools(
 
   if (request.modality !== "text") {
     throw new Error(`Streaming is only supported for text and image modalities. Requested: ${request.modality}`);
+  }
+
+  if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
+    yield* streamMoonshotText(request, target);
+    return;
   }
 
   if (isSpeechToTextOperation(request)) {
@@ -2423,7 +2560,7 @@ export async function* streamWithTools(
   }
 
   if (target.provider === "azure") {
-    const result = await generateAzureChat(target.modelId, request.messages, {
+    yield* streamAzureChat(target.modelId, request.messages, {
       temperature: request.temperature,
       maxTokens: request.maxTokens,
       tools: request.tools,
@@ -2432,71 +2569,21 @@ export async function* streamWithTools(
       customParams: request.customParams,
       operation: request.operation,
       inputItems: request.mode === "responses" ? request.inputItems : undefined,
+      signal: target.signal,
     });
-    if (result.text) {
-      yield { type: "text-delta", text: result.text };
-    }
-    let callIndex = 0;
-    for (const call of result.toolCalls || []) {
-      yield {
-        type: "tool-call",
-        toolCall: {
-          id: call.id || `call_${callIndex}`,
-          ...(call.itemId ? { itemId: call.itemId } : {}),
-          ...(call.callId ? { callId: call.callId } : {}),
-          name: call.name,
-          arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
-          index: call.outputIndex ?? callIndex,
-          ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
-        },
-      };
-      callIndex += 1;
-    }
-    yield {
-      type: "done",
-      finishReason: result.finishReason || "stop",
-      usage: result.usage || {
-        promptTokens: 0,
-        completionTokens: estimateTokens(result.text),
-        totalTokens: estimateTokens(result.text),
-      },
-    };
     return;
   }
 
   if (target.provider === "alibaba") {
-    const result = await generateAlibabaChat(target.modelId, request.messages, {
+    yield* streamAlibabaChat(target.modelId, request.messages, {
       temperature: request.temperature,
       maxTokens: request.maxTokens,
       tools: request.tools,
       toolChoice: request.toolChoice,
       responseFormat: request.responseFormat,
       customParams: request.customParams,
+      signal: target.signal,
     });
-    if (result.text) {
-      yield { type: "text-delta", text: result.text };
-    }
-    for (const [index, call] of (result.toolCalls || []).entries()) {
-      yield {
-        type: "tool-call",
-        toolCall: {
-          id: call.id || `call_${index}`,
-          name: call.name,
-          arguments: typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments),
-          index,
-          ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
-        },
-      };
-    }
-    yield {
-      type: "done",
-      finishReason: result.finishReason || "stop",
-      usage: result.usage || {
-        promptTokens: 0,
-        completionTokens: estimateTokens(result.text),
-        totalTokens: estimateTokens(result.text),
-      },
-    };
     return;
   }
 
