@@ -367,6 +367,85 @@ export function isOpenAIImageStreamingUnsupportedError(error: unknown): boolean 
         && /400|bad request/i.test(message);
 }
 
+function openAISSEData(raw: string): string | undefined {
+    const dataLines = raw
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart());
+    if (dataLines.length === 0) return undefined;
+    return dataLines.join("\n").trim();
+}
+
+export async function* readOpenAISSE(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncGenerator<string> {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let reachedEOF = false;
+    let cancelled = false;
+    let previousWasCR = false;
+
+    const append = (text: string): void => {
+        for (const char of text) {
+            if (previousWasCR) {
+                previousWasCR = false;
+                if (char === "\n") continue;
+            }
+            if (char === "\r") {
+                buffer += "\n";
+                previousWasCR = true;
+            } else {
+                buffer += char;
+            }
+        }
+    };
+
+    const cancel = (): void => {
+        if (cancelled || reachedEOF) return;
+        cancelled = true;
+        try {
+            void reader.cancel().catch(() => undefined);
+        } catch {
+            // Best-effort cancellation for non-standard stream implementations.
+        }
+    };
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                reachedEOF = true;
+                append(decoder.decode());
+            } else {
+                append(decoder.decode(value, { stream: true }));
+            }
+
+            while (true) {
+                const separator = buffer.indexOf("\n\n");
+                if (separator === -1) break;
+                const raw = buffer.slice(0, separator);
+                buffer = buffer.slice(separator + 2);
+                const data = openAISSEData(raw);
+                if (data === "[DONE]") {
+                    cancel();
+                    return;
+                }
+                if (data) yield data;
+            }
+
+            if (!done) continue;
+            const data = openAISSEData(buffer);
+            buffer = "";
+            if (data === "[DONE]") return;
+            if (data) yield data;
+            return;
+        }
+    } finally {
+        if (!reachedEOF) cancel();
+        try { reader.releaseLock(); } catch { /* best-effort */ }
+    }
+}
+
 /**
  * Stream partial images from OpenAI's native image-generation SSE surface.
  * Uses `partial_images` so the UI can progressively refine the image behind a
@@ -415,67 +494,49 @@ export async function* openaiStreamImage(
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error("OpenAI image streaming returned no body");
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
+    for await (const data of readOpenAISSE(reader)) {
         if (options?.signal?.aborted) {
             throw (options.signal.reason instanceof Error ? options.signal.reason : new Error("request aborted"));
         }
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        while (true) {
-            const sep = buffer.indexOf("\n\n");
-            if (sep === -1) break;
-            const raw = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            const lines = raw.split("\n");
-            const dataLines = lines.filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart());
-            if (dataLines.length === 0) continue;
-            const data = dataLines.join("\n").trim();
-            if (!data || data === "[DONE]") continue;
+        let parsed: Record<string, unknown>;
+        try {
+            parsed = JSON.parse(data) as Record<string, unknown>;
+        } catch {
+            continue;
+        }
 
-            let parsed: Record<string, unknown>;
-            try {
-                parsed = JSON.parse(data) as Record<string, unknown>;
-            } catch {
-                continue;
-            }
-
-            if (parsed.type === "image_generation.partial_image") {
-                const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
-                if (b64) {
-                    yield {
-                        type: "image-partial",
-                        index: typeof parsed.partial_image_index === "number" ? parsed.partial_image_index : 0,
-                        b64,
-                    };
-                }
-                continue;
-            }
-
-            if (parsed.type === "image_generation.completed") {
-                const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
-                if (!b64) continue;
-                const rawUsage = parsed.usage && typeof parsed.usage === "object"
-                    ? parsed.usage as Record<string, unknown>
-                    : null;
-                const usage = rawUsage
-                    ? {
-                        promptTokens: typeof rawUsage.input_tokens === "number" ? rawUsage.input_tokens : 0,
-                        completionTokens: typeof rawUsage.output_tokens === "number" ? rawUsage.output_tokens : 0,
-                        totalTokens: typeof rawUsage.total_tokens === "number" ? rawUsage.total_tokens : 0,
-                        raw: rawUsage,
-                    }
-                    : undefined;
+        if (parsed.type === "image_generation.partial_image") {
+            const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
+            if (b64) {
                 yield {
-                    type: "image-complete",
+                    type: "image-partial",
+                    index: typeof parsed.partial_image_index === "number" ? parsed.partial_image_index : 0,
                     b64,
-                    revisedPrompt: typeof parsed.revised_prompt === "string" ? parsed.revised_prompt : undefined,
-                    ...(usage ? { usage } : {}),
                 };
             }
+            continue;
+        }
+
+        if (parsed.type === "image_generation.completed") {
+            const b64 = typeof parsed.b64_json === "string" ? parsed.b64_json : "";
+            if (!b64) continue;
+            const rawUsage = parsed.usage && typeof parsed.usage === "object"
+                ? parsed.usage as Record<string, unknown>
+                : null;
+            const usage = rawUsage
+                ? {
+                    promptTokens: typeof rawUsage.input_tokens === "number" ? rawUsage.input_tokens : 0,
+                    completionTokens: typeof rawUsage.output_tokens === "number" ? rawUsage.output_tokens : 0,
+                    totalTokens: typeof rawUsage.total_tokens === "number" ? rawUsage.total_tokens : 0,
+                    raw: rawUsage,
+                }
+                : undefined;
+            yield {
+                type: "image-complete",
+                b64,
+                revisedPrompt: typeof parsed.revised_prompt === "string" ? parsed.revised_prompt : undefined,
+                ...(usage ? { usage } : {}),
+            };
         }
     }
 }
@@ -761,13 +822,13 @@ const RESPONSES_OMIT = new Set([
     "verbosity",
 ]);
 
-function endpointUrl(endpoint: OpenAIWireEndpoint, slot: keyof typeof DEFAULT_OPENAI_PATHS): string {
+export function endpointUrl(endpoint: OpenAIWireEndpoint, slot: keyof typeof DEFAULT_OPENAI_PATHS): string {
     const base = endpoint.baseURL.replace(/\/+$/, "");
     const path = endpoint.paths?.[slot] || DEFAULT_OPENAI_PATHS[slot];
     return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-function endpointHeaders(endpoint: OpenAIWireEndpoint, contentType?: string): Record<string, string> {
+export function endpointHeaders(endpoint: OpenAIWireEndpoint, contentType?: string): Record<string, string> {
     const headers: Record<string, string> = {};
     if (contentType) headers["Content-Type"] = contentType;
     const style = endpoint.authStyle ?? "bearer";
@@ -897,6 +958,12 @@ export function mapMessagesForOpenAIWire(messages: Message[]): Array<Record<stri
                             : JSON.stringify(call.function.arguments),
                     },
                 }));
+            }
+            if (message.reasoning_content !== undefined) {
+                out.reasoning_content = message.reasoning_content;
+            }
+            if (message.partial === true) {
+                out.partial = true;
             }
             return out;
         }
@@ -1279,6 +1346,9 @@ export function buildBodyChat(
         for (const [key, value] of Object.entries(opts.customParams)) {
             if (CHAT_OMIT.has(key)) continue;
             if (opts.maxTokensField === "max_completion_tokens" && key === "max_tokens") continue;
+            if (key === "seed" && (typeof value !== "number" || !Number.isSafeInteger(value))) {
+                throw new Error("seed must be a safe integer");
+            }
             if (value !== undefined && body[key] === undefined) body[key] = value;
         }
     }
@@ -1307,6 +1377,9 @@ export function buildBodyResponses(
     if (opts?.customParams) {
         for (const [key, value] of Object.entries(opts.customParams)) {
             if (RESPONSES_OMIT.has(key)) continue;
+            if (key === "seed" && (typeof value !== "number" || !Number.isSafeInteger(value))) {
+                throw new Error("seed must be a safe integer");
+            }
             if (value !== undefined && body[key] === undefined) body[key] = value;
         }
     }
@@ -1355,10 +1428,12 @@ export async function chat(
             : "";
     const toolCalls = toolCallsFromAssistant(message);
     const usage = usageFromOpenAIWire(data.usage);
+    const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content : undefined;
 
     return {
         modality: "text",
         content: text,
+        ...(reasoning ? { reasoning } : {}),
         usage,
         finishReason: finishReasonFromWire(first?.finish_reason, Boolean(toolCalls && toolCalls.length > 0)),
         ...(toolCalls ? { toolCalls } : {}),
@@ -1402,93 +1477,70 @@ export async function* streamChat(
     }
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let lastUsage: Usage | undefined;
     let lastFinishReason: string | undefined;
     let sawToolCall = false;
     const toolCalls = new Map<number, ToolCallAccumulator>();
 
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            while (true) {
-                const sep = buffer.indexOf("\n\n");
-                if (sep === -1) break;
-                const raw = buffer.slice(0, sep);
-                buffer = buffer.slice(sep + 2);
-                const dataLines = raw
-                    .split("\n")
-                    .filter((line) => line.startsWith("data:"))
-                    .map((line) => line.slice(5).trimStart());
-                if (dataLines.length === 0) continue;
-                const data = dataLines.join("\n").trim();
-                if (!data || data === "[DONE]") continue;
+    for await (const data of readOpenAISSE(reader)) {
+        let parsed: Record<string, unknown>;
+        try {
+            parsed = JSON.parse(data) as Record<string, unknown>;
+        } catch {
+            continue;
+        }
 
-                let parsed: Record<string, unknown>;
-                try {
-                    parsed = JSON.parse(data) as Record<string, unknown>;
-                } catch {
-                    continue;
+        if (parsed.usage) {
+            const u = usageFromOpenAIWire(parsed.usage);
+            if (u) lastUsage = u;
+        }
+
+        const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+        const choice = asWireRecord(choices[0]);
+        if (!choice) continue;
+        const delta = asWireRecord(choice.delta);
+        if (delta) {
+            const content = delta.content;
+            if (typeof content === "string" && content.length > 0) {
+                yield { type: "text-delta", text: content };
+            }
+            const reasoning = delta.reasoning_content;
+            if (typeof reasoning === "string" && reasoning.length > 0) {
+                yield { type: "thinking", thinking: reasoning };
+            }
+            const deltaToolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+            for (const item of deltaToolCalls) {
+                const record = asWireRecord(item);
+                if (!record) continue;
+                const index = typeof record.index === "number" ? record.index : 0;
+                const fn = asWireRecord(record.function);
+                const idDelta = cleanWire(record.id);
+                const nameDelta = cleanWire(fn?.name);
+                const argsDelta = typeof fn?.arguments === "string" ? (fn.arguments as string) : "";
+
+                let acc = toolCalls.get(index);
+                if (!acc) {
+                    acc = { id: idDelta || `call_${index}`, name: nameDelta, args: argsDelta };
+                    toolCalls.set(index, acc);
+                } else {
+                    if (idDelta) acc.id = idDelta;
+                    if (nameDelta) acc.name += nameDelta;
+                    if (argsDelta) acc.args += argsDelta;
                 }
-
-                if (parsed.usage) {
-                    const u = usageFromOpenAIWire(parsed.usage);
-                    if (u) lastUsage = u;
-                }
-
-                const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
-                const choice = asWireRecord(choices[0]);
-                if (!choice) continue;
-                const delta = asWireRecord(choice.delta);
-                if (delta) {
-                    const content = delta.content;
-                    if (typeof content === "string" && content.length > 0) {
-                        yield { type: "text-delta", text: content };
-                    }
-                    const reasoning = delta.reasoning_content;
-                    if (typeof reasoning === "string" && reasoning.length > 0) {
-                        yield { type: "thinking", thinking: reasoning };
-                    }
-                    const deltaToolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
-                    for (const item of deltaToolCalls) {
-                        const record = asWireRecord(item);
-                        if (!record) continue;
-                        const index = typeof record.index === "number" ? record.index : 0;
-                        const fn = asWireRecord(record.function);
-                        const idDelta = cleanWire(record.id);
-                        const nameDelta = cleanWire(fn?.name);
-                        const argsDelta = typeof fn?.arguments === "string" ? (fn.arguments as string) : "";
-
-                        let acc = toolCalls.get(index);
-                        if (!acc) {
-                            acc = { id: idDelta || `call_${index}`, name: nameDelta, args: argsDelta };
-                            toolCalls.set(index, acc);
-                        } else {
-                            if (idDelta) acc.id = idDelta;
-                            if (nameDelta) acc.name += nameDelta;
-                            if (argsDelta) acc.args += argsDelta;
-                        }
-                        sawToolCall = true;
-                        yield {
-                            type: "tool-call-delta",
-                            toolCallDelta: {
-                                index,
-                                ...(idDelta ? { id: idDelta } : {}),
-                                ...(nameDelta ? { name: nameDelta } : {}),
-                                ...(argsDelta ? { arguments: argsDelta } : {}),
-                            },
-                        };
-                    }
-                }
-                const fr = cleanWire(choice.finish_reason);
-                if (fr) lastFinishReason = fr;
+                sawToolCall = true;
+                yield {
+                    type: "tool-call-delta",
+                    toolCallDelta: {
+                        index,
+                        ...(idDelta ? { id: idDelta } : {}),
+                        ...(nameDelta ? { name: nameDelta } : {}),
+                        ...(argsDelta ? { arguments: argsDelta } : {}),
+                    },
+                };
             }
         }
-    } finally {
-        try { reader.releaseLock(); } catch { /* best-effort */ }
+        const fr = cleanWire(choice.finish_reason);
+        if (fr) lastFinishReason = fr;
     }
 
     if (sawToolCall) {
@@ -1673,136 +1725,113 @@ export async function* streamResponses(
     }
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let lastUsage: Usage | undefined;
     let lastStatus: unknown;
     let sawToolCall = false;
     const toolCalls = new Map<number, ResponseToolAccumulator>();
     const outputItems = new Map<number, ResponsesOutputItem>();
 
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            while (true) {
-                const sep = buffer.indexOf("\n\n");
-                if (sep === -1) break;
-                const raw = buffer.slice(0, sep);
-                buffer = buffer.slice(sep + 2);
-                const dataLines = raw
-                    .split("\n")
-                    .filter((line) => line.startsWith("data:"))
-                    .map((line) => line.slice(5).trimStart());
-                if (dataLines.length === 0) continue;
-                const data = dataLines.join("\n").trim();
-                if (!data || data === "[DONE]") continue;
-
-                let parsed: Record<string, unknown>;
-                try {
-                    parsed = JSON.parse(data) as Record<string, unknown>;
-                } catch {
-                    continue;
-                }
-
-                const type = cleanWire(parsed.type);
-                if (type === "response.output_text.delta" && typeof parsed.delta === "string" && parsed.delta.length > 0) {
-                    yield {
-                        type: "text-delta",
-                        itemId: cleanWire(parsed.item_id) || undefined,
-                        outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : undefined,
-                        text: parsed.delta,
-                    };
-                    continue;
-                }
-                if (
-                    (type === "response.reasoning_text.delta" || type === "response.reasoning_summary_text.delta")
-                    && typeof parsed.delta === "string"
-                    && parsed.delta.length > 0
-                ) {
-                    yield {
-                        type: "thinking",
-                        itemId: cleanWire(parsed.item_id) || undefined,
-                        outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : undefined,
-                        thinking: parsed.delta,
-                    };
-                    continue;
-                }
-                if (type === "response.output_item.added" || type === "response.output_item.done") {
-                    const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
-                    const item = asWireRecord(parsed.item);
-                    sawToolCall = mergeResponsesToolItem(toolCalls, outputIndex, item) || sawToolCall;
-                    if (type === "response.output_item.done" && item && typeof item.type === "string") {
-                        outputItems.set(outputIndex, { ...item } as ResponsesOutputItem);
-                    }
-                    continue;
-                }
-                if (type === "response.function_call_arguments.delta") {
-                    const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
-                    const delta = typeof parsed.delta === "string" ? parsed.delta : "";
-                    const acc = toolCalls.get(outputIndex) || {
-                        itemId: cleanWire(parsed.item_id) || `fc_${outputIndex}`,
-                        callId: "",
-                        outputIndex,
-                        name: "",
-                        args: "",
-                    };
-                    if (delta) acc.args += delta;
-                    toolCalls.set(outputIndex, acc);
-                    sawToolCall = true;
-                    yield {
-                        type: "tool-call-delta",
-                        toolCallDelta: {
-                            index: outputIndex,
-                            ...(acc.callId ? { id: acc.callId, callId: acc.callId } : {}),
-                            ...(acc.itemId ? { itemId: acc.itemId } : {}),
-                            ...(acc.name ? { name: acc.name } : {}),
-                            ...(delta ? { arguments: delta } : {}),
-                        },
-                    };
-                    continue;
-                }
-                if (type === "response.function_call_arguments.done") {
-                    const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
-                    const acc = toolCalls.get(outputIndex) || {
-                        itemId: cleanWire(parsed.item_id) || `fc_${outputIndex}`,
-                        callId: "",
-                        outputIndex,
-                        name: "",
-                        args: "",
-                    };
-                    const name = cleanWire(parsed.name);
-                    if (name) acc.name = name;
-                    if (typeof parsed.arguments === "string") acc.args = parsed.arguments;
-                    toolCalls.set(outputIndex, acc);
-                    sawToolCall = true;
-                    continue;
-                }
-                if (type === "response.completed") {
-                    const responseRecord = asWireRecord(parsed.response);
-                    if (responseRecord) {
-                        lastUsage = usageFromOpenAIWire(responseRecord.usage);
-                        lastStatus = responseRecord.status;
-                        sawToolCall = mergeResponsesCompletedToolCalls(toolCalls, responseRecord) || sawToolCall;
-                        const completedItems = outputItemsFromResponses(responseRecord) || [];
-                        completedItems.forEach((item, index) => outputItems.set(index, item));
-                    }
-                    continue;
-                }
-                if (type === "response.failed") {
-                    const responseRecord = asWireRecord(parsed.response);
-                    const errorRecord = asWireRecord(responseRecord?.error);
-                    throw new Error(cleanWire(errorRecord?.message) || "OpenAI-wire responses stream failed");
-                }
-                if (type === "error") {
-                    const errorRecord = asWireRecord(parsed.error) || parsed;
-                    throw new Error(cleanWire(errorRecord.message) || "OpenAI-wire responses stream error");
-                }
-            }
+    for await (const data of readOpenAISSE(reader)) {
+        let parsed: Record<string, unknown>;
+        try {
+            parsed = JSON.parse(data) as Record<string, unknown>;
+        } catch {
+            continue;
         }
-    } finally {
-        try { reader.releaseLock(); } catch { /* best-effort */ }
+
+        const type = cleanWire(parsed.type);
+        if (type === "response.output_text.delta" && typeof parsed.delta === "string" && parsed.delta.length > 0) {
+            yield {
+                type: "text-delta",
+                itemId: cleanWire(parsed.item_id) || undefined,
+                outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : undefined,
+                text: parsed.delta,
+            };
+            continue;
+        }
+        if (
+            (type === "response.reasoning_text.delta" || type === "response.reasoning_summary_text.delta")
+            && typeof parsed.delta === "string"
+            && parsed.delta.length > 0
+        ) {
+            yield {
+                type: "thinking",
+                itemId: cleanWire(parsed.item_id) || undefined,
+                outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : undefined,
+                thinking: parsed.delta,
+            };
+            continue;
+        }
+        if (type === "response.output_item.added" || type === "response.output_item.done") {
+            const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
+            const item = asWireRecord(parsed.item);
+            sawToolCall = mergeResponsesToolItem(toolCalls, outputIndex, item) || sawToolCall;
+            if (item && typeof item.type === "string") {
+                outputItems.set(outputIndex, { ...item } as ResponsesOutputItem);
+            }
+            continue;
+        }
+        if (type === "response.function_call_arguments.delta") {
+            const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
+            const delta = typeof parsed.delta === "string" ? parsed.delta : "";
+            const acc = toolCalls.get(outputIndex) || {
+                itemId: cleanWire(parsed.item_id) || `fc_${outputIndex}`,
+                callId: "",
+                outputIndex,
+                name: "",
+                args: "",
+            };
+            if (delta) acc.args += delta;
+            toolCalls.set(outputIndex, acc);
+            sawToolCall = true;
+            yield {
+                type: "tool-call-delta",
+                toolCallDelta: {
+                    index: outputIndex,
+                    ...(acc.callId ? { id: acc.callId, callId: acc.callId } : {}),
+                    ...(acc.itemId ? { itemId: acc.itemId } : {}),
+                    ...(acc.name ? { name: acc.name } : {}),
+                    ...(delta ? { arguments: delta } : {}),
+                },
+            };
+            continue;
+        }
+        if (type === "response.function_call_arguments.done") {
+            const outputIndex = typeof parsed.output_index === "number" ? parsed.output_index : 0;
+            const acc = toolCalls.get(outputIndex) || {
+                itemId: cleanWire(parsed.item_id) || `fc_${outputIndex}`,
+                callId: "",
+                outputIndex,
+                name: "",
+                args: "",
+            };
+            const name = cleanWire(parsed.name);
+            if (name) acc.name = name;
+            if (typeof parsed.arguments === "string") acc.args = parsed.arguments;
+            toolCalls.set(outputIndex, acc);
+            sawToolCall = true;
+            continue;
+        }
+        if (type === "response.completed") {
+            const responseRecord = asWireRecord(parsed.response);
+            if (responseRecord) {
+                lastUsage = usageFromOpenAIWire(responseRecord.usage);
+                lastStatus = responseRecord.status;
+                sawToolCall = mergeResponsesCompletedToolCalls(toolCalls, responseRecord) || sawToolCall;
+                const completedItems = outputItemsFromResponses(responseRecord) || [];
+                completedItems.forEach((item, index) => outputItems.set(index, item));
+            }
+            continue;
+        }
+        if (type === "response.failed") {
+            const responseRecord = asWireRecord(parsed.response);
+            const errorRecord = asWireRecord(responseRecord?.error);
+            throw new Error(cleanWire(errorRecord?.message) || "OpenAI-wire responses stream failed");
+        }
+        if (type === "error") {
+            const errorRecord = asWireRecord(parsed.error) || parsed;
+            throw new Error(cleanWire(errorRecord.message) || "OpenAI-wire responses stream error");
+        }
     }
 
     if (sawToolCall) {
