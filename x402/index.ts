@@ -32,10 +32,6 @@ import {
     getActiveSessionStatus,
 } from "./keys/index.js";
 
-// Compose Session Budget (locked/used tracking for settlement)
-import {
-    lockBudget,
-} from "./session/budget.js";
 import {
     quoteMeteredAuthorization,
     quoteMeteredSettlement,
@@ -944,7 +940,7 @@ export async function prepareInferencePayment(
     const userAddress = validation.payload.sub;
     const keyId = validation.payload.keyId;
     const purpose = validation.record.purpose;
-    let sessionMaxAmountWei: string | null = null;
+    const requirement = resolveInferenceAuthorizationRequirement(req, authorizationInput);
 
     if (purpose === "session") {
         const sessionStatus = await getActiveSessionStatus(userAddress, network);
@@ -954,45 +950,41 @@ export async function prepareInferencePayment(
             res.status(401).json({ error: "The key session is inactive or expired." });
             return null;
         }
-        sessionMaxAmountWei = String(Math.max(0, session.budgetRemaining));
     }
 
     let currentHeaders: Record<string, string> = {};
     let paymentIntentId: string | null = null;
-    let maxAmountWei = sessionMaxAmountWei || "0";
+    let maxAmountWei = requirement.maxAmountWei;
     const idempotencyKey = getIdempotencyKeyFromRequest(req);
     let paymentSettled = false;
-    let paymentIntentSequence = 0;
 
-    if (purpose !== "session") {
-        const authorizationResult = await authorizePaymentIntent({
-            authorization,
-            network,
-            service: "api",
-            action: "inference",
-            resource: publicResourceUrl(req),
-            method: req.method || "POST",
-            useBudgetCap: true,
-            runId: getRunIdFromRequest(req) || undefined,
-            idempotencyKey,
-        });
+    const authorizationResult = await authorizePaymentIntent({
+        authorization,
+        network,
+        service: "api",
+        action: "inference",
+        resource: publicResourceUrl(req),
+        method: req.method || "POST",
+        maxAmountWei: requirement.maxAmountWei,
+        runId: getRunIdFromRequest(req) || undefined,
+        idempotencyKey,
+    });
 
-        currentHeaders = {
-            ...authorizationResult.headers,
-        };
+    currentHeaders = {
+        ...authorizationResult.headers,
+    };
 
-        if (!authorizationResult.ok) {
-            for (const [key, value] of Object.entries(authorizationResult.headers)) {
-                res.setHeader(key, value);
-            }
-            setSessionInvalidHeader(res, getSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
-            res.status(authorizationResult.status).json(authorizationResult.body);
-            return null;
+    if (!authorizationResult.ok) {
+        for (const [key, value] of Object.entries(authorizationResult.headers)) {
+            res.setHeader(key, value);
         }
-
-        paymentIntentId = authorizationResult.body.paymentIntentId;
-        maxAmountWei = authorizationResult.body.maxAmountWei;
+        setSessionInvalidHeader(res, getSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
+        res.status(authorizationResult.status).json(authorizationResult.body);
+        return null;
     }
+
+    paymentIntentId = authorizationResult.body.paymentIntentId;
+    maxAmountWei = authorizationResult.body.maxAmountWei;
 
     const resolvedRuntimeHeaders = runtimeHeaders({
         authorization,
@@ -1046,101 +1038,24 @@ export async function prepareInferencePayment(
                 };
             }
 
-            if (purpose === "session") {
-                const requestId = typeof req.headers["x-run-id"] === "string"
-                    ? req.headers["x-run-id"]
-                    : `inference-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-                const lock = await lockBudget(
-                    userAddress,
-                    network,
-                    finalAmountWei,
-                    merchantWalletAddress,
-                    requestId,
-                    meterSubject || (typeof req.body?.model === "string" ? req.body.model : undefined),
-                );
-
-                if (!lock.success || !lock.intentId) {
-                    setSessionInvalidHeader(currentHeaders, "budget_exhausted");
-                    return {
-                        success: false,
-                        error: lock.error || "Session budget exhausted",
-                        statusCode: 402,
-                    };
-                }
-
-                currentHeaders = {
-                    "x-payment-method": "session",
-                    "x-settlement": "queued",
-                    "x-payment-intent-id": lock.intentId,
-                    "x-session-budget-intent-id": lock.intentId,
-                    "x-key-final-amount-wei": finalAmountWei,
-                    "x-budget-remaining": lock.availableWei,
-                };
-                return {
-                    success: true,
-                    finalAmountWei,
-                    providerAmountWei,
-                    platformFeeWei,
-                    meterSubject,
-                    lineItems,
-                    network,
-                    settledAt: Date.now(),
-                    settlementStatus: "queued",
-                    sessionBudgetIntentId: lock.intentId,
-                };
-            }
-
             if (!paymentIntentId) {
                 return {
                     success: false,
-                    error: "Payment intent is required for non-session Compose key settlement",
+                    error: "Payment intent is required for Compose key settlement",
                     statusCode: 402,
                 };
             }
 
-            let activePaymentIntentId = paymentIntentId;
             if (paymentSettled) {
-                paymentIntentSequence += 1;
-                const authorizationResult = await authorizePaymentIntent({
-                    authorization,
-                    network,
-                    service: "api",
-                    action: "inference",
-                    resource: publicResourceUrl(req),
-                    method: req.method || "POST",
-                    useBudgetCap: true,
-                    runId: getRunIdFromRequest(req) || undefined,
-                    idempotencyKey: idempotencyKey ? `${idempotencyKey}:settlement:${paymentIntentSequence}` : undefined,
-                });
-
-                currentHeaders = {
-                    ...authorizationResult.headers,
+                return {
+                    success: false,
+                    error: "Payment intent has already been settled",
+                    statusCode: 409,
                 };
-
-                if (!authorizationResult.ok) {
-                    setSessionInvalidHeader(currentHeaders, getSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
-                    return {
-                        success: false,
-                        error: typeof authorizationResult.body.error === "string"
-                            ? authorizationResult.body.error
-                            : "Payment authorization failed",
-                        statusCode: authorizationResult.status,
-                        paymentRequired: authorizationResult.status === 402
-                            ? authorizationResult.body as unknown as PaymentRequired
-                            : undefined,
-                        paymentRequiredHeader: authorizationResult.headers["PAYMENT-REQUIRED"]
-                            || authorizationResult.headers["payment-required"]
-                            || null,
-                    };
-                }
-
-                activePaymentIntentId = authorizationResult.body.paymentIntentId;
-                paymentIntentId = activePaymentIntentId;
-                maxAmountWei = authorizationResult.body.maxAmountWei;
             }
 
             const intentSettlement = await settlePaymentIntent({
-                paymentIntentId: activePaymentIntentId,
+                paymentIntentId,
                 finalAmountWei,
                 providerAmountWei,
                 platformFeeWei,
@@ -1151,12 +1066,12 @@ export async function prepareInferencePayment(
             currentHeaders = {
                 ...currentHeaders,
                 ...intentSettlement.headers,
-                "x-payment-intent-id": activePaymentIntentId,
+                "x-payment-intent-id": paymentIntentId,
             };
 
             if (!intentSettlement.ok) {
                 await abortPaymentIntent({
-                    paymentIntentId: activePaymentIntentId,
+                    paymentIntentId,
                     reason: typeof intentSettlement.body.error === "string"
                         ? intentSettlement.body.error
                         : "Payment settlement failed",
@@ -1189,7 +1104,7 @@ export async function prepareInferencePayment(
                 network,
                 settledAt: Date.now(),
                 settlementStatus: txHash ? "settled" : "queued",
-                paymentIntentId: activePaymentIntentId,
+                paymentIntentId,
             };
         },
         abort: async (reason?: string) => {

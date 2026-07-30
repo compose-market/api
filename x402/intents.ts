@@ -583,7 +583,7 @@ export async function authorizePaymentIntent(
         const recordKey = keyRecordKey(validation.payload.keyId);
         const purpose = validation.record.purpose;
 
-        const authorizationLockKey = purpose === "api" && authorizationAmount.useBudgetCap
+        const authorizationLockKey = purpose === "api"
             ? paymentIntentLockKey(paymentIntentId)
             : keyLockKey(validation.payload.keyId);
         const budgetState = await withValkeyLock(authorizationLockKey, async () => {
@@ -609,25 +609,22 @@ export async function authorizePaymentIntent(
                     };
                 }
 
-                let resolvedSessionBudgetIntentId = "";
-                if (!authorizationAmount.useBudgetCap) {
-                    const reservation = await lockBudget(
-                        validation.payload!.sub,
-                        network,
-                        requestedAmountWei,
-                        merchantWalletAddress,
-                        paymentIntentId,
-                        authorizationAmount.metering?.subject,
-                    );
+                const reservation = await lockBudget(
+                    validation.payload!.sub,
+                    network,
+                    requestedAmountWei,
+                    merchantWalletAddress,
+                    paymentIntentId,
+                    authorizationAmount.metering?.subject,
+                );
 
-                    if (!reservation.success) {
-                        return {
-                            ok: false as const,
-                        };
-                    }
-
-                    resolvedSessionBudgetIntentId = reservation.intentId || "";
+                if (!reservation.success) {
+                    return {
+                        ok: false as const,
+                    };
                 }
+
+                const resolvedSessionBudgetIntentId = reservation.intentId || "";
 
                 const now = Date.now();
                 await valkeyHSet(paymentIntentKey(paymentIntentId), {
@@ -646,7 +643,7 @@ export async function authorizePaymentIntent(
                     idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
                     sessionBudgetIntentId: toOptionalString(resolvedSessionBudgetIntentId || ""),
                     useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
-                    reservedAmountWei: authorizationAmount.useBudgetCap ? "0" : requestedAmountWei,
+                    reservedAmountWei: requestedAmountWei,
                     ...meteringValkeyFields(authorizationAmount.metering),
                     createdAt: String(now),
                     updatedAt: String(now),
@@ -671,18 +668,51 @@ export async function authorizePaymentIntent(
             const maxAmountWei = authorizationAmount.useBudgetCap
                 ? available.toString()
                 : authorizationAmount.maxAmountWei!;
-            const reservedAmountWei = authorizationAmount.useBudgetCap ? "0" : maxAmountWei;
+            const reservedAmountWei = maxAmountWei;
             const reservedAmount = BigInt(reservedAmountWei);
 
-            if (!authorizationAmount.useBudgetCap && reservedAmount > available) {
+            if (reservedAmount <= 0n || reservedAmount > available) {
                 return {
                     ok: false as const,
                     available,
                 };
             }
 
-            if (reservedAmount > 0n) {
-                await valkeyHIncrByAmount(recordKey, "budgetReserved", reservedAmount);
+            const reservedBudget = await valkeyTryReserveBudget({
+                budgetKey: recordKey,
+                intentKey: paymentIntentKey(paymentIntentId),
+                amount: reservedAmount,
+            });
+            if (!reservedBudget) {
+                return {
+                    ok: false as const,
+                    available,
+                };
+            }
+
+            const sessionReservation = await lockBudget(
+                validation.payload!.sub,
+                network,
+                reservedAmountWei,
+                merchantWalletAddress,
+                paymentIntentId,
+                authorizationAmount.metering?.subject,
+            );
+            if (!sessionReservation.success || !sessionReservation.intentId) {
+                await valkeyReleaseReservedBudget({
+                    budgetKey: recordKey,
+                    intentKey: paymentIntentKey(paymentIntentId),
+                    reservedAmount,
+                    intentFields: {
+                        status: "failed",
+                        updatedAt: String(Date.now()),
+                        error: sessionReservation.error || "Session budget exhausted",
+                    },
+                });
+                return {
+                    ok: false as const,
+                    available,
+                };
             }
 
             const now = Date.now();
@@ -700,6 +730,7 @@ export async function authorizePaymentIntent(
                 status: "authorized",
                 runId: toOptionalString(normalizedInput.runId || ""),
                 idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
+                sessionBudgetIntentId: sessionReservation.intentId,
                 useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
                 reservedAmountWei,
                 ...meteringValkeyFields(authorizationAmount.metering),
@@ -815,58 +846,17 @@ export async function settlePaymentIntent(
                 return failure(409, "finalAmountWei cannot exceed the reserved amount");
             }
 
-            let sessionBudgetIntentId = intent.sessionBudgetIntentId;
+            const sessionBudgetIntentId = intent.sessionBudgetIntentId;
             let reservedSessionAmount = maxAmount;
             if (intent.purpose === "session" && !sessionBudgetIntentId) {
-                const exactReservation = await lockBudget(
-                    intent.userAddress,
-                    intent.network,
-                    finalAmountStr,
-                    merchantWalletAddress,
-                    intent.paymentIntentId,
-                    settlementResolved.metering?.subject || intent.meterSubject,
-                );
-
-                if (!exactReservation.success || !exactReservation.intentId) {
-                    const headers = await buildPaymentBudgetHeaders(intent);
-                    return {
-                        ok: false,
-                        status: 402,
-                        body: { error: exactReservation.error || "Compose key budget exhausted" },
-                        headers,
-                    };
-                }
-
-                sessionBudgetIntentId = exactReservation.intentId;
-                reservedSessionAmount = finalAmount;
-                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                    sessionBudgetIntentId,
-                });
+                return failure(409, "Session payment intent is missing its authorization reservation");
             }
 
-            let apiReservedAmount = intent.reservedAmountWei
+            const apiReservedAmount = intent.reservedAmountWei
                 ? BigInt(intent.reservedAmountWei)
-                : intent.useBudgetCap
-                    ? 0n
-                    : maxAmount;
-            if (intent.purpose === "api" && intent.useBudgetCap && apiReservedAmount <= 0n) {
-                const reserved = await valkeyTryReserveBudget({
-                    budgetKey: keyRecordKey(intent.keyId),
-                    intentKey: paymentIntentKey(intent.paymentIntentId),
-                    amount: finalAmount,
-                });
-
-                if (!reserved) {
-                    const headers = await buildPaymentBudgetHeaders(intent);
-                    return {
-                        ok: false,
-                        status: 402,
-                        body: { error: "Compose key budget exhausted" },
-                        headers,
-                    };
-                }
-
-                apiReservedAmount = finalAmount;
+                : 0n;
+            if (intent.purpose === "api" && apiReservedAmount <= 0n) {
+                return failure(409, "API payment intent is missing its authorization reservation");
             }
 
             await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
@@ -891,11 +881,10 @@ export async function settlePaymentIntent(
                     : null;
 
             if (settlementError) {
-                if (intent.purpose === "session") {
-                    if (sessionBudgetIntentId) {
-                        await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
-                    }
-                } else if (apiReservedAmount > 0n) {
+                if (sessionBudgetIntentId) {
+                    await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
+                }
+                if (intent.purpose === "api" && apiReservedAmount > 0n) {
                     await valkeyReleaseReservedBudget({
                         budgetKey: keyRecordKey(intent.keyId),
                         intentKey: paymentIntentKey(intent.paymentIntentId),
@@ -924,7 +913,7 @@ export async function settlePaymentIntent(
                 });
             }
 
-            if (intent.purpose === "session") {
+            if (sessionBudgetIntentId) {
                 const unlockedAmount = reservedSessionAmount - finalAmount;
                 if (unlockedAmount > 0n) {
                     await unlockBudget(intent.userAddress, intent.network, unlockedAmount.toString());
@@ -1040,11 +1029,10 @@ export async function abortPaymentIntent(
                     ? 0n
                     : parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
 
-            if (intent.purpose === "session") {
-                if (intent.sessionBudgetIntentId) {
-                    await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
-                }
-            } else if (reservedAmount > 0n) {
+            if (intent.sessionBudgetIntentId) {
+                await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
+            }
+            if (intent.purpose === "api" && reservedAmount > 0n) {
                 const abortedAt = Date.now();
                 await valkeyReleaseReservedBudget({
                     budgetKey: keyRecordKey(intent.keyId),
