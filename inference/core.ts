@@ -522,9 +522,9 @@ function normalizeContentParts(parts: unknown[]): Part[] {
     if (type === "tool-call" || type === "tool_call") {
       normalized.push({
         type: "tool-call",
-        toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
-        toolName: typeof part.toolName === "string" ? part.toolName : typeof part.name === "string" ? part.name : undefined,
-        input: part.input ?? part.args ?? {},
+        toolCallId: pickStringValue(part.toolCallId, part.tool_call_id, part.call_id, part.id),
+        toolName: pickStringValue(part.toolName, part.tool_name, part.name),
+        input: part.input ?? part.args ?? part.arguments ?? {},
       });
       continue;
     }
@@ -532,8 +532,8 @@ function normalizeContentParts(parts: unknown[]): Part[] {
     if (type === "tool-result" || type === "tool_result") {
       normalized.push({
         type: "tool-result",
-        toolCallId: typeof part.toolCallId === "string" ? part.toolCallId : undefined,
-        toolName: typeof part.toolName === "string" ? part.toolName : undefined,
+        toolCallId: pickStringValue(part.toolCallId, part.tool_call_id, part.call_id, part.id),
+        toolName: pickStringValue(part.toolName, part.tool_name, part.name, part.tool),
         output: part.output ?? part.result,
       });
       continue;
@@ -545,12 +545,51 @@ function normalizeContentParts(parts: unknown[]): Part[] {
   return normalized;
 }
 
+function embeddedToolCalls(parts: Part[]): Message["tool_calls"] {
+  return parts.flatMap((part): NonNullable<Message["tool_calls"]> => {
+    if (part.type !== "tool-call" || !part.toolCallId || !part.toolName) return [];
+    return [{
+      id: part.toolCallId,
+      type: "function",
+      function: {
+        name: part.toolName,
+        arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {}),
+      },
+    }];
+  });
+}
+
+function enrichToolHistory(messages: Message[]): Message[] {
+  const names = new Map<string, string>();
+  const pending: Array<{ id: string; name: string }> = [];
+  return messages.map((message) => {
+    for (const call of message.tool_calls || []) {
+      if (!call.id || !call.function.name) continue;
+      names.set(call.id, call.function.name);
+      pending.push({ id: call.id, name: call.function.name });
+    }
+    if (message.role !== "tool") return message;
+
+    const matched = (message.tool_call_id
+      ? pending.find((call) => call.id === message.tool_call_id)
+      : undefined) ?? pending[0];
+    const toolCallId = message.tool_call_id || matched?.id;
+    const name = message.name || (toolCallId ? names.get(toolCallId) : undefined) || matched?.name;
+    if (matched) pending.splice(pending.indexOf(matched), 1);
+    return {
+      ...message,
+      ...(toolCallId ? { tool_call_id: toolCallId } : {}),
+      ...(name ? { name } : {}),
+    };
+  });
+}
+
 function normalizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) {
     return [];
   }
 
-  return input
+  const messages = input
     .filter((msg) => !!msg && typeof msg === "object")
     .map((msg) => {
       const message = msg as Record<string, unknown>;
@@ -558,12 +597,28 @@ function normalizeMessages(input: unknown): Message[] {
       const content = message.content;
 
       if (Array.isArray(content)) {
+        const normalizedContent = normalizeContentParts(content);
+        const contentCalls = role === "assistant" ? embeddedToolCalls(normalizedContent) : undefined;
+        const resultPart = role === "tool"
+          ? normalizedContent.find((part) => part.type === "tool-result")
+          : undefined;
+        const visibleContent = normalizedContent.filter((part) => part.type !== "tool-call" && part.type !== "tool-result");
         return {
           role,
-          content: normalizeContentParts(content),
-          tool_calls: Array.isArray(message.tool_calls) ? message.tool_calls as Message["tool_calls"] : undefined,
-          tool_call_id: typeof message.tool_call_id === "string" ? message.tool_call_id : undefined,
-          name: typeof message.name === "string" ? message.name : undefined,
+          content: resultPart
+            ? responseItemOutput(resultPart.output)
+            : visibleContent.length > 0
+              ? visibleContent
+              : role === "assistant"
+                ? null
+                : [],
+          tool_calls: Array.isArray(message.tool_calls)
+            ? message.tool_calls as Message["tool_calls"]
+            : contentCalls?.length
+              ? contentCalls
+              : undefined,
+          tool_call_id: pickStringValue(message.tool_call_id, resultPart?.toolCallId),
+          name: pickStringValue(message.name, resultPart?.toolName),
           reasoning_content: typeof message.reasoning_content === "string" ? message.reasoning_content : undefined,
           partial: message.partial === true ? true : undefined,
           cache_control: asRecord(message.cache_control) || undefined,
@@ -581,6 +636,7 @@ function normalizeMessages(input: unknown): Message[] {
         cache_control: asRecord(message.cache_control) || undefined,
       } satisfies Message;
     });
+  return enrichToolHistory(messages);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1011,6 +1067,7 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
         role: "tool",
         content: responseItemOutput(record.output),
         tool_call_id: callId,
+        ...(pickStringValue(record.name, record.tool) ? { name: pickStringValue(record.name, record.tool) } : {}),
       });
       continue;
     }
@@ -1050,7 +1107,7 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
   }
 
   flushParts();
-  return { items, messages };
+  return { items, messages: enrichToolHistory(messages) };
 }
 
 function requestedModalities(body: Record<string, unknown>): Modality[] {
