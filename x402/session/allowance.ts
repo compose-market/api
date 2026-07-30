@@ -130,6 +130,17 @@ function readSessionAllowanceOverrideWei(): bigint | null {
     return BigInt(raw);
 }
 
+function readSessionBalanceOverrideWei(): bigint | null {
+    const raw = process.env.COMPOSE_SESSION_BALANCE_OVERRIDE_WEI?.trim();
+    if (!raw) {
+        return null;
+    }
+    if (!/^\d+$/.test(raw)) {
+        throw new Error("COMPOSE_SESSION_BALANCE_OVERRIDE_WEI must be a base-10 integer string");
+    }
+    return BigInt(raw);
+}
+
 const SPL_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SPL_TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -283,6 +294,10 @@ export async function readSessionUsdcBalanceWei(
     userAddress: string,
     network: NetworkId,
 ): Promise<bigint> {
+    const override = readSessionBalanceOverrideWei();
+    if (override !== null) {
+        return override;
+    }
     if (!isEvmNetwork(network)) {
         return readSvmUsdcBalanceWei(userAddress, network as SolanaNetworkId);
     }

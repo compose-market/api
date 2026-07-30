@@ -32,7 +32,7 @@ import {
     readSessionUsdcBalanceWei,
 } from "./allowance.js";
 import {
-    isSolanaNetwork,
+    isEvmNetwork,
     type NetworkId,
 } from "../configs/chains.js";
 
@@ -101,8 +101,12 @@ export interface BudgetInfo {
 // Key Helpers
 // =============================================================================
 
+function normalizeAddress(address: string, network: NetworkId): string {
+    return isEvmNetwork(network) ? address.toLowerCase() : address;
+}
+
 function getSessionKey(address: string, network: NetworkId): string {
-    return `${SESSION_KEY_PREFIX}${network}:${address}`;
+    return `${SESSION_KEY_PREFIX}${network}:${normalizeAddress(address, network)}`;
 }
 
 function getIntentKey(intentId: string): string {
@@ -110,7 +114,7 @@ function getIntentKey(intentId: string): string {
 }
 
 function getUserIntentsKey(address: string, network: NetworkId): string {
-    return `${SESSION_KEY_PREFIX}${network}:${address}:intents`;
+    return `${SESSION_KEY_PREFIX}${network}:${normalizeAddress(address, network)}:intents`;
 }
 
 async function getLiveBudgetAvailability(input: {
@@ -154,7 +158,7 @@ export async function initializeSessionBudget(
     const key = getSessionKey(userAddress, network);
 
     const budget: SessionBudget = {
-        userAddress,
+        userAddress: normalizeAddress(userAddress, network),
         network,
         totalBudgetWei,
         lockedBudgetWei: "0",
@@ -372,25 +376,18 @@ export async function lockBudget(
         };
     }
 
-    // For SVM networks, verify live on-chain spendability before locking.
-    // This prevents free output when the SPL delegate has been revoked,
-    // reduced, or the token balance has dropped below the locked amount.
-    // Mirrors the EVM invariant: queued session intents are allowed only
-    // when backed by live on-chain balance + allowance/delegate.
-    if (isSolanaNetwork(network)) {
-        const [liveBalance, liveAllowance] = await Promise.all([
-            readSessionUsdcBalanceWei(userAddress, network),
-            readSessionAllowanceWei(userAddress, network),
-        ]);
-        const liveSpendable = liveBalance < liveAllowance ? liveBalance : liveAllowance;
-        if (liveSpendable < requestAmount + currentLocked) {
-            return {
-                success: false,
-                availableWei: liveSpendable.toString(),
-                lockedWei: currentLocked.toString(),
-                error: `Insufficient on-chain spendable budget: need ${amountWei} (plus ${currentLocked.toString()} locked), have ${liveSpendable.toString()} on-chain`,
-            };
-        }
+    const [liveBalance, liveAllowance] = await Promise.all([
+        readSessionUsdcBalanceWei(userAddress, network),
+        readSessionAllowanceWei(userAddress, network),
+    ]);
+    const liveSpendable = liveBalance < liveAllowance ? liveBalance : liveAllowance;
+    if (liveSpendable < requestAmount + currentLocked) {
+        return {
+            success: false,
+            availableWei: liveSpendable.toString(),
+            lockedWei: currentLocked.toString(),
+            error: `Insufficient on-chain spendable budget: need ${amountWei} (plus ${currentLocked.toString()} locked), have ${liveSpendable.toString()} on-chain`,
+        };
     }
 
     // Atomically increment locked amount
@@ -399,22 +396,23 @@ export async function lockBudget(
     const newLocked = BigInt(newLockedStr);
 
     // Double-check we didn't over-allocate (race condition protection)
-    if (newLocked + used > total) {
+    if (newLocked + used > total || newLocked > liveSpendable) {
         // Rollback the increment
         await valkeyHIncrByAmount(key, "lockedBudgetWei", -requestAmount);
         return {
             success: false,
-            availableWei: availableWei.toString(),
+            availableWei: (liveSpendable > currentLocked ? liveSpendable - currentLocked : 0n).toString(),
             lockedWei: currentLocked.toString(),
-            error: "Race condition: budget exhausted",
+            error: "Race condition: spendable budget exhausted",
         };
     }
 
     // Create and store payment intent
-    const intentId = `${network}:${userAddress}-${requestId}-${Date.now()}`;
+    const normalizedAddress = normalizeAddress(userAddress, network);
+    const intentId = `${network}:${normalizedAddress}-${requestId}-${Date.now()}`;
     const intent: PaymentIntent = {
         id: intentId,
-        userAddress,
+        userAddress: normalizedAddress,
         merchantWallet,
         amountWei,
         network,
@@ -431,7 +429,7 @@ export async function lockBudget(
         budgetLimitWei: total,
         usedWei: used,
         lockedWei: newLocked,
-        allowanceWei: total,
+        allowanceWei: liveAllowance,
     });
 
     console.log(`[sessionBudget] Locked ${amountWei} wei for ${userAddress} network ${network}, available: ${newAvailable.toString()}`);
