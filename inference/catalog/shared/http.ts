@@ -17,6 +17,9 @@ export class HttpError extends Error {
     statusText: string;
     url: string;
     body: string;
+    responseBody: string;
+    code?: string;
+    retryAfter?: string;
 
     constructor(label: string, url: string, response: Response, body: string) {
         super(`${label} HTTP ${response.status} ${response.statusText} @ ${url}: ${body}`);
@@ -25,6 +28,18 @@ export class HttpError extends Error {
         this.statusText = response.statusText;
         this.url = url;
         this.body = body;
+        this.responseBody = body;
+        this.retryAfter = response.headers.get("retry-after") || undefined;
+        try {
+            const root = JSON.parse(body) as Record<string, unknown>;
+            const nested = root.error && typeof root.error === "object" && !Array.isArray(root.error)
+                ? root.error as Record<string, unknown>
+                : root;
+            const code = nested.code ?? nested.type;
+            if (typeof code === "string" && code.length > 0) this.code = code;
+        } catch {
+            // Preserve non-JSON provider errors as bounded text.
+        }
     }
 }
 
