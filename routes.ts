@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
+import { validateSvmAddress } from "@x402/svm";
 
 import {
   buildUsageRecordSettlementMeter,
@@ -7,10 +8,9 @@ import {
 } from "./x402/metering.js";
 import {
   extractKeyFromHeader,
-  validateKey,
 } from "./x402/keys/middleware.js";
-import { getActiveSessionStatus, verifyKey } from "./x402/keys/index.js";
-import { getActiveChainId } from "./x402/configs/chains.js";
+import { verifyKey } from "./x402/keys/index.js";
+import { isNetworkId, type NetworkId } from "./x402/configs/chains.js";
 import {
   kickBatchSettlement,
   prepareInferencePayment,
@@ -18,14 +18,29 @@ import {
   type PreparedInferencePayment,
 } from "./x402/index.js";
 import {
+  AGENTS_ENTRYPOINT,
+  AGENTS_CATALOG,
+  buildAgentsPaymentRequired,
+  buildModelsPaymentRequired,
+  buildOpenApiDocument,
+  buildWellKnownX402,
+  fetchAgentCatalog,
+  listModelCatalog,
+  maybeSendAgentStreamDiscoveryChallenge,
+  MODELS_ENTRYPOINT,
+  MODELS_CATALOG,
+} from "./x402/discovery.js";
+import { encodePaymentRequiredHeader } from "./x402/facilitator.js";
+import {
   listChildEvidence,
   listExecutionEvidence,
   recordChargeEvidence,
   type ChargeEvidence,
 } from "./x402/evidence.js";
-import { type Receipt, type ReceiptBill, type ReceiptLineItem } from "./http/request-context.js";
+import { type Receipt, type Bill, type LineItem } from "./http/request-context.js";
 import { toReceiptStreamEvent } from "./inference/core.js";
 import { triggerConfirmedPayment } from "./metrics/payments.js";
+import { publicOriginFromHost, publicResourceUrl } from "./http/public-origin.js";
 import {
   buildAgentResponsesSettlement,
   buildAgentTextSettlement,
@@ -75,7 +90,7 @@ export interface AgentCard {
   dnaHash: string;
   walletAddress: string;
   walletTimestamp?: number;
-  chain: number;
+  network: NetworkId;
   model: string;
   creatorFee?: number;
   target?: string;
@@ -287,10 +302,6 @@ function requireRuntimeUrl(): string {
   return normalizeUrl(value);
 }
 
-function publicResourceUrl(req: Request): string {
-  return `https://${req.get("host")}${req.originalUrl}`;
-}
-
 function requireConnectorsUrl(): string {
   const value = process.env.CONNECTORS_URL;
   if (!value) {
@@ -299,25 +310,8 @@ function requireConnectorsUrl(): string {
   return normalizeUrl(value);
 }
 
-function modelsUrl(): string {
-  return normalizeUrl(process.env.MODELS_URL || "https://models.compose.market");
-}
-
-async function listModels(): Promise<unknown[]> {
-  const response = await fetch(`${modelsUrl()}/models?limit=100`, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`models catalog failed (${response.status}): ${body.slice(0, 300)}`);
-  }
-  const parsed = await response.json() as { data?: unknown[] };
-  return Array.isArray(parsed.data) ? parsed.data : [];
-}
-
 function isWalletAddress(value: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(value);
+  return /^0x[a-fA-F0-9]{40}$/.test(value) || validateSvmAddress(value);
 }
 
 function queryString(query: Record<string, string | undefined> | undefined): string {
@@ -327,6 +321,36 @@ function queryString(query: Record<string, string | undefined> | undefined): str
   }
   const value = params.toString();
   return value ? `?${value}` : "";
+}
+
+function eventHeader(event: PublicRouteEvent, name: string): string | undefined {
+  const normalized = name.toLowerCase();
+  for (const [key, value] of Object.entries(event.headers || {})) {
+    if (key.toLowerCase() === normalized) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function eventSignedWithoutNetwork(event: PublicRouteEvent): boolean {
+  const paymentSignature = eventHeader(event, "payment-signature");
+  const network = eventHeader(event, "x-network-id");
+  return Boolean(paymentSignature?.trim()) && !network?.trim();
+}
+
+function paymentRequiredResult(
+  headers: Record<string, string>,
+  paymentRequired: Awaited<ReturnType<typeof buildModelsPaymentRequired>>,
+): PublicRouteResult {
+  return jsonResult(402, {
+    ...headers,
+    "PAYMENT-REQUIRED": encodePaymentRequiredHeader(paymentRequired),
+  }, paymentRequired);
+}
+
+function isEntrypoint(path: string, value: string): boolean {
+  return path === value || path === `${value}/`;
 }
 
 function agentsRedirect(
@@ -350,8 +374,39 @@ export async function handlePublicRoute(
 ): Promise<PublicRouteResult | null> {
   const { rawPath: path } = event;
   const method = event.requestContext.http.method.toUpperCase();
+  const publicOrigin = publicOriginFromHost(eventHeader(event, "host"));
 
   try {
+    if (method === "GET" && path === "/openapi.json") {
+      return jsonResult(200, corsHeaders, await buildOpenApiDocument(publicOrigin));
+    }
+
+    if (method === "GET" && path === "/.well-known/x402") {
+      return jsonResult(200, corsHeaders, await buildWellKnownX402(publicOrigin));
+    }
+
+    if (method === "GET" && path === MODELS_CATALOG) {
+      return jsonResult(200, corsHeaders, listModelCatalog(event.queryStringParameters, publicOrigin));
+    }
+
+    if (method === "GET" && path === AGENTS_CATALOG) {
+      return jsonResult(200, corsHeaders, await fetchAgentCatalog(event.queryStringParameters, publicOrigin));
+    }
+
+    if (method === "POST" && isEntrypoint(path, MODELS_ENTRYPOINT)) {
+      if (eventSignedWithoutNetwork(event)) {
+        return jsonResult(400, corsHeaders, { error: "x-network-id header is required" });
+      }
+      return paymentRequiredResult(corsHeaders, await buildModelsPaymentRequired(publicOrigin));
+    }
+
+    if (method === "POST" && isEntrypoint(path, AGENTS_ENTRYPOINT)) {
+      if (eventSignedWithoutNetwork(event)) {
+        return jsonResult(400, corsHeaders, { error: "x-network-id header is required" });
+      }
+      return paymentRequiredResult(corsHeaders, await buildAgentsPaymentRequired(publicOrigin));
+    }
+
     if (method === "GET" && path === "/health") {
       return jsonResult(200, corsHeaders, {
         status: "ok",
@@ -360,10 +415,7 @@ export async function handlePublicRoute(
     }
 
     if (method === "GET" && path === "/api/models") {
-      return jsonResult(200, corsHeaders, {
-        object: "list",
-        data: await listModels(),
-      });
+      return jsonResult(200, corsHeaders, listModelCatalog(event.queryStringParameters, publicOrigin));
     }
 
     if (method === "GET" && path === "/agents") {
@@ -378,7 +430,7 @@ export async function handlePublicRoute(
       return agentsRedirect(event, corsHeaders);
     }
 
-    const agentAvatarMatch = path.match(/^\/agent\/(0x[a-fA-F0-9]{40})\/avatar$/);
+    const agentAvatarMatch = path.match(/^\/agent\/([^/]+)\/avatar$/);
     if (method === "GET" && agentAvatarMatch) {
       const walletAddress = agentAvatarMatch[1];
       if (!isWalletAddress(walletAddress)) {
@@ -387,7 +439,7 @@ export async function handlePublicRoute(
       return agentsRedirect(event, corsHeaders);
     }
 
-    const agentMatch = path.match(/^\/agent\/(0x[a-fA-F0-9]{40})$/);
+    const agentMatch = path.match(/^\/agent\/([^/]+)$/);
     if (method === "GET" && agentMatch) {
       const walletAddress = agentMatch[1];
       if (!isWalletAddress(walletAddress)) {
@@ -466,10 +518,12 @@ function setRequestHeader(req: Request, name: string, value: string): void {
 function keyUserAddress(req: Request): string | undefined {
   const token = extractKeyFromHeader(getHeader(req, "authorization"));
   if (!token) {
-    return getHeader(req, "x-session-user-address")?.toLowerCase();
+    const userAddress = getHeader(req, "x-session-user-address");
+    return userAddress && /^0x[a-fA-F0-9]{40}$/.test(userAddress) ? userAddress.toLowerCase() : userAddress;
   }
   const payload = verifyKey(token);
-  return payload?.sub?.toLowerCase() || getHeader(req, "x-session-user-address")?.toLowerCase();
+  const userAddress = payload?.sub || getHeader(req, "x-session-user-address");
+  return userAddress && /^0x[a-fA-F0-9]{40}$/.test(userAddress) ? userAddress.toLowerCase() : userAddress;
 }
 
 function bodyRecord(req: Request): Record<string, unknown> | null {
@@ -570,7 +624,9 @@ export function buildRuntimeSessionHeaders(input: {
 }): Record<string, string> {
   return {
     "x-session-active": "true",
-    "x-session-user-address": input.userAddress.toLowerCase(),
+    "x-session-user-address": /^0x[a-fA-F0-9]{40}$/.test(input.userAddress)
+      ? input.userAddress.toLowerCase()
+      : input.userAddress,
     "x-session-budget-remaining": input.sessionBudgetRemaining,
   };
 }
@@ -694,6 +750,13 @@ async function prepareRoutePayment(
   // authorize the boundary, forward the inherited run context to runtime, and
   // settle only the terminal amount when the endpoint emits usage evidence.
   try {
+    if (service === "agent" && action === "stream") {
+      const challenged = await maybeSendAgentStreamDiscoveryChallenge(req, res);
+      if (challenged) {
+        return null;
+      }
+    }
+
     const prepared = await prepareInferencePayment(req, res, {
       useBudgetCap: true,
       scheme: service === "agent" ? "batch-settlement" : "upto",
@@ -738,7 +801,7 @@ async function settlePreparedPayment(
   prepared: PaymentPreparation,
   res: ExpressResponse,
   settlement: RouteSettlement,
-  chainId?: number,
+  network?: NetworkId,
 ): Promise<Receipt | null> {
   const remember = async (input: {
     finalAmountWei?: string;
@@ -750,7 +813,7 @@ async function settlePreparedPayment(
     sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
-    chainId?: number;
+    network?: NetworkId;
     settledAt?: number;
   } | null): Promise<void> => {
     if (!input || !input.finalAmountWei || !("evidence" in settlement) || !settlement.evidence) {
@@ -767,7 +830,7 @@ async function settlePreparedPayment(
       sessionBudgetIntentId: input.sessionBudgetIntentId,
       paymentChannelId: input.paymentChannelId,
       paymentCumulativeAmountWei: input.paymentCumulativeAmountWei,
-      chainId: input.chainId || chainId,
+      network: input.network || network,
       settledAt: input.settledAt,
     });
   };
@@ -789,18 +852,13 @@ async function settlePreparedPayment(
       { statusCode: 402 },
     );
   }
-  if (settlementReceipt?.txHash && settlementReceipt.settlementStatus === "settled") {
-    const settledChainId = settlementReceipt.chainId || chainId;
-    if (settledChainId) {
-      triggerConfirmedPayment({ chainId: settledChainId, txHash: settlementReceipt.txHash }, "route");
-    }
-  }
+  if (settlementReceipt?.txHash && settlementReceipt.settlementStatus === "settled") void settlementReceipt.txHash;
   await remember(settlementReceipt);
   if (settlementReceipt?.evidenceOnly) {
     return null;
   }
   const receipt = await finalizeReceipt(
-    withSettlementBills(receiptFromInferenceSettlement(settlementReceipt, chainId), settlement),
+    withSettlementBills(receiptFromInferenceSettlement(settlementReceipt, network), settlement),
     prepared.receiptContext,
   );
   await kickBatchSettlement(
@@ -898,7 +956,7 @@ function total(amountWei: string | undefined): string {
   return `${usd(amountWei).toFixed(6)} USDC`;
 }
 
-function line(key: string, amountWei: string | undefined): ReceiptLineItem | null {
+function line(key: string, amountWei: string | undefined): LineItem | null {
   if (!amountWei || !/^\d+$/u.test(amountWei) || BigInt(amountWei) <= 0n) return null;
   return {
     key,
@@ -910,14 +968,14 @@ function line(key: string, amountWei: string | undefined): ReceiptLineItem | nul
 }
 
 function bill(input: {
-  kind: ReceiptBill["kind"];
+  kind: Bill["kind"];
   source?: string;
   action?: string;
   subject?: string;
   name?: string;
   amountWei: string;
-  lineItems: Array<ReceiptLineItem | null>;
-}): ReceiptBill {
+  lineItems: Array<LineItem | null>;
+}): Bill {
   return {
     kind: input.kind,
     source: input.source,
@@ -927,11 +985,11 @@ function bill(input: {
     amountWei: input.amountWei,
     total: total(input.amountWei),
     duration: "0s",
-    lineItems: input.lineItems.filter((item): item is ReceiptLineItem => Boolean(item)),
+    lineItems: input.lineItems.filter((item): item is LineItem => Boolean(item)),
   };
 }
 
-function evidenceBill(charge: ChargeEvidence): ReceiptBill {
+function evidenceBill(charge: ChargeEvidence): Bill {
   const kind = charge.kind === "agent" || charge.kind === "model" || charge.kind === "tool"
     || charge.kind === "search" || charge.kind === "memory" || charge.kind === "connector"
     ? charge.kind
@@ -977,8 +1035,8 @@ function agentBill(input: {
   amountWei: string;
   feeWei: string;
   creatorFeeWei: string;
-  children: ReceiptBill[];
-}): ReceiptBill {
+  children: Bill[];
+}): Bill {
   return {
     kind: "agent",
     source: "agent",
@@ -1009,7 +1067,7 @@ function agentBill(input: {
       ...input.children.flatMap((child) => child.lineItems),
       line(`${input.subject}:compose_fee`, input.feeWei),
       line(`${input.subject}:creator_fee`, input.creatorFeeWei),
-    ].filter((item): item is ReceiptLineItem => Boolean(item)),
+    ].filter((item): item is LineItem => Boolean(item)),
     children: input.children,
   };
 }
@@ -1363,10 +1421,9 @@ function queryValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function receiptChainId(req: Request): number {
-  const raw = queryValue(req.query.chainId) ?? getHeader(req, "x-chain-id");
-  const parsed = raw ? Number.parseInt(raw, 10) : getActiveChainId();
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : getActiveChainId();
+function receiptNetwork(req: Request): NetworkId | null {
+  const raw = queryValue(req.query.network) ?? getHeader(req, "x-network-id");
+  return raw && isNetworkId(raw) ? raw : null;
 }
 
 function receiptLimit(req: Request): number {
@@ -1374,51 +1431,30 @@ function receiptLimit(req: Request): number {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : 50;
 }
 
-async function receiptIdentity(req: Request): Promise<{ userAddress: string; chainId: number } | { error: string; status: number }> {
-  const token = extractKeyFromHeader(getHeader(req, "authorization"));
-  if (!token) {
-    return { error: "Compose key authorization is required", status: 401 };
+function receiptIdentity(req: Request): { userAddress: string; network: NetworkId } | { error: string; status: number } {
+  const raw = getHeader(req, "x-session-user-address");
+  if (!raw) {
+    return { error: "x-session-user-address header required", status: 401 };
   }
-
-  const validation = await validateKey(token, 0);
-  if (!validation.valid || !validation.payload || !validation.record) {
-    return { error: validation.error || "Invalid Compose key", status: 401 };
-  }
-
-  const chainId = receiptChainId(req);
-  if (validation.record.chainId && validation.record.chainId !== chainId) {
-    return { error: "Compose key chainId does not match request chainId", status: 409 };
-  }
-
-  if (validation.record.purpose === "session") {
-    const sessionStatus = await getActiveSessionStatus(validation.payload.sub, chainId);
-    const session = sessionStatus.session;
-    if (!session || session.keyId !== validation.payload.keyId) {
-      return { error: "The compose-key session is inactive or expired.", status: 401 };
-    }
-  }
-
-  return {
-    userAddress: validation.payload.sub.toLowerCase(),
-    chainId,
-  };
+  const userAddress = raw.trim();
+  const network = receiptNetwork(req);
+  if (!userAddress || !network) return { error: "Valid x-network-id header required", status: 401 };
+  return { userAddress, network };
 }
 
 function receiptsRoute() {
   return (req: Request, res: ExpressResponse, next: NextFunction) => {
-    void (async () => {
-      const identity = await receiptIdentity(req);
-      if ("error" in identity) {
-        res.status(identity.status).json({ error: identity.error });
-        return;
-      }
+    const identity = receiptIdentity(req);
+    if ("error" in identity) {
+      res.status(identity.status).json({ error: identity.error });
+      return;
+    }
 
-      res.status(200).json(await listReceipts({
-        userAddress: identity.userAddress,
-        chainId: identity.chainId,
-        limit: receiptLimit(req),
-      }));
-    })().catch(next);
+    void listReceipts({
+      userAddress: identity.userAddress,
+      network: identity.network,
+      limit: receiptLimit(req),
+    }).then((result) => res.status(200).json(result)).catch(next);
   };
 }
 
@@ -1570,6 +1606,7 @@ function payableStreamRoute(config: {
   service: string;
   action: string;
   pathAndQuery?: (req: Request) => string;
+  isSettlementEvent: (eventName: string, data: Record<string, unknown>) => boolean;
   resolveSettlement: (eventName: string, data: Record<string, unknown>, req: Request) => RouteSettlement | null | Promise<RouteSettlement | null>;
 }) {
   return (req: Request, res: ExpressResponse, next: NextFunction) => {
@@ -1653,15 +1690,15 @@ function payableStreamRoute(config: {
       lifecycle.signal.addEventListener("abort", cancelReader, { once: true });
       let ended = false;
       let settlement: RouteSettlement | null = null;
+      let terminalSettlementPromise: Promise<RouteSettlement | null> | null = null;
       let settlementPromise: Promise<Receipt | null> | null = null;
       let settlementDone = false;
       let receiptWritten = false;
       let sawExplicitErrorEvent = false;
       let buffer = "";
       const decoder = new TextDecoder();
-      const chainIdHeader = getHeader(req, "x-chain-id");
-      const chainId = chainIdHeader ? Number.parseInt(chainIdHeader, 10) : Number.NaN;
-      const resolvedChainId = Number.isFinite(chainId) ? chainId : undefined;
+      const networkHeader = getHeader(req, "x-network-id");
+      const resolvedNetwork = networkHeader && isNetworkId(networkHeader) ? networkHeader : undefined;
 
       const canWrite = () => !res.destroyed && !res.writableEnded;
       const settleOnce = async () => {
@@ -1672,7 +1709,7 @@ function payableStreamRoute(config: {
           prepared,
           res,
           settlement,
-          resolvedChainId,
+          resolvedNetwork,
         ).then((receipt) => {
           settlementDone = true;
           markTiming("settled");
@@ -1687,7 +1724,7 @@ function payableStreamRoute(config: {
         // Streaming receipts must be emitted in-band. The underlying
         // Node response flushes headers on the first `res.write`, so any
         // settlement headers set after the stream starts are not visible to
-        // clients. The gateway solves this by writing `event: compose.receipt`
+        // clients. The gateway solves this by writing `event: receipt`
         // before ending the stream; the generic runtime paywall must do the
         // same for agent/workflow SSE routes.
         res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
@@ -1750,20 +1787,10 @@ function payableStreamRoute(config: {
               sawExplicitErrorEvent = true;
             }
 
-            let resolved: RouteSettlement | null = null;
-            try {
-              resolved = await config.resolveSettlement(parsed.eventName, parsed.data, req);
-            } catch (error) {
-              if (!terminal(parsed.data)) {
-                throw error;
-              }
-              terminalSettlementError = error;
-              terminalAbortData = parsed.data;
-              sawTerminalAbort = true;
-              markTiming("terminal_abort_event");
-            }
-            if (resolved) {
-              settlement = resolved;
+            if (config.isSettlementEvent(parsed.eventName, parsed.data)) {
+              terminalSettlementPromise ??= Promise.resolve().then(() =>
+                config.resolveSettlement(parsed.eventName, parsed.data, req),
+              );
               sawTerminalSettlement = true;
               markTiming("terminal_settlement_event");
             } else if (terminal(parsed.data)) {
@@ -1814,20 +1841,14 @@ function payableStreamRoute(config: {
             break;
           }
 
-          if (sawTerminalSettlement && settlement) {
+          if (sawTerminalSettlement && terminalSettlementPromise) {
             const text = Buffer.from(value).toString("utf8");
-            const doneIndex = text.indexOf("data: [DONE]");
-            const beforeDone = doneIndex === -1 ? text : text.slice(0, doneIndex);
             markTiming("first_downstream_write");
-            if (beforeDone.length > 0) {
-              res.write(beforeDone);
+            if (canWrite()) {
+              res.write(text);
             }
-            const receipt = await settleOnce();
-            writeReceipt(receipt);
-            if (canWrite() && doneIndex === -1) {
+            if (canWrite() && !text.includes("data: [DONE]")) {
               res.write("data: [DONE]\n\n");
-            } else if (canWrite()) {
-              res.write(text.slice(doneIndex));
             }
             if (canWrite()) {
               res.end();
@@ -1837,8 +1858,15 @@ function payableStreamRoute(config: {
             try {
               await reader.cancel();
             } catch {
-              // best-effort; settlement has already happened
+              // best-effort; the client stream is already complete
             }
+
+            settlement = await terminalSettlementPromise;
+            if (!settlement) {
+              await abortPreparedPayment(prepared, "runtime_terminal_without_billable_usage");
+              break;
+            }
+            await settleOnce();
             break;
           }
 
@@ -1946,6 +1974,9 @@ export function registerManowarRoutes(app: Application): void {
     payableStreamRoute({
       service: "agent",
       action: "stream",
+      isSettlementEvent: (_eventName, data) => (
+        data.type === "done" || data.type === "stopped" || data.type === "error"
+      ),
       resolveSettlement: (_eventName, data, req) => {
         // Settle on any terminal event that carries usage metering. `done` is the
         // normal path; `stopped` (user-issued abort via /runs/:id/stop) and
@@ -1996,6 +2027,7 @@ export function registerManowarRoutes(app: Application): void {
     payableStreamRoute({
       service: "workflow",
       action: "workflow-stream",
+      isSettlementEvent: (eventName) => eventName === "result",
       resolveSettlement: (eventName, data, req) => (
         eventName === "result"
           ? resolveWorkflowSettlement(data, workflowSettlementSubject(req))
@@ -2011,6 +2043,7 @@ export function registerManowarRoutes(app: Application): void {
     payableStreamRoute({
       service: "workflow",
       action: "workflow-stream",
+      isSettlementEvent: (eventName) => eventName === "result",
       resolveSettlement: (eventName, data, req) => (
         eventName === "result"
           ? resolveWorkflowSettlement(data, workflowSettlementSubject(req))
