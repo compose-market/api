@@ -700,6 +700,17 @@ export function adaptError(
   const paymentRequired = getPaymentRequiredBody(asRecord) ?? getPaymentRequiredBody(causeRecord);
   const paymentRequiredHeader = getPaymentRequiredHeader(asRecord) ?? getPaymentRequiredHeader(causeRecord);
 
+  if (isContextOverflowError(error) || isContextOverflowError(asRecord?.cause)) {
+    return {
+      status: typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : 400,
+      body: createErrorResponse(
+        getErrorMessage(error),
+        "invalid_request_error",
+        "context_length_exceeded",
+      ),
+    };
+  }
+
   if ((statusCode === 402 || paymentRequired || paymentRequiredHeader) && paymentRequired) {
     return {
       status: 402,
@@ -890,6 +901,19 @@ function writeAdaptedError(res: Res, error: unknown, defaultStatus = 500): void 
   }
 
   res.status(status).json(body);
+}
+
+function streamErrorPayload(error: unknown): NonNullable<Event["error"]> {
+  const adapted = adaptError(error, 500);
+  const adaptedError = getErrorRecord(adapted.body.error);
+  return {
+    code: typeof adaptedError?.code === "string" ? adaptedError.code : "upstream_error",
+    message: typeof adaptedError?.message === "string" ? adaptedError.message : getErrorMessage(error),
+    details: {
+      status: adapted.status,
+      type: typeof adaptedError?.type === "string" ? adaptedError.type : "upstream_error",
+    },
+  };
 }
 
 function validateStreamFlag(body: Record<string, unknown>, res: Res): boolean {
@@ -1710,18 +1734,20 @@ export async function executeRequest(args: {
         final: { modelId },
       });
       paid.payment.applyHeaders(args.res);
-      openEventStream(args.res, request.responseId);
-      baseRecordSave = saveResponseRecord(baseRecord).then(
-        () => null,
-        (error) => error,
-      );
+      if (!externalCompatibility) {
+        openEventStream(args.res, request.responseId);
+        baseRecordSave = saveResponseRecord(baseRecord).then(
+          () => null,
+          (error) => error,
+        );
+      }
     } else {
       await saveResponseRecord(baseRecord);
     }
 
     if (request.stream && args.shape === "responses" && !usesProviderStream(request)) {
       const responsesEncoder = new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt);
-      writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+      if (!externalCompatibility) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
       try {
         const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
@@ -1741,6 +1767,10 @@ export async function executeRequest(args: {
           direct?.cleanup();
         }
         const output = routed.result.output;
+        if (externalCompatibility) {
+          openEventStream(args.res, request.responseId);
+          writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+        }
         markInferenceFirstOutput(telemetry);
         let finalOutput = output;
 
@@ -1850,16 +1880,14 @@ export async function executeRequest(args: {
         try {
           await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
         } catch { /* best-effort */ }
+        if (externalCompatibility && !args.res.headersSent) throw error;
         try {
           writeResponsesEvents(args.res, responsesEncoder, {
             type: "error",
-            error: {
-              code: "upstream_error",
-              message: error instanceof Error ? error.message : String(error),
-            },
+            error: streamErrorPayload(error),
           });
-          args.res.write(formatCoreSSEDone());
-          args.res.end();
+          if (externalCompatibility) args.res.end();
+          else closeEventStream(args.res);
         } catch { /* best-effort */ }
         throw error;
       }
@@ -1876,7 +1904,27 @@ export async function executeRequest(args: {
       const responsesEncoder = args.shape === "responses"
         ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
         : null;
+      const iterator = routed.result.stream[Symbol.asyncIterator]();
+      let firstEvent: IteratorResult<Event> | null = null;
+      if (externalCompatibility) {
+        firstEvent = await iterator.next();
+        if (firstEvent.done) throw new Error("upstream stream ended without output");
+        if (firstEvent.value.type === "error") {
+          throw Object.assign(new Error(firstEvent.value.error?.message || "upstream_error"), {
+            code: firstEvent.value.error?.code,
+          });
+        }
+        openEventStream(args.res, request.responseId);
+      }
       if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+      const events = async function* (): AsyncGenerator<Event> {
+        if (firstEvent && !firstEvent.done) yield firstEvent.value;
+        while (true) {
+          const event = await iterator.next();
+          if (event.done) return;
+          yield event.value;
+        }
+      };
 
       let isFirstToken = true;
       let aggregatedText = "";
@@ -1942,7 +1990,7 @@ export async function executeRequest(args: {
       };
 
       try {
-        for await (const event of routed.result.stream) {
+        for await (const event of externalCompatibility ? events() : routed.result.stream) {
           markInferenceFirstOutput(telemetry);
           if (event.type === "text-delta") {
             aggregatedText += event.text || "";
@@ -2020,9 +2068,10 @@ export async function executeRequest(args: {
             if (event.media) {
               lastMedia = event.media;
             }
-            if (responsesEncoder && event.type === "error") {
-              writeResponsesEvents(args.res, responsesEncoder, event);
-              throw new Error(event.error?.message || "upstream_error");
+            if (event.type === "error") {
+              throw Object.assign(new Error(event.error?.message || "upstream_error"), {
+                code: event.error?.code,
+              });
             }
             const payload = args.shape === "chat"
               ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
@@ -2159,19 +2208,16 @@ export async function executeRequest(args: {
             if (responsesEncoder) {
               writeResponsesEvents(args.res, responsesEncoder, {
                 type: "error",
-                error: {
-                  code: "upstream_error",
-                  message: error instanceof Error ? error.message : String(error),
-                },
+                error: streamErrorPayload(error),
               });
             } else {
-              args.res.write(toErrorStreamEvent({
-                code: "upstream_error",
-                message: error instanceof Error ? error.message : String(error),
-              }));
+              args.res.write(toErrorStreamEvent(streamErrorPayload(error)));
             }
           } catch { /* best-effort */ }
-          try { closeEventStream(args.res); } catch { /* best-effort */ }
+          try {
+            if (externalCompatibility) args.res.end();
+            else closeEventStream(args.res);
+          } catch { /* best-effort */ }
         }
         throw error;
       }
@@ -2255,6 +2301,10 @@ export async function executeRequest(args: {
       error: error instanceof Error ? error.message : String(error),
     });
     await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
+    if (externalCompatibility && !args.res.headersSent) {
+      writeAdaptedError(args.res, error, 500);
+      return;
+    }
     throw error;
   } finally {
     lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);

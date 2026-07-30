@@ -116,9 +116,14 @@ function metricKeyCandidates(key: string): string[] {
 
 function isStrictMetricKey(normalized: string): boolean {
   return /^(cached_)?input_.+_tokens?$/.test(normalized)
+    || /^cache_(?:write|creation)_input_.+_tokens?$/.test(normalized)
     || /^output_.+_tokens?$/.test(normalized)
     || normalized === "cached_input_tokens"
     || normalized === "cached_input_token"
+    || normalized === "cache_write_input_tokens"
+    || normalized === "cache_write_input_token"
+    || normalized === "cache_creation_input_tokens"
+    || normalized === "cache_creation_input_token"
     || normalized === "reasoning_tokens"
     || normalized === "reasoning_token";
 }
@@ -1908,11 +1913,13 @@ function buildTokenLineItems(args: {
     const reasoningTokens = category === "generic" || category === "text"
       ? (args.usage.reasoningTokens ?? readNonNegativeMetric(billingMetrics || {}, ["reasoning_tokens"]))
       : undefined;
+    const pricedCachedInput = typeof section.values.cached_input === "number" ? (cachedInput || 0) : 0;
+    const pricedCacheWriteInput = typeof section.values.cache_write === "number" ? (cacheWriteInput || 0) : 0;
 
     if (
       typeof inputTotal === "number"
       && inputTotal > 0
-      && (cachedInput || 0) + (cacheWriteInput || 0) > inputTotal
+      && pricedCachedInput + pricedCacheWriteInput > inputTotal
     ) {
       throw new Error("authoritative usage is invalid: cached read and cache write tokens exceed total input tokens");
     }
@@ -1950,8 +1957,8 @@ function buildTokenLineItems(args: {
 
     const billableInput = typeof inputOnlyTotal === "number"
       ? inputOnlyTotal
-        - (typeof section.values.cached_input === "number" ? (cachedInput || 0) : 0)
-        - (typeof section.values.cache_write === "number" ? (cacheWriteInput || 0) : 0)
+        - pricedCachedInput
+        - pricedCacheWriteInput
       : undefined;
     if (typeof billableInput === "number" && billableInput < 0) {
       throw new Error("authoritative usage is invalid: cache token buckets exceed input tokens");

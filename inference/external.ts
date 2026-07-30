@@ -132,13 +132,11 @@ function limit(model: ModelCard): Record<string, number> | undefined {
     ?? positive(context?.context_tokens)
     ?? positive(context?.inputTokens)
     ?? positive(context?.input_tokens);
-  const input = positive(context?.inputTokens) ?? positive(context?.input_tokens);
   const output = positive(context?.outputTokens)
     ?? positive(context?.output_tokens)
     ?? positive(model.maxOutputTokens);
   const out: Record<string, number> = {};
   if (contextTokens !== undefined) out.context = contextTokens;
-  if (input !== undefined) out.input = input;
   if (output !== undefined) out.output = output;
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -189,20 +187,13 @@ function meta(model: ModelCard): Record<string, unknown> {
 
 function olimit(model: ModelCard): Record<string, number> | undefined {
   const bounds = limit(model);
-  if (
-    !bounds
-    || typeof bounds.context !== "number"
-    || bounds.context <= 0
-    || typeof bounds.output !== "number"
-    || bounds.output <= 0
-  ) {
+  if (!bounds || typeof bounds.context !== "number" || bounds.context <= 0) {
     return undefined;
   }
 
   return {
     context: bounds.context,
-    ...(typeof bounds.input === "number" && bounds.input > 0 ? { input: bounds.input } : {}),
-    output: bounds.output,
+    output: typeof bounds.output === "number" ? bounds.output : 0,
   };
 }
 
@@ -348,8 +339,24 @@ function data(frame: string): string | null {
 }
 
 type ExternalProtocol = "chat" | "responses";
+interface ExternalStreamState {
+  sequence: number;
+}
 
-function frame(res: Response, value: string, protocol: ExternalProtocol): string {
+function responseFrameBody(
+  res: Response,
+  value: Record<string, unknown>,
+  protocol: ExternalProtocol,
+  state: ExternalStreamState,
+): Record<string, unknown> {
+  const shaped = body(res, value) as Record<string, unknown>;
+  if (protocol !== "responses" || typeof shaped.type !== "string" || "sequence_number" in shaped) {
+    return shaped;
+  }
+  return { ...shaped, sequence_number: state.sequence++ };
+}
+
+function frame(res: Response, value: string, protocol: ExternalProtocol, state: ExternalStreamState): string {
   if (/^event:\s*(receipt|compose\.receipt|compose\.video\.status|video\.status)/imu.test(value)) {
     return "";
   }
@@ -364,7 +371,17 @@ function frame(res: Response, value: string, protocol: ExternalProtocol): string
         parsed = raw;
       }
     }
-    return `data: ${JSON.stringify({ error: error(parsed, res.statusCode) })}\n\n`;
+    const shaped = error(parsed, res.statusCode);
+    if (protocol === "responses") {
+      return `data: ${JSON.stringify({
+        type: "error",
+        sequence_number: state.sequence++,
+        code: shaped.code,
+        message: shaped.message,
+        param: shaped.param ?? null,
+      })}\n\n`;
+    }
+    return `data: ${JSON.stringify({ error: shaped })}\n\n`;
   }
 
   const raw = data(value);
@@ -381,24 +398,25 @@ function frame(res: Response, value: string, protocol: ExternalProtocol): string
     ) {
       return "";
     }
-    return `data: ${JSON.stringify(body(res, parsed))}\n\n`;
+    return `data: ${JSON.stringify(responseFrameBody(res, parsed, protocol, state))}\n\n`;
   } catch {
     return value.endsWith("\n\n") ? value : `${value}\n\n`;
   }
 }
 
-function sse(res: Response, value: string, protocol: ExternalProtocol): string {
+function sse(res: Response, value: string, protocol: ExternalProtocol, state: ExternalStreamState): string {
   if (!/^(data|event):/mu.test(value)) {
     return value;
   }
   return value
     .split("\n\n")
-    .map((item) => item.trim().length > 0 ? frame(res, item, protocol) : "")
+    .map((item) => item.trim().length > 0 ? frame(res, item, protocol, state) : "")
     .join("");
 }
 
 export function shape(protocol: ExternalProtocol = "chat"): RequestHandler {
   return (_req, res, next) => {
+    const streamState: ExternalStreamState = { sequence: 0 };
     const json = res.json.bind(res);
     res.json = ((value?: unknown) => json(body(res, value))) as typeof res.json;
 
@@ -408,7 +426,7 @@ export function shape(protocol: ExternalProtocol = "chat"): RequestHandler {
       if (!value || !/^(data|event):/mu.test(value)) {
         return write(chunk, ...args);
       }
-      const nextChunk = sse(res, value, protocol);
+      const nextChunk = sse(res, value, protocol, streamState);
       if (nextChunk.length === 0) {
         const callback = args.find((arg): arg is () => void => typeof arg === "function");
         callback?.();
@@ -612,24 +630,6 @@ async function handleExternalResponses(req: Request, res: Response): Promise<voi
   const request = normalizeResponsesRequest(body);
   if (request.messages.length === 0 && !request.previousResponseId) {
     fail(res, 400, "input is required", "missing_input");
-    return;
-  }
-  const resolved = res.locals.externalResolvedModel as ResolvedModel | undefined;
-  if (
-    resolved?.card
-    && externalProtocol(resolved.card) !== "responses"
-    && (
-      body.previous_response_id !== undefined
-      || body.context_management !== undefined
-      || body.truncation !== undefined
-    )
-  ) {
-    fail(
-      res,
-      400,
-      "This model does not expose Responses continuation or context management. Send complete stateless input or use Chat Completions.",
-      "unsupported_responses_state",
-    );
     return;
   }
   await executeRequest({ req, res, request, shape: "responses", externalCompatibility: true });
