@@ -448,6 +448,10 @@ export interface DeepSeekNativeText {
 export interface MoonshotNativeText {
   /** kimi-k2.6 thinking + preserved-thinking. */
   thinking?: { type: "enabled" | "disabled"; keep?: "all" | null };
+  /** Kimi reasoning effort. */
+  reasoning_effort?: "low" | "high" | "max";
+  /** Controls historical reasoning replay across tool and chat turns. */
+  reasoning_history?: "disabled" | "interleaved" | "preserved";
   /** Cache key for prompt KV reuse. */
   prompt_cache_key?: string;
   safety_identifier?: string;
