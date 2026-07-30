@@ -1,0 +1,736 @@
+/**
+ * Session Budget Management
+ * 
+ * Atomic ValKey operations for the Compose session-budget extension.
+ * Enables instant inference by tracking and locking budget off-chain,
+ * with Compose-managed on-chain settlement after usage is known.
+ * 
+ * ARCHITECTURE:
+ * - User creates session with on-chain approval (USDC.approve to TREASURY_WALLET)
+ * - Session budget is tracked in ValKey for instant authorization
+ * - Each request "locks" budget atomically in ValKey
+ * - Batch worker settles locked amounts on-chain every 2 minutes
+ * 
+ * @module shared/x402/sessionBudget
+ */
+
+import {
+    valkeyGet,
+    valkeySet,
+    valkeyHGetAll,
+    valkeyHSet,
+    valkeyHIncrByAmount,
+    valkeyExpire,
+    valkeySAdd,
+    valkeySMembers,
+    valkeySRem,
+    valkeyExists,
+} from "../keys/valkey.js";
+import {
+    getSpendableSessionBudgetWei,
+    readSessionAllowanceWei,
+    readSessionUsdcBalanceWei,
+} from "./allowance.js";
+import {
+    isSolanaNetwork,
+    type NetworkId,
+} from "../configs/chains.js";
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/** Maximum lock duration before auto-release (5 minutes) */
+const LOCK_TTL_SECONDS = 300;
+
+/** Session budget key prefix */
+const SESSION_KEY_PREFIX = "session:budget:";
+
+/** Pending intents set key */
+const PENDING_INTENTS_KEY = "intents:pending";
+
+/** Intent hash key prefix */
+const INTENT_KEY_PREFIX = "intent:";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface SessionBudget {
+    userAddress: string;
+    network: NetworkId;
+    totalBudgetWei: string;      // Original session budget
+    lockedBudgetWei: string;     // Amount locked for pending intents
+    usedBudgetWei: string;       // Amount already settled on-chain
+    expiresAt: number;           // Session expiry timestamp (Unix ms)
+    createdAt: number;           // Session creation timestamp
+}
+
+export interface PaymentIntent {
+    id: string;
+    userAddress: string;
+    merchantWallet: string;
+    amountWei: string;
+    network: NetworkId;
+    model?: string;
+    requestId: string;
+    createdAt: number;
+    status: "locked" | "pending_settlement" | "settled" | "failed";
+    txHash?: string;
+    settledAt?: number;
+    error?: string;
+}
+
+export interface LockResult {
+    success: boolean;
+    availableWei: string;
+    lockedWei: string;
+    intentId?: string;
+    error?: string;
+}
+
+export interface BudgetInfo {
+    totalWei: string;
+    lockedWei: string;
+    usedWei: string;
+    availableWei: string;
+    pendingIntents: number;
+}
+
+// =============================================================================
+// Key Helpers
+// =============================================================================
+
+function getSessionKey(address: string, network: NetworkId): string {
+    return `${SESSION_KEY_PREFIX}${network}:${address}`;
+}
+
+function getIntentKey(intentId: string): string {
+    return `${INTENT_KEY_PREFIX}${intentId}`;
+}
+
+function getUserIntentsKey(address: string, network: NetworkId): string {
+    return `${SESSION_KEY_PREFIX}${network}:${address}:intents`;
+}
+
+async function getLiveBudgetAvailability(input: {
+    userAddress: string;
+    network: NetworkId;
+    totalWei: bigint;
+    lockedWei: bigint;
+    usedWei: bigint;
+}): Promise<{
+    allowanceWei: bigint;
+    availableWei: bigint;
+}> {
+    const allowanceWei = await readSessionAllowanceWei(input.userAddress, input.network);
+    const availableWei = getSpendableSessionBudgetWei({
+        budgetLimitWei: input.totalWei,
+        usedWei: input.usedWei,
+        lockedWei: input.lockedWei,
+        allowanceWei,
+    });
+
+    return {
+        allowanceWei,
+        availableWei,
+    };
+}
+
+// =============================================================================
+// Session Budget Operations
+// =============================================================================
+
+/**
+ * Initialize or update session budget from on-chain session creation
+ * Called when user creates an allowance-backed session on-chain
+ */
+export async function initializeSessionBudget(
+    userAddress: string,
+    network: NetworkId,
+    totalBudgetWei: string,
+    expiresAt: number,
+): Promise<void> {
+    const key = getSessionKey(userAddress, network);
+
+    const budget: SessionBudget = {
+        userAddress,
+        network,
+        totalBudgetWei,
+        lockedBudgetWei: "0",
+        usedBudgetWei: "0",
+        expiresAt,
+        createdAt: Date.now(),
+    };
+
+    // Store as hash for efficient field access
+    await valkeyHSet(key, {
+        userAddress: budget.userAddress,
+        network: budget.network,
+        totalBudgetWei: budget.totalBudgetWei,
+        lockedBudgetWei: budget.lockedBudgetWei,
+        usedBudgetWei: budget.usedBudgetWei,
+        expiresAt: String(budget.expiresAt),
+        createdAt: String(budget.createdAt),
+    });
+
+    // Set TTL based on session expiry
+    const ttlSeconds = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000));
+    await valkeyExpire(key, ttlSeconds);
+
+    console.log(`[sessionBudget] Initialized budget for ${userAddress} network ${network}: ${totalBudgetWei} wei, expires in ${ttlSeconds}s`);
+}
+
+/**
+ * Get current session budget state
+ */
+export async function getSessionBudget(
+    userAddress: string,
+    network: NetworkId,
+): Promise<SessionBudget | null> {
+    const key = getSessionKey(userAddress, network);
+    const data = await valkeyHGetAll(key);
+
+    if (!data || Object.keys(data).length === 0) {
+        return null;
+    }
+
+    // Check if expired
+    const expiresAt = parseInt(data.expiresAt);
+    if (Date.now() > expiresAt) {
+        console.log(`[sessionBudget] Session expired for ${userAddress} network ${network}`);
+        return null;
+    }
+
+    return {
+        userAddress: data.userAddress,
+        network: data.network as NetworkId,
+        totalBudgetWei: data.totalBudgetWei,
+        lockedBudgetWei: data.lockedBudgetWei,
+        usedBudgetWei: data.usedBudgetWei,
+        expiresAt: parseInt(data.expiresAt),
+        createdAt: parseInt(data.createdAt),
+    };
+}
+
+/**
+ * Get session status with notification flags
+ * Returns status info for frontend notifications
+ */
+export interface SessionStatus {
+    isActive: boolean;
+    isExpired: boolean;
+    expiresAt: number;
+    expiresInSeconds: number;
+    totalBudget: string;
+    availableBudget: string;
+    lockedBudget: string;
+    usedBudget: string;
+    budgetPercentRemaining: number;
+    warnings: {
+        budgetLow: boolean;      // < 20% remaining
+        budgetDepleted: boolean;  // < 1 request worth
+        expiringSoon: boolean;   // < 5 minutes
+        expired: boolean;
+    };
+}
+
+export async function getSessionStatus(
+    userAddress: string,
+    network: NetworkId,
+    requestCostWei?: string,
+): Promise<SessionStatus | null> {
+    const budget = await getSessionBudget(userAddress, network);
+
+    if (!budget) {
+        return null;
+    }
+
+    const now = Date.now();
+    const total = BigInt(budget.totalBudgetWei);
+    const locked = BigInt(budget.lockedBudgetWei);
+    const used = BigInt(budget.usedBudgetWei);
+    const { availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        network,
+        totalWei: total,
+        lockedWei: locked,
+        usedWei: used,
+    });
+    const requestCost = requestCostWei ? BigInt(requestCostWei) : 0n;
+
+    const expiresInMs = budget.expiresAt - now;
+    const expiresInSeconds = Math.max(0, Math.floor(expiresInMs / 1000));
+    const isExpired = now > budget.expiresAt;
+
+    const totalNum = Number(total);
+    const availableNum = Number(availableWei);
+    const budgetPercentRemaining = totalNum > 0 ? (availableNum / totalNum) * 100 : 0;
+
+    return {
+        isActive: !isExpired && availableWei > 0n,
+        isExpired,
+        expiresAt: budget.expiresAt,
+        expiresInSeconds,
+        totalBudget: budget.totalBudgetWei,
+        availableBudget: availableWei.toString(),
+        lockedBudget: budget.lockedBudgetWei,
+        usedBudget: budget.usedBudgetWei,
+        budgetPercentRemaining,
+        warnings: {
+            budgetLow: budgetPercentRemaining < 20,
+            budgetDepleted: requestCost > 0n ? availableWei < requestCost : availableWei <= 0n,
+            expiringSoon: expiresInSeconds < 300 && !isExpired, // < 5 minutes
+            expired: isExpired,
+        },
+    };
+}
+
+/**
+ * Get available budget (total - locked - used)
+ */
+export async function getAvailableBudget(
+    userAddress: string,
+    network: NetworkId,
+): Promise<bigint> {
+    const budget = await getSessionBudget(userAddress, network);
+
+    if (!budget) {
+        return 0n;
+    }
+
+    const total = BigInt(budget.totalBudgetWei);
+    const locked = BigInt(budget.lockedBudgetWei);
+    const used = BigInt(budget.usedBudgetWei);
+    const { availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        network,
+        totalWei: total,
+        lockedWei: locked,
+        usedWei: used,
+    });
+
+    return availableWei;
+}
+
+/**
+ * Validate if sufficient budget is available for a request
+ */
+export async function validateBudgetSufficient(
+    userAddress: string,
+    network: NetworkId,
+    requiredWei: string,
+): Promise<boolean> {
+    const available = await getAvailableBudget(userAddress, network);
+    return available >= BigInt(requiredWei);
+}
+
+/**
+ * Lock budget for a new request (atomic operation)
+ * Returns remaining available budget after lock
+ * 
+ * This is the core function for instant authorization:
+ * 1. Atomically increment lockedBudgetWei
+ * 2. Store payment intent for batch settlement
+ * 3. Return success if budget was available
+ */
+export async function lockBudget(
+    userAddress: string,
+    network: NetworkId,
+    amountWei: string,
+    merchantWallet: string,
+    requestId: string,
+    model?: string,
+): Promise<LockResult> {
+    const key = getSessionKey(userAddress, network);
+
+    // First, check if session exists and has budget
+    const budget = await getSessionBudget(userAddress, network);
+
+    if (!budget) {
+        return {
+            success: false,
+            availableWei: "0",
+            lockedWei: "0",
+            error: "No active session found",
+        };
+    }
+
+    const total = BigInt(budget.totalBudgetWei);
+    const currentLocked = BigInt(budget.lockedBudgetWei);
+    const used = BigInt(budget.usedBudgetWei);
+    const requestAmount = BigInt(amountWei);
+    const availableWei = total > used + currentLocked ? total - used - currentLocked : 0n;
+
+    // Check if sufficient budget available
+    if (availableWei < requestAmount) {
+        return {
+            success: false,
+            availableWei: availableWei.toString(),
+            lockedWei: currentLocked.toString(),
+            error: `Insufficient spendable session budget: need ${amountWei}, have ${availableWei.toString()}`,
+        };
+    }
+
+    // For SVM networks, verify live on-chain spendability before locking.
+    // This prevents free output when the SPL delegate has been revoked,
+    // reduced, or the token balance has dropped below the locked amount.
+    // Mirrors the EVM invariant: queued session intents are allowed only
+    // when backed by live on-chain balance + allowance/delegate.
+    if (isSolanaNetwork(network)) {
+        const [liveBalance, liveAllowance] = await Promise.all([
+            readSessionUsdcBalanceWei(userAddress, network),
+            readSessionAllowanceWei(userAddress, network),
+        ]);
+        const liveSpendable = liveBalance < liveAllowance ? liveBalance : liveAllowance;
+        if (liveSpendable < requestAmount + currentLocked) {
+            return {
+                success: false,
+                availableWei: liveSpendable.toString(),
+                lockedWei: currentLocked.toString(),
+                error: `Insufficient on-chain spendable budget: need ${amountWei} (plus ${currentLocked.toString()} locked), have ${liveSpendable.toString()} on-chain`,
+            };
+        }
+    }
+
+    // Atomically increment locked amount
+    // HINCRBY is atomic in ValKey
+    const newLockedStr = await valkeyHIncrByAmount(key, "lockedBudgetWei", requestAmount);
+    const newLocked = BigInt(newLockedStr);
+
+    // Double-check we didn't over-allocate (race condition protection)
+    if (newLocked + used > total) {
+        // Rollback the increment
+        await valkeyHIncrByAmount(key, "lockedBudgetWei", -requestAmount);
+        return {
+            success: false,
+            availableWei: availableWei.toString(),
+            lockedWei: currentLocked.toString(),
+            error: "Race condition: budget exhausted",
+        };
+    }
+
+    // Create and store payment intent
+    const intentId = `${network}:${userAddress}-${requestId}-${Date.now()}`;
+    const intent: PaymentIntent = {
+        id: intentId,
+        userAddress,
+        merchantWallet,
+        amountWei,
+        network,
+        model,
+        requestId,
+        createdAt: Date.now(),
+        status: "locked",
+    };
+
+    // Store intent
+    await storePaymentIntent(intent);
+
+    const newAvailable = getSpendableSessionBudgetWei({
+        budgetLimitWei: total,
+        usedWei: used,
+        lockedWei: newLocked,
+        allowanceWei: total,
+    });
+
+    console.log(`[sessionBudget] Locked ${amountWei} wei for ${userAddress} network ${network}, available: ${newAvailable.toString()}`);
+
+    return {
+        success: true,
+        availableWei: newAvailable.toString(),
+        lockedWei: newLocked.toString(),
+        intentId,
+    };
+}
+
+/**
+ * Release locked budget (for failed requests)
+ * Called when inference fails after budget was locked
+ */
+export async function unlockBudget(
+    userAddress: string,
+    network: NetworkId,
+    amountWei: string,
+    intentId?: string,
+): Promise<void> {
+    const key = getSessionKey(userAddress, network);
+
+    // Atomically decrement locked amount
+    await valkeyHIncrByAmount(key, "lockedBudgetWei", -BigInt(amountWei));
+
+    // Mark intent as failed if provided
+    if (intentId) {
+        await markIntentFailed(intentId, "Request failed - budget released");
+    }
+
+    console.log(`[session-budget] Unlocked ${amountWei} wei for ${userAddress} network ${network}`);
+}
+
+/**
+ * Deterministically cancel a locked intent and release its budget.
+ * Safe to call multiple times; only locked intents are released.
+ */
+export async function cancelBudgetIntent(
+    intentId: string,
+    error: string = "Request failed before settlement",
+): Promise<void> {
+    const intent = await getPaymentIntent(intentId);
+    if (!intent) {
+        return;
+    }
+
+    if (intent.status !== "locked") {
+        return;
+    }
+
+    await unlockBudget(intent.userAddress, intent.network, intent.amountWei);
+    await markIntentFailed(intentId, error);
+}
+
+/**
+ * Mark locked budget as settled (after batch settlement)
+ * Moves amount from locked to used
+ */
+export async function markSettled(
+    userAddress: string,
+    network: NetworkId,
+    amountWei: string,
+): Promise<void> {
+    const key = getSessionKey(userAddress, network);
+    const amount = BigInt(amountWei);
+
+    // Atomically: decrement locked, increment used
+    await valkeyHIncrByAmount(key, "lockedBudgetWei", -amount);
+    await valkeyHIncrByAmount(key, "usedBudgetWei", amount);
+
+    console.log(`[session-budget] Marked ${amountWei} wei as settled for ${userAddress} network ${network}`);
+}
+
+/**
+ * Get comprehensive budget info for a user
+ */
+export async function getBudgetInfo(
+    userAddress: string,
+    network: NetworkId,
+): Promise<BudgetInfo | null> {
+    const budget = await getSessionBudget(userAddress, network);
+
+    if (!budget) {
+        return null;
+    }
+
+    const total = BigInt(budget.totalBudgetWei);
+    const locked = BigInt(budget.lockedBudgetWei);
+    const used = BigInt(budget.usedBudgetWei);
+    const { availableWei } = await getLiveBudgetAvailability({
+        userAddress,
+        network,
+        totalWei: total,
+        lockedWei: locked,
+        usedWei: used,
+    });
+
+    // Get pending intent count
+    const intentIds = await valkeySMembers(getUserIntentsKey(userAddress, network));
+    const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
+    const pendingCount = intents.filter((intent) => intent && intent.status === "locked").length;
+
+    return {
+        totalWei: total.toString(),
+        lockedWei: locked.toString(),
+        usedWei: used.toString(),
+        availableWei: availableWei.toString(),
+        pendingIntents: pendingCount,
+    };
+}
+
+// =============================================================================
+// Payment Intent Operations
+// =============================================================================
+
+/**
+ * Store a payment intent for batch settlement
+ */
+export async function storePaymentIntent(intent: PaymentIntent): Promise<void> {
+    const intentKey = getIntentKey(intent.id);
+
+    // Store intent data
+    await valkeyHSet(intentKey, {
+        id: intent.id,
+        userAddress: intent.userAddress,
+        merchantWallet: intent.merchantWallet,
+        amountWei: intent.amountWei,
+        network: intent.network,
+        model: intent.model || "",
+        requestId: intent.requestId,
+        createdAt: String(intent.createdAt),
+        status: intent.status,
+        txHash: intent.txHash || "",
+        settledAt: intent.settledAt ? String(intent.settledAt) : "",
+        error: intent.error || "",
+    });
+
+    // Set TTL (24 hours for intents)
+    await valkeyExpire(intentKey, 86400);
+
+    // Add to pending set for batch worker
+    await valkeySAdd(PENDING_INTENTS_KEY, intent.id);
+
+    // Add to user's intent set
+    await valkeySAdd(getUserIntentsKey(intent.userAddress, intent.network), intent.id);
+
+    console.log(`[sessionBudget] Stored intent ${intent.id} for ${intent.userAddress}`);
+}
+
+/**
+ * Get a payment intent by ID
+ */
+export async function getPaymentIntent(intentId: string): Promise<PaymentIntent | null> {
+    const data = await valkeyHGetAll(getIntentKey(intentId));
+
+    if (!data || Object.keys(data).length === 0) {
+        return null;
+    }
+
+    return {
+        id: data.id,
+        userAddress: data.userAddress,
+        merchantWallet: data.merchantWallet,
+        amountWei: data.amountWei,
+        network: data.network as NetworkId,
+        model: data.model || undefined,
+        requestId: data.requestId,
+        createdAt: parseInt(data.createdAt),
+        status: data.status as PaymentIntent["status"],
+        txHash: data.txHash || undefined,
+        settledAt: data.settledAt ? parseInt(data.settledAt) : undefined,
+        error: data.error || undefined,
+    };
+}
+
+/**
+ * Get all pending intents (for batch worker)
+ */
+export async function getPendingIntents(): Promise<PaymentIntent[]> {
+    const intentIds = await valkeySMembers(PENDING_INTENTS_KEY);
+    const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
+    return intents.filter((intent): intent is PaymentIntent => Boolean(intent && intent.status === "locked"));
+}
+
+/**
+ * Get pending intents grouped by user and chain
+ */
+export async function getPendingIntentsGrouped(): Promise<Map<NetworkId, Map<string, PaymentIntent[]>>> {
+    const intents = await getPendingIntents();
+    const grouped = new Map<NetworkId, Map<string, PaymentIntent[]>>();
+
+    for (const intent of intents) {
+        const byUser = grouped.get(intent.network) || new Map<string, PaymentIntent[]>();
+        const existing = byUser.get(intent.userAddress) || [];
+        existing.push(intent);
+        byUser.set(intent.userAddress, existing);
+        grouped.set(intent.network, byUser);
+    }
+
+    return grouped;
+}
+
+/**
+ * Get total pending amount for a user on a chain
+ */
+export async function getPendingTotal(userAddress: string, network: NetworkId): Promise<bigint> {
+    const intentIds = await valkeySMembers(getUserIntentsKey(userAddress, network));
+    const intents = await Promise.all(intentIds.map((id) => getPaymentIntent(id)));
+    return intents.reduce((total, intent) => {
+        if (!intent || intent.status !== "locked" || intent.network !== network) {
+            return total;
+        }
+
+        return total + BigInt(intent.amountWei);
+    }, 0n);
+}
+
+/**
+ * Mark intents as settled (after successful batch settlement)
+ */
+export async function markIntentsSettled(intentIds: string[], txHash: string): Promise<void> {
+    const now = Date.now();
+
+    for (const id of intentIds) {
+        const intentKey = getIntentKey(id);
+        const intent = await getPaymentIntent(id);
+
+        // Update intent status
+        await valkeyHSet(intentKey, {
+            status: "settled",
+            txHash,
+            settledAt: String(now),
+        });
+
+        // Remove from pending set
+        await valkeySRem(PENDING_INTENTS_KEY, id);
+
+        // Remove from user's pending set
+        if (intent) {
+            await valkeySRem(getUserIntentsKey(intent.userAddress, intent.network), id);
+        }
+    }
+
+    console.log(`[sessionBudget] Marked ${intentIds.length} intents as settled, tx: ${txHash}`);
+}
+
+/**
+ * Mark intent as failed
+ */
+export async function markIntentFailed(intentId: string, error: string): Promise<void> {
+    const intentKey = getIntentKey(intentId);
+    const intent = await getPaymentIntent(intentId);
+
+    await valkeyHSet(intentKey, {
+        status: "failed",
+        error,
+    });
+
+    // Failed intents should not remain pending.
+    await valkeySRem(PENDING_INTENTS_KEY, intentId);
+    if (intent) {
+        await valkeySRem(getUserIntentsKey(intent.userAddress, intent.network), intentId);
+    }
+
+    console.log(`[sessionBudget] Marked intent ${intentId} as failed: ${error}`);
+}
+
+// =============================================================================
+// Threshold Checking
+// =============================================================================
+
+/** $1 in USDC wei (6 decimals) */
+const IMMEDIATE_SETTLEMENT_THRESHOLD = 1000000n;
+
+/**
+ * Check if pending amount exceeds threshold for immediate settlement
+ */
+export async function shouldTriggerImmediateSettlement(
+    userAddress: string,
+    network: NetworkId,
+): Promise<boolean> {
+    const pending = await getPendingTotal(userAddress, network);
+    return pending >= IMMEDIATE_SETTLEMENT_THRESHOLD;
+}
+
+/**
+ * Get threshold status for a user
+ */
+export async function getThresholdStatus(
+    userAddress: string,
+    network: NetworkId,
+): Promise<{ pendingWei: string; thresholdWei: string; shouldSettle: boolean }> {
+    const pending = await getPendingTotal(userAddress, network);
+
+    return {
+        pendingWei: pending.toString(),
+        thresholdWei: IMMEDIATE_SETTLEMENT_THRESHOLD.toString(),
+        shouldSettle: pending >= IMMEDIATE_SETTLEMENT_THRESHOLD,
+    };
+}
