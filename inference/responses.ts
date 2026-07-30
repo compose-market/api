@@ -572,23 +572,7 @@ export class ResponsesStreamEncoder {
     }
 
     if (event.type === "done") {
-      const pending = [
-        ...[...this.pendingCalls.values()].map((value) => ({
-          outputIndex: value.outputIndex,
-          finish: () => this.finishCall(value),
-        })),
-        ...[...this.reasonings.values()].map((value) => ({
-          outputIndex: value.outputIndex,
-          finish: () => this.finishReasoning(value),
-        })),
-        ...[...this.texts.values()].map((value) => ({
-          outputIndex: value.outputIndex,
-          finish: () => this.finishText(value),
-        })),
-      ].sort((left, right) => left.outputIndex - right.outputIndex);
-      for (const item of pending) {
-        events.push(...item.finish());
-      }
+      events.push(...this.finishItems());
       this.completed = true;
       const incomplete = event.finishReason === "length";
       events.push({
@@ -598,6 +582,27 @@ export class ResponsesStreamEncoder {
       return events;
     }
 
+    return events;
+  }
+
+  finishItems(): Array<Record<string, unknown>> {
+    if (this.completed) return [];
+    const events: Array<Record<string, unknown>> = [];
+    const pending = [
+      ...[...this.pendingCalls.values()].map((value) => ({
+        outputIndex: value.outputIndex,
+        finish: () => this.finishCall(value),
+      })),
+      ...[...this.reasonings.values()].map((value) => ({
+        outputIndex: value.outputIndex,
+        finish: () => this.finishReasoning(value),
+      })),
+      ...[...this.texts.values()].map((value) => ({
+        outputIndex: value.outputIndex,
+        finish: () => this.finishText(value),
+      })),
+    ].sort((left, right) => left.outputIndex - right.outputIndex);
+    for (const item of pending) events.push(...item.finish());
     return events;
   }
 

@@ -182,10 +182,6 @@ function lowestDefaultForParam(def: ParamDefinition): unknown {
     return lowestOption(def.options);
   }
 
-  if (typeof def.minimum === "number" && Number.isFinite(def.minimum)) {
-    return def.minimum;
-  }
-
   return undefined;
 }
 
@@ -222,8 +218,23 @@ function pickModalityFromCard(modelId: string, preferred?: CanonicalModality): {
 function coerce(def: ParamDefinition, value: unknown): unknown {
   if (value === undefined || value === null) return undefined;
   if (def.type === "integer") {
-    if (typeof value === "number" && Number.isInteger(value)) return value;
-    if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return parseInt(value.trim(), 10);
+    if (typeof value === "number") {
+      if (Number.isSafeInteger(value)) return value;
+      throw Object.assign(new Error("integer parameters must be safe integers"), {
+        statusCode: 400,
+        code: "unsafe_integer_parameter",
+      });
+    }
+    if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+      const parsed = BigInt(value.trim());
+      if (parsed < BigInt(Number.MIN_SAFE_INTEGER) || parsed > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw Object.assign(new Error("integer parameters must be safe integers"), {
+          statusCode: 400,
+          code: "unsafe_integer_parameter",
+        });
+      }
+      return Number(parsed);
+    }
   }
   if (def.type === "number") {
     if (typeof value === "number" && Number.isFinite(value)) return value;

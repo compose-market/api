@@ -50,6 +50,7 @@ export async function generate(request: Request, options: RunOptions = {}): Prom
       return generateWithTools(request, {
         modelId: upstreamModelId,
         provider: target.provider,
+        family: resolved.card?.family,
         signal: options.signal,
       });
     },
@@ -73,6 +74,7 @@ export async function stream(request: Request, options: RunOptions = {}): Promis
         stream: streamWithTools(request, {
           modelId: upstreamModelId,
           provider: target.provider,
+          family: resolved.card?.family,
           signal: options.signal,
         }),
       };

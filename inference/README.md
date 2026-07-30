@@ -151,7 +151,7 @@ compiled model catalog declares that parameter.
 | --- | --- |
 | `receipt` | Payment settled. Final amount, network, line items, optional transaction hash. |
 | `compose.error` | Structured stream error before the stream closes. |
-| `compose.video.status` | Video job status update. |
+| `video.status` | Video job status update. |
 
 External streams remove these events and keep the stream OpenAI-shaped.
 
@@ -254,7 +254,7 @@ client's upfront quote.
 | `catalog/registry.ts` | Model registry. Loads `data/models.json`, builds indexes, search. |
 | `catalog/adapter.ts` | Provider dispatcher. Routes by modality + provider to family or vendor modules. |
 | `catalog/modalities/` | 6 modality classifiers: text, image, audio, video, embeddings, realtime. |
-| `catalog/families/` | 17 provider-native wire protocol modules (OpenAI, Anthropic, Google, etc.). |
+| `catalog/families/` | Provider-native wire protocol modules (OpenAI, Anthropic, Google, Moonshot, etc.). |
 | `catalog/vendors/` | 9 backend wiring modules (Azure, Vertex, Fireworks, Cloudflare, etc.). |
 | `catalog/shared/` | Coercion, HTTP, media, messages, usage, JSON Schema lowering. |
 

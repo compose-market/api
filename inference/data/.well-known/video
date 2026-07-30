@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-07-26T19:23:39.065Z",
+  "lastUpdated": "2026-07-29T01:11:28.469Z",
   "totalModels": 61,
   "byProvider": {
     "alibaba": 34,
@@ -193,7 +193,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -282,7 +283,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -325,7 +327,8 @@
           "param:resolution The resolution of the generated video.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a \"Happy Horse\" text watermark to the bottom-right corner.",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -522,7 +525,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -622,7 +626,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -665,7 +670,8 @@
           "param:resolution The resolution tier of the generated video.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Specifies whether to add a watermark to the generated video. The watermark is placed in the bottom-right corner with the fixed text \"Happy Horse\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -863,7 +869,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -962,7 +969,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -1004,7 +1012,8 @@
           "param:resolution Output video resolution.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Whether to add a watermark. Displays \"HappyHorse\" in the lower-right corner.",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -1187,7 +1196,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -1272,7 +1282,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -1314,7 +1325,8 @@
           "param:resolution Resolution of the generated video.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -1502,7 +1514,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -1593,7 +1606,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -1638,7 +1652,8 @@
           "param:resolution The resolution of the generated video.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a \"Happy Horse\" text watermark to the bottom-right corner.",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -1836,7 +1851,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -1937,7 +1953,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -1981,7 +1998,8 @@
           "param:resolution The resolution tier of the generated video.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Specifies whether to add a watermark to the generated video. The watermark is placed in the bottom-right corner with the fixed text \"Happy Horse\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -2180,7 +2198,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -2280,7 +2299,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -2323,7 +2343,8 @@
           "param:resolution Output video resolution.",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Whether to add a watermark. Displays \"HappyHorse\" in the lower-right corner.",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -2507,7 +2528,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -2616,7 +2638,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -2659,7 +2682,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -2843,7 +2867,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -2952,7 +2977,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -2995,7 +3021,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -3189,7 +3216,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -3312,7 +3340,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -3358,7 +3387,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -3540,7 +3570,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -3649,7 +3680,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -3692,7 +3724,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -3887,7 +3920,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -3996,7 +4030,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -4039,7 +4074,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -4325,7 +4361,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -4564,7 +4601,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -4590,7 +4628,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -4654,7 +4693,8 @@
           "param:top_scale Centers the video frame and extends it upward by the specified ratio.",
           "param:video_url The URL of the input video.",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -4852,7 +4892,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -4962,7 +5003,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -5006,7 +5048,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -5204,7 +5247,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -5314,7 +5358,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -5358,7 +5403,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -5561,7 +5607,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -5673,7 +5720,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -5719,7 +5767,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -5922,7 +5971,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -6034,7 +6084,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -6080,7 +6131,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -6300,7 +6352,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -6423,7 +6476,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -6469,7 +6523,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -6669,7 +6724,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -6780,7 +6836,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -6825,7 +6882,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -7038,7 +7096,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -7149,7 +7208,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -7194,7 +7254,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -7407,7 +7468,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -7518,7 +7580,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -7563,7 +7626,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -7770,7 +7834,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -7882,7 +7947,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -7928,7 +7994,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -8161,7 +8228,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -8273,7 +8341,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -8319,7 +8388,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -8522,7 +8592,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -8633,7 +8704,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -8678,7 +8750,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -8907,7 +8980,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -9018,7 +9092,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -9063,7 +9138,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -9267,7 +9343,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -9378,7 +9455,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -9423,7 +9501,8 @@
           "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
           "param:size",
           "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -9638,7 +9717,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -9761,7 +9841,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -9809,7 +9890,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -10022,7 +10104,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -10144,7 +10227,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -10191,7 +10275,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -10408,7 +10493,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -10532,7 +10618,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -10581,7 +10668,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -10798,7 +10886,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -10922,7 +11011,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -10971,7 +11061,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -11181,7 +11272,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -11302,7 +11394,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -11348,7 +11441,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -11558,7 +11652,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -11679,7 +11774,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -11725,7 +11821,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -11936,7 +12033,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -12058,7 +12156,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -12105,7 +12204,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -12329,7 +12429,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "videos"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -12464,7 +12565,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "videos"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -12513,7 +12615,8 @@
           "param:resolution",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
           "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
-          "source:video-generation"
+          "source:video-generation",
+          "source:videos"
         ]
       }
     },
@@ -12579,7 +12682,8 @@
           "video"
         ],
         "operations": [
-          "image-to-video"
+          "image-to-video",
+          "text-to-video"
         ],
         "inputs": [
           "image",
@@ -12589,6 +12693,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -12615,6 +12720,31 @@
         "operationCapabilities": [
           {
             "modality": "video",
+            "operation": "text-to-video",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "video",
             "operation": "image-to-video",
             "input": [
               "image",
@@ -12624,7 +12754,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -12644,9 +12775,11 @@
           "input:text",
           "modality:video",
           "operation:image-to-video",
+          "operation:text-to-video",
           "output:video",
           "param:instances Required. The instances that are the input to the prediction call.",
           "param:parameters Optional. The parameters that govern the prediction call.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
@@ -12712,7 +12845,8 @@
           "video"
         ],
         "operations": [
-          "image-to-video"
+          "image-to-video",
+          "text-to-video"
         ],
         "inputs": [
           "image",
@@ -12722,6 +12856,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -12748,6 +12883,31 @@
         "operationCapabilities": [
           {
             "modality": "video",
+            "operation": "text-to-video",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "video",
             "operation": "image-to-video",
             "input": [
               "image",
@@ -12757,7 +12917,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -12777,9 +12938,11 @@
           "input:text",
           "modality:video",
           "operation:image-to-video",
+          "operation:text-to-video",
           "output:video",
           "param:instances Required. The instances that are the input to the prediction call.",
           "param:parameters Optional. The parameters that govern the prediction call.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
@@ -12846,7 +13009,8 @@
           "video"
         ],
         "operations": [
-          "image-to-video"
+          "image-to-video",
+          "text-to-video"
         ],
         "inputs": [
           "image",
@@ -12856,6 +13020,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -12882,6 +13047,31 @@
         "operationCapabilities": [
           {
             "modality": "video",
+            "operation": "text-to-video",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "modality": "video",
             "operation": "image-to-video",
             "input": [
               "image",
@@ -12891,7 +13081,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -12911,16 +13102,18 @@
           "input:text",
           "modality:video",
           "operation:image-to-video",
+          "operation:text-to-video",
           "output:video",
           "param:instances Required. The instances that are the input to the prediction call.",
           "param:parameters Optional. The parameters that govern the prediction call.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Video Eraser",
-      "modelId": "Bria/video_eraser",
+      "modelId": "video_eraser",
       "family": "bria",
       "description": "Remove unwanted objects or regions from video using a mask, reconstructs the background with intelligent content-aware fill.",
       "type": "video generation",
@@ -13015,6 +13208,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Bria/video_eraser",
       "semantics": {
         "family": "bria",
         "modalities": [
@@ -13030,6 +13224,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -13104,7 +13299,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -13136,13 +13332,14 @@
           "param:output_container_and_codec The desired output container and codec, e.g., 'mp4/h264'.",
           "param:preserve_audio Whether to preserve the original audio track.",
           "param:video Required. Publicly accessible URL of the input video.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Video Foreground Mask",
-      "modelId": "Bria/video_foreground_mask",
+      "modelId": "video_foreground_mask",
       "family": "bria",
       "description": "Automatically identify and segment foreground objects across video frames and generate a mask. No prompts, just a video.",
       "type": "video generation",
@@ -13220,6 +13417,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Bria/video_foreground_mask",
       "semantics": {
         "family": "bria",
         "modalities": [
@@ -13235,6 +13433,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -13288,7 +13487,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -13317,13 +13517,14 @@
           "output:video",
           "param:output_container_and_codec The desired output container and codec, e.g., 'mp4/h264'.",
           "param:video Required. Publicly accessible URL of the input video.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Video Increase Resolution",
-      "modelId": "Bria/video_increase_resolution",
+      "modelId": "video_increase_resolution",
       "family": "bria",
       "description": "Increase video resolution up to 8K with advanced AI upscaling. Bring your videos to the big screen, ready for the screens of tomorrow.",
       "type": "video generation",
@@ -13417,6 +13618,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Bria/video_increase_resolution",
       "semantics": {
         "family": "bria",
         "modalities": [
@@ -13432,6 +13634,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -13499,7 +13702,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -13530,13 +13734,14 @@
           "param:output_container_and_codec The desired output container and codec, e.g., 'mp4/h264'.",
           "param:preserve_audio Whether to preserve the original audio track.",
           "param:video Required. Publicly accessible URL of the input video.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Video Mask By Key Points",
-      "modelId": "Bria/video_mask_by_key_points",
+      "modelId": "video_mask_by_key_points",
       "family": "bria",
       "description": "Identify and segment objects across video frames using specific coordinate points. Just point in the right direction and the model will figure out by itself which object should be masked.",
       "type": "video generation",
@@ -13631,6 +13836,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Bria/video_mask_by_key_points",
       "semantics": {
         "family": "bria",
         "modalities": [
@@ -13646,6 +13852,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -13720,7 +13927,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -13752,13 +13960,14 @@
           "param:key_points List of coordinates to define the area to mask.",
           "param:output_container_and_codec The desired output container and codec, e.g., 'mp4/h264'.",
           "param:video Required. Publicly accessible URL of the input video.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Video Mask By Prompt",
-      "modelId": "Bria/video_mask_by_prompt",
+      "modelId": "video_mask_by_prompt",
       "family": "bria",
       "description": "Identify and segment objects across video frames using a text prompt. The easiest way to create a mask to modify your videos.",
       "type": "video generation",
@@ -13847,6 +14056,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Bria/video_mask_by_prompt",
       "semantics": {
         "family": "bria",
         "modalities": [
@@ -13862,6 +14072,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -13929,7 +14140,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -13960,13 +14172,14 @@
           "param:output_container_and_codec The desired output container and codec, e.g., 'mp4/h264'.",
           "param:prompt Required. Text prompt to define the area to mask.",
           "param:video Required. Publicly accessible URL of the input video.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Video Remove Background",
-      "modelId": "Bria/video_remove_background",
+      "modelId": "video_remove_background",
       "family": "bria",
       "description": "Light and fast. Remove the background of your videos to bring the foreground elements to focus. No more unwanted distractions.",
       "type": "video generation",
@@ -14068,6 +14281,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Bria/video_remove_background",
       "semantics": {
         "family": "bria",
         "modalities": [
@@ -14083,6 +14297,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -14162,7 +14377,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -14193,13 +14409,14 @@
           "param:output_container_and_codec The desired output container and codec, e.g., 'mp4/h264'.",
           "param:preserve_audio Whether to preserve the original audio track.",
           "param:video Required. Publicly accessible URL of the input video.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Seedance 1.5 Pro",
-      "modelId": "ByteDance/Seedance-1.5-Pro",
+      "modelId": "Seedance-1.5-Pro",
       "family": "bytedance",
       "description": "ByteDance's Seedance 1.5 Pro is a professional video model using V2A native generation for integrated, synced audio-visual output, enhancing efficiency of professional video creation.",
       "type": "video generation",
@@ -14323,6 +14540,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "ByteDance/Seedance-1.5-Pro",
       "semantics": {
         "family": "bytedance",
         "modalities": [
@@ -14338,6 +14556,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -14453,7 +14672,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -14492,13 +14712,14 @@
           "param:resolution resolution of the output video",
           "param:seed random seed for reproducible output",
           "param:watermark whether to add a watermark to the output video",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Seedance 2.0",
-      "modelId": "ByteDance/Seedance-2.0",
+      "modelId": "Seedance-2.0",
       "family": "bytedance",
       "description": "A new-generation professional-grade multimodal video creation model developed, supports video generation with multimodal reference inputs including images, videos and audio.",
       "type": "video generation",
@@ -14638,6 +14859,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "ByteDance/Seedance-2.0",
       "semantics": {
         "family": "bytedance",
         "modalities": [
@@ -14653,6 +14875,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -14789,7 +15012,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -14831,13 +15055,14 @@
           "param:return_last_frame whether to return the last frame image of the generated video",
           "param:seed random seed for reproducible output",
           "param:watermark whether to add a watermark to the output video",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "FastWan QAD FP8 1.3B",
-      "modelId": "FastVideo/FastWan-QAD-FP8-1.3B",
+      "modelId": "FastWan-QAD-FP8-1.3B",
       "family": "fastvideo",
       "description": "A fast, compact 480p text-to-video model — 5-second clips (landscape or portrait) from a text prompt. A 3-step, FP8 quantization-aware distillation of Wan2.1-T2V-1.3B by FastVideo (Hao AI Lab).",
       "type": "video generation",
@@ -14930,6 +15155,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "FastVideo/FastWan-QAD-FP8-1.3B",
       "semantics": {
         "family": "fastvideo",
         "modalities": [
@@ -14945,6 +15171,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -15014,7 +15241,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -15045,13 +15273,14 @@
           "param:resolution Output resolution: always 480p (fixed/required for this model).",
           "param:seconds Clip duration: always 5 seconds (fixed/required for this model).",
           "param:seed specify a seed for reproducible output",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Veo 3.1",
-      "modelId": "google/veo-3.1",
+      "modelId": "veo-3.1",
       "family": "google",
       "description": "Veo 3.1 is the latest text-to-video model from Google that generates high-fidelity, cinematic videos with synchronized audio from a simple text prompt. It excels at creating realistic and imaginative scenes with a deep understanding of natural language and visual dynamics.",
       "type": "video generation",
@@ -15176,6 +15405,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "google/veo-3.1",
       "semantics": {
         "family": "google",
         "modalities": [
@@ -15191,6 +15421,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -15304,7 +15535,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -15343,13 +15575,14 @@
           "param:resolution Resolution of the output video",
           "param:sample_count Number of samples to generate, must be between 1 and 4",
           "param:seed Seed for reproducibility, must be a non-negative integer",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Veo 3.1 Fast",
-      "modelId": "google/veo-3.1-fast",
+      "modelId": "veo-3.1-fast",
       "family": "google",
       "description": "Veo 3.1 is the latest text-to-video model from Google that generates high-fidelity, cinematic videos with synchronized audio from a simple text prompt. It excels at creating realistic and imaginative scenes with a deep understanding of natural language and visual dynamics.",
       "type": "video generation",
@@ -15474,6 +15707,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "google/veo-3.1-fast",
       "semantics": {
         "family": "google",
         "modalities": [
@@ -15489,6 +15723,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -15602,7 +15837,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -15641,13 +15877,14 @@
           "param:resolution Resolution of the output video",
           "param:sample_count Number of samples to generate, must be between 1 and 4",
           "param:seed Seed for reproducibility, must be a non-negative integer",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Cosmos3 Nano",
-      "modelId": "nvidia/Cosmos3-Nano",
+      "modelId": "Cosmos3-Nano",
       "family": "nvidia",
       "description": "Cosmos3 is a world foundation model that unifies understanding and generation within a single Mixture-of-Transformer (MoT) architecture. Two tightly coupled towers—a Reasoner (vision-language model) and a Generator (world simulator)—share latent representations so that structured perception directly grounds realistic, temporally consistent simulation.",
       "type": "video generation",
@@ -15769,6 +16006,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "nvidia/Cosmos3-Nano",
       "semantics": {
         "family": "nvidia",
         "modalities": [
@@ -15784,7 +16022,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "world-model"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -15886,7 +16125,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "world-model"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -15922,13 +16162,14 @@
           "param:resolution Output resolution. Per-second price relative to 720p: 720p (1x), 480p (0.5x), 256p (0.25x).",
           "param:seed Random seed for reproducible output",
           "param:video_url Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url.",
-          "source:video-generation"
+          "source:video-generation",
+          "source:world-model"
         ]
       }
     },
     {
       "name": "Cosmos3 Super",
-      "modelId": "nvidia/Cosmos3-Super",
+      "modelId": "Cosmos3-Super",
       "family": "nvidia",
       "description": "Cosmos3 is a world foundation model that unifies understanding and generation within a single Mixture-of-Transformer (MoT) architecture. Two tightly coupled towers—a Reasoner (vision-language model) and a Generator (world simulator)—share latent representations so that structured perception directly grounds realistic, temporally consistent simulation.",
       "type": "video generation",
@@ -16050,6 +16291,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "nvidia/Cosmos3-Super",
       "semantics": {
         "family": "nvidia",
         "modalities": [
@@ -16065,7 +16307,8 @@
           "video"
         ],
         "sourceTypes": [
-          "video-generation"
+          "video-generation",
+          "world-model"
         ],
         "streamable": false,
         "capabilityKeys": [
@@ -16167,7 +16410,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "world-model"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -16203,13 +16447,14 @@
           "param:resolution Output resolution. Per-second price relative to 720p: 720p (1x), 480p (0.5x), 256p (0.25x).",
           "param:seed Random seed for reproducible output",
           "param:video_url Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url.",
-          "source:video-generation"
+          "source:video-generation",
+          "source:world-model"
         ]
       }
     },
     {
       "name": "Pixverse 6 I2V",
-      "modelId": "Pixverse/Pixverse-6-I2V",
+      "modelId": "Pixverse-6-I2V",
       "family": "pixverse",
       "description": "PixVerse V6 redefines AI video by shifting from isolated generation to a unified, model-driven workflow. Key upgrades include 15-second durations at 1080p resolution and a multi-shot engine. This transition allows creators to move beyond short clips toward meaningful narrative production and professional-grade marketing assets suitable for 2026 digital distribution standards.",
       "type": "video generation",
@@ -16319,6 +16564,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Pixverse/Pixverse-6-I2V",
       "semantics": {
         "family": "pixverse",
         "modalities": [
@@ -16334,6 +16580,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -16424,7 +16671,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -16459,13 +16707,14 @@
           "param:prompt text prompt",
           "param:quality Output video quality. 1080p supports up to 15 seconds.",
           "param:seed Seed for reproducibility, must be a non-negative integer",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Pixverse 6 T2V",
-      "modelId": "Pixverse/Pixverse-6-T2V",
+      "modelId": "Pixverse-6-T2V",
       "family": "pixverse",
       "description": "PixVerse V6 redefines AI video by shifting from isolated generation to a unified, model-driven workflow. Key upgrades include 15-second durations at 1080p resolution and a multi-shot engine. This transition allows creators to move beyond short clips toward meaningful narrative production and professional-grade marketing assets suitable for 2026 digital distribution standards.",
       "type": "video generation",
@@ -16589,6 +16838,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Pixverse/Pixverse-6-T2V",
       "semantics": {
         "family": "pixverse",
         "modalities": [
@@ -16604,6 +16854,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -16707,7 +16958,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -16744,13 +16996,14 @@
           "param:prompt text prompt",
           "param:quality Output video quality. 1080p supports up to 15 seconds.",
           "param:seed Seed for reproducibility, must be a non-negative integer",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Pixverse T2V",
-      "modelId": "Pixverse/Pixverse-T2V",
+      "modelId": "Pixverse-T2V",
       "family": "pixverse",
       "description": "PixVerse's 720p resolution offers a fast and reliable option for generating standard HD videos, ideal for quick previews and social media content where generation speed is prioritized over maximum detail.",
       "type": "video generation",
@@ -16865,6 +17118,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Pixverse/Pixverse-T2V",
       "semantics": {
         "family": "pixverse",
         "modalities": [
@@ -16880,6 +17134,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -16967,7 +17222,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -17002,13 +17258,14 @@
           "param:prompt text prompt",
           "param:seed Seed for reproducibility, must be a non-negative integer",
           "param:style Art style for the generated video",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Pixverse T2V HD",
-      "modelId": "Pixverse/Pixverse-T2V-HD",
+      "modelId": "Pixverse-T2V-HD",
       "family": "pixverse",
       "description": "The 1080p high-fidelity mode in PixVerse renders videos with significantly enhanced sharpness and visual clarity, capturing intricate details and providing a crisp, professional-grade quality suitable for more polished projects.",
       "type": "video generation",
@@ -17123,6 +17380,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Pixverse/Pixverse-T2V-HD",
       "semantics": {
         "family": "pixverse",
         "modalities": [
@@ -17138,6 +17396,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -17225,7 +17484,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -17260,13 +17520,14 @@
           "param:prompt text prompt",
           "param:seed Seed for reproducibility, must be a non-negative integer",
           "param:style Art style for the generated video",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "P Video",
-      "modelId": "PrunaAI/p-video",
+      "modelId": "p-video",
       "family": "prunaai",
       "description": "Real-time AI video generation from text, images, and audio. Supports up to 1080p at 48 FPS with built-in audio generation, draft mode for 4x faster previews, and prompt upsampling.",
       "type": "video generation",
@@ -17401,6 +17662,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "PrunaAI/p-video",
       "semantics": {
         "family": "prunaai",
         "modalities": [
@@ -17416,6 +17678,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -17537,7 +17800,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -17577,13 +17841,14 @@
           "param:resolution Resolution of the generated video. Defaults to 720p.",
           "param:save_audio Whether to preserve audio from the input when doing image-to-video generation.",
           "param:seed Random seed for reproducible generation.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "P Video Avatar",
-      "modelId": "PrunaAI/p-video-avatar",
+      "modelId": "p-video-avatar",
       "family": "prunaai",
       "description": "Pruna's talking head video generation model. Provide a portrait image and either a speech script or an audio file, and the model generates a realistic video of the person speaking. Supports multiple voices, languages, and output resolutions.",
       "type": "video generation",
@@ -17744,6 +18009,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "PrunaAI/p-video-avatar",
       "semantics": {
         "family": "prunaai",
         "modalities": [
@@ -17759,6 +18025,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -17894,7 +18161,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -17932,13 +18200,14 @@
           "param:voice_language Output language for generated speech. Defaults to 'English (US)'.",
           "param:voice_prompt Speaking style, tone, pacing or emotion instructions for the generated speech.",
           "param:voice_script Script for the person to say when no audio is uploaded.",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Wan2.2 T2V A14B",
-      "modelId": "Wan-AI/Wan2.2-T2V-A14B",
+      "modelId": "Wan2.2-T2V-A14B",
       "family": "alibaba",
       "description": "The Wan2.2 T2V A14B is a next-generation 14B-parameter video foundation model by Wan-AI featuring a novel two-stage denoising architecture. It produces 480P videos with improved visual coherence and detail, generating 2 or 5 second clips at 16fps from text prompts.",
       "type": "video generation",
@@ -18021,6 +18290,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Wan-AI/Wan2.2-T2V-A14B",
       "semantics": {
         "family": "alibaba",
         "modalities": [
@@ -18036,6 +18306,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -18094,7 +18365,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -18126,13 +18398,14 @@
           "param:prompt text prompt",
           "param:seconds video duration in seconds (2 or 5)",
           "param:seed specify a seed for reproducible output",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Wan2.6 I2V",
-      "modelId": "Wan-AI/Wan2.6-I2V",
+      "modelId": "Wan2.6-I2V",
       "family": "alibaba",
       "description": "Turn any image into a video. Intelligent shot scheduling supports multi-shot storytelling, generating multi-shot narrative videos with consistent subjects, scenes, and atmosphere",
       "type": "video generation",
@@ -18252,6 +18525,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Wan-AI/Wan2.6-I2V",
       "semantics": {
         "family": "alibaba",
         "modalities": [
@@ -18267,6 +18541,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -18373,7 +18648,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -18410,13 +18686,14 @@
           "param:seed Random seed for reproducibility",
           "param:shot_type Shot type: single continuous shot or multi switching shots",
           "param:watermark Whether to add AI Generated watermark",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Wan2.6 T2V",
-      "modelId": "Wan-AI/Wan2.6-T2V",
+      "modelId": "Wan2.6-T2V",
       "family": "alibaba",
       "description": "Turn any prompt into a smooth video. Intelligent shot scheduling supports multi-shot storytelling, generating multi-shot narrative videos with consistent subjects, scenes, and atmosphere",
       "type": "video generation",
@@ -18542,6 +18819,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Wan-AI/Wan2.6-T2V",
       "semantics": {
         "family": "alibaba",
         "modalities": [
@@ -18557,6 +18835,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -18667,7 +18946,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -18705,13 +18985,14 @@
           "param:shot_type Shot type: single continuous shot or multi switching shots. Only effective when prompt_extend=true",
           "param:size Resolution of the generated video in width*height format. Default is 1920*1080",
           "param:watermark Whether to add AI Generated watermark. Default is false",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Wan2.7 I2V",
-      "modelId": "Wan-AI/Wan2.7-I2V",
+      "modelId": "Wan2.7-I2V",
       "family": "alibaba",
       "description": "Generates video content from images while stably preserving details such as subject, style, and text elements. Ensures visual consistency and information fidelity throughout dynamic transitions.",
       "type": "video generation",
@@ -18832,6 +19113,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Wan-AI/Wan2.7-I2V",
       "semantics": {
         "family": "alibaba",
         "modalities": [
@@ -18847,6 +19129,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -18956,7 +19239,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -18994,13 +19278,14 @@
           "param:resolution Resolution tier of the generated video (720P or 1080P). Default 1080P",
           "param:seed Random seed for reproducibility",
           "param:watermark Whether to add AI Generated watermark. Default false",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
     },
     {
       "name": "Wan2.7 R2V",
-      "modelId": "Wan-AI/Wan2.7-R2V",
+      "modelId": "Wan2.7-R2V",
       "family": "alibaba",
       "description": "Accurately preserve the look and voice of people or objects from a reference video, supporting multi-reference co-creation.",
       "type": "video generation",
@@ -19118,6 +19403,7 @@
         }
       },
       "deprecated": false,
+      "upstreamModelId": "Wan-AI/Wan2.7-R2V",
       "semantics": {
         "family": "alibaba",
         "modalities": [
@@ -19133,6 +19419,7 @@
           "video"
         ],
         "sourceTypes": [
+          "text-to-video",
           "video-generation"
         ],
         "streamable": false,
@@ -19235,7 +19522,8 @@
               "video"
             ],
             "sourceTypes": [
-              "video-generation"
+              "video-generation",
+              "text-to-video"
             ],
             "streamable": false,
             "pricingUnits": [
@@ -19271,6 +19559,7 @@
           "param:resolution Resolution tier of the generated video (720P or 1080P). Default 1080P",
           "param:seed Random seed for reproducibility",
           "param:watermark Whether to add AI Generated watermark. Default false",
+          "source:text-to-video",
           "source:video-generation"
         ]
       }
