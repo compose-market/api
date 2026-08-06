@@ -1893,6 +1893,12 @@ export interface ReceiptStreamPayload {
   resource?: string;
   userAddress?: string;
   finalAmountWei: string;
+  checkpointAmountWei?: string;
+  cumulativeAmountWei?: string;
+  checkpointSequence?: number;
+  rootRunId?: string;
+  executionRunId?: string;
+  parentExecutionRunId?: string;
   providerAmountWei?: string;
   platformFeeWei?: string;
   meterSubject?: string;
@@ -1905,13 +1911,14 @@ export interface ReceiptStreamPayload {
   }>;
   bills?: BillPayload[];
   txHash?: string;
-  settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+  settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
   claimTxHash?: string;
   settleTxHash?: string;
+  paymentIntentId?: string;
   paymentChannelId?: string;
   paymentCumulativeAmountWei?: string;
   network?: string;
-  settledAt: number;
+  settledAt?: number;
   cumulative?: {
     totalAmountWei: string;
     providerAmountWei?: string;

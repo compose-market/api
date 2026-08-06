@@ -68,6 +68,7 @@ other provider rows get readable public aliases.
 | --- | --- | --- |
 | `GET` | `/v1/models` | Compiled catalog. |
 | `GET` | `/v1/models/all` | Extended catalog, when present. |
+| `GET` | `/v1/models/index` | Compressed, cacheable selector/search index. |
 | `POST` | `/v1/models/search` | Filter by provider, modality, operation, streaming, context, price. |
 | `GET` | `/v1/families` | Model family catalog. |
 | `GET` | `/v1/modalities` | Modality catalog derived from model metadata. |
@@ -159,7 +160,7 @@ External streams remove these events and keep the stream OpenAI-shaped.
 curl -N https://api.compose.market/v1/chat/completions \
   -H "Authorization: Bearer $COMPOSE_MARKET_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "x-network-id: 43113" \
+  -H "x-network-id: eip155:${evmNetworkId} | solana:${svmNetworkId}" \
   -d '{
     "model": "gpt-5.5",
     "stream": true,

@@ -31,10 +31,11 @@ export interface InferenceSettlementTelemetry {
   model: string;
   types: string[];
   operation: string;
-  status: "queued" | "claimed" | "settled" | "failed";
+  status: "queued" | "submitted" | "claimed" | "settled" | "failed";
   transactionHash?: string;
   claimTransactionHash?: string;
   settleTransactionHash?: string;
+  paymentIntentId?: string;
   pricedUnits: InferencePricedUnit[];
   billing: InferenceBillingTotals;
   settledAt?: string;
@@ -133,6 +134,7 @@ export function addInferenceSettlement(
     transactionHash: settlement.txHash,
     claimTransactionHash: settlement.claimTxHash,
     settleTransactionHash: settlement.settleTxHash,
+    paymentIntentId: settlement.paymentIntentId,
     pricedUnits: quote.telemetry.lineItems.map((item, index) => ({
       key: item.key,
       unit: item.unit,
@@ -141,7 +143,9 @@ export function addInferenceSettlement(
       amountAtomic: settlement.lineItems![index].amountWei,
     })),
     billing: billing(settlement),
-    settledAt: new Date(settlement.settledAt).toISOString(),
+    ...(settlement.settledAt !== undefined
+      ? { settledAt: new Date(settlement.settledAt).toISOString() }
+      : {}),
     createdAt: new Date().toISOString(),
   });
 }
