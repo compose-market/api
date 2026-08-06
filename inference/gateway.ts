@@ -1,5 +1,7 @@
 import type { Express, NextFunction, Request as Req, Response as Res } from "express";
 import type { PaymentRequired } from "@x402/core/types";
+import { createHash } from "node:crypto";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { publicResourceUrl } from "../http/public-origin.js";
 
 import {
@@ -11,7 +13,7 @@ import {
   type ModelSearchInput,
   type ResolvedModel,
 } from "./catalog/registry.js";
-import { isProvider, type ModelCard, type ModelProvider } from "./types.js";
+import { isProvider, type CompiledModelsData, type ModelCard, type ModelProvider } from "./types.js";
 import type { AdapterStatus } from "./catalog/adapter.js";
 import {
   CANONICAL_MODALITIES,
@@ -28,6 +30,8 @@ import {
 import {
   buildResolvedAuthorizationInput,
   buildSettlementMeterFromOutput,
+  differenceMeteredModelQuote,
+  type MeteredModelQuote,
 } from "../x402/metering.js";
 import {
   kickBatchSettlement,
@@ -44,9 +48,6 @@ import {
   shouldDirectChallenge,
 } from "../x402/discovery.js";
 import { type Receipt } from "../http/request-context.js";
-import {
-  type MeteredSettlementInput,
-} from "../x402/metering.js";
 import {
   applyReceiptHeader,
   attachReceiptToJsonBody,
@@ -367,6 +368,96 @@ function withModelOperations(model: ModelCard): ModelCard & { operations: Return
   };
 }
 
+type EncodedCatalogPayload = {
+  raw: Buffer;
+  gzip: Buffer;
+  brotli: Buffer;
+  hash: string;
+};
+
+const compiledCatalogPayloads = new WeakMap<CompiledModelsData, EncodedCatalogPayload>();
+const extendedCatalogPayloads = new WeakMap<CompiledModelsData, EncodedCatalogPayload>();
+const modelIndexPayloads = new WeakMap<CompiledModelsData, EncodedCatalogPayload>();
+
+function encodeCatalogPayload(value: unknown): EncodedCatalogPayload {
+  const raw = Buffer.from(JSON.stringify(value));
+  return {
+    raw,
+    gzip: gzipSync(raw, { level: 6 }),
+    brotli: brotliCompressSync(raw, {
+      params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 },
+    }),
+    hash: createHash("sha256").update(raw).digest("base64url").slice(0, 24),
+  };
+}
+
+function cachedCatalogPayload(
+  cache: WeakMap<CompiledModelsData, EncodedCatalogPayload>,
+  catalog: CompiledModelsData,
+  build: () => unknown,
+): EncodedCatalogPayload {
+  const cached = cache.get(catalog);
+  if (cached) return cached;
+  const next = encodeCatalogPayload(build());
+  cache.set(catalog, next);
+  return next;
+}
+
+function acceptedEncoding(req: Req): "br" | "gzip" | "identity" {
+  const header = req.headers["accept-encoding"];
+  if (typeof header !== "string") return "identity";
+  const accepted = new Map(header.split(",").map((part) => {
+    const [name = "", ...params] = part.trim().toLowerCase().split(";");
+    const quality = params.find((param) => param.trim().startsWith("q="));
+    return [name.trim(), quality ? Number.parseFloat(quality.split("=")[1] || "0") : 1] as const;
+  }));
+  if ((accepted.get("br") ?? accepted.get("*") ?? 0) > 0) return "br";
+  if ((accepted.get("gzip") ?? accepted.get("*") ?? 0) > 0) return "gzip";
+  return "identity";
+}
+
+function etagMatches(req: Req, etag: string): boolean {
+  const header = req.headers["if-none-match"];
+  if (typeof header !== "string") return false;
+  return header.split(",").some((candidate) => candidate.trim() === etag || candidate.trim() === "*");
+}
+
+function sendCatalogPayload(req: Req, res: Res, payload: EncodedCatalogPayload): void {
+  const encoding = acceptedEncoding(req);
+  const etag = `"${payload.hash}-${encoding}"`;
+  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
+  res.setHeader("CDN-Cache-Control", "public, s-maxage=21600, stale-while-revalidate=86400");
+  res.setHeader("Vary", "Accept-Encoding");
+  res.setHeader("ETag", etag);
+  if (etagMatches(req, etag)) {
+    res.status(304).end();
+    return;
+  }
+
+  const body = encoding === "br" ? payload.brotli : encoding === "gzip" ? payload.gzip : payload.raw;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  if (encoding !== "identity") res.setHeader("Content-Encoding", encoding);
+  res.setHeader("Content-Length", String(body.byteLength));
+  res.status(200).send(body);
+}
+
+function modelIndexCard(model: ModelCard): ModelCard {
+  return {
+    modelId: model.modelId,
+    name: model.name,
+    provider: model.provider,
+    ...(model.family ? { family: model.family } : {}),
+    type: model.type,
+    description: null,
+    input: model.input,
+    output: model.output,
+    contextWindow: model.contextWindow,
+    pricing: model.pricing,
+    ...(model.maxOutputTokens !== undefined ? { maxOutputTokens: model.maxOutputTokens } : {}),
+    ...(model.available !== undefined ? { available: model.available } : {}),
+  };
+}
+
 function phrase(values: readonly string[]): string {
   if (values.length <= 1) return values[0] ?? "";
   if (values.length === 2) return `${values[0]} and ${values[1]}`;
@@ -392,6 +483,7 @@ export interface InferenceRoute {
 export const INFERENCE_ROUTES: InferenceRoute[] = [
   { method: "GET", path: "/v1/models", handler: (req, res) => handleListModels(req, res, false), description: "List models" },
   { method: "GET", path: "/v1/models/all", handler: (req, res) => handleListModels(req, res, true), description: "List all models" },
+  { method: "GET", path: "/v1/models/index", handler: handleListModelIndex, description: "List compact model selector index" },
   { method: "POST", path: "/v1/models/search", handler: handleSearchModels, description: "Search models" },
   { method: "GET", path: "/v1/families", handler: handleListFamilies, description: "List family catalogs" },
   { method: "GET", path: "/v1/families/:family", handler: handleGetFamily, description: "Get family catalog" },
@@ -1224,21 +1316,39 @@ async function settlePaidInference(args: {
   request: Request;
   output: Output;
   resolved: ResolvedModel;
+  checkpointSequence?: number;
+  previousCumulativeAmountWei?: string;
+  previousCumulativeQuote?: MeteredModelQuote;
+  onPaymentBacked?: (result: {
+    settlement: NonNullable<Awaited<ReturnType<typeof settlePreparedInferencePayment>>>;
+    quote: MeteredModelQuote;
+    cumulativeQuote: MeteredModelQuote;
+  }) => void;
 }): Promise<{
   receipt: Receipt | null;
   settlement: Awaited<ReturnType<typeof settlePreparedInferencePayment>>;
-  quote: ReturnType<typeof buildSettlementMeterFromOutput>;
+  quote: MeteredModelQuote;
+  cumulativeQuote: MeteredModelQuote;
 }> {
-  const quote = buildSettlementMeterFromOutput({
+  const cumulativeQuote = buildSettlementMeterFromOutput({
     request: args.request,
     output: args.output,
     resolved: args.resolved,
+    checkpointSequence: 0,
   });
+  const quote = differenceMeteredModelQuote(cumulativeQuote, args.previousCumulativeQuote);
+  if (BigInt(quote.finalAmountWei) === 0n) {
+    return { receipt: null, settlement: null, quote, cumulativeQuote };
+  }
   const settlementReceipt = await settlePreparedInferencePayment(
     args.payment,
     args.res,
     {
-      meter: quote.meter as MeteredSettlementInput,
+      finalAmountWei: quote.finalAmountWei,
+      providerAmountWei: quote.providerAmountWei,
+      platformFeeWei: quote.platformFeeWei,
+      meterSubject: quote.subject,
+      lineItems: quote.lineItems,
     },
   );
 
@@ -1247,13 +1357,19 @@ async function settlePaidInference(args: {
     && BigInt(settlementReceipt.finalAmountWei || "0") > 0n
     && !settlementReceipt.txHash
     && !settlementReceipt.paymentIntentId
-    && !settlementReceipt.sessionBudgetIntentId
     && !(settlementReceipt.paymentChannelId && settlementReceipt.paymentCumulativeAmountWei)
   ) {
     throw Object.assign(
       new Error("Nonzero settlement is missing x402 payment backing"),
       { statusCode: 402 },
     );
+  }
+  if (settlementReceipt && BigInt(settlementReceipt.finalAmountWei || "0") > 0n) {
+    args.onPaymentBacked?.({
+      settlement: settlementReceipt,
+      quote,
+      cumulativeQuote,
+    });
   }
 
   if (settlementReceipt?.providerAmountWei) {
@@ -1273,12 +1389,11 @@ async function settlePaidInference(args: {
         providerAmountWei: settlementReceipt.providerAmountWei,
         feeWei: settlementReceipt.platformFeeWei || "0",
         finalAmountWei: settlementReceipt.finalAmountWei,
-        settlementStatus: settlementReceipt.settlementStatus || (settlementReceipt.txHash ? "settled" : "queued"),
+        settlementStatus: settlementReceipt.settlementStatus || (settlementReceipt.txHash ? "submitted" : "queued"),
         txHash: settlementReceipt.txHash,
         claimTxHash: settlementReceipt.claimTxHash,
         settleTxHash: settlementReceipt.settleTxHash,
         paymentIntentId: settlementReceipt.paymentIntentId,
-        sessionBudgetIntentId: settlementReceipt.sessionBudgetIntentId,
         paymentChannelId: settlementReceipt.paymentChannelId,
         paymentCumulativeAmountWei: settlementReceipt.paymentCumulativeAmountWei,
         network: settlementReceipt.network || getNetworkFromInferenceRequest(args.req),
@@ -1290,16 +1405,39 @@ async function settlePaidInference(args: {
     if (shouldKickSettlement(args.req)) {
       await kickBatchSettlement(settlementReceipt, "inference:evidence");
     }
-    return { receipt: null, settlement: settlementReceipt, quote };
+    return { receipt: null, settlement: settlementReceipt, quote, cumulativeQuote };
   }
+  const baseReceipt = receiptFromInferenceSettlement(
+    settlementReceipt,
+    getNetworkFromInferenceRequest(args.req),
+  );
   const receipt = await finalizeReceipt(
-    receiptFromInferenceSettlement(settlementReceipt, getNetworkFromInferenceRequest(args.req)),
+    baseReceipt
+      ? {
+        ...baseReceipt,
+        checkpointAmountWei: baseReceipt.finalAmountWei,
+        cumulativeAmountWei: (
+          BigInt(args.previousCumulativeAmountWei || "0")
+          + BigInt(baseReceipt.finalAmountWei || "0")
+        ).toString(),
+        checkpointSequence: baseReceipt.checkpointSequence ?? args.checkpointSequence,
+        rootRunId: baseReceipt.rootRunId
+          || readHeader(args.req, "x-run-id")
+          || readHeader(args.req, "x-idempotency-key"),
+        executionRunId: baseReceipt.executionRunId
+          || readHeader(args.req, "x-execution-run-id")
+          || readHeader(args.req, "x-run-id")
+          || readHeader(args.req, "x-idempotency-key"),
+        parentExecutionRunId: baseReceipt.parentExecutionRunId
+          || readHeader(args.req, "x-parent-run-id"),
+      }
+      : null,
     receiptContextFromInferenceRequest(args.req),
   );
   if (shouldKickSettlement(args.req)) {
     await kickBatchSettlement(settlementReceipt, "inference:receipt");
   }
-  return { receipt, settlement: settlementReceipt, quote };
+  return { receipt, settlement: settlementReceipt, quote, cumulativeQuote };
 }
 
 function metricDelta(current?: Record<string, unknown>, previous?: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -1316,6 +1454,25 @@ function metricDelta(current?: Record<string, unknown>, previous?: Record<string
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+function metricContext(current?: Record<string, unknown>): Record<string, unknown> | undefined {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(current || {})) {
+    if (typeof value === "string" || typeof value === "boolean") {
+      result[key] = value;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function checkpointMetrics(
+  current: Record<string, unknown> | undefined,
+  delta: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const context = metricContext(current);
+  if (!context && !delta) return undefined;
+  return { ...(context || {}), ...(delta || {}) };
+}
+
 function usageDelta(current?: Output["usage"], previous?: Output["usage"]): Output["usage"] | undefined {
   if (!current) return undefined;
   const promptTokens = Math.max(0, current.promptTokens - (previous?.promptTokens || 0));
@@ -1327,16 +1484,21 @@ function usageDelta(current?: Output["usage"], previous?: Output["usage"]): Outp
   const cachedInputTokens = typeof current.cachedInputTokens === "number"
     ? Math.max(0, current.cachedInputTokens - (previous?.cachedInputTokens || 0))
     : undefined;
-  const billingMetrics = metricDelta(current.billingMetrics, previous?.billingMetrics);
-  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && !reasoningTokens && !cachedInputTokens && !billingMetrics) {
+  const cacheWriteTokens = typeof current.cacheWriteTokens === "number"
+    ? Math.max(0, current.cacheWriteTokens - (previous?.cacheWriteTokens || 0))
+    : undefined;
+  const billingMetricDelta = metricDelta(current.billingMetrics, previous?.billingMetrics);
+  if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && !reasoningTokens && !cachedInputTokens && !cacheWriteTokens && !billingMetricDelta) {
     return undefined;
   }
+  const billingMetrics = checkpointMetrics(current.billingMetrics, billingMetricDelta);
   return {
     promptTokens,
     completionTokens,
     totalTokens: totalTokens || promptTokens + completionTokens,
     ...(reasoningTokens ? { reasoningTokens } : {}),
     ...(cachedInputTokens ? { cachedInputTokens } : {}),
+    ...(cacheWriteTokens ? { cacheWriteTokens } : {}),
     ...(billingMetrics ? { billingMetrics } : {}),
   };
 }
@@ -1349,16 +1511,170 @@ function mediaDelta(current?: Output["media"], previous?: Output["media"]): Outp
   const generatedUnits = typeof current.generatedUnits === "number"
     ? Math.max(0, current.generatedUnits - (previous?.generatedUnits || 0))
     : undefined;
-  const billingMetrics = metricDelta(current.billingMetrics, previous?.billingMetrics);
-  if (!duration && !generatedUnits && !billingMetrics) {
+  const billingMetricDelta = metricDelta(current.billingMetrics, previous?.billingMetrics);
+  if (!duration && !generatedUnits && !billingMetricDelta) {
     return undefined;
   }
+  const billingMetrics = checkpointMetrics(current.billingMetrics, billingMetricDelta);
   return {
     mimeType: current.mimeType,
     ...(duration ? { duration } : {}),
     ...(generatedUnits ? { generatedUnits } : {}),
     status: "completed",
     ...(billingMetrics ? { billingMetrics } : {}),
+  };
+}
+
+function maxMetricEvidence(
+  current?: Record<string, unknown>,
+  previous?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const merged: Record<string, unknown> = { ...(previous || {}) };
+  for (const [key, value] of Object.entries(current || {})) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const prior = merged[key];
+      merged[key] = typeof prior === "number" && Number.isFinite(prior)
+        ? Math.max(prior, value)
+        : value;
+    } else if (typeof value === "string" || typeof value === "boolean") {
+      merged[key] = value;
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function maxUsageEvidence(
+  current: NonNullable<Output["usage"]>,
+  previous?: Output["usage"],
+): NonNullable<Output["usage"]> {
+  const maximum = (value: number | undefined, prior: number | undefined): number | undefined => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return prior;
+    return Math.max(prior || 0, value);
+  };
+  const promptTokens = maximum(current.promptTokens, previous?.promptTokens) || 0;
+  const completionTokens = maximum(current.completionTokens, previous?.completionTokens) || 0;
+  const totalTokens = maximum(current.totalTokens, previous?.totalTokens) || promptTokens + completionTokens;
+  const reasoningTokens = maximum(current.reasoningTokens, previous?.reasoningTokens);
+  const cachedInputTokens = maximum(current.cachedInputTokens, previous?.cachedInputTokens);
+  const cacheWriteTokens = maximum(current.cacheWriteTokens, previous?.cacheWriteTokens);
+  const billingMetrics = maxMetricEvidence(current.billingMetrics, previous?.billingMetrics);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(billingMetrics ? { billingMetrics } : {}),
+  };
+}
+
+function maxMediaEvidence(
+  current: NonNullable<Output["media"]>,
+  previous?: Output["media"],
+): NonNullable<Output["media"]> {
+  const maximum = (value: number | undefined, prior: number | undefined): number | undefined => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return prior;
+    return Math.max(prior || 0, value);
+  };
+  const duration = maximum(current.duration, previous?.duration);
+  const generatedUnits = maximum(current.generatedUnits, previous?.generatedUnits);
+  const billingMetrics = maxMetricEvidence(current.billingMetrics, previous?.billingMetrics);
+  return {
+    mimeType: current.mimeType || previous?.mimeType || "application/octet-stream",
+    ...(duration !== undefined ? { duration } : {}),
+    ...(generatedUnits !== undefined ? { generatedUnits } : {}),
+    status: "completed",
+    ...(billingMetrics ? { billingMetrics } : {}),
+  };
+}
+
+export interface CumulativeSettlementLane {
+  checkpoint: (output: Output) => boolean;
+  flush: () => Promise<void>;
+  failure: () => Promise<never>;
+  checkpointCount: () => number;
+  hasEvidence: () => boolean;
+}
+
+export async function finalizeDirectStreamPayment(args: {
+  output: Output;
+  settle: (output: Output) => Promise<Receipt | null>;
+  emitReceipt: (receipt: Receipt) => void | Promise<void>;
+  emitDone: () => void | Promise<void>;
+  emitError: (error: { code: string; message: string }) => void | Promise<void>;
+  terminalError?: { code: string; message: string };
+  interruptedError?: Error;
+}): Promise<"done" | "error"> {
+  const receipt = await args.settle(args.output);
+  if (args.interruptedError) {
+    throw args.interruptedError;
+  }
+  if (receipt) {
+    await args.emitReceipt(receipt);
+  }
+  if (args.terminalError) {
+    await args.emitError(args.terminalError);
+    return "error";
+  }
+  await args.emitDone();
+  return "done";
+}
+
+export function createCumulativeSettlementLane(args: {
+  settle: (output: Output) => Promise<Receipt | null>;
+  emitReceipt: (receipt: Receipt) => void | Promise<void>;
+}): CumulativeSettlementLane {
+  let scheduledUsage: Output["usage"] | undefined;
+  let scheduledMedia: Output["media"] | undefined;
+  let scheduledCheckpoints = 0;
+  let firstFailure: unknown;
+  let chain: Promise<void> = Promise.resolve();
+  let rejectFailure!: (error: unknown) => void;
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  void failure.catch(() => undefined);
+
+  const checkpoint = (output: Output): boolean => {
+    if (firstFailure) throw firstFailure;
+    const deltaUsage = usageDelta(output.usage, scheduledUsage);
+    const deltaMedia = mediaDelta(output.media, scheduledMedia);
+    if (!deltaUsage && !deltaMedia) return false;
+
+    if (output.usage) scheduledUsage = maxUsageEvidence(output.usage, scheduledUsage);
+    if (output.media) scheduledMedia = maxMediaEvidence(output.media, scheduledMedia);
+    scheduledCheckpoints += 1;
+
+    const cumulativeOutput: Output = {
+      modality: output.modality,
+      ...(scheduledUsage ? { usage: scheduledUsage } : {}),
+      ...(scheduledMedia ? { media: scheduledMedia } : {}),
+      finishReason: output.finishReason || "stop",
+    };
+    chain = chain.then(async () => {
+      try {
+        const receipt = await args.settle(cumulativeOutput);
+        if (receipt) await args.emitReceipt(receipt);
+      } catch (error) {
+        if (!firstFailure) {
+          firstFailure = error;
+          rejectFailure(error);
+        }
+      }
+    });
+    return true;
+  };
+
+  return {
+    checkpoint,
+    flush: async () => {
+      await chain;
+      if (firstFailure) throw firstFailure;
+    },
+    failure: () => failure,
+    checkpointCount: () => scheduledCheckpoints,
+    hasEvidence: () => scheduledCheckpoints > 0,
   };
 }
 
@@ -1382,7 +1698,8 @@ function resourceAction(req: Req, fallback: string): string {
 }
 
 function shouldKickSettlement(req: Req): boolean {
-  return !readHeader(req, "x-execution-run-id");
+  void req;
+  return true;
 }
 
 function readHeader(req: Req, name: string): string | undefined {
@@ -1691,6 +2008,12 @@ export async function executeRequest(args: {
     await finishInferenceTelemetry(telemetry, status, error);
   };
   let paymentTerminal = false;
+  let settlementSequence = 0;
+  let cumulativeSettlementAmountWei = 0n;
+  let chargedCumulativeQuote: MeteredModelQuote | undefined;
+  let activeSettlement: Promise<Receipt | null> | null = null;
+  let activeSettlementLane: CumulativeSettlementLane | null = null;
+  let activeSettlementCheckpoint: (() => boolean) | null = null;
   const abortPaidInference = async (reason: string) => {
     if (paymentTerminal) {
       return;
@@ -1698,14 +2021,53 @@ export async function executeRequest(args: {
     paymentTerminal = true;
     await paid.payment.abort(reason);
   };
-  const settleOutput = async (output: Output) => {
-    const { receipt, settlement, quote } = await settlePaidInference({ req: args.req, res: args.res, payment: paid.payment, request, output, resolved: paid.resolved });
-    paymentTerminal = true;
-    addInferenceSettlement(telemetry, quote, settlement);
-    return receipt;
+  const settleOutput = async (output: Output): Promise<Receipt | null> => {
+    const checkpointSequence = settlementSequence;
+    const pending = (async () => {
+      const { receipt, settlement, quote, cumulativeQuote } = await settlePaidInference({
+        req: args.req,
+        res: args.res,
+        payment: paid.payment,
+        request,
+        output,
+        resolved: paid.resolved,
+        checkpointSequence,
+        previousCumulativeAmountWei: cumulativeSettlementAmountWei.toString(),
+        previousCumulativeQuote: chargedCumulativeQuote,
+        onPaymentBacked: ({ settlement, cumulativeQuote }) => {
+          chargedCumulativeQuote = cumulativeQuote;
+          cumulativeSettlementAmountWei += BigInt(settlement.finalAmountWei);
+          settlementSequence += 1;
+          paymentTerminal = true;
+        },
+      });
+      addInferenceSettlement(telemetry, quote, settlement);
+      return receipt;
+    })();
+    activeSettlement = pending;
+    try {
+      return await pending;
+    } finally {
+      if (activeSettlement === pending) activeSettlement = null;
+    }
   };
   const abortPaymentOnClose = () => {
-    void abortPaidInference(abortError(lifecycle.signal).message).catch((error) => {
+    void (async () => {
+      try {
+        activeSettlementCheckpoint?.();
+        if (activeSettlementLane?.hasEvidence()) {
+          await activeSettlementLane.flush();
+          return;
+        }
+        if (activeSettlement) {
+          await activeSettlement;
+          return;
+        }
+      } catch (error) {
+        console.warn("[gateway] failed to flush evidenced inference payment after client close:", error instanceof Error ? error.message : String(error));
+      }
+      await abortPaidInference(abortError(lifecycle.signal).message);
+    })().catch((error) => {
       console.warn("[gateway] failed to abort inference payment after client close:", error instanceof Error ? error.message : String(error));
     });
   };
@@ -1773,6 +2135,7 @@ export async function executeRequest(args: {
         }
         markInferenceFirstOutput(telemetry);
         let finalOutput = output;
+        let terminalStreamError: { code: string; message: string } | undefined;
 
         writeDirectResponsesOutput(args.res, responsesEncoder, output);
 
@@ -1828,54 +2191,70 @@ export async function executeRequest(args: {
                   ...(typeof status.progress === "number" ? { progress: status.progress } : {}),
                 },
               };
-              args.res.write(toErrorStreamEvent({
+              terminalStreamError = {
                 code: "upstream_error",
                 message: status.error || `Video job ${jobId} failed`,
-              }));
+              };
               break;
             }
 
             if (Date.now() - startedAt >= timeoutMs) {
-              args.res.write(toErrorStreamEvent({
+              terminalStreamError = {
                 code: "upstream_timeout",
                 message: `Video job ${jobId} did not complete within ${timeoutMs}ms`,
-              }));
+              };
               break;
             }
 
             await wait(pollIntervalMs, lifecycle.signal);
           }
 
-          if (lifecycle.aborted()) {
-            throw abortError(lifecycle.signal);
-          }
         }
 
-        writeResponsesEvents(args.res, responsesEncoder, {
-          type: "done",
-          finishReason: finalOutput.finishReason || "stop",
-          usage: finalOutput.usage,
-        });
         finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
-        closeEventStream(args.res);
+        const terminalOutcome = await finalizeDirectStreamPayment({
+          output: finalOutput,
+          settle: settleOutput,
+          emitReceipt: (receipt) => {
+            if (!args.res.writableEnded) {
+              args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
+            }
+          },
+          emitDone: () => {
+            if (!args.res.writableEnded) {
+              writeResponsesEvents(args.res, responsesEncoder, {
+                type: "done",
+                finishReason: finalOutput.finishReason || "stop",
+                usage: finalOutput.usage,
+              });
+              closeEventStream(args.res);
+            }
+          },
+          emitError: (error) => {
+            if (args.res.writableEnded) return;
+            args.res.write(toErrorStreamEvent(error));
+            if (externalCompatibility) args.res.end();
+            else closeEventStream(args.res);
+          },
+          ...(terminalStreamError ? { terminalError: terminalStreamError } : {}),
+          ...(lifecycle.aborted() ? { interruptedError: abortError(lifecycle.signal) } : {}),
+        });
         lifecycle.done();
-
-        await settleOutput(finalOutput);
         const stateError = await baseRecordSave;
         if (stateError) throw stateError;
 
         await saveResponseRecord({
           ...baseRecord,
-          status: finalOutput.media?.status === "failed"
+          status: terminalOutcome === "error"
             ? "failed"
             : finalOutput.media?.jobId && finalOutput.media.status && finalOutput.media.status !== "completed"
               ? "in_progress"
               : "completed",
           output: finalOutput,
           ...(finalOutput.media?.jobId ? { jobId: finalOutput.media.jobId } : {}),
-          ...(finalOutput.media?.status === "failed" ? { error: finalOutput.media.status } : {}),
+          ...(terminalStreamError ? { error: terminalStreamError.message } : {}),
         });
-        await finishTelemetry(finalOutput.media?.status === "failed" ? "failed" : "succeeded");
+        await finishTelemetry(terminalOutcome === "error" ? "failed" : "succeeded");
       } catch (error) {
         try {
           await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
@@ -1905,27 +2284,6 @@ export async function executeRequest(args: {
         ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
         : null;
       const iterator = routed.result.stream[Symbol.asyncIterator]();
-      let firstEvent: IteratorResult<Event> | null = null;
-      if (externalCompatibility) {
-        firstEvent = await iterator.next();
-        if (firstEvent.done) throw new Error("upstream stream ended without output");
-        if (firstEvent.value.type === "error") {
-          throw Object.assign(new Error(firstEvent.value.error?.message || "upstream_error"), {
-            code: firstEvent.value.error?.code,
-          });
-        }
-        openEventStream(args.res, request.responseId);
-      }
-      if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
-      const events = async function* (): AsyncGenerator<Event> {
-        if (firstEvent && !firstEvent.done) yield firstEvent.value;
-        while (true) {
-          const event = await iterator.next();
-          if (event.done) return;
-          yield event.value;
-        }
-      };
-
       let isFirstToken = true;
       let aggregatedText = "";
       let aggregatedReasoning = "";
@@ -1941,57 +2299,87 @@ export async function executeRequest(args: {
       } | null = null;
       let pendingImageCompleteEvent: Event | null = null;
       let pendingDoneEvent: Event | null = null;
+      let sawProviderDone = false;
       const externalChatToolDeltaIndexes = new Set<number>();
       let lastMedia: Output["media"] | undefined;
       const realtimeStream = request.modality === "realtime";
-      let settledUsage: Output["usage"] | undefined;
-      let settledMedia: Output["media"] | undefined;
-      let realtimeSettlements = 0;
-      let settlementFailure: unknown = null;
-      let settlementChain: Promise<void> = Promise.resolve();
-      const scheduleRealtimeSettlement = () => {
-        if (!realtimeStream) return;
-        const deltaUsage = usageDelta(lastUsage, settledUsage);
-        const deltaMedia = mediaDelta(lastMedia, settledMedia);
-        if (!deltaUsage && !deltaMedia) return;
-        settledUsage = lastUsage;
-        settledMedia = lastMedia;
-
-        const output: Output = {
-          modality: "realtime",
-          content: "",
-          ...(deltaUsage ? { usage: deltaUsage } : {}),
-          ...(deltaMedia ? { media: deltaMedia } : {}),
-          finishReason: "stop",
-        };
-
-        settlementChain = settlementChain
-          .then(async () => {
-            if (settlementFailure) return;
-            const receipt = await settleOutput(output);
-            if (!receipt || BigInt(receipt.finalAmountWei || "0") <= 0n) {
-              throw Object.assign(new Error("Realtime settlement produced no backed nonzero receipt"), { statusCode: 402 });
-            }
-            realtimeSettlements += 1;
-            if (!args.res.writableEnded) {
-              args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
-            }
-          })
-          .catch((error) => {
-            settlementFailure = error;
-            try {
-              args.res.write(toErrorStreamEvent({
-                code: "payment_settlement_failed",
-                message: error instanceof Error ? error.message : String(error),
-              }));
-            } catch { /* best-effort */ }
-            void closeRealtimeEngine(request.responseId).catch(() => undefined);
-          });
+      const continuousSettlement = paid.payment.settlementMode === "continuous";
+      let receiptCount = 0;
+      const cumulativeOutput = (): Output => ({
+        modality: streamedImage ? "image" : request.modality,
+        ...(lastUsage ? { usage: lastUsage } : {}),
+        ...(lastMedia ? { media: lastMedia } : {}),
+        finishReason,
+      });
+      const settlementLane = createCumulativeSettlementLane({
+        settle: settleOutput,
+        emitReceipt: (receipt) => {
+          receiptCount += 1;
+          if (!args.res.headersSent) {
+            applyReceiptHeader(args.res, receipt);
+            return;
+          }
+          if (args.res.writableEnded) return;
+          try {
+            args.res.write(toReceiptStreamEvent(receiptStreamPayload(receipt)));
+          } catch (error) {
+            console.warn("[gateway] failed to emit inference settlement receipt:", error instanceof Error ? error.message : String(error));
+          }
+        },
+      });
+      activeSettlementLane = settlementLane;
+      const checkpointSettlement = (force = false) => {
+        if (!force && !continuousSettlement) return false;
+        return settlementLane.checkpoint(cumulativeOutput());
       };
+      activeSettlementCheckpoint = () => checkpointSettlement(true);
+      const flushSettlement = async () => {
+        await settlementLane.flush();
+        if (realtimeStream && settlementLane.hasEvidence() && receiptCount <= 0) {
+          throw Object.assign(new Error("Realtime settlement produced no backed nonzero receipt"), { statusCode: 402 });
+        }
+      };
+      let firstEvent: IteratorResult<Event> | null = null;
+      if (externalCompatibility) {
+        firstEvent = await iterator.next();
+        if (firstEvent.done) throw new Error("upstream stream ended without output");
+        if (firstEvent.value.type === "error") {
+          markInferenceFirstOutput(telemetry);
+          if (firstEvent.value.usage) lastUsage = firstEvent.value.usage;
+          if (firstEvent.value.media) lastMedia = firstEvent.value.media;
+          checkpointSettlement(true);
+          await flushSettlement();
+          throw Object.assign(new Error(firstEvent.value.error?.message || "upstream_error"), {
+            code: firstEvent.value.error?.code,
+          });
+        }
+        openEventStream(args.res, request.responseId);
+      }
+      if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
+      const events = async function* (): AsyncGenerator<Event> {
+        if (firstEvent && !firstEvent.done) yield firstEvent.value;
+        while (true) {
+          const event = await Promise.race([
+            iterator.next(),
+            settlementLane.failure(),
+          ]);
+          if (event.done) return;
+          yield event.value;
+        }
+      };
+      const providerKeepalive = setInterval(() => {
+        if (!args.res.writableEnded && args.res.headersSent) {
+          args.res.write(": ping\n\n");
+        }
+      }, 15_000);
 
       try {
-        for await (const event of externalCompatibility ? events() : routed.result.stream) {
+        for await (const event of events()) {
           markInferenceFirstOutput(telemetry);
+          const eventHasEvidence = Boolean(event.usage || event.media);
+          if (event.usage) lastUsage = event.usage;
+          if (event.media) lastMedia = event.media;
+          if (continuousSettlement && eventHasEvidence) checkpointSettlement();
           if (event.type === "text-delta") {
             aggregatedText += event.text || "";
             if (responsesEncoder) writeResponsesEvents(args.res, responsesEncoder, event);
@@ -2068,6 +2456,7 @@ export async function executeRequest(args: {
             if (event.media) {
               lastMedia = event.media;
             }
+            if (continuousSettlement) checkpointSettlement();
             if (event.type === "error") {
               throw Object.assign(new Error(event.error?.message || "upstream_error"), {
                 code: event.error?.code,
@@ -2077,7 +2466,6 @@ export async function executeRequest(args: {
               ? toChatStreamEvent(request.responseId, modelId, event, isFirstToken)
               : toResponsesStreamEvent(request.responseId, modelId, event);
             args.res.write(formatCoreSSE(payload));
-            scheduleRealtimeSettlement();
             isFirstToken = false;
             continue;
           }
@@ -2096,7 +2484,17 @@ export async function executeRequest(args: {
             if (event.usage) {
               lastUsage = event.usage;
             }
+            if (streamedImage) {
+              lastMedia = {
+                mimeType: streamedImage.mimeType || "image/png",
+                ...(typeof streamedImage.duration === "number" ? { duration: streamedImage.duration } : {}),
+                ...(typeof streamedImage.generatedUnits === "number" ? { generatedUnits: streamedImage.generatedUnits } : {}),
+                ...(streamedImage.billingMetrics ? { billingMetrics: streamedImage.billingMetrics } : {}),
+                status: "completed",
+              };
+            }
             pendingImageCompleteEvent = event;
+            if (continuousSettlement) checkpointSettlement();
             continue;
           }
 
@@ -2109,12 +2507,21 @@ export async function executeRequest(args: {
             }
             finishReason = event.finishReason || "stop";
             pendingDoneEvent = event;
-            scheduleRealtimeSettlement();
+            sawProviderDone = true;
+            if (continuousSettlement) checkpointSettlement();
             continue;
           }
         }
 
-        if (!lastUsage && !(request.modality === "realtime" && lastMedia)) {
+        checkpointSettlement(true);
+        if (!sawProviderDone) {
+          await flushSettlement();
+          throw Object.assign(
+            new Error("incomplete_provider_stream"),
+            { code: "incomplete_provider_stream" },
+          );
+        }
+        if (!settlementLane.hasEvidence()) {
           await abortPaidInference("missing_stream_evidence");
           await finishTelemetry("failed", new Error("missing_stream_evidence"));
           args.res.end();
@@ -2122,7 +2529,7 @@ export async function executeRequest(args: {
         }
 
         let finalOutput: Output = {
-          modality: streamedImage ? "image" : request.modality === "realtime" ? "realtime" : "text",
+          modality: streamedImage ? "image" : request.modality,
           ...(streamedImage
             ? {
               media: {
@@ -2138,13 +2545,16 @@ export async function executeRequest(args: {
             : {
               content: aggregatedText,
               ...(aggregatedReasoning ? { reasoning: aggregatedReasoning } : {}),
-              ...(request.modality === "realtime" && lastMedia ? { media: lastMedia } : {}),
+              ...(lastMedia ? { media: lastMedia } : {}),
             }),
           ...(lastUsage ? { usage: lastUsage } : {}),
           finishReason,
           ...(responsesEncoder && !streamedImage ? { outputItems: responsesEncoder.items() } : {}),
           ...(responsesEncoder?.calls().length ? { toolCalls: responsesEncoder.calls() } : {}),
         };
+
+        if (continuousSettlement) settlementLane.checkpoint(finalOutput);
+        await flushSettlement();
 
         if (pendingImageCompleteEvent) {
           args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
@@ -2159,11 +2569,7 @@ export async function executeRequest(args: {
           finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
         }
 
-        const terminalEvent = pendingDoneEvent ?? {
-          type: "done" as const,
-          usage: lastUsage,
-          finishReason,
-        };
+        const terminalEvent = pendingDoneEvent!;
         if (responsesEncoder) {
           writeResponsesEvents(args.res, responsesEncoder, terminalEvent);
         } else {
@@ -2174,18 +2580,6 @@ export async function executeRequest(args: {
         }
         closeEventStream(args.res);
         lifecycle.done();
-
-        if (realtimeStream) {
-          await settlementChain;
-          if (settlementFailure) {
-            throw settlementFailure;
-          }
-          if (realtimeSettlements <= 0) {
-            throw new Error("missing_realtime_settlement_evidence");
-          }
-        } else {
-          await settleOutput(finalOutput);
-        }
         const stateError = await baseRecordSave;
         if (stateError) throw stateError;
 
@@ -2196,8 +2590,33 @@ export async function executeRequest(args: {
         });
         await finishTelemetry("succeeded");
       } catch (error) {
+        let terminalError: unknown = error;
         try {
-          await abortPaidInference(error instanceof Error ? error.message : "stream_failed");
+          checkpointSettlement(true);
+        } catch (settlementError) {
+          terminalError = settlementError;
+        }
+        if (settlementLane.hasEvidence()) {
+          try {
+            await settlementLane.flush();
+            if (realtimeStream && receiptCount <= 0) {
+              throw Object.assign(new Error("Realtime settlement produced no backed nonzero receipt"), { statusCode: 402 });
+            }
+          } catch (settlementError) {
+            terminalError = Object.assign(
+              settlementError instanceof Error ? settlementError : new Error(String(settlementError)),
+              { code: "payment_settlement_failed" },
+            );
+            if (realtimeStream) {
+              void closeRealtimeEngine(request.responseId).catch(() => undefined);
+            }
+          }
+        }
+        try {
+          await iterator.return?.(undefined);
+        } catch { /* best-effort */ }
+        try {
+          await abortPaidInference(terminalError instanceof Error ? terminalError.message : "stream_failed");
         } catch { /* best-effort */ }
         if (!args.res.headersSent) {
           // Let the outer Express error handler send the JSON error response.
@@ -2208,10 +2627,10 @@ export async function executeRequest(args: {
             if (responsesEncoder) {
               writeResponsesEvents(args.res, responsesEncoder, {
                 type: "error",
-                error: streamErrorPayload(error),
+                error: streamErrorPayload(terminalError),
               });
             } else {
-              args.res.write(toErrorStreamEvent(streamErrorPayload(error)));
+              args.res.write(toErrorStreamEvent(streamErrorPayload(terminalError)));
             }
           } catch { /* best-effort */ }
           try {
@@ -2219,7 +2638,11 @@ export async function executeRequest(args: {
             else closeEventStream(args.res);
           } catch { /* best-effort */ }
         }
-        throw error;
+        throw terminalError;
+      } finally {
+        clearInterval(providerKeepalive);
+        activeSettlementCheckpoint = null;
+        activeSettlementLane = null;
       }
 
       return;
@@ -2642,6 +3065,9 @@ async function runDeferredInference(args: {
       request: args.request,
       output: result,
       resolved: paid.resolved,
+      onPaymentBacked: () => {
+        paymentTerminal = true;
+      },
     });
     addInferenceSettlement(telemetry, quote, settlement);
     paymentTerminal = true;
@@ -2672,7 +3098,33 @@ export async function handleListModels(req: Req, res: Res, extended = false): Pr
 
   try {
     const models = extended ? getExtendedModels() : getCompiledModels();
-    res.status(200).json({ object: "list", data: models.models.map(withModelOperations) });
+    const cache = extended ? extendedCatalogPayloads : compiledCatalogPayloads;
+    const payload = cachedCatalogPayload(cache, models, () => ({
+      object: "list",
+      data: models.models.map(withModelOperations),
+    }));
+    sendCatalogPayload(req, res, payload);
+  } catch (error) {
+    writeAdaptedError(res, error, 500);
+  }
+}
+
+export async function handleListModelIndex(req: Req, res: Res): Promise<void> {
+  setCorsHeaders(res);
+  if (req.method === "OPTIONS") {
+    res.status(200).end();
+    return;
+  }
+
+  try {
+    const catalog = getCompiledModels();
+    const payload = cachedCatalogPayload(modelIndexPayloads, catalog, () => ({
+      object: "list",
+      version: catalog.lastUpdated,
+      total: catalog.models.length,
+      data: catalog.models.map(modelIndexCard),
+    }));
+    sendCatalogPayload(req, res, payload);
   } catch (error) {
     writeAdaptedError(res, error, 500);
   }
