@@ -70,16 +70,21 @@ export interface Receipt {
     providerAmountWei?: string;
     platformFeeWei?: string;
     finalAmountWei: string;
-    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    checkpointAmountWei?: string;
+    cumulativeAmountWei?: string;
+    checkpointSequence?: number;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
+    settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
     txHash?: string;
     claimTxHash?: string;
     settleTxHash?: string;
     paymentIntentId?: string;
-    sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
     network: `${string}:${string}`;
-    settledAt: number;
+    settledAt?: number;
     cumulative?: CumulativeBill;
 }
 
