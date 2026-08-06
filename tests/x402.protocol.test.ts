@@ -187,6 +187,7 @@ test("settlePreparedInferencePayment preserves x402 payment-required negotiation
     settlePreparedInferencePayment(
       {
         maxAmountWei: "76",
+        settlementMode: "single",
         runtimeHeaders: {},
         settle: async () => ({
           success: false,
@@ -235,6 +236,7 @@ test("settlePreparedInferencePayment preserves granular metered receipt fields",
   const receipt = await settlePreparedInferencePayment(
     {
       maxAmountWei: "1000000",
+      settlementMode: "single",
       runtimeHeaders: {},
       settle: async () => ({
         success: true,
@@ -267,6 +269,7 @@ test("raw x402 settlement receipts preserve the verified payer identity", async 
   const settlement = await settlePreparedInferencePayment(
     {
       maxAmountWei: "1000000",
+      settlementMode: "continuous",
       runtimeHeaders: {},
       settle: async () => ({
         success: true,
@@ -292,10 +295,39 @@ test("raw x402 settlement receipts preserve the verified payer identity", async 
   assert.equal(receipt?.paymentChannelId, "0xa45e9ee88304f93c0e744b3b0841840a9b745635d9d44e94c2abcb1a82f7a2b0");
 });
 
+test("queued and submitted payment backing never invents a settlement timestamp", async () => {
+  for (const settlementStatus of ["queued", "submitted"] as const) {
+    const receipt = await settlePreparedInferencePayment(
+      {
+        maxAmountWei: "1000000",
+        settlementMode: "continuous",
+        runtimeHeaders: {},
+        settle: async () => ({
+          success: true,
+          userAddress: "0x1111111111111111111111111111111111111111",
+          finalAmountWei: "24",
+          network: "eip155:5042002",
+          settlementStatus,
+          paymentIntentId: `intent-${settlementStatus}`,
+          ...(settlementStatus === "submitted" ? { txHash: `0x${"78".repeat(32)}` } : {}),
+        }),
+        abort: async () => undefined,
+        applyHeaders: () => undefined,
+      },
+      {} as Response,
+      { finalAmountWei: "24" },
+    );
+
+    assert.equal(receipt?.settlementStatus, settlementStatus);
+    assert.equal(receipt?.settledAt, undefined);
+  }
+});
+
 test("settlePreparedInferencePayment preserves settlement chain id for stream receipts", async () => {
   const receipt = await settlePreparedInferencePayment(
     {
       maxAmountWei: "1000000",
+      settlementMode: "single",
       runtimeHeaders: {},
       settle: async () => ({
         success: true,
@@ -320,7 +352,7 @@ test("terminal batch settlement kicks require real backing and shared worker loc
   assert.match(X402_SOURCE, /positiveAmount\(settlement\.finalAmountWei\)/);
   assert.match(X402_SOURCE, /settlement\.txHash/);
   assert.match(X402_SOURCE, /settlement\.paymentIntentId/);
-  assert.match(X402_SOURCE, /settlement\.sessionBudgetIntentId/);
+  assert.doesNotMatch(X402_SOURCE, /sessionBudgetIntentId|session_budget_intent_id/);
   assert.match(X402_SOURCE, /settlement\.paymentChannelId && settlement\.paymentCumulativeAmountWei/);
   assert.match(X402_SOURCE, /valkeySetNXEX\(\s*SETTLEMENT_KICK_LOCK_KEY/);
   assert.match(X402_SOURCE, /valkeySetNXEX\(\s*SETTLEMENT_RUN_LOCK_KEY/);
@@ -344,13 +376,21 @@ test("terminal batch settlement kicks require real backing and shared worker loc
   assert.doesNotMatch(X402_SOURCE, /consumeKeyBudget\([^)]*\)[\s\S]{0,160}settlementStatus: "queued"/);
 });
 
-test("inherited raw batch envelopes commit nested charges against final amount requirements", () => {
-  assert.match(
-    X402_SOURCE,
-    /commitBatchCharge\(\s*inherited\.paymentPayload,\s*finalAmountWei,\s*createPaymentRequirement\(\{\s*amountWei: finalAmountWei,\s*network: requiredNetwork,\s*scheme: "batch-settlement",\s*\}\),\s*\)/,
-  );
-  assert.doesNotMatch(
-    X402_SOURCE,
-    /commitBatchCharge\(\s*inherited\.paymentPayload,\s*finalAmountWei\s*\)/,
-  );
+test("raw batch envelopes use one checkpoint authority and only verified batch payloads persist", () => {
+  const rawBatchFactoryStart = X402_SOURCE.indexOf("function createPreparedRawBatchPayment");
+  const rawBatchFactoryEnd = X402_SOURCE.indexOf("async function prepareRawInferenceX402Payment");
+  const verifiedBatchGuardStart = X402_SOURCE.indexOf("const verifiedBatchPayload = getBatchPayload(paymentPayload)");
+  const singleUseStart = X402_SOURCE.indexOf("let singleUseConsumed = false");
+  const rawBatchFactory = X402_SOURCE.slice(rawBatchFactoryStart, rawBatchFactoryEnd);
+  const verifiedBatchGuard = X402_SOURCE.slice(verifiedBatchGuardStart, singleUseStart);
+
+  assert.ok(rawBatchFactoryStart >= 0 && rawBatchFactoryEnd > rawBatchFactoryStart);
+  assert.ok(verifiedBatchGuardStart >= 0 && singleUseStart > verifiedBatchGuardStart);
+  assert.match(rawBatchFactory, /commitRawBatchCheckpoint\(\{[\s\S]*?amountWei: finalAmountWei,[\s\S]*?rootRunId: input\.rootRunId,[\s\S]*?executionRunId: input\.executionRunId,[\s\S]*?sequence,/);
+  assert.match(rawBatchFactory, /settlementStatus: "queued"/);
+  assert.doesNotMatch(rawBatchFactory, /\bsettledAt\b|\btxHash\b/);
+
+  assert.equal(X402_SOURCE.match(/await saveRawEnvelope\(/gu)?.length, 1);
+  assert.match(verifiedBatchGuard, /if \(verifiedBatchPayload\) \{[\s\S]*?await saveRawEnvelope\(/);
+  assert.doesNotMatch(X402_SOURCE, /\b(?:reserveRawEnvelope|releaseRawEnvelope|commitBatchCharge)\b/);
 });

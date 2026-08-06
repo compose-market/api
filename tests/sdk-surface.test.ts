@@ -10,7 +10,7 @@
  *   - The idempotency helper keys are stable
  *
  * Every test is self-contained; no mocks. ValKey is hit through the real client
- * so session-budget state is cleaned in the finally blocks.
+ * and test-owned state is cleaned in the finally blocks.
  */
 
 import "dotenv/config";
@@ -21,7 +21,7 @@ import test from "node:test";
 
 import express from "express";
 
-import { closeValkey, valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
+import { closeValkey, valkeyDel, valkeyHSet, valkeySAdd } from "../x402/keys/valkey.js";
 import { createKey } from "../x402/keys/storage.js";
 import {
     encodeReceiptHeader,
@@ -33,8 +33,6 @@ import {
 } from "../http/request-context.js";
 import { buildCorsHeaders } from "../http/cors.js";
 import { buildError, statusForCode } from "../http/errors.js";
-import { initializeSessionBudget } from "../x402/session/budget.js";
-import { saveRawEnvelope } from "../x402/envelope.js";
 
 type HandlerEvent = {
     rawPath: string;
@@ -62,12 +60,25 @@ function randomWalletAddress(): `0x${string}` {
     return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
 }
 
-function userKeysIndex(address: string): string {
-    return `user-keys:${address.toLowerCase()}`;
+function userKeysIndex(address: string, network: string): string {
+    return `user-keys:${network}:${address.toLowerCase()}`;
 }
 
-function sessionBudgetKey(userAddress: string, network: string): string {
-    return `session:budget:${network}:${userAddress}`;
+function legacySessionBudgetKey(userAddress: string, network: string): string {
+    return `session:budget:${network}:${userAddress.toLowerCase()}`;
+}
+
+async function cleanupComposeKeys(
+    userAddress: string,
+    network: string,
+    keyIds: string[],
+): Promise<void> {
+    await Promise.all(keyIds.flatMap((keyId) => [
+        valkeyDel(`key:${keyId}`),
+        valkeyDel(`key:revoked:${keyId}`),
+        valkeyDel(`key-payment-intents:${keyId}`),
+    ]));
+    await valkeyDel(userKeysIndex(userAddress, network));
 }
 
 // ----------------------------------------------------------------------------
@@ -121,6 +132,8 @@ test("buildCorsHeaders echoes credentialed first-party origins and sends '*' for
     assert.equal(first["Access-Control-Allow-Credentials"], "true");
     assert.equal(first["Vary"], "Origin");
     assert.ok(first["Access-Control-Allow-Headers"].includes("x-sdk"));
+    assert.ok(first["Access-Control-Allow-Headers"].includes("x-execution-run-id"));
+    assert.ok(first["Access-Control-Allow-Headers"].includes("x-parent-run-id"));
 
     const localhost = buildCorsHeaders("http://localhost:3000");
     assert.equal(localhost["Access-Control-Allow-Origin"], "http://localhost:3000");
@@ -174,7 +187,15 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
             name: "test-session-key",
         });
         seededKeyId = seeded.keyId;
-        await initializeSessionBudget(userAddress, network, "1000000", expiresAt);
+        await valkeyHSet(legacySessionBudgetKey(userAddress, network), {
+            userAddress: userAddress.toLowerCase(),
+            network,
+            totalBudgetWei: "9000000",
+            lockedBudgetWei: "8000000",
+            usedBudgetWei: "500000",
+            expiresAt: String(expiresAt),
+            createdAt: String(Date.now()),
+        });
         assert.ok(seeded.token.startsWith("compose-"));
 
         const result = await handler(
@@ -207,41 +228,30 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
         assert.equal(globalBody.keyId, seeded.keyId);
         assert.equal(globalBody.network, network);
     } finally {
-        if (seededKeyId) {
-            await valkeyDel(`key:${seededKeyId}`);
-            await valkeySRem(userKeysIndex(userAddress), seededKeyId);
-        }
-        // Clean any leftover state.
-        await valkeyDel(userKeysIndex(userAddress));
-        await valkeyDel(sessionBudgetKey(userAddress, network));
+        await cleanupComposeKeys(userAddress, network, seededKeyId ? [seededKeyId] : []);
+        await valkeyDel(legacySessionBudgetKey(userAddress, network));
     }
 });
 
-test("GET /api/session returns active raw x402 envelope metadata by payer", async () => {
+test("GET /api/session never mixes raw x402 envelope state into Session identity", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
     const network = "eip155:5042002" as const;
     const rootRunId = `raw-${randomUUID()}`;
 
     try {
-        await saveRawEnvelope({
+        await valkeyHSet(`x402:envelope:${rootRunId}`, {
             rootRunId,
             network,
             maxAmountWei: "2500",
             payer: userAddress,
-            paymentPayload: {
+            usedWei: "0",
+            paymentPayload: JSON.stringify({
                 x402Version: 2,
-                accepted: {
-                    scheme: "upto",
-                    network,
-                    amount: "2500",
-                    asset: "0x0000000000000000000000000000000000000001",
-                    payTo: "0x0000000000000000000000000000000000000002",
-                    maxTimeoutSeconds: 60,
-                },
-                payload: {},
-            } as any,
+                accepted: { scheme: "batch-settlement", network },
+            }),
         });
+        await valkeySAdd(`x402:envelope:payer:${network}:${userAddress}`, rootRunId);
 
         const result = await handler(
             createEvent("GET", "/api/session", {
@@ -258,10 +268,7 @@ test("GET /api/session returns active raw x402 envelope metadata by payer", asyn
             rawEnvelope?: { rootRunId?: string; network?: string; maxAmountWei?: string; remainingWei?: string };
         };
         assert.equal(body.hasSession, false);
-        assert.equal(body.rawEnvelope?.rootRunId, rootRunId);
-        assert.equal(body.rawEnvelope?.network, network);
-        assert.equal(body.rawEnvelope?.maxAmountWei, "2500");
-        assert.equal(body.rawEnvelope?.remainingWei, "2500");
+        assert.equal(body.rawEnvelope, undefined);
     } finally {
         await valkeyDel(`x402:envelope:${rootRunId}`);
         await valkeyDel(`x402:envelope:payer:${userAddress.toLowerCase()}`);
@@ -276,6 +283,8 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
     const attacker = randomWalletAddress();
     const network = "eip155:5042002" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
+    const userKeyIds: string[] = [];
+    const attackerKeyIds: string[] = [];
 
     try {
         const seeded = await createKey(userAddress, {
@@ -285,6 +294,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
             purpose: "api",
             name: "revoke-target",
         });
+        userKeyIds.push(seeded.keyId);
 
         // Attempt 1: no Authorization → 401
         const unauth = await handler(
@@ -308,6 +318,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
             purpose: "api",
             name: "attacker-key",
         });
+        attackerKeyIds.push(attackerKey.keyId);
         const wrongKey = await handler(
             createEvent("DELETE", `/api/keys/${seeded.keyId}`, {
                 headers: {
@@ -345,6 +356,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
             purpose: "api",
             name: "key-a",
         });
+        userKeyIds.push(keyA.keyId);
         const keyB = await createKey(userAddress, {
             budgetLimit: 1_000_000,
             expiresAt,
@@ -352,6 +364,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
             purpose: "api",
             name: "key-b",
         });
+        userKeyIds.push(keyB.keyId);
         const crossRevoke = await handler(
             createEvent("DELETE", `/api/keys/${keyB.keyId}`, {
                 headers: { authorization: `Bearer ${keyA.token}` },
@@ -369,8 +382,8 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
         );
         assert.equal(attackerCleanup.statusCode, 200);
     } finally {
-        await valkeyDel(userKeysIndex(userAddress));
-        await valkeyDel(userKeysIndex(attacker));
+        await cleanupComposeKeys(userAddress, network, userKeyIds);
+        await cleanupComposeKeys(attacker, network, attackerKeyIds);
     }
 });
 
@@ -379,6 +392,7 @@ test("GET /api/keys/:keyId requires possession and returns key metadata without 
     const userAddress = randomWalletAddress();
     const network = "eip155:5042002" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
+    let keyId: string | null = null;
 
     try {
         const seeded = await createKey(userAddress, {
@@ -388,6 +402,7 @@ test("GET /api/keys/:keyId requires possession and returns key metadata without 
             purpose: "api",
             name: "inspect-me",
         });
+        keyId = seeded.keyId;
 
         const unauth = await handler(
             createEvent("GET", `/api/keys/${seeded.keyId}`),
@@ -418,7 +433,7 @@ test("GET /api/keys/:keyId requires possession and returns key metadata without 
             {},
         );
     } finally {
-        await valkeyDel(userKeysIndex(userAddress));
+        await cleanupComposeKeys(userAddress, network, keyId ? [keyId] : []);
     }
 });
 

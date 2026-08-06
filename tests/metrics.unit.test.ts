@@ -7,9 +7,9 @@ import { encodeAbiParameters, encodeEventTopics, parseAbiItem, type Hex } from "
 
 import { NETWORK_IDS, getNetwork } from "../x402/configs/chains.js";
 import { merchantWalletAddress } from "../x402/wallets.js";
-import { formatUsdcAtomic } from "../metrics/format.js";
-import { aggregatePaymentLogs, incomingAmountFromLogs } from "../metrics/payments.js";
-import { buildSnapshot } from "../metrics/snapshot.js";
+import { formatUsdcAtomic } from "../data/metrics/format.js";
+import { aggregatePaymentLogs, incomingAmountFromLogs } from "../data/metrics/payments.js";
+import { buildSnapshot } from "../data/metrics/snapshot.js";
 
 const txA = `0x${"a".repeat(64)}` as const;
 const txB = `0x${"b".repeat(64)}` as const;
@@ -56,7 +56,7 @@ test("incomingAmountFromLogs counts only transfers received by the merchant wall
 });
 
 test("payments Neon migration keys rows by network and drops legacy chain_id", () => {
-  const source = readFileSync(new URL("../metrics/db.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../data/metrics/db.ts", import.meta.url), "utf8");
 
   assert.match(source, /network\s+TEXT NOT NULL/u);
   assert.match(source, /PRIMARY KEY \(network, tx_hash\)/u);

@@ -221,6 +221,32 @@ test("handler rejects legacy numeric dispenser inputs", async () => {
   assert.match(JSON.parse(status.body).error, /CAIP-2 network/i);
 });
 
+test("handler does not expose the legacy Session settlement-status route", async () => {
+  const { handler } = await import("../handler.js");
+
+  const result = await handler({
+    rawPath: "/api/settlement/status",
+    requestContext: { http: { method: "GET" } },
+    headers: {
+      "x-session-user-address": "0x1111111111111111111111111111111111111111",
+      "x-network-id": "eip155:5042002",
+    },
+  }, {});
+
+  assert.equal(result.statusCode, 404);
+});
+
+test("handler does not expose the synchronous Compose-key settlement bypass", async () => {
+  const { handler } = await import("../handler.js");
+
+  const result = await handler(
+    createEvent("POST", "/api/keys/settle", { amount: "1" }),
+    {},
+  );
+
+  assert.equal(result.statusCode, 404);
+});
+
 test("handler treats Solana dispenser status as unsupported without EVM coercion", async () => {
   const { handler } = await import("../handler.js");
 

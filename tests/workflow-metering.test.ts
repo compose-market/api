@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import test from "node:test";
 
 import {
@@ -9,57 +7,6 @@ import {
 } from "../x402/metering.js";
 
 test("buildUsageRecordSettlementMeter prices mixed workflow usage across models", () => {
-  const dataDir = path.join(process.cwd(), "data");
-  fs.mkdirSync(dataDir, { recursive: true });
-  const seededModels = {
-    lastUpdated: new Date().toISOString(),
-    totalModels: 2,
-    byProvider: {},
-    byType: {},
-    models: [
-      {
-        modelId: "openai/gpt-5.4",
-        name: "GPT-5.4",
-        provider: "openai",
-        type: "chat-completions",
-        description: null,
-        input: ["text"],
-        output: ["text"],
-        capabilities: ["streaming"],
-        available: true,
-        pricing: {
-          unit: "usd_per_1m_tokens",
-          values: {
-            input: 0.4,
-            output: 1.6,
-          },
-        },
-        contextWindow: 1_000_000,
-      },
-      {
-        modelId: "gemini-2.5-flash",
-        name: "Gemini 2.5 Flash",
-        provider: "gemini",
-        type: "chat-completions",
-        description: null,
-        input: ["text"],
-        output: ["text"],
-        capabilities: ["streaming"],
-        available: true,
-        pricing: {
-          unit: "usd_per_1m_tokens",
-          values: {
-            input: 0.3,
-            output: 2.5,
-          },
-        },
-        contextWindow: 1_000_000,
-      },
-    ],
-  };
-  fs.writeFileSync(path.join(dataDir, "models.json"), JSON.stringify(seededModels));
-  fs.writeFileSync(path.join(dataDir, "models_extended.json"), JSON.stringify(seededModels));
-
   const usageRecords: UsageRecord[] = [
     {
       agentWallet: "coordinator",
@@ -114,8 +61,6 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
   assert.equal(metered.providerAmountWei, "13300");
   assert.equal(metered.platformFeeWei, "133");
   assert.equal(metered.finalAmountWei, "13433");
-
-  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
 test("buildUsageRecordSettlementMeter hard-fails when authoritative usage records are missing", () => {

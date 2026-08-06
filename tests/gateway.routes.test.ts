@@ -128,6 +128,48 @@ test("registerInferenceRoutes serves /v1 models directly", async () => {
   );
 });
 
+test("model index is compact, compressed, cacheable, and conditionally revalidated", async () => {
+  await withInferenceServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/v1/models/index`, {
+      headers: { "accept-encoding": "gzip" },
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("cache-control") || "", /max-age=300/);
+    assert.match(response.headers.get("cdn-cache-control") || "", /s-maxage=21600/);
+    assert.equal(response.headers.get("content-encoding"), "gzip");
+    const etag = response.headers.get("etag");
+    assert.ok(etag);
+
+    const body = await response.json() as {
+      object: string;
+      version: string;
+      total: number;
+      data: Array<Record<string, unknown>>;
+    };
+    assert.equal(body.object, "list");
+    assert.equal(body.total, body.data.length);
+    assert.ok(body.version);
+    const model = body.data.find((entry) => entry.modelId === TEXT_MODEL_ID);
+    assert.ok(model);
+    assert.equal(model.provider, TEXT_MODEL_PROVIDER);
+    assert.ok(model.pricing);
+    assert.ok(model.contextWindow);
+    assert.equal(model.description, null);
+    assert.equal("capabilities" in model, false);
+    assert.equal("semantics" in model, false);
+    assert.equal("sourceMetadata" in model, false);
+    assert.equal("operations" in model, false);
+
+    const notModified = await fetch(`${baseUrl}/v1/models/index`, {
+      headers: {
+        "accept-encoding": "gzip",
+        "if-none-match": etag!,
+      },
+    });
+    assert.equal(notModified.status, 304);
+  });
+});
+
 test("registerInferenceRoutes serves canonical /v1/models/:model rows", async () => {
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(TEXT_MODEL_ID)}`);

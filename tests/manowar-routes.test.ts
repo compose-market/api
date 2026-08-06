@@ -18,7 +18,6 @@ import {
 import { createKey } from "../x402/keys/storage.js";
 import { closeValkey, valkeyDel, valkeySRem } from "../x402/keys/valkey.js";
 import { recordChargeEvidence } from "../x402/evidence.js";
-import { initializeSessionBudget } from "../x402/session/budget.js";
 
 const ORIGINAL_RUNTIME_URL = process.env.RUNTIME_URL;
 const ORIGINAL_AGENTS_URL = process.env.AGENTS_URL;
