@@ -39,7 +39,7 @@ import {
 } from "./x402/evidence.js";
 import { type Receipt, type Bill, type LineItem } from "./http/request-context.js";
 import { toReceiptStreamEvent } from "./inference/core.js";
-import { triggerConfirmedPayment } from "./metrics/payments.js";
+import { triggerConfirmedPayment } from "./data/metrics/payments.js";
 import { publicOriginFromHost, publicResourceUrl } from "./http/public-origin.js";
 import {
   buildAgentResponsesSettlement,
@@ -806,11 +806,10 @@ async function settlePreparedPayment(
   const remember = async (input: {
     finalAmountWei?: string;
     txHash?: string;
-    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
     claimTxHash?: string;
     settleTxHash?: string;
     paymentIntentId?: string;
-    sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
     network?: NetworkId;
@@ -822,12 +821,11 @@ async function settlePreparedPayment(
     await recordChargeEvidence({
       ...settlement.evidence,
       finalAmountWei: input.finalAmountWei,
-      settlementStatus: input.settlementStatus || (input.txHash ? "settled" : "queued"),
+      settlementStatus: input.settlementStatus || (input.txHash ? "submitted" : "queued"),
       txHash: input.txHash,
       claimTxHash: input.claimTxHash,
       settleTxHash: input.settleTxHash,
       paymentIntentId: input.paymentIntentId,
-      sessionBudgetIntentId: input.sessionBudgetIntentId,
       paymentChannelId: input.paymentChannelId,
       paymentCumulativeAmountWei: input.paymentCumulativeAmountWei,
       network: input.network || network,
@@ -844,7 +842,6 @@ async function settlePreparedPayment(
     && BigInt(settlementReceipt.finalAmountWei || "0") > 0n
     && !settlementReceipt.txHash
     && !settlementReceipt.paymentIntentId
-    && !settlementReceipt.sessionBudgetIntentId
     && !(settlementReceipt.paymentChannelId && settlementReceipt.paymentCumulativeAmountWei)
   ) {
     throw Object.assign(
@@ -897,11 +894,9 @@ function terminalAgentMetadata(body: Record<string, unknown>, req: Request): {
     ? body.agent as Record<string, unknown>
     : {};
   const root = stringField(body.rootRunId)
-    || stringField(body.paymentRunId)
     || getHeader(req, "x-run-id")
     || rootRunId(req);
   const execution = stringField(body.runId)
-    || stringField(body.runId)
     || stringField(body.executionRunId)
     || getHeader(req, "x-execution-run-id")
     || root;

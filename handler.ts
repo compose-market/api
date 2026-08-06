@@ -38,22 +38,17 @@ import {
     getActiveSessionStatus,
 } from "./x402/keys/index.js";
 import type { SessionInactiveReason } from "./x402/keys/types.js";
+import { resolveWalletScopes } from "./data/user/scopes.js";
 
 import {
     extractKeyFromHeader,
     validateKey,
-    consumeKeyBudget,
-    getKeyBudgetInfo,
 } from "./x402/keys/middleware.js";
 
 import {
-    getBudgetInfo as getSessionBudgetInfo,
-    initializeSessionBudget,
-} from "./x402/session/budget.js";
-import {
     getSessionFundingReadiness,
 } from "./x402/session/allowance.js";
-import { recordSession } from "./metrics/sessions.js";
+import { recordSession } from "./data/metrics/sessions.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerManowarRoutes } from "./routes.js";
@@ -82,8 +77,7 @@ import {
     settlePayment,
     verifyPayment,
 } from "./x402/facilitator.js";
-import { recordConfirmedPayment, triggerConfirmedPayment } from "./metrics/payments.js";
-import { readActiveRawEnvelope, type RawEnvelope } from "./x402/envelope.js";
+import { recordConfirmedPayment, triggerConfirmedPayment } from "./data/metrics/payments.js";
 
 // Per-agent permissions / Composio accounts
 const loadBackpack = () => import("./backpack/accounts.js");
@@ -120,7 +114,6 @@ function triggerPaymentMetric(network: NetworkId | undefined, txHash: unknown, s
 async function recordSettlementCycleMetrics(result: {
     native?: {
         chains?: Array<{
-            chainId: number;
             network: EvmNetworkId;
             settleTxHash?: string;
         }>;
@@ -129,6 +122,7 @@ async function recordSettlementCycleMetrics(result: {
         results?: Array<{
             network: NetworkId;
             txHash?: string;
+            status?: string;
             error?: string;
         }>;
     } | null;
@@ -150,7 +144,7 @@ async function recordSettlementCycleMetrics(result: {
         }
     }
     for (const item of result.intents?.results || []) {
-        if (!item.error && item.txHash && isEvmNetwork(item.network)) {
+        if (item.status === "confirmed" && item.txHash && isEvmNetwork(item.network)) {
             tasks.push(recordConfirmedPayment({
                 network: item.network,
                 txHash: item.txHash,
@@ -167,35 +161,13 @@ async function recordSettlementCycleMetrics(result: {
     await Promise.all(tasks);
 }
 
-function envelopePayload(envelope: RawEnvelope | null): Record<string, unknown> | undefined {
-    if (!envelope) return undefined;
-    let remainingWei = envelope.maxAmountWei;
-    try {
-        remainingWei = (BigInt(envelope.maxAmountWei) - BigInt(envelope.usedWei || "0")).toString();
-    } catch {
-        remainingWei = envelope.maxAmountWei;
-    }
-    return {
-        rootRunId: envelope.rootRunId,
-        network: envelope.network,
-        maxAmountWei: envelope.maxAmountWei,
-        usedWei: envelope.usedWei || "0",
-        remainingWei,
-        ...(envelope.createdAt ? { createdAt: envelope.createdAt } : {}),
-        ...(envelope.updatedAt ? { updatedAt: envelope.updatedAt } : {}),
-        ...(envelope.updatedAt ? { expiresAt: envelope.updatedAt + 15 * 60 * 1000 } : {}),
-    };
-}
-
-function buildInactiveSessionPayload(reason: SessionInactiveReason, rawEnvelope?: Record<string, unknown>): {
+function buildInactiveSessionPayload(reason: SessionInactiveReason): {
     hasSession: false;
     reason: SessionInactiveReason;
-    rawEnvelope?: Record<string, unknown>;
 } {
     return {
         hasSession: false,
         reason,
-        ...(rawEnvelope ? { rawEnvelope } : {}),
     };
 }
 
@@ -402,7 +374,6 @@ export function registerHandlerRoutes(app: Application): void {
     app.get("/api/session", routeHandler);
     app.post("/api/keys", routeHandler);
     app.get("/api/keys", routeHandler);
-    app.post("/api/keys/settle", routeHandler);
     app.get(/^\/api\/keys\/[^/]+$/, routeHandler);
     app.delete(/^\/api\/keys\/[^/]+$/, routeHandler);
 
@@ -431,7 +402,6 @@ export function registerHandlerRoutes(app: Application): void {
     app.get(/^\/api\/dispenser\/check\/0x[a-fA-F0-9]{40}$/, routeHandler);
 
     app.post("/api/settlement/batch", routeHandler);
-    app.get("/api/settlement/status", routeHandler);
 
     app.post("/api/generate-avatar", routeHandler);
     app.post("/api/generate-banner", routeHandler);
@@ -545,14 +515,9 @@ export async function handler(
             return handleListKeys(event);
         }
 
-        // POST /api/keys/settle - Settle payment using Compose Key
-        if (method === "POST" && path === "/api/keys/settle") {
-            return handleSettleKeyPayment(event);
-        }
-
         // GET /api/keys/:keyId - Inspect one Compose Key. Requires Authorization
         // header containing the very key being inspected (JWT-possession proof).
-        if (method === "GET" && /^\/api\/keys\/[^/]+$/.test(path) && path !== "/api/keys/settle") {
+        if (method === "GET" && /^\/api\/keys\/[^/]+$/.test(path)) {
             return handleGetKeyDetails(event);
         }
 
@@ -628,48 +593,6 @@ export async function handler(
                     headers: corsHeaders,
                     body: JSON.stringify({
                         error: "Batch settlement failed",
-                        message: error instanceof Error ? error.message : String(error),
-                    }),
-                };
-            }
-        }
-
-        // GET /api/settlement/status - Get pending settlement info for a user
-        if (method === "GET" && path === "/api/settlement/status") {
-            const network = requireNetworkHeader(event);
-            const userAddress = requireUserAddressHeader(event);
-
-            try {
-                const { getBudgetInfo } = await import("./x402/session/budget.js");
-
-                const info = await getBudgetInfo(userAddress, network);
-
-                if (!info) {
-                    return {
-                        statusCode: 200,
-                        headers: corsHeaders,
-                        body: JSON.stringify({
-                            hasActiveBudget: false,
-                            message: "No active session budget found",
-                        }),
-                    };
-                }
-
-                return {
-                    statusCode: 200,
-                    headers: corsHeaders,
-                    body: JSON.stringify({
-                        hasActiveBudget: true,
-                        budget: info,
-                    }),
-                };
-            } catch (error) {
-                console.error("[settlement/status] Error:", error);
-                return {
-                    statusCode: 500,
-                    headers: corsHeaders,
-                    body: JSON.stringify({
-                        error: "Failed to get status",
                         message: error instanceof Error ? error.message : String(error),
                     }),
                 };
@@ -829,7 +752,7 @@ export async function batchSettlementHandler(
 }
 
 function assertNativeBatchSettlement(native: {
-    chains?: Array<{ chainId: number; network: EvmNetworkId; error?: string }>;
+    chains?: Array<{ network: EvmNetworkId; error?: string }>;
 }): void {
     const failed = native.chains?.filter((chain) => chain.error) || [];
     if (failed.length === 0) {
@@ -850,20 +773,18 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
 
     const sessionStatus = await getActiveSessionStatus(userAddress, network);
     const session = sessionStatus.session;
-    const rawEnvelope = envelopePayload(await readActiveRawEnvelope({ payer: userAddress, network }));
 
     if (!session) {
         return {
             statusCode: 200,
             headers: corsHeaders,
-            body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason, rawEnvelope)),
+            body: JSON.stringify(buildInactiveSessionPayload(sessionStatus.reason)),
         };
     }
-    const liveBudget = await getSessionBudgetInfo(userAddress, session.network);
-    const budgetLimit = BigInt(liveBudget?.totalWei ?? session.budgetLimit);
-    const budgetUsed = BigInt(liveBudget?.usedWei ?? session.budgetUsed);
-    const budgetLocked = BigInt(liveBudget?.lockedWei ?? session.budgetLocked);
-    const budgetRemaining = BigInt(liveBudget?.availableWei ?? session.budgetRemaining);
+    const budgetLimit = BigInt(session.budgetLimit);
+    const budgetUsed = BigInt(session.budgetUsed);
+    const budgetLocked = BigInt(session.budgetLocked);
+    const budgetRemaining = BigInt(session.budgetRemaining);
 
     const response: Record<string, any> = {
         hasSession: true,
@@ -871,12 +792,12 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
         token: session.token,
         budgetLimit: budgetLimit.toString(),
         budgetUsed: budgetUsed.toString(),
+        budgetReserved: budgetLocked.toString(),
         budgetLocked: budgetLocked.toString(),
         budgetRemaining: budgetRemaining.toString(),
         expiresAt: session.expiresAt,
         network: session.network,
         name: session.name,
-        ...(rawEnvelope ? { rawEnvelope } : {}),
     };
 
     // Compute status warnings from real-time budget
@@ -904,6 +825,7 @@ async function handleGetSession(event: APIGatewayProxyEventV2): Promise<APIGatew
     const headers: Record<string, string> = { ...corsHeaders };
     headers["x-session-budget-limit"] = budgetLimit.toString();
     headers["x-session-budget-used"] = budgetUsed.toString();
+    headers["x-session-budget-reserved"] = budgetLocked.toString();
     headers["x-session-budget-locked"] = budgetLocked.toString();
     headers["x-session-budget-remaining"] = budgetRemaining.toString();
 
@@ -1032,8 +954,8 @@ async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise
             }
             : undefined,
     });
-    if (result.ok) {
-        const body = result.body as { network?: NetworkId; txHash?: unknown };
+    if (result.ok && result.body.status === "confirmed") {
+        const body = result.body;
         triggerPaymentMetric(body.network, body.txHash, "payment-intent");
     }
 
@@ -1165,18 +1087,29 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         if (!readiness.ready) {
             const budgetLabel = purpose === "session" ? "session budget" : "Compose key budget";
             const actionLabel = purpose === "session" ? "session creation" : "key creation";
+            const isFundingShortfall = readiness.reason === "insufficient_balance"
+                || readiness.reason === "insufficient_allowance";
+            const error = readiness.reason === "insufficient_balance"
+                ? `Insufficient USDC balance for requested ${budgetLabel}`
+                : readiness.reason === "insufficient_allowance"
+                    ? `Insufficient USDC allowance for requested ${budgetLabel}`
+                    : readiness.error || "Failed to verify Compose key funding readiness";
+            const hint = readiness.reason === "insufficient_balance"
+                ? `Fund the selected account with at least the selected ${budgetLabel}, then retry ${actionLabel}.`
+                : readiness.reason === "insufficient_allowance"
+                    ? `Authorize Compose.Market to spend at least the selected ${budgetLabel}, then retry ${actionLabel}.`
+                    : readiness.hint;
             return {
-                statusCode: 402,
+                statusCode: isFundingShortfall ? 402 : 503,
                 headers: corsHeaders,
                 body: JSON.stringify({
-                    error: readiness.reason === "insufficient_balance"
-                        ? `Insufficient USDC balance for requested ${budgetLabel}`
-                        : `Insufficient USDC allowance for requested ${budgetLabel}`,
-                    hint: readiness.reason === "insufficient_balance"
-                        ? `Fund the selected account with at least the selected ${budgetLabel}, then retry ${actionLabel}.`
-                        : `Authorize Compose.Market to spend at least the selected ${budgetLabel}, then retry ${actionLabel}.`,
+                    error,
+                    ...(hint ? { hint } : {}),
                     code: readiness.reason,
                     details: {
+                        network: readiness.network,
+                        payer: readiness.payer,
+                        asset: readiness.asset,
                         requiredWei: readiness.requiredWei,
                         balanceWei: readiness.balanceWei,
                         allowanceWei: readiness.allowanceWei,
@@ -1205,32 +1138,10 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
         network,
     });
 
-    if (purpose === "session") {
-        try {
-            await initializeSessionBudget(
-                userAddress,
-                network,
-                String(budgetLimit),
-                expiresAt,
-            );
-        } catch (error) {
-            await revokeKey(result.keyId, userAddress);
-            return {
-                statusCode: 500,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                    error: error instanceof Error ? error.message : "Failed to initialize session budget",
-                }),
-            };
-        }
-    }
-
     const budgetLimitString = String(result.budgetLimit);
-    const liveBudget = purpose === "session"
-        ? await getSessionBudgetInfo(userAddress, network)
-        : null;
-    const budgetUsed = liveBudget?.usedWei || "0";
-    const budgetRemaining = liveBudget?.availableWei || budgetLimitString;
+    const budgetUsed = "0";
+    const budgetReserved = "0";
+    const budgetRemaining = budgetLimitString;
     const createdAt = Date.now();
 
     return {
@@ -1240,6 +1151,8 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             ...result,
             budgetLimit: budgetLimitString,
             budgetUsed,
+            budgetReserved,
+            budgetLocked: budgetReserved,
             budgetRemaining,
             createdAt,
             purpose,
@@ -1249,9 +1162,36 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
 }
 
 async function handleListKeys(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const userAddress = requireUserAddressHeader(event);
-    const network = requireNetworkHeader(event);
-    const keys = await listUserKeys(userAddress, network);
+    let userAddress: string;
+    try {
+        userAddress = requireUserAddressHeader(event);
+    } catch (error) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ error: error instanceof Error ? error.message : "Invalid user address" }),
+        };
+    }
+
+    let keys: Awaited<ReturnType<typeof listUserKeys>>;
+    try {
+        const scopes = await resolveWalletScopes(userAddress);
+        keys = await listUserKeys(scopes);
+    } catch (error) {
+        const statusCode = typeof error === "object"
+            && error !== null
+            && "statusCode" in error
+            && (error.statusCode === 400 || error.statusCode === 404 || error.statusCode === 503)
+            ? error.statusCode
+            : 503;
+        return {
+            statusCode,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: error instanceof Error ? error.message : "Failed to list Compose keys",
+            }),
+        };
+    }
 
     const safeKeys = keys.map(k => ({
         keyId: k.keyId,
@@ -1357,73 +1297,6 @@ async function handleGetKeyDetails(event: APIGatewayProxyEventV2): Promise<APIGa
             lastUsedAt: record.lastUsedAt,
             name: record.name,
             network: record.network,
-        }),
-    };
-}
-
-async function handleSettleKeyPayment(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const authHeader = event.headers["authorization"];
-    const keyToken = extractKeyFromHeader(authHeader);
-
-    if (!keyToken) {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "Missing Compose Key in Authorization header" }),
-        };
-    }
-
-    const body = event.body ? JSON.parse(event.body) : {};
-    const amountWei = parseInt(body.amount, 10);
-
-    const validation = await validateKey(keyToken, amountWei);
-    if (!validation.valid) {
-        return {
-            statusCode: 401,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: validation.error }),
-        };
-    }
-
-    const budgetRemaining = validation.record!.budgetLimit - validation.record!.budgetUsed;
-    if (budgetRemaining < amountWei) {
-        return {
-            statusCode: 402,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "Budget exhausted", budgetRemaining }),
-        };
-    }
-
-    const keyNetwork = validation.record!.network;
-    if (!isEvmNetwork(keyNetwork)) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "Solana key settlement requires an SVM authorization payload" }),
-        };
-    }
-    const { settleKeyPayment } = await import("./x402/settlement.js");
-    const result = await settleKeyPayment(validation.payload!.sub, amountWei, keyNetwork);
-
-    if (!result.success) {
-        return {
-            statusCode: 402,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: result.error }),
-        };
-    }
-
-    await consumeKeyBudget(validation.payload!.keyId, amountWei);
-    const budgetInfo = await getKeyBudgetInfo(validation.payload!.keyId);
-    triggerPaymentMetric(keyNetwork, result.txHash, "key");
-
-    return {
-        statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({
-            success: true,
-            txHash: result.txHash,
-            budgetRemaining: budgetInfo?.budgetRemaining || 0,
         }),
     };
 }

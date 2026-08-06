@@ -614,6 +614,7 @@ async function deployJobs(image: string) {
                 "SEI_MAINNET_RPC",
                 "MERCHANT_WALLET_ADDRESS",
                 "SVM_MERCHANT_WALLET_ADDRESS",
+                "ANALYTICS_DATABASE_URL",
                 "VALKEY_TLS",
                 "VALKEY_KEYS_SERVICE_URI",
                 "SERVER_WALLET_KEY",

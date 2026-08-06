@@ -23,6 +23,7 @@ Everything else is glue or supporting surface.
 | `http/` | CORS, request-id, body parsing, error envelopes. Single-layer CORS policy. |
 | `metrics/` | Download, payment, session, and expense sync. Snapshots for the dashboard. |
 | `feedback/` | User feedback storage and validation. |
+| `user/` | Public EVM/SVM smart-account pair records used to scope cross-network reads. |
 | `a2a/` | Agent-to-agent schema types. |
 | `backpack/` | Per-agent permissions and Composio account storage. |
 | `local/` | Local-network peer registration and Synapse/Filecoin paymaster routes. |
@@ -49,6 +50,7 @@ npm run tests        # run the test suite
 npm run deploy       # fast deploy
 npm run deploy:full  # build + full deploy
 npm run metrics      # sync metrics + snapshot
+npm run init:user-db # initialize public.wallet_pairs once in the empty User DB
 ```
 
 ## Environment
@@ -66,6 +68,7 @@ The API reads secrets from env. The names that matter:
 | `AVALANCHE_FUJI_RPC` | RPC endpoint for Avalanche Fuji (43113). |
 | `AVALANCHE_MAINNET_RPC` | RPC endpoint for Avalanche C-Chain (43114). |
 | `VALKEY_KEYS_SERVICE_URI` | Valkey connection URI for keys, budgets, intents, evidence, receipts. |
+| `USER_DATABASE_URL` | Neon connection URL for the public smart-account pair registry. |
 | `RUNTIME_URL` | Manowar runtime base URL for agent/workflow proxying. |
 
 ## Architecture

@@ -10,14 +10,16 @@ import { registerSessionEventsRoute } from "./x402/keys/sse.js";
 import { corsMiddleware, requestIdMiddleware } from "./http/middleware.js";
 import { buildError } from "./http/errors.js";
 import { errors as bodyErrors, form, json } from "./http/body.js";
-import { registerMetricsRoutes } from "./metrics/routes.js";
-import { syncDownloads } from "./metrics/downloads.js";
-import { syncPayments } from "./metrics/payments.js";
-import { syncSessionsFromValkey } from "./metrics/sessions.js";
-import { syncAllExpenses } from "./metrics/expenses/index.js";
-import { refreshMetricsSnapshot } from "./metrics/snapshot.js";
-import { registerAnalyticsRoutes } from "./analytics/index.js";
+import { registerMetricsRoutes } from "./data/metrics/routes.js";
+import { syncDownloads } from "./data/metrics/downloads.js";
+import { syncPayments } from "./data/metrics/payments.js";
+import { syncSessionsFromValkey } from "./data/metrics/sessions.js";
+import { syncAllExpenses } from "./data/metrics/expenses/index.js";
+import { refreshMetricsSnapshot } from "./data/metrics/snapshot.js";
+import { registerAnalyticsRoutes } from "./data/analytics/index.js";
 import { registerSvmRoutes } from "./svm/relay.js";
+import { registerUserRoutes } from "./data/user/routes.js";
+import { registerDomainEventRoutes } from "./data/shared/routes.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
 export { expiryWorker } from "./x402/keys/expiry.js";
@@ -106,10 +108,33 @@ app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
   let capturedJsonResponse: Record<string, unknown> | undefined = undefined;
+  let analyticsResponseStats: {
+    aggregateRows: number;
+    requestRows: number;
+    settlementRows: number;
+    responseBytes: number;
+  } | undefined;
 
   const originalResJson = res.json;
   res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
+    if (path === "/api/analytics/inference") {
+      const body = bodyJson && typeof bodyJson === "object"
+        ? bodyJson as Record<string, any>
+        : {};
+      const breakdowns = body.breakdowns && typeof body.breakdowns === "object"
+        ? Object.values(body.breakdowns as Record<string, unknown>)
+        : [];
+      analyticsResponseStats = {
+        aggregateRows: 1
+          + (Array.isArray(body.timeline) ? body.timeline.length : 0)
+          + breakdowns.reduce<number>((count, rows) => count + (Array.isArray(rows) ? rows.length : 0), 0),
+        requestRows: Array.isArray(body.requests?.data) ? body.requests.data.length : 0,
+        settlementRows: Array.isArray(body.settlements?.data) ? body.settlements.data.length : 0,
+        responseBytes: Buffer.byteLength(JSON.stringify(bodyJson)),
+      };
+    } else {
+      capturedJsonResponse = bodyJson;
+    }
     return originalResJson.apply(res, [bodyJson, ...args]);
   };
 
@@ -117,7 +142,12 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      if (analyticsResponseStats) {
+        logLine += ` :: aggregateRows=${analyticsResponseStats.aggregateRows}`
+          + ` requestRows=${analyticsResponseStats.requestRows}`
+          + ` settlementRows=${analyticsResponseStats.settlementRows}`
+          + ` responseBytes=${analyticsResponseStats.responseBytes}`;
+      } else if (capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
@@ -162,7 +192,9 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
 
   registerExternalRoutes(app);
   registerInferenceRoutes(app);
+  registerUserRoutes(app);
   registerAnalyticsRoutes(app);
+  registerDomainEventRoutes(app);
   registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
   registerMetricsRoutes(app);
