@@ -48,7 +48,6 @@ import {
     type EvmNetworkId,
     type NetworkId,
     NETWORK_IDS,
-    evmChainId,
     getNetwork,
     getNetworkRpcUrl,
     getSupportedNetworks,
@@ -757,7 +756,7 @@ export function createPaymentRequirement(input: {
         extra.facilitatorAddress = getFacilitatorAccount().address;
     }
     if (isBatchSettlementScheme(scheme) && isEvmNetwork(input.network)) {
-        Object.assign(extra, createBatchPaymentExtra(evmChainId(input.network), getReceiverAuthorizer().address));
+        Object.assign(extra, createBatchPaymentExtra(input.network, getReceiverAuthorizer().address));
     }
     if (isSolanaNetwork(input.network)) {
         extra.feePayer = requireEnv("SVM_TREASURY_SERVER_WALLET_PUBLIC");

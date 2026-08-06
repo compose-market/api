@@ -8,7 +8,7 @@
  */
 
 import { verifyKey } from "./jwt.js";
-import { getKeyRecord, isKeyRevoked, recordKeyUsage, getKeyBudgetRemaining } from "./storage.js";
+import { getKeyRecord, isKeyRevoked } from "./storage.js";
 import type { KeyValidationResult, KeyPayload } from "./types.js";
 
 // =============================================================================
@@ -100,17 +100,6 @@ export async function validateKey(
         payload,
         record,
     };
-}
-
-/**
- * Consume budget from a Compose Key
- * 
- * @param keyId - Key ID
- * @param amountWei - Amount to consume
- * @returns New total used, or -1 if failed
- */
-export async function consumeKeyBudget(keyId: string, amountWei: number): Promise<number> {
-    return recordKeyUsage(keyId, amountWei);
 }
 
 /**

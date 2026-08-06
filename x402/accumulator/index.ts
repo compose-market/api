@@ -19,6 +19,5 @@ export { DEFAULT_BATCH_CONFIG } from "./types.js";
 // Worker
 export {
     runBatchSettlement,
-    settleUserBatch,
     triggerImmediateSettlement,
 } from "./worker.js";

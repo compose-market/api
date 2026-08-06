@@ -15,9 +15,16 @@ import {
     valkeySRem,
     getValkeyClient,
 } from "./valkey.js";
+import { publishDomainInvalidationBestEffort } from "../../data/shared/updates.js";
 
 const USER_KEYS_PREFIX = "user-keys:";
 const KEY_PREFIX = "key:";
+
+function ownerFromUserKeyIndex(index: string): string | null {
+    const separator = index.lastIndexOf(":");
+    if (!index.startsWith(USER_KEYS_PREFIX) || separator <= USER_KEYS_PREFIX.length) return null;
+    return index.slice(separator + 1) || null;
+}
 
 export async function expiryWorker(
     _event: ScheduledEvent,
@@ -34,8 +41,14 @@ export async function expiryWorker(
             for (const keyId of keyIds) {
                 const record = await valkeyHGetAll(`${KEY_PREFIX}${keyId}`);
                 if (!record || Object.keys(record).length === 0) {
-                    await valkeySRem(userKeyIndex, keyId);
-                    staleRefsRemoved += 1;
+                    const removed = await valkeySRem(userKeyIndex, keyId);
+                    if (removed > 0) {
+                        staleRefsRemoved += 1;
+                        const ownerAddress = ownerFromUserKeyIndex(userKeyIndex);
+                        if (ownerAddress) {
+                            await publishDomainInvalidationBestEffort("keys", ownerAddress, "expired");
+                        }
+                    }
                 }
             }
         }

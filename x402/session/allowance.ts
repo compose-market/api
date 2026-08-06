@@ -1,5 +1,4 @@
 import { createPublicClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 
 import {
     Address as SolanaAddress,
@@ -24,9 +23,7 @@ import {
     NETWORK_IDS,
 } from "../configs/chains.js";
 import {
-    merchantWalletAddress,
     svmTreasuryWalletAddress,
-    treasuryWalletAddress,
 } from "../wallets.js";
 
 const ERC20_ALLOWANCE_ABI = [
@@ -56,45 +53,45 @@ const ERC20_BALANCE_OF_ABI = [
 
 export const UNBOUNDED_SESSION_ALLOWANCE_WEI = (2n ** 256n) - 1n;
 
+export type SessionFundingFailureReason =
+    | "insufficient_balance"
+    | "insufficient_allowance"
+    | "rpc_unavailable"
+    | "network_configuration_error";
+
 export interface SessionFundingReadiness {
     ready: boolean;
-    reason?: "insufficient_balance" | "insufficient_allowance";
+    reason?: SessionFundingFailureReason;
+    network: NetworkId;
+    payer: string;
+    asset?: string;
     requiredWei: string;
-    balanceWei: string;
-    allowanceWei: string;
-    spender: `0x${string}`;
+    balanceWei?: string;
+    allowanceWei?: string;
+    spender?: string;
     error?: string;
     hint?: string;
 }
 
-function normalizePrivateKey(value: string): `0x${string}` {
-    return (value.startsWith("0x") ? value : `0x${value}`) as `0x${string}`;
+export interface SessionFundingReadinessDependencies {
+    resolveSpender?: (network: NetworkId) => string;
+    readBalanceWei?: (userAddress: string, network: NetworkId) => Promise<bigint>;
+    readAllowanceWei?: (userAddress: string, network: NetworkId) => Promise<bigint>;
 }
 
 export function resolveSessionAllowanceSpenderAddress(
     env: NodeJS.ProcessEnv = process.env,
 ): `0x${string}` {
-    const configuredTreasury = env.TREASURY_SERVER_WALLET_PUBLIC?.trim() as `0x${string}` | undefined;
-    const deployerKey = env.FACILITATOR_KEY?.trim();
-
-    if (deployerKey) {
-        const derivedSpender = privateKeyToAccount(normalizePrivateKey(deployerKey)).address;
-        if (
-            configuredTreasury
-            && configuredTreasury.toLowerCase() !== derivedSpender.toLowerCase()
-        ) {
-            console.warn(
-                `[session-allowance] TREASURY_SERVER_WALLET_PUBLIC (${configuredTreasury}) does not match FACILITATOR_KEY public address (${derivedSpender}); using FACILITATOR_KEY`,
-            );
-        }
-        return derivedSpender;
+    const configuredSpender = env.TREASURY_SERVER_WALLET_PUBLIC?.trim();
+    if (!configuredSpender) {
+        throw new Error("EVM Treasury Wallet can't be read.");
     }
 
-    if (configuredTreasury) {
-        return configuredTreasury;
+    if (!/^0x[a-fA-F0-9]{40}$/.test(configuredSpender)) {
+        throw new Error("EVMTreasury Wallet has an invalid format.");
     }
 
-    return treasuryWalletAddress || merchantWalletAddress;
+    return configuredSpender as `0x${string}`;
 }
 
 export function getSpendableSessionBudgetWei(input: {
@@ -205,52 +202,44 @@ async function readSvmUsdcBalanceWei(
     userAddress: string,
     network: SolanaNetworkId,
 ): Promise<bigint> {
-    try {
-        const rpc = createSvmRpc(network);
-        const definition = getNetwork(network);
-        const mint = solanaAddress(definition.asset.address);
-        const owner = solanaAddress(userAddress);
-        const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
-        const ata = await findAssociatedTokenAddress({ owner, mint, tokenProgram });
-        const data = await fetchSvmTokenAccountData(rpc, ata);
-        if (!data || data.length < 72) return 0n;
-        return data.readBigUInt64LE(64);
-    } catch (error) {
-        console.warn(`[session-allowance] Failed to read SVM USDC balance for ${userAddress} on ${network}:`, error);
-        return 0n;
-    }
+    const rpc = createSvmRpc(network);
+    const definition = getNetwork(network);
+    const mint = solanaAddress(definition.asset.address);
+    const owner = solanaAddress(userAddress);
+    const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
+    const ata = await findAssociatedTokenAddress({ owner, mint, tokenProgram });
+    const data = await fetchSvmTokenAccountData(rpc, ata);
+    if (!data || data.length < 72) return 0n;
+    return data.readBigUInt64LE(64);
 }
 
 async function readSvmDelegateAllowanceWei(
     userAddress: string,
     network: SolanaNetworkId,
 ): Promise<bigint> {
-    try {
-        const rpc = createSvmRpc(network);
-        const definition = getNetwork(network);
-        const mint = solanaAddress(definition.asset.address);
-        const owner = solanaAddress(userAddress);
-        const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
-        const ata = await findAssociatedTokenAddress({ owner, mint, tokenProgram });
-        const data = await fetchSvmTokenAccountData(rpc, ata);
-        if (!data || data.length < 129) return 0n;
+    const rpc = createSvmRpc(network);
+    const definition = getNetwork(network);
+    const mint = solanaAddress(definition.asset.address);
+    const owner = solanaAddress(userAddress);
+    const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
+    const ata = await findAssociatedTokenAddress({ owner, mint, tokenProgram });
+    const data = await fetchSvmTokenAccountData(rpc, ata);
+    if (!data || data.length < 129) return 0n;
 
-        const delegateOption = data.readUInt8(72);
-        if (delegateOption === 0) return 0n;
+    const delegateOption = data.readUInt8(72);
+    if (delegateOption === 0) return 0n;
 
-        const delegatePubkey = data.subarray(76, 108).toString("hex");
-        const expectedDelegate = svmTreasuryWalletAddress?.trim();
-        if (!expectedDelegate) return 0n;
-
-        const encoder = getSolanaAddressEncoder();
-        const expectedDelegateBytes = encoder.encode(solanaAddress(expectedDelegate));
-        if (delegatePubkey !== Buffer.from(expectedDelegateBytes).toString("hex")) return 0n;
-
-        return data.readBigUInt64LE(121);
-    } catch (error) {
-        console.warn(`[session-allowance] Failed to read SVM delegate allowance for ${userAddress} on ${network}:`, error);
-        return 0n;
+    const delegatePubkey = data.subarray(76, 108).toString("hex");
+    const expectedDelegate = svmTreasuryWalletAddress?.trim();
+    if (!expectedDelegate) {
+        throw new Error("SVM Treasury Wallet can't be read.");
     }
+
+    const encoder = getSolanaAddressEncoder();
+    const expectedDelegateBytes = encoder.encode(solanaAddress(expectedDelegate));
+    if (delegatePubkey !== Buffer.from(expectedDelegateBytes).toString("hex")) return 0n;
+
+    return data.readBigUInt64LE(121);
 }
 
 export async function readSessionAllowanceWei(
@@ -325,25 +314,77 @@ export async function getSessionFundingReadiness(input: {
     userAddress: string;
     network: NetworkId;
     requiredBudgetWei: bigint | number | string;
-}): Promise<SessionFundingReadiness> {
+}, dependencies: SessionFundingReadinessDependencies = {}): Promise<SessionFundingReadiness> {
     const requiredWei = BigInt(input.requiredBudgetWei);
     if (requiredWei <= 0n) {
         throw new Error("requiredBudgetWei must be greater than zero");
     }
 
-    const spender = isSolanaNetwork(input.network)
-        ? (svmTreasuryWalletAddress as `0x${string}`)
-        : resolveSessionAllowanceSpenderAddress();
-    const [balanceWei, allowanceWei] = await Promise.all([
-        readSessionUsdcBalanceWei(input.userAddress, input.network),
-        readSessionAllowanceWei(input.userAddress, input.network),
+    const base = {
+        network: input.network,
+        payer: input.userAddress,
+        requiredWei: requiredWei.toString(),
+    };
+
+    let asset: string;
+    let spender: string;
+    try {
+        asset = getNetwork(input.network).asset.address;
+        spender = dependencies.resolveSpender
+            ? dependencies.resolveSpender(input.network)
+            : isSolanaNetwork(input.network)
+                ? (() => {
+                    const configured = svmTreasuryWalletAddress?.trim();
+                    if (!configured) {
+                        throw new Error("SVM_TREASURY_SERVER_WALLET_PUBLIC environment variable required for Session allowance readiness");
+                    }
+                    return configured;
+                })()
+                : resolveSessionAllowanceSpenderAddress();
+    } catch (error) {
+        return {
+            ready: false,
+            reason: "network_configuration_error",
+            ...base,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+
+    const balanceReader = dependencies.readBalanceWei || readSessionUsdcBalanceWei;
+    const allowanceReader = dependencies.readAllowanceWei || readSessionAllowanceWei;
+    const [balanceResult, allowanceResult] = await Promise.allSettled([
+        balanceReader(input.userAddress, input.network),
+        allowanceReader(input.userAddress, input.network),
     ]);
+    const observedBalanceWei = balanceResult.status === "fulfilled" ? balanceResult.value : undefined;
+    const observedAllowanceWei = allowanceResult.status === "fulfilled" ? allowanceResult.value : undefined;
+
+    if (balanceResult.status === "rejected" || allowanceResult.status === "rejected") {
+        const failures = [balanceResult, allowanceResult]
+            .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+            .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+        return {
+            ready: false,
+            reason: "rpc_unavailable",
+            ...base,
+            asset,
+            spender,
+            ...(observedBalanceWei !== undefined ? { balanceWei: observedBalanceWei.toString() } : {}),
+            ...(observedAllowanceWei !== undefined ? { allowanceWei: observedAllowanceWei.toString() } : {}),
+            error: failures.join("; "),
+            hint: `Retry funding readiness for ${input.network}; no balance or allowance value was inferred from the failed RPC read.`,
+        };
+    }
+
+    const balanceWei = balanceResult.value;
+    const allowanceWei = allowanceResult.value;
 
     if (balanceWei < requiredWei) {
         return {
             ready: false,
             reason: "insufficient_balance",
-            requiredWei: requiredWei.toString(),
+            ...base,
+            asset,
             balanceWei: balanceWei.toString(),
             allowanceWei: allowanceWei.toString(),
             spender,
@@ -356,7 +397,8 @@ export async function getSessionFundingReadiness(input: {
         return {
             ready: false,
             reason: "insufficient_allowance",
-            requiredWei: requiredWei.toString(),
+            ...base,
+            asset,
             balanceWei: balanceWei.toString(),
             allowanceWei: allowanceWei.toString(),
             spender,
@@ -367,7 +409,8 @@ export async function getSessionFundingReadiness(input: {
 
     return {
         ready: true,
-        requiredWei: requiredWei.toString(),
+        ...base,
+        asset,
         balanceWei: balanceWei.toString(),
         allowanceWei: allowanceWei.toString(),
         spender,

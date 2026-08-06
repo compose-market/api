@@ -6,14 +6,15 @@
  */
 
 import type { Request, Response } from "express";
-import type { PaymentRequired } from "@x402/core/types";
+import { randomUUID } from "node:crypto";
+import type { PaymentRequired, VerifyResponse } from "@x402/core/types";
 import { publicResourceUrl } from "../http/public-origin.js";
 import {
     paymentAsset,
     merchantWalletAddress,
     serverWalletAddress,
 } from "./wallets.js";
-import { getDefaultNetwork, isNetworkId, type NetworkId } from "./configs/chains.js";
+import { getDefaultNetwork, isEvmNetwork, isNetworkId, type NetworkId } from "./configs/chains.js";
 import {
     createPaymentRequired,
     createPaymentRequirement,
@@ -40,16 +41,19 @@ import {
 } from "./metering.js";
 import {
     readRawEnvelope,
-    releaseRawEnvelope,
-    reserveRawEnvelope,
     saveRawEnvelope,
+    type RawEnvelope,
 } from "./envelope.js";
 import {
-    commitBatchCharge,
+    commitRawBatchCheckpoint,
+    createEvmBatchDepositDependencies,
+    ensureEvmBatchDeposit,
     getBatchPayload,
     isBatchSettlementScheme,
     queuedBatchSettlement,
     rememberBatchChannel,
+    requireEvmBatchDepositConfirmed,
+    type EvmBatchDepositState,
 } from "./batch.js";
 import {
     abortPaymentIntent,
@@ -122,18 +126,21 @@ function settlementCycleStepValue<T>(
 
 function shouldKickSettlement(settlement: {
     finalAmountWei?: string;
-    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
     txHash?: string;
     paymentIntentId?: string;
-    sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
 } | null | undefined): boolean {
     if (!settlement || !positiveAmount(settlement.finalAmountWei)) return false;
-    if (settlement.settlementStatus !== "queued" && settlement.settlementStatus !== "claimed") return false;
+    if (
+        settlement.settlementStatus !== "queued"
+        && settlement.settlementStatus !== "submitted"
+        && settlement.settlementStatus !== "claimed"
+    ) return false;
     return Boolean(
         settlement.txHash
-        || settlement.sessionBudgetIntentId
+        || settlement.paymentIntentId
         || (settlement.paymentChannelId && settlement.paymentCumulativeAmountWei)
     );
 }
@@ -198,10 +205,9 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
 export async function kickBatchSettlement(
     settlement: {
         finalAmountWei?: string;
-        settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+        settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
         txHash?: string;
         paymentIntentId?: string;
-        sessionBudgetIntentId?: string;
         paymentChannelId?: string;
         paymentCumulativeAmountWei?: string;
     } | null | undefined,
@@ -333,13 +339,16 @@ interface InferencePaymentSettlementResult {
     success: boolean;
     userAddress?: string;
     txHash?: string;
-    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
     claimTxHash?: string;
     settleTxHash?: string;
     paymentIntentId?: string;
-    sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
+    checkpointSequence?: number;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
     finalAmountWei?: string;
     providerAmountWei?: string;
     platformFeeWei?: string;
@@ -362,6 +371,7 @@ interface InferencePaymentSettlementResult {
 
 export interface PreparedInferencePayment {
     maxAmountWei: string;
+    settlementMode: "single" | "continuous";
     runtimeHeaders: Record<string, string>;
     settle: (settlement: InferenceSettlementInput) => Promise<InferencePaymentSettlementResult>;
     abort: (reason?: string) => Promise<void>;
@@ -553,6 +563,195 @@ function resolveInferenceAuthorizationRequirement(
     };
 }
 
+function verifiedResultFromEvmDepositState(state: EvmBatchDepositState) {
+    return {
+        isValid: true as const,
+        payer: state.payer,
+        extra: {
+            balance: state.verifiedBalanceWei,
+            totalClaimed: state.verifiedTotalClaimedWei,
+            withdrawRequestedAt: Number.parseInt(state.verifiedWithdrawRequestedAt, 10),
+            refundNonce: state.verifiedRefundNonce,
+        },
+    };
+}
+
+function durableEvmBatchDepositDependencies() {
+    return createEvmBatchDepositDependencies(async ({ paymentPayload, requirements, onSubmitted }) => {
+        // @x402/evm 2.20 exposes deposit as one settle() call: it broadcasts and
+        // waits for a receipt before returning the hash. There is no prepared
+        // transaction or post-broadcast callback to persist earlier. If this
+        // call disappears after broadcast, the durable state deliberately
+        // remains `broadcast` and retries fail closed instead of rebroadcasting.
+        let result;
+        try {
+            result = await settlePayment(paymentPayload, requirements);
+        } catch (error) {
+            return {
+                status: "unknown" as const,
+                error: error instanceof Error ? error.message : "EVM batch deposit settlement failed ambiguously",
+            };
+        }
+        const txHash = result.transaction || "";
+        if (txHash) {
+            await onSubmitted(txHash);
+        }
+        if (result.success && txHash) {
+            return { status: "confirmed" as const, txHash };
+        }
+        if (!result.success && txHash) {
+            return {
+                status: "failed" as const,
+                terminal: true as const,
+                txHash,
+                error: result.errorMessage || result.errorReason || "EVM batch deposit transaction failed",
+            };
+        }
+        return {
+            status: "unknown" as const,
+            error: result.errorMessage || result.errorReason || "EVM batch deposit settlement result is ambiguous",
+        };
+    });
+}
+
+function createPreparedRawBatchPayment(input: {
+    envelope: RawEnvelope;
+    requiredNetwork: NetworkId;
+    rootRunId: string;
+    executionRunId: string;
+    parentExecutionRunId?: string;
+}): PreparedInferencePayment {
+    let currentHeaders: Record<string, string> = {};
+    let checkpointSequence = 0;
+    let lane = Promise.resolve();
+
+    const enqueue = (
+        operation: () => Promise<InferencePaymentSettlementResult>,
+    ): Promise<InferencePaymentSettlementResult> => {
+        const result = lane.then(operation);
+        lane = result.then(() => undefined, () => undefined);
+        return result;
+    };
+
+    return {
+        maxAmountWei: input.envelope.maxAmountWei,
+        settlementMode: "continuous",
+        runtimeHeaders: rawRuntimeHeaders(input.requiredNetwork, input.envelope.maxAmountWei),
+        settle: (settlementInput) => enqueue(async () => {
+            const {
+                finalAmountWei,
+                providerAmountWei,
+                platformFeeWei,
+                meterSubject,
+                lineItems,
+            } = resolveInferenceSettlement(settlementInput);
+            if (!/^(?:0|[1-9]\d*)$/u.test(finalAmountWei)) {
+                return {
+                    success: false,
+                    error: "Invalid raw batch settlement amount",
+                    statusCode: 400,
+                };
+            }
+            if (BigInt(finalAmountWei) > BigInt(input.envelope.maxAmountWei)) {
+                return {
+                    success: false,
+                    error: "finalAmountWei cannot exceed the inherited x402 authorized maximum",
+                    statusCode: 402,
+                };
+            }
+            if (BigInt(finalAmountWei) === 0n) {
+                return {
+                    success: true,
+                    finalAmountWei,
+                    providerAmountWei,
+                    platformFeeWei,
+                    meterSubject,
+                    lineItems,
+                    userAddress: input.envelope.payer,
+                    network: input.requiredNetwork,
+                    rootRunId: input.rootRunId,
+                    executionRunId: input.executionRunId,
+                    parentExecutionRunId: input.parentExecutionRunId,
+                };
+            }
+
+            const settlementRequirement = createPaymentRequirement({
+                amountWei: finalAmountWei,
+                network: input.requiredNetwork,
+                scheme: "batch-settlement",
+            });
+            const batchPayload = getBatchPayload(input.envelope.paymentPayload);
+            if (batchPayload?.type === "deposit" && isEvmNetwork(input.requiredNetwork)) {
+                try {
+                    await requireEvmBatchDepositConfirmed({
+                        paymentPayload: input.envelope.paymentPayload,
+                        requirements: input.envelope.paymentPayload.accepted,
+                    });
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error instanceof Error ? error.message : "EVM batch deposit is not confirmed",
+                        statusCode: 402,
+                    };
+                }
+            }
+
+            const sequence = checkpointSequence;
+            let batch;
+            try {
+                batch = await commitRawBatchCheckpoint({
+                    paymentPayload: input.envelope.paymentPayload,
+                    requirements: settlementRequirement,
+                    amountWei: finalAmountWei,
+                    rootRunId: input.rootRunId,
+                    executionRunId: input.executionRunId,
+                    sequence,
+                });
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : "Raw batch checkpoint failed",
+                    statusCode: 402,
+                };
+            }
+            checkpointSequence += 1;
+            const queued = queuedBatchSettlement(
+                finalAmountWei,
+                input.requiredNetwork,
+                batch,
+                input.envelope.payer,
+            );
+            currentHeaders = {
+                "PAYMENT-RESPONSE": encodePaymentResponseHeader(queued),
+            };
+            return {
+                success: true,
+                finalAmountWei,
+                providerAmountWei,
+                platformFeeWei,
+                meterSubject,
+                lineItems,
+                userAddress: input.envelope.payer,
+                network: input.requiredNetwork,
+                settlementStatus: "queued",
+                paymentChannelId: batch.channelId,
+                paymentCumulativeAmountWei: batch.cumulativeAmountWei,
+                checkpointSequence: sequence,
+                rootRunId: input.rootRunId,
+                executionRunId: input.executionRunId,
+                parentExecutionRunId: input.parentExecutionRunId,
+            };
+        }),
+        abort: async () => undefined,
+        applyHeaders: (response) => {
+            if (response.headersSent) return;
+            for (const [header, value] of Object.entries(currentHeaders)) {
+                response.setHeader(header, value);
+            }
+        },
+    };
+}
+
 async function prepareRawInferenceX402Payment(
     req: Request,
     res: Response,
@@ -566,6 +765,15 @@ async function prepareRawInferenceX402Payment(
     }
     const resourceUrl = publicResourceUrl(req);
     const runId = getRunIdFromRequest(req);
+    const executionHeader = req.get?.("x-execution-run-id") || req.headers["x-execution-run-id"];
+    const parentHeader = req.get?.("x-parent-run-id") || req.headers["x-parent-run-id"];
+    const explicitExecutionRunId = typeof executionHeader === "string" && executionHeader.trim()
+        ? executionHeader.trim()
+        : undefined;
+    const parentExecutionRunId = typeof parentHeader === "string" && parentHeader.trim()
+        ? parentHeader.trim()
+        : undefined;
+    const executionRunId = explicitExecutionRunId || runId || undefined;
 
     const buildPaymentRequired = (network: NetworkId, error?: string) => createPaymentRequired({
         amountWei: requirement.maxAmountWei,
@@ -579,11 +787,7 @@ async function prepareRawInferenceX402Payment(
 
     const paymentSignature = getPaymentSignatureFromRequest(req);
     if (!paymentSignature) {
-        const inheritedExecutionId = req.get?.("x-execution-run-id")
-            || req.headers["x-execution-run-id"]
-            || req.get?.("x-parent-run-id")
-            || req.headers["x-parent-run-id"];
-        if (runId && inheritedExecutionId) {
+        if (runId && executionRunId && (explicitExecutionRunId || parentExecutionRunId)) {
             const inherited = await readRawEnvelope(runId);
             if (inherited && inherited.network !== requiredNetwork) {
                 const paymentRequired = buildPaymentRequired(
@@ -595,108 +799,39 @@ async function prepareRawInferenceX402Payment(
                 return null;
             }
             if (inherited) {
-                return {
-                    maxAmountWei: inherited.maxAmountWei,
-                    runtimeHeaders: rawRuntimeHeaders(requiredNetwork, inherited.maxAmountWei),
-                    settle: async (settlementInput) => {
-                        let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
-                        let finalAmountWei: string;
-                        let providerAmountWei: string | undefined;
-                        let platformFeeWei: string | undefined;
-                        let meterSubject: string | undefined;
-                        let lineItems: InferencePaymentSettlementResult["lineItems"] | undefined;
-                        if ("meter" in settlementInput) {
-                            metering = quoteMeteredSettlement(settlementInput.meter);
-                            finalAmountWei = metering.finalAmountWei;
-                            providerAmountWei = metering.providerAmountWei;
-                            platformFeeWei = metering.platformFeeWei;
-                            meterSubject = metering.subject;
-                            lineItems = metering.lineItems;
-                        } else {
-                            finalAmountWei = settlementInput.finalAmountWei;
-                            providerAmountWei = settlementInput.providerAmountWei;
-                            platformFeeWei = settlementInput.platformFeeWei;
-                            meterSubject = settlementInput.meterSubject;
-                            lineItems = settlementInput.lineItems;
-                        }
-
-                        if (BigInt(finalAmountWei) > BigInt(inherited.maxAmountWei)) {
-                            return {
-                                success: false,
-                                error: "finalAmountWei cannot exceed the inherited x402 authorized maximum",
-                                statusCode: 402,
-                            };
-                        }
-
-                        await reserveRawEnvelope(runId, finalAmountWei);
-                        const inheritedBatchPayload = getBatchPayload(inherited.paymentPayload);
-                        if (inheritedBatchPayload) {
-                            try {
-                                const batch = await commitBatchCharge(
-                                    inherited.paymentPayload,
-                                    finalAmountWei,
-                                    createPaymentRequirement({
-                                        amountWei: finalAmountWei,
-                                        network: requiredNetwork,
-                                        scheme: "batch-settlement",
-                                    }),
-                                );
-                                return {
-                                    success: true,
-                                    finalAmountWei,
-                                    providerAmountWei,
-                                    platformFeeWei,
-                                    meterSubject,
-                                    lineItems,
-                                    userAddress: inherited.payer,
-                                    network: requiredNetwork,
-                                    settledAt: Date.now(),
-                                    settlementStatus: "queued",
-                                    paymentChannelId: batch.channelId,
-                                    paymentCumulativeAmountWei: batch.cumulativeAmountWei,
-                                };
-                            } catch (error) {
-                                await releaseRawEnvelope(runId, finalAmountWei);
-                                return {
-                                    success: false,
-                                    error: error instanceof Error ? error.message : "Batch settlement commit failed",
-                                    statusCode: 402,
-                                };
-                            }
-                        }
-                        const settled = await settlePayment(
-                            inherited.paymentPayload,
-                            createPaymentRequirement({
-                                amountWei: finalAmountWei,
-                                network: requiredNetwork,
-                                scheme: inherited.paymentPayload.accepted.scheme === "upto" ? "upto" : "exact",
-                            }),
+                if (inherited.resource !== resourceUrl) {
+                    const paymentRequired = buildPaymentRequired(
+                        requiredNetwork,
+                        "Inherited x402 envelope resource does not match the requested resource",
+                    );
+                    res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+                    res.status(402).json(paymentRequired);
+                    return null;
+                }
+                const inheritedBatchPayload = getBatchPayload(inherited.paymentPayload);
+                if (inheritedBatchPayload?.type === "deposit" && isEvmNetwork(requiredNetwork)) {
+                    try {
+                        await requireEvmBatchDepositConfirmed({
+                            paymentPayload: inherited.paymentPayload,
+                            requirements: inherited.paymentPayload.accepted,
+                        });
+                    } catch (error) {
+                        const paymentRequired = buildPaymentRequired(
+                            requiredNetwork,
+                            error instanceof Error ? error.message : "EVM batch deposit is not confirmed",
                         );
-                        if (!settled.success) {
-                            await releaseRawEnvelope(runId, finalAmountWei);
-                            return {
-                                success: false,
-                                error: settled.errorMessage || settled.errorReason || "Payment settlement failed",
-                                statusCode: 402,
-                            };
-                        }
-                        return {
-                            success: true,
-                            txHash: settled.transaction || undefined,
-                            finalAmountWei,
-                            providerAmountWei,
-                            platformFeeWei,
-                            meterSubject,
-                            lineItems,
-                            userAddress: inherited.payer,
-                            network: requiredNetwork,
-                            settledAt: Date.now(),
-                            settlementStatus: settled.transaction ? "settled" : "queued",
-                        };
-                    },
-                    abort: async () => undefined,
-                    applyHeaders: () => undefined,
-                };
+                        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+                        res.status(402).json(paymentRequired);
+                        return null;
+                    }
+                }
+                return createPreparedRawBatchPayment({
+                    envelope: inherited,
+                    requiredNetwork,
+                    rootRunId: runId,
+                    executionRunId,
+                    parentExecutionRunId,
+                });
             }
         }
         const paymentRequired = buildPaymentRequired(requiredNetwork);
@@ -735,7 +870,47 @@ async function prepareRawInferenceX402Payment(
         network: requiredNetwork,
         scheme: requirement.scheme,
     });
-    const verifyResult = await verifyPayment(paymentPayload, verificationRequirement);
+    const decodedBatchPayload = getBatchPayload(paymentPayload);
+    const evmDepositDependencies = decodedBatchPayload?.type === "deposit" && isEvmNetwork(requiredNetwork)
+        ? durableEvmBatchDepositDependencies()
+        : null;
+    let resumedDeposit: EvmBatchDepositState | null = null;
+    if (decodedBatchPayload?.type === "deposit" && evmDepositDependencies) {
+        if (!runId || !executionRunId) {
+            res.status(400).json({ error: "x-run-id header is required for batch-settlement" });
+            return null;
+        }
+        if (paymentPayload.resource?.url !== resourceUrl) {
+            const paymentRequired = buildPaymentRequired(
+                requiredNetwork,
+                "Batch-settlement payment resource does not match the requested resource",
+            );
+            res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+            res.status(402).json(paymentRequired);
+            return null;
+        }
+        resumedDeposit = await ensureEvmBatchDeposit({
+            paymentPayload,
+            requirements: verificationRequirement,
+        }, evmDepositDependencies);
+        if (resumedDeposit && resumedDeposit.status !== "confirmed") {
+            const paymentRequired = buildPaymentRequired(
+                requiredNetwork,
+                resumedDeposit.status === "failed"
+                    ? `EVM batch deposit failed: ${resumedDeposit.error || "definitive on-chain failure"}`
+                    : `EVM batch deposit is ${resumedDeposit.status}, not confirmed`,
+            );
+            res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+            res.status(402).json(paymentRequired);
+            return null;
+        }
+    }
+    const resolveVerifyResult = async (): Promise<VerifyResponse> => {
+        if (resumedDeposit) return verifiedResultFromEvmDepositState(resumedDeposit);
+        const verifyResult = await verifyPayment(paymentPayload, verificationRequirement);
+        return verifyResult;
+    };
+    const verifyResult = await resolveVerifyResult();
     if (!verifyResult.isValid) {
         const paymentRequired = buildPaymentRequired(
             requiredNetwork,
@@ -747,26 +922,102 @@ async function prepareRawInferenceX402Payment(
     }
     const verifiedBatchPayload = getBatchPayload(paymentPayload);
     if (verifiedBatchPayload) {
-        await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
-    }
-
-    if (runId) {
+        if (!runId || !executionRunId) {
+            res.status(400).json({ error: "x-run-id header is required for batch-settlement" });
+            return null;
+        }
+        if (!verifyResult.payer) {
+            const paymentRequired = buildPaymentRequired(requiredNetwork, "Verified batch-settlement payer is required");
+            res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+            res.status(402).json(paymentRequired);
+            return null;
+        }
+        if (paymentPayload.resource?.url !== resourceUrl) {
+            const paymentRequired = buildPaymentRequired(
+                requiredNetwork,
+                "Batch-settlement payment resource does not match the requested resource",
+            );
+            res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+            res.status(402).json(paymentRequired);
+            return null;
+        }
+        let depositState = resumedDeposit;
+        if (verifiedBatchPayload.type === "deposit" && evmDepositDependencies) {
+            depositState = depositState || await ensureEvmBatchDeposit({
+                paymentPayload,
+                requirements: verificationRequirement,
+                verifyResult,
+            }, evmDepositDependencies);
+            if (!depositState || depositState.status !== "confirmed") {
+                const paymentRequired = buildPaymentRequired(
+                    requiredNetwork,
+                    depositState?.status === "failed"
+                        ? `EVM batch deposit failed: ${depositState.error || "definitive on-chain failure"}`
+                        : `EVM batch deposit is ${depositState?.status || "unprepared"}, not confirmed`,
+                );
+                res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+                res.status(402).json(paymentRequired);
+                return null;
+            }
+            await rememberBatchChannel(
+                paymentPayload,
+                verificationRequirement,
+                verifiedResultFromEvmDepositState(depositState),
+            );
+        }
         await saveRawEnvelope({
             rootRunId: runId,
             maxAmountWei: requirement.maxAmountWei,
             network: requiredNetwork,
             paymentPayload,
-            payer: verifyResult.payer,
+            payer: depositState?.payer || verifyResult.payer,
         });
+        if (!(verifiedBatchPayload.type === "deposit" && evmDepositDependencies)) {
+            await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
+        }
+        const envelope = await readRawEnvelope(runId);
+        if (!envelope) {
+            throw Object.assign(new Error("Verified raw batch envelope could not be loaded"), { statusCode: 402 });
+        }
+        return createPreparedRawBatchPayment({
+            envelope,
+            requiredNetwork,
+            rootRunId: runId,
+            executionRunId,
+            parentExecutionRunId,
+        });
+    }
+    if (isBatchSettlementScheme(paymentPayload.accepted.scheme)) {
+        const paymentRequired = buildPaymentRequired(requiredNetwork, "Invalid batch-settlement payload backing");
+        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+        res.status(402).json(paymentRequired);
+        return null;
     }
 
     let currentHeaders: Record<string, string> = {};
     const rawPayer = verifyResult.payer || undefined;
+    let singleUseConsumed = false;
+    let singleUseLane = Promise.resolve();
+    const enqueueSingleUse = (
+        operation: () => Promise<InferencePaymentSettlementResult>,
+    ): Promise<InferencePaymentSettlementResult> => {
+        const result = singleUseLane.then(operation);
+        singleUseLane = result.then(() => undefined, () => undefined);
+        return result;
+    };
 
     return {
         maxAmountWei: requirement.maxAmountWei,
+        settlementMode: "single",
         runtimeHeaders: rawRuntimeHeaders(requiredNetwork, requirement.maxAmountWei),
-        settle: async (settlementInput) => {
+        settle: (settlementInput) => enqueueSingleUse(async () => {
+            if (singleUseConsumed) {
+                return {
+                    success: false,
+                    error: "Raw exact and upto payment payloads are request-scoped and single-use",
+                    statusCode: 409,
+                };
+            }
             let metering: ReturnType<typeof quoteMeteredSettlement> | undefined;
             let finalAmountWei: string;
             let providerAmountWei: string | undefined;
@@ -797,12 +1048,16 @@ async function prepareRawInferenceX402Payment(
                 lineItems = metering.lineItems;
             }
 
+            if (!/^(?:0|[1-9]\d*)$/u.test(finalAmountWei)) {
+                return { success: false, error: "Invalid raw x402 settlement amount", statusCode: 400 };
+            }
             if (requirement.scheme === "upto" && BigInt(finalAmountWei) > BigInt(requirement.maxAmountWei)) {
                 return {
                     success: false,
                     error: "finalAmountWei cannot exceed the x402 authorized maximum",
                 };
             }
+            singleUseConsumed = true;
 
             if (BigInt(finalAmountWei) === 0n) {
                 return {
@@ -814,20 +1069,7 @@ async function prepareRawInferenceX402Payment(
                     lineItems,
                     userAddress: rawPayer,
                     network: requiredNetwork,
-                    settledAt: Date.now(),
                 };
-            }
-
-            if (runId) {
-                try {
-                    await reserveRawEnvelope(runId, finalAmountWei);
-                } catch (error) {
-                    return {
-                        success: false,
-                        error: error instanceof Error ? error.message : "Payment envelope budget exhausted",
-                        statusCode: 402,
-                    };
-                }
             }
 
             const settlementRequirement = createPaymentRequirement({
@@ -836,29 +1078,14 @@ async function prepareRawInferenceX402Payment(
                 scheme: requirement.scheme,
             });
             let settled;
-            let batch;
-            const batchPayload = getBatchPayload(paymentPayload);
-            if (batchPayload?.type === "voucher") {
-                try {
-                    batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
-                    settled = queuedBatchSettlement(finalAmountWei, settlementRequirement.network);
-                } catch (error) {
-                    if (runId) {
-                        await releaseRawEnvelope(runId, finalAmountWei);
-                    }
-                    return {
-                        success: false,
-                        error: error instanceof Error ? error.message : "Batch settlement commit failed",
-                    };
-                }
-            } else {
-                settled = await settlePayment(
-                    paymentPayload,
-                    settlementRequirement,
-                );
-                if (batchPayload && settled.success) {
-                    batch = await commitBatchCharge(paymentPayload, finalAmountWei, settlementRequirement);
-                }
+            try {
+                settled = await settlePayment(paymentPayload, settlementRequirement);
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : "Payment settlement failed",
+                    statusCode: 402,
+                };
             }
 
             currentHeaders = {
@@ -869,9 +1096,6 @@ async function prepareRawInferenceX402Payment(
             }
 
             if (!settled.success) {
-                if (runId) {
-                    await releaseRawEnvelope(runId, finalAmountWei);
-                }
                 return {
                     success: false,
                     error: settled.errorMessage || settled.errorReason || "Payment settlement failed",
@@ -888,14 +1112,10 @@ async function prepareRawInferenceX402Payment(
                 lineItems,
                 userAddress: rawPayer,
                 network: requiredNetwork,
-                settledAt: Date.now(),
-                settlementStatus: batch
-                    ? "queued"
-                    : (settled.transaction ? "settled" : "queued"),
-                paymentChannelId: batch?.channelId,
-                paymentCumulativeAmountWei: batch?.cumulativeAmountWei,
+                ...(settled.transaction ? { settledAt: Date.now() } : {}),
+                settlementStatus: settled.transaction ? "settled" : "queued",
             };
-        },
+        }),
         abort: async () => undefined,
         applyHeaders: (response) => {
             if (response.headersSent) {
@@ -940,7 +1160,6 @@ export async function prepareInferencePayment(
     const userAddress = validation.payload.sub;
     const keyId = validation.payload.keyId;
     const purpose = validation.record.purpose;
-    const requirement = resolveInferenceAuthorizationRequirement(req, authorizationInput);
 
     if (purpose === "session") {
         const sessionStatus = await getActiveSessionStatus(userAddress, network);
@@ -954,9 +1173,19 @@ export async function prepareInferencePayment(
 
     let currentHeaders: Record<string, string> = {};
     let paymentIntentId: string | null = null;
-    let maxAmountWei = requirement.maxAmountWei;
+    let maxAmountWei = "0";
     const idempotencyKey = getIdempotencyKeyFromRequest(req);
-    let paymentSettled = false;
+    const rootRunId = getRunIdFromRequest(req) || idempotencyKey || `inference-${randomUUID()}`;
+    const executionHeader = req.get?.("x-execution-run-id") || req.headers["x-execution-run-id"];
+    const parentHeader = req.get?.("x-parent-run-id") || req.headers["x-parent-run-id"];
+    const executionRunId = typeof executionHeader === "string" && executionHeader.trim()
+        ? executionHeader.trim()
+        : rootRunId;
+    const parentExecutionRunId = typeof parentHeader === "string" && parentHeader.trim()
+        ? parentHeader.trim()
+        : undefined;
+    let paymentFinalized = false;
+    let paymentIntentSequence = 0;
 
     const authorizationResult = await authorizePaymentIntent({
         authorization,
@@ -965,9 +1194,13 @@ export async function prepareInferencePayment(
         action: "inference",
         resource: publicResourceUrl(req),
         method: req.method || "POST",
-        maxAmountWei: requirement.maxAmountWei,
-        runId: getRunIdFromRequest(req) || undefined,
+        useBudgetCap: true,
+        runId: rootRunId,
         idempotencyKey,
+        rootRunId,
+        executionRunId,
+        parentExecutionRunId,
+        sequence: paymentIntentSequence,
     });
 
     currentHeaders = {
@@ -998,6 +1231,7 @@ export async function prepareInferencePayment(
 
     return {
         maxAmountWei,
+        settlementMode: "continuous",
         runtimeHeaders: resolvedRuntimeHeaders,
         settle: async (settlementInput) => {
             const {
@@ -1018,21 +1252,22 @@ export async function prepareInferencePayment(
             const finalAmount = BigInt(finalAmountWei);
 
             if (finalAmount === 0n) {
-                if (paymentIntentId && !paymentSettled) {
+                if (paymentIntentId && !paymentFinalized) {
                     await abortPaymentIntent({
                         paymentIntentId,
                         reason: "zero_amount_settlement",
                     });
+                    paymentFinalized = true;
                 }
                 return {
                     success: true,
+                    userAddress,
                     finalAmountWei,
                     providerAmountWei,
                     platformFeeWei,
                     meterSubject,
                     lineItems,
                     network,
-                    settledAt: Date.now(),
                     settlementStatus: "queued",
                     ...(paymentIntentId ? { paymentIntentId } : {}),
                 };
@@ -1046,16 +1281,53 @@ export async function prepareInferencePayment(
                 };
             }
 
-            if (paymentSettled) {
-                return {
-                    success: false,
-                    error: "Payment intent has already been settled",
-                    statusCode: 409,
+            let activePaymentIntentId = paymentIntentId;
+            if (paymentFinalized) {
+                paymentIntentSequence += 1;
+                const authorizationResult = await authorizePaymentIntent({
+                    authorization,
+                    network,
+                    service: "api",
+                    action: "inference",
+                    resource: publicResourceUrl(req),
+                    method: req.method || "POST",
+                    useBudgetCap: true,
+                    runId: rootRunId,
+                    idempotencyKey,
+                    rootRunId,
+                    executionRunId,
+                    parentExecutionRunId,
+                    sequence: paymentIntentSequence,
+                });
+
+                currentHeaders = {
+                    ...authorizationResult.headers,
                 };
+
+                if (!authorizationResult.ok) {
+                    setSessionInvalidHeader(currentHeaders, getSessionInvalidReason(String(authorizationResult.body.error || authorizationResult.status)));
+                    return {
+                        success: false,
+                        error: typeof authorizationResult.body.error === "string"
+                            ? authorizationResult.body.error
+                            : "Payment authorization failed",
+                        statusCode: authorizationResult.status,
+                        paymentRequired: authorizationResult.status === 402
+                            ? authorizationResult.body as unknown as PaymentRequired
+                            : undefined,
+                        paymentRequiredHeader: authorizationResult.headers["PAYMENT-REQUIRED"]
+                            || authorizationResult.headers["payment-required"]
+                            || null,
+                    };
+                }
+
+                activePaymentIntentId = authorizationResult.body.paymentIntentId;
+                paymentIntentId = activePaymentIntentId;
+                maxAmountWei = authorizationResult.body.maxAmountWei;
             }
 
             const intentSettlement = await settlePaymentIntent({
-                paymentIntentId,
+                paymentIntentId: activePaymentIntentId,
                 finalAmountWei,
                 providerAmountWei,
                 platformFeeWei,
@@ -1066,12 +1338,12 @@ export async function prepareInferencePayment(
             currentHeaders = {
                 ...currentHeaders,
                 ...intentSettlement.headers,
-                "x-payment-intent-id": paymentIntentId,
+                "x-payment-intent-id": activePaymentIntentId,
             };
 
             if (!intentSettlement.ok) {
                 await abortPaymentIntent({
-                    paymentIntentId,
+                    paymentIntentId: activePaymentIntentId,
                     reason: typeof intentSettlement.body.error === "string"
                         ? intentSettlement.body.error
                         : "Payment settlement failed",
@@ -1091,10 +1363,18 @@ export async function prepareInferencePayment(
                 };
             }
 
-            paymentSettled = true;
+            paymentFinalized = true;
             const txHash = intentSettlement.body.txHash;
+            const settlementStatus = intentSettlement.body.status === "confirmed"
+                ? "settled"
+                : intentSettlement.body.status === "submitted"
+                    ? "submitted"
+                    : intentSettlement.body.status === "failed"
+                        ? "failed"
+                        : "queued";
             return {
                 success: true,
+                userAddress,
                 txHash,
                 finalAmountWei,
                 providerAmountWei,
@@ -1102,13 +1382,19 @@ export async function prepareInferencePayment(
                 meterSubject,
                 lineItems,
                 network,
-                settledAt: Date.now(),
-                settlementStatus: txHash ? "settled" : "queued",
-                paymentIntentId,
+                settlementStatus,
+                paymentIntentId: activePaymentIntentId,
+                checkpointSequence: paymentIntentSequence,
+                rootRunId,
+                executionRunId,
+                parentExecutionRunId,
+                ...(settlementStatus === "settled" && intentSettlement.body.confirmedAt !== undefined
+                    ? { settledAt: intentSettlement.body.confirmedAt }
+                    : {}),
             };
         },
         abort: async (reason?: string) => {
-            if (paymentIntentId && !paymentSettled) {
+            if (paymentIntentId && !paymentFinalized) {
                 await abortPaymentIntent({
                     paymentIntentId,
                     reason: reason || "Inference failed before settlement",
@@ -1153,15 +1439,18 @@ export interface InferenceSettlementReceipt {
         amountWei: string;
     }>;
     txHash?: string;
-    settlementStatus?: "queued" | "claimed" | "settled" | "failed";
+    settlementStatus?: "queued" | "submitted" | "claimed" | "settled" | "failed";
     claimTxHash?: string;
     settleTxHash?: string;
     paymentIntentId?: string;
-    sessionBudgetIntentId?: string;
     paymentChannelId?: string;
     paymentCumulativeAmountWei?: string;
+    checkpointSequence?: number;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
     network?: NetworkId;
-    settledAt: number;
+    settledAt?: number;
     evidenceOnly?: boolean;
 }
 
@@ -1198,13 +1487,12 @@ export async function settlePreparedInferencePayment(
     }
     if (
         BigInt(settlement.finalAmountWei || "0") > 0n
-        && settlement.paymentIntentId
+        && !settlement.paymentIntentId
         && !settlement.txHash
-        && !settlement.sessionBudgetIntentId
         && !(settlement.paymentChannelId && settlement.paymentCumulativeAmountWei)
     ) {
         throw Object.assign(
-            new Error("Nonzero direct Compose Key settlement is missing on-chain transaction backing"),
+            new Error("Nonzero settlement is missing durable payment backing"),
             { statusCode: 402 },
         );
     }
@@ -1217,15 +1505,18 @@ export async function settlePreparedInferencePayment(
         meterSubject: settlement.meterSubject,
         lineItems: settlement.lineItems,
         txHash: settlement.txHash,
-        settlementStatus: settlement.settlementStatus || (settlement.txHash ? "settled" : "queued"),
+        settlementStatus: settlement.settlementStatus || (settlement.txHash ? "submitted" : "queued"),
         claimTxHash: settlement.claimTxHash,
         settleTxHash: settlement.settleTxHash,
         paymentIntentId: settlement.paymentIntentId,
-        sessionBudgetIntentId: settlement.sessionBudgetIntentId,
         paymentChannelId: settlement.paymentChannelId,
         paymentCumulativeAmountWei: settlement.paymentCumulativeAmountWei,
+        checkpointSequence: settlement.checkpointSequence,
+        rootRunId: settlement.rootRunId,
+        executionRunId: settlement.executionRunId,
+        parentExecutionRunId: settlement.parentExecutionRunId,
         network: settlement.network,
-        settledAt: settlement.settledAt ?? Date.now(),
+        ...(settlement.settledAt !== undefined ? { settledAt: settlement.settledAt } : {}),
         evidenceOnly: settlement.evidenceOnly,
     };
 }

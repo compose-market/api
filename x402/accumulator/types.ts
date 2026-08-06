@@ -6,20 +6,23 @@
  * @module shared/x402/accumulator/types
  */
 
-import type { PaymentIntent } from "../session/budget.js";
+import type { PaymentIntentRecord, PaymentIntentStatus } from "../intents.js";
 import type { NetworkId } from "../configs/chains.js";
 
-export { PaymentIntent };
+export type PaymentIntent = PaymentIntentRecord;
 
 /**
  * Result of a batch settlement for a single user
  */
 export interface BatchSettlementResult {
+    paymentIntentId: string;
     userAddress: string;
     network: NetworkId;
+    asset: string;
     totalSettledWei: string;
     intentCount: number;
     txHash: string;
+    status: PaymentIntentStatus;
     gasUsed?: string;
     error?: string;
 }

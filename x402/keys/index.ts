@@ -27,8 +27,6 @@ export {
     createKey,
     getKeyRecord,
     listUserKeys,
-    recordKeyUsage,
-    syncBudgetAfterSettlement,
     isKeyRevoked,
     revokeKey,
     getKeyBudgetRemaining,
@@ -39,7 +37,6 @@ export {
 export {
     extractKeyFromHeader,
     validateKey,
-    consumeKeyBudget,
     hasKeyAuth,
     getKeyBudgetInfo,
 } from "./middleware.js";

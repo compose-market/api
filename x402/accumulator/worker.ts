@@ -1,291 +1,142 @@
 /**
- * Batch Settlement Worker
- * 
- * Executes batch settlements for accumulated payment intents.
- * Triggered by CloudWatch Events (every 2 minutes) or $1 threshold.
- * 
- * SETTLEMENT FLOW:
- * 1. Read all pending intents from ValKey (grouped by user + network)
- * 2. For each user, calculate total amount to settle
- * 3. Execute single USDC.transferFrom per user (from locked allowance)
- * 4. Mark intents as settled on success
- * 5. On failure, fallback to per-intent settlement or requeue
- * 
- * @module shared/x402/accumulator/worker
+ * Canonical Compose payment-intent worker.
+ *
+ * Every queued checkpoint is an independent payable obligation and
+ * an independent settlement operation. The worker never aggregates amounts
+ * across checkpoints, credentials, payers, assets, or networks.
  */
 
 import {
-    getPendingIntentsGrouped,
-    markIntentsSettled,
-    markIntentFailed,
-    markSettled,
-    unlockBudget,
-    type PaymentIntent,
-} from "../session/budget.js";
-import { settleKeyPaymentForNetwork } from "../settlement.js";
-import type { NetworkId } from "../configs/chains.js";
-import { syncBudgetAfterSettlement } from "../keys/index.js";
-import { markIntentEvidenceSettled } from "../evidence.js";
-import { markIntentReceiptsSettled } from "../receipts.js";
-import type { BatchSettlementResult, BatchRunSummary, BatchConfig, DEFAULT_BATCH_CONFIG } from "./types.js";
+    executeCanonicalPaymentIntent,
+    getCanonicalPaymentIntent,
+    listCanonicalPaymentIntentIds,
+    listCanonicalPaymentProjectionIds,
+    reconcileCanonicalPaymentIntentProjections,
+    removeCanonicalPaymentIntentWorkId,
+} from "../intents.js";
+import { isEvmNetwork, type NetworkId } from "../configs/chains.js";
+import { valkeySMembers } from "../keys/valkey.js";
+import type { BatchRunSummary, BatchSettlementResult, BatchConfig } from "./types.js";
 
-// =============================================================================
-// Configuration
-// =============================================================================
+const MAX_INTENTS_PER_RUN = 100;
 
-/** $1 threshold for immediate settlement (USDC with 6 decimals) */
-const IMMEDIATE_THRESHOLD_WEI = 1000000n;
+function pendingRetry(intent: Awaited<ReturnType<typeof getCanonicalPaymentIntent>>, now: number): boolean {
+    return Boolean(intent?.nextAttemptAt && intent.nextAttemptAt > now);
+}
 
-// =============================================================================
-// Batch Settlement Worker
-// =============================================================================
-
-/**
- * Run a complete batch settlement cycle
- * 
- * Called by:
- * - CloudWatch Events (scheduled every 2 minutes)
- * - Immediate trigger when $1 threshold reached
- */
 export async function runBatchSettlement(
     config: Partial<BatchConfig> = {},
 ): Promise<BatchRunSummary> {
-    const runId = `batch-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    const runId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const startTime = Date.now();
-
-    console.log(`[batch-settlement] Starting batch run ${runId}`);
-
+    const requestedMax = config.maxIntentsPerRun && config.maxIntentsPerRun > 0
+        ? Math.floor(config.maxIntentsPerRun)
+        : MAX_INTENTS_PER_RUN;
+    const maxIntents = Math.min(requestedMax, MAX_INTENTS_PER_RUN);
+    const projectionLimit = Math.max(1, Math.floor(maxIntents / 4));
+    const projectionIds = await listCanonicalPaymentProjectionIds(projectionLimit);
+    for (const paymentIntentId of projectionIds) {
+        await reconcileCanonicalPaymentIntentProjections(paymentIntentId).catch((error) => {
+            console.error("[settlement-worker] projection retry failed", {
+                paymentIntentId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        });
+    }
+    const remainingCapacity = Math.max(0, maxIntents - projectionIds.length);
+    const boundedScanLimit = Math.min(MAX_INTENTS_PER_RUN * 4, remainingCapacity * 4);
+    const candidateIds = await listCanonicalPaymentIntentIds(boundedScanLimit);
     const results: BatchSettlementResult[] = [];
-    let successCount = 0;
-    let failCount = 0;
-    let totalIntents = 0;
-    let totalValueWei = 0n;
-
-    try {
-        // Get all pending intents grouped by user:network
-        const grouped = await getPendingIntentsGrouped();
-
-        console.log(`[batch-settlement] Found ${grouped.size} network groups with pending intents`);
-
-        // Process each user:network group
-        for (const [network, byUser] of grouped.entries()) {
-          for (const [userAddress, intents] of byUser.entries()) {
-            if (intents.length === 0) continue;
-
-            totalIntents += intents.length;
-
-            try {
-                const result = await settleUserBatch(userAddress, network, intents);
-                results.push(result);
-
-                if (result.error) {
-                    failCount++;
-                } else {
-                    successCount++;
-                    totalValueWei += BigInt(result.totalSettledWei);
-                }
-            } catch (error) {
-                console.error(`[batch-settlement] Failed to settle batch for ${network}:${userAddress}:`, error);
-
-                results.push({
-                    userAddress,
-                    network,
-                    totalSettledWei: "0",
-                    intentCount: intents.length,
-                    txHash: "",
-                    error: error instanceof Error ? error.message : String(error),
-                });
-
-                failCount++;
-            }
-          }
+    for (const paymentIntentId of candidateIds) {
+        if (results.length >= remainingCapacity) break;
+        const intent = await getCanonicalPaymentIntent(paymentIntentId);
+        if (!intent) {
+            await removeCanonicalPaymentIntentWorkId(paymentIntentId);
+            continue;
         }
-
-    } catch (error) {
-        console.error(`[batch-settlement] Fatal error in batch run:`, error);
+        if (intent.status !== "queued" && intent.status !== "submitted") {
+            await removeCanonicalPaymentIntentWorkId(paymentIntentId);
+            continue;
+        }
+        if (pendingRetry(intent, startTime)) continue;
+        if (intent.executionClaimToken && (intent.executionClaimExpiresAt || 0) > Date.now()) continue;
+        const execution = await executeCanonicalPaymentIntent(paymentIntentId, { waitForConfirmation: false });
+        const current = await getCanonicalPaymentIntent(paymentIntentId);
+        if (!current) continue;
+        if (current.attemptCount === intent.attemptCount && current.status === intent.status) continue;
+        const confirmed = Boolean(execution.ok && current?.status === "confirmed");
+        results.push({
+            paymentIntentId,
+            userAddress: intent.userAddress,
+            network: intent.network,
+            asset: intent.asset,
+            totalSettledWei: confirmed ? (current?.finalAmountWei || "0") : "0",
+            intentCount: 1,
+            txHash: current?.txHash || "",
+            status: current?.status || "failed",
+            ...(!confirmed && current?.lastError ? { error: current.lastError } : {}),
+        });
     }
 
-    const endTime = Date.now();
-    const totalUsers = results.length;
-
-    console.log(`[batch-settlement] Completed batch run ${runId}:`, {
-        duration: `${endTime - startTime}ms`,
-        totalUsers,
-        totalIntents,
-        successCount,
-        failCount,
-        totalValueWei: totalValueWei.toString(),
-    });
-
+    const confirmed = results.filter((result) => result.status === "confirmed");
+    const terminalFailures = results.filter((result) => result.status === "failed");
     return {
         runId,
         startTime,
-        endTime,
-        totalUsers,
-        totalIntents,
-        totalValueWei: totalValueWei.toString(),
-        successCount,
-        failCount,
+        endTime: Date.now(),
+        totalUsers: new Set(results.map((result) => `${result.network}:${result.userAddress}`)).size,
+        totalIntents: results.length,
+        totalValueWei: confirmed
+            .reduce((total, result) => total + BigInt(result.totalSettledWei), 0n)
+            .toString(),
+        successCount: confirmed.length,
+        failCount: terminalFailures.length,
         results,
     };
 }
 
-/**
- * Settle batch of intents for a single user on a single network
- */
-export async function settleUserBatch(
-    userAddress: string,
-    network: NetworkId,
-    intents: PaymentIntent[],
-): Promise<BatchSettlementResult> {
-    console.log(`[batch-settlement] Settling ${intents.length} intents for ${userAddress} on network ${network}`);
-
-    // Calculate total amount to settle
-    const totalAmount = intents.reduce(
-        (sum, intent) => sum + BigInt(intent.amountWei),
-        0n
-    );
-
-    const intentIds = intents.map((i) => i.id);
-
-    console.log(`[batch-settlement] Total amount: ${totalAmount.toString()} wei`);
-
-    try {
-        // Execute single on-chain settlement for all intents
-        const settlementResult = await settleKeyPaymentForNetwork(
-            userAddress,
-            totalAmount.toString(),
-            network,
-        );
-        const settlementError = !settlementResult.success
-            ? settlementResult.error || "Unknown error"
-            : !settlementResult.txHash
-                ? "Payment settlement did not return transaction hash"
-                : null;
-
-        if (settlementError) {
-            console.error(`[batch-settlement] Settlement failed for ${userAddress}:`, settlementError);
-
-            // Fallback: Try to settle individually or requeue
-            await handleSettlementFailure(userAddress, network, intents, settlementError);
-
-            return {
-                userAddress,
-                network,
-                totalSettledWei: "0",
-                intentCount: intents.length,
-                txHash: "",
-                error: settlementError,
-            };
-        }
-
-        const txHash = settlementResult.txHash as string;
-
-        // Success - mark all intents as settled
-        await markIntentsSettled(intentIds, txHash);
-        await Promise.all(intentIds.map((sessionBudgetIntentId) => Promise.all([
-            markIntentEvidenceSettled({
-                sessionBudgetIntentId,
-                txHash,
-                network,
-            }),
-            markIntentReceiptsSettled({
-                sessionBudgetIntentId,
-                txHash,
-            }),
-        ])));
-
-        // Update session budget: move from locked to used
-        await markSettled(userAddress, network, totalAmount.toString());
-
-        // Sync storage.ts for UI consistency - use session-budget.ts usedBudgetWei
-        const { getSessionBudget } = await import("../session/budget.js");
-        const budget = await getSessionBudget(userAddress, network);
-        if (budget) {
-            await syncBudgetAfterSettlement(userAddress, network, budget.usedBudgetWei);
-            console.log(`[batch-settlement] Synced storage.ts budgetUsed to ${budget.usedBudgetWei} for ${userAddress}`);
-        }
-
-        console.log(`[batch-settlement] Successfully settled ${intents.length} intents for ${userAddress}, tx: ${txHash}`);
-
-        return {
-            userAddress,
-            network,
-            totalSettledWei: totalAmount.toString(),
-            intentCount: intents.length,
-            txHash,
-        };
-
-    } catch (error) {
-        console.error(`[batch-settlement] Exception during settlement for ${userAddress}:`, error);
-
-        await handleSettlementFailure(
-            userAddress,
-            network,
-            intents,
-            error instanceof Error ? error.message : String(error),
-        );
-
-        return {
-            userAddress,
-            network,
-            totalSettledWei: "0",
-            intentCount: intents.length,
-            txHash: "",
-            error: error instanceof Error ? error.message : String(error),
-        };
-    }
-}
-
-/**
- * Handle settlement failure - fallback strategies
- */
-async function handleSettlementFailure(
-    userAddress: string,
-    network: NetworkId,
-    intents: PaymentIntent[],
-    errorMessage: string,
-): Promise<void> {
-    console.log(`[batch-settlement] Handling failure for ${userAddress}, ${intents.length} intents`);
-
-    // Strategy: Mark all intents as failed and unlock budget
-    // The user can retry or use a different payment method
-
-    for (const intent of intents) {
-        await markIntentFailed(intent.id, `Batch settlement failed: ${errorMessage}`);
-    }
-
-    // Unlock the budget so user can try again
-    const totalAmount = intents.reduce(
-        (sum, intent) => sum + BigInt(intent.amountWei),
-        0n
-    );
-
-    await unlockBudget(userAddress, network, totalAmount.toString());
-
-    console.log(`[batch-settlement] Unlocked ${totalAmount.toString()} wei for ${userAddress} after failure`);
-
-    console.error("[settlement-worker] batch failed after retries", errorMessage);
-}
-
-/**
- * Trigger immediate settlement for a single user (threshold reached)
- */
 export async function triggerImmediateSettlement(
     userAddress: string,
     network: NetworkId,
 ): Promise<BatchSettlementResult | null> {
-    console.log(`[batch-settlement] Triggering immediate settlement for ${userAddress} on network ${network}`);
-
-    // Get pending intents for this user
-    const grouped = await getPendingIntentsGrouped();
-    const intents = grouped.get(network)?.get(userAddress);
-
-    if (!intents || intents.length === 0) {
-        console.log(`[batch-settlement] No pending intents for ${userAddress} on network ${network}`);
-        return null;
+    const normalizedUserAddress = isEvmNetwork(network) ? userAddress.toLowerCase() : userAddress;
+    const keyIds = (await valkeySMembers(`user-keys:${network}:${normalizedUserAddress}`)).sort();
+    const intentIds = new Set<string>();
+    for (const keyId of keyIds) {
+        for (const paymentIntentId of await valkeySMembers(`key-payment-intents:${keyId}`)) {
+            intentIds.add(paymentIntentId);
+        }
     }
-
-    // Settle immediately
-    return await settleUserBatch(userAddress, network, intents);
+    const candidates: Array<NonNullable<Awaited<ReturnType<typeof getCanonicalPaymentIntent>>>> = [];
+    for (const paymentIntentId of intentIds) {
+        const intent = await getCanonicalPaymentIntent(paymentIntentId);
+        if (!intent || (intent.status !== "queued" && intent.status !== "submitted")) continue;
+        if (intent.userAddress !== normalizedUserAddress || intent.network !== network) continue;
+        candidates.push(intent);
+    }
+    candidates.sort((left, right) => {
+        const leftDue = left.nextAttemptAt || left.createdAt;
+        const rightDue = right.nextAttemptAt || right.createdAt;
+        return leftDue - rightDue || left.paymentIntentId.localeCompare(right.paymentIntentId);
+    });
+    for (const intent of candidates) {
+        if (pendingRetry(intent, Date.now())) continue;
+        if (intent.executionClaimToken && (intent.executionClaimExpiresAt || 0) > Date.now()) continue;
+        await executeCanonicalPaymentIntent(intent.paymentIntentId, { waitForConfirmation: false });
+        const current = await getCanonicalPaymentIntent(intent.paymentIntentId);
+        if (!current) return null;
+        if (current.attemptCount === intent.attemptCount && current.status === intent.status) continue;
+        return {
+            paymentIntentId: intent.paymentIntentId,
+            userAddress: current.userAddress,
+            network: current.network,
+            asset: current.asset,
+            totalSettledWei: current.status === "confirmed" ? (current.finalAmountWei || "0") : "0",
+            intentCount: 1,
+            txHash: current.txHash || "",
+            status: current.status,
+            ...(current.status !== "confirmed" && current.lastError ? { error: current.lastError } : {}),
+        };
+    }
+    return null;
 }

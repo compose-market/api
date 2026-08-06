@@ -30,6 +30,8 @@ export interface NetworkDefinition {
     asset: {
         address: string;
         symbol: "USDC";
+        name: "Circle USD";
+        version: "2";
         decimals: 6;
     };
     schemes: readonly PaymentScheme[];
@@ -86,7 +88,13 @@ function network(
         explorer,
         explorerQuery,
         rpcEnvVar,
-        asset: { address: assetAddress, symbol: "USDC", decimals: 6 },
+        asset: {
+            address: assetAddress,
+            symbol: "USDC",
+            name: "Circle USD",
+            version: "2",
+            decimals: 6,
+        },
         schemes: ALL_SCHEMES,
         enabled: true,
     };

@@ -15,16 +15,16 @@ import {
     valkeySAdd,
     valkeySMembers,
     valkeyExists,
-    valkeyHIncrBy,
     valkeyExpire,
-    valkeySet,
     valkeyGet,
     valkeySRem,
     valkeyTTL,
+    getValkeyClient,
 } from "./valkey.js";
 import { signKey } from "./jwt.js";
-import { getBudgetInfo as getSessionBudgetInfo, getSessionBudget } from "../session/budget.js";
-import { isEvmNetwork, type NetworkId } from "../configs/chains.js";
+import { isEvmNetwork, isNetworkId, type NetworkId } from "../configs/chains.js";
+import type { WalletScope } from "../../data/user/types.js";
+import { publishDomainInvalidationBestEffort } from "../../data/shared/updates.js";
 import type {
     KeyRecord,
     KeyPurpose,
@@ -41,6 +41,33 @@ import type {
 const KEY_PREFIX = "key:";
 const USER_KEYS_PREFIX = "user-keys:";
 const REVOKED_PREFIX = "key:revoked:";
+const PAYMENT_INTENT_PREFIX = "payment-intent:";
+const KEY_PAYMENT_INTENTS_PREFIX = "key-payment-intents:";
+
+export const KEY_RECORD_LIST_FIELDS = [
+    "keyId",
+    "userAddress",
+    "purpose",
+    "budgetLimit",
+    "budgetUsed",
+    "budgetReserved",
+    "createdAt",
+    "expiresAt",
+    "revokedAt",
+    "name",
+    "lastUsedAt",
+    "network",
+] as const;
+
+export interface KeyListPipeline {
+    smembers(key: string): this;
+    hmget(key: string, ...fields: string[]): this;
+    exec(): Promise<Array<[Error | null, unknown]> | null>;
+}
+
+export interface KeyListClient {
+    pipeline(): KeyListPipeline;
+}
 
 function keyRecordKey(keyId: string): string {
     return `${KEY_PREFIX}${keyId}`;
@@ -56,6 +83,10 @@ function userKeysKey(userAddress: string, network: NetworkId): string {
 
 function revokedKey(keyId: string): string {
     return `${REVOKED_PREFIX}${keyId}`;
+}
+
+function keyPaymentIntentsKey(keyId: string): string {
+    return `${KEY_PAYMENT_INTENTS_PREFIX}${keyId}`;
 }
 
 function parseKeyPurpose(value: string | undefined): KeyPurpose | null {
@@ -83,7 +114,6 @@ export interface ActiveSessionCandidate {
     network: NetworkId;
     name?: string;
     revokedAt?: number;
-    missingBudgetState?: boolean;
 }
 
 function parseStoredInteger(value: string | undefined): number | null {
@@ -110,10 +140,6 @@ function latestKeySnapshot(candidate: ActiveSessionCandidate): NonNullable<Activ
 }
 
 function getInactiveReason(candidate: ActiveSessionCandidate, now: number): SessionInactiveReason | null {
-    if (candidate.missingBudgetState) {
-        return "missing_budget_state";
-    }
-
     if (candidate.revokedAt) {
         return "revoked";
     }
@@ -142,8 +168,9 @@ function buildActiveSessionCandidate(
     const budgetUsed = parseStoredInteger(data.budgetUsed);
     const budgetLocked = parseStoredInteger(data.budgetReserved) ?? 0;
     const expiresAt = parseStoredInteger(data.expiresAt);
+    const network = data.network;
 
-    if (!purpose || budgetLimit === null || budgetUsed === null || expiresAt === null) {
+    if (!purpose || budgetLimit === null || budgetUsed === null || expiresAt === null || !isNetworkId(network)) {
         return null;
     }
 
@@ -161,47 +188,9 @@ function buildActiveSessionCandidate(
         }),
         expiresAt,
         createdAt: parseStoredInteger(data.createdAt) ?? 0,
-        network: data.network as NetworkId,
+        network,
         name: data.name || undefined,
         revokedAt: parseStoredInteger(data.revokedAt) ?? undefined,
-    };
-}
-
-function applySessionBudgetState(
-    candidate: ActiveSessionCandidate,
-    budget: Awaited<ReturnType<typeof getSessionBudget>> | undefined,
-    info: Awaited<ReturnType<typeof getSessionBudgetInfo>> | undefined,
-): ActiveSessionCandidate {
-    if (!budget || !info) {
-        return {
-            ...candidate,
-            missingBudgetState: true,
-            budgetLocked: 0,
-            budgetRemaining: 0,
-        };
-    }
-
-    const budgetLimit = parseStoredInteger(info.totalWei);
-    const budgetUsed = parseStoredInteger(info.usedWei);
-    const budgetLocked = parseStoredInteger(info.lockedWei);
-    const budgetRemaining = parseStoredInteger(info.availableWei);
-
-    if (budgetLimit === null || budgetUsed === null || budgetLocked === null || budgetRemaining === null) {
-        return {
-            ...candidate,
-            missingBudgetState: true,
-            budgetLocked: 0,
-            budgetRemaining: 0,
-        };
-    }
-
-    return {
-        ...candidate,
-        budgetLimit,
-        budgetUsed,
-        budgetLocked,
-        budgetRemaining: Math.max(0, budgetRemaining),
-        expiresAt: budget.expiresAt,
     };
 }
 
@@ -348,6 +337,8 @@ export async function createKey(
         await valkeyExpire(userKeysKey(normalizedAddress, request.network), ttlSeconds);
     }
 
+    await publishDomainInvalidationBestEffort("keys", normalizedAddress, "created");
+
     return {
         keyId,
         token,
@@ -390,77 +381,117 @@ export async function getKeyRecord(keyId: string): Promise<KeyRecord | null> {
     };
 }
 
-/**
- * List all keys for a user
- */
-export async function listUserKeys(userAddress: string, network: NetworkId): Promise<KeyRecord[]> {
-    const normalizedAddress = normalizeAddress(userAddress, network);
-    const keyIds = await valkeySMembers(userKeysKey(normalizedAddress, network));
-    const records = (await Promise.all(keyIds.map((keyId) => getKeyRecord(keyId))))
-        .filter((record): record is KeyRecord => record !== null);
-
-    // Sort by creation date, newest first
-    records.sort((a, b) => b.createdAt - a.createdAt);
-
-    return records;
+function parseListInteger(value: string | null, optional = false): number | null {
+    if (value === null) return optional ? 0 : null;
+    if (!/^\d+$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-/**
- * Record usage against a key's budget
- * 
- * @param keyId - Key ID
- * @param amountWei - Amount to deduct in USDC wei
- * @returns New budget used, or -1 if budget exceeded
- */
-export async function recordKeyUsage(keyId: string, amountWei: number): Promise<number> {
-    const recordKey = keyRecordKey(keyId);
+function listRecord(
+    expectedKeyId: string,
+    values: unknown,
+    scopesByNetwork: ReadonlyMap<NetworkId, string>,
+): KeyRecord | null {
+    if (!Array.isArray(values) || values.length !== KEY_RECORD_LIST_FIELDS.length) return null;
+    if (values.some((value) => value !== null && typeof value !== "string")) return null;
 
-    // Get current values
-    const record = await getKeyRecord(keyId);
-    if (!record) {
-        return -1;
+    const data = Object.fromEntries(
+        KEY_RECORD_LIST_FIELDS.map((field, index) => [field, values[index] as string | null]),
+    ) as Record<(typeof KEY_RECORD_LIST_FIELDS)[number], string | null>;
+    const purpose = parseKeyPurpose(data.purpose ?? undefined);
+    const network = data.network;
+    const budgetLimit = parseListInteger(data.budgetLimit);
+    const budgetUsed = parseListInteger(data.budgetUsed);
+    const budgetReserved = parseListInteger(data.budgetReserved, true);
+    const createdAt = parseListInteger(data.createdAt);
+    const expiresAt = parseListInteger(data.expiresAt);
+    const revokedAt = data.revokedAt === null ? undefined : parseListInteger(data.revokedAt);
+    const lastUsedAt = data.lastUsedAt === null ? undefined : parseListInteger(data.lastUsedAt);
+
+    if (
+        data.keyId !== expectedKeyId
+        || !data.userAddress
+        || !purpose
+        || !network
+        || !isNetworkId(network)
+        || budgetLimit === null
+        || budgetUsed === null
+        || budgetReserved === null
+        || createdAt === null
+        || expiresAt === null
+        || revokedAt === null
+        || lastUsedAt === null
+    ) {
+        return null;
     }
 
-    // Check if budget would be exceeded
-    const newUsed = record.budgetUsed + amountWei;
-    if (newUsed > record.budgetLimit) {
-        return -1;
-    }
+    const scopedAddress = scopesByNetwork.get(network);
+    if (!scopedAddress || normalizeAddress(data.userAddress, network) !== scopedAddress) return null;
 
-    // Atomically increment usage
-    const updatedUsed = await valkeyHIncrBy(recordKey, "budgetUsed", amountWei);
-
-    // Update last used timestamp
-    await valkeyHSet(recordKey, "lastUsedAt", String(Date.now()));
-
-    return updatedUsed;
+    return {
+        keyId: data.keyId,
+        userAddress: normalizeAddress(data.userAddress, network),
+        purpose,
+        budgetLimit,
+        budgetUsed,
+        budgetReserved,
+        createdAt,
+        expiresAt,
+        ...(revokedAt === undefined ? {} : { revokedAt }),
+        ...(data.name ? { name: data.name } : {}),
+        ...(lastUsedAt === undefined ? {} : { lastUsedAt }),
+        network,
+    };
 }
 
-/**
- * Sync budget from batch settlement
- * Called by batch worker after on-chain settlement completes
- * Updates storage.ts budgetUsed to match settled amount
- * 
- * @param userAddress - User wallet address
- * @param network - CAIP-2 network
- * @param totalUsedWei - Total USDC wei settled on-chain
- */
-export async function syncBudgetAfterSettlement(
-    userAddress: string,
-    network: NetworkId,
-    totalUsedWei: string,
-): Promise<void> {
-    const addr = normalizeAddress(userAddress, network);
-    const keyIds = await valkeySMembers(userKeysKey(addr, network));
+async function executeListPipeline(
+    pipeline: KeyListPipeline,
+    expectedResults: number,
+): Promise<unknown[]> {
+    const results = await pipeline.exec();
+    if (!results || results.length !== expectedResults) {
+        throw new Error("Invalid Valkey pipeline response");
+    }
+    return results.map(([error, value]) => {
+        if (error) throw error;
+        return value;
+    });
+}
 
-    for (const keyId of keyIds) {
-        const record = await getKeyRecord(keyId);
-        if (record && record.network === network) {
-            const recordKey = keyRecordKey(keyId);
-            await valkeyHSet(recordKey, "budgetUsed", totalUsedWei);
-            return;
+/** List every token-free key record in the supplied enabled wallet scopes. */
+export async function listUserKeys(
+    scopes: readonly WalletScope[],
+    client?: KeyListClient,
+): Promise<KeyRecord[]> {
+    if (scopes.length === 0) return [];
+    const valkey = client ?? await getValkeyClient() as unknown as KeyListClient;
+    const indexPipeline = valkey.pipeline();
+    for (const scope of scopes) {
+        indexPipeline.smembers(userKeysKey(scope.address, scope.network));
+    }
+    const indexResults = await executeListPipeline(indexPipeline, scopes.length);
+    const keyIds = new Set<string>();
+    for (const result of indexResults) {
+        if (!Array.isArray(result) || result.some((keyId) => typeof keyId !== "string")) {
+            throw new Error("Invalid Valkey key index response");
         }
+        for (const keyId of result) keyIds.add(keyId);
     }
+    if (keyIds.size === 0) return [];
+
+    const uniqueKeyIds = [...keyIds];
+    const recordPipeline = valkey.pipeline();
+    for (const keyId of uniqueKeyIds) {
+        recordPipeline.hmget(keyRecordKey(keyId), ...KEY_RECORD_LIST_FIELDS);
+    }
+    const recordResults = await executeListPipeline(recordPipeline, uniqueKeyIds.length);
+    const scopesByNetwork = new Map(scopes.map((scope) => [scope.network, scope.address]));
+    const records = recordResults
+        .map((values, index) => listRecord(uniqueKeyIds[index]!, values, scopesByNetwork))
+        .filter((record): record is KeyRecord => record !== null);
+    records.sort((left, right) => right.createdAt - left.createdAt);
+    return records;
 }
 
 /**
@@ -484,21 +515,108 @@ export async function revokeKey(keyId: string, userAddress: string): Promise<boo
         return false;
     }
 
-    if (record.userAddress.toLowerCase() !== userAddress.toLowerCase()) {
+    const normalizedAddress = normalizeAddress(userAddress, record.network);
+    if (record.userAddress !== normalizedAddress || record.revokedAt) {
         return false;
     }
 
-    // Mark as revoked in hash
-    await valkeyHSet(keyRecordKey(keyId), "revokedAt", String(Date.now()));
+    const now = Date.now();
+    const ttlSeconds = Math.max(1, Math.ceil((record.expiresAt - now) / 1000));
+    const valkey = await getValkeyClient();
+    const result = await valkey.eval(
+        `local function normalize(value)
+    local normalized = string.gsub(value or "0", "^0+", "")
+    return normalized == "" and "0" or normalized
+end
+local function add(left, right)
+    left = normalize(left)
+    right = normalize(right)
+    local result = ""
+    local carry = 0
+    local i = string.len(left)
+    local j = string.len(right)
+    while i > 0 or j > 0 or carry > 0 do
+        local leftDigit = i > 0 and tonumber(string.sub(left, i, i)) or 0
+        local rightDigit = j > 0 and tonumber(string.sub(right, j, j)) or 0
+        local sum = leftDigit + rightDigit + carry
+        result = tostring(sum % 10) .. result
+        carry = math.floor(sum / 10)
+        i = i - 1
+        j = j - 1
+    end
+    return normalize(result)
+end
+local function greaterThan(left, right)
+    left = normalize(left)
+    right = normalize(right)
+    if string.len(left) ~= string.len(right) then
+        return string.len(left) > string.len(right)
+    end
+    return left > right
+end
+local owner = redis.call("HGET", KEYS[1], "userAddress")
+local network = redis.call("HGET", KEYS[1], "network")
+local revokedAt = redis.call("HGET", KEYS[1], "revokedAt")
+if owner ~= ARGV[1] or network ~= ARGV[2] or revokedAt then
+    return 0
+end
+local intentIds = redis.call("SMEMBERS", KEYS[4])
+local release = {}
+local totalRelease = "0"
+for _, intentId in ipairs(intentIds) do
+    local intentKey = ARGV[6] .. intentId
+    local intentKeyId = redis.call("HGET", intentKey, "keyId")
+    local status = redis.call("HGET", intentKey, "status")
+    if intentKeyId == ARGV[3] and (status == "authorized" or status == "reserved") then
+        local amount = redis.call("HGET", intentKey, "reservedAmountWei") or "0"
+        if not string.match(amount, "^%d+$") then
+            return -2
+        end
+        totalRelease = add(totalRelease, amount)
+        table.insert(release, { key = intentKey, amount = normalize(amount) })
+    end
+end
+local currentReserved = redis.call("HGET", KEYS[1], "budgetReserved") or "0"
+if not string.match(currentReserved, "^%d+$") or greaterThan(totalRelease, currentReserved) then
+    return -2
+end
+redis.call("HSET", KEYS[1], "revokedAt", ARGV[4])
+redis.call("SET", KEYS[2], "1", "EX", ARGV[5])
+redis.call("SREM", KEYS[3], ARGV[3])
+for _, item in ipairs(release) do
+    if item.amount ~= "0" then
+        redis.call("HINCRBY", KEYS[1], "budgetReserved", "-" .. item.amount)
+    end
+    redis.call("HSET", item.key,
+        "status", "released",
+        "reservedAmountWei", "0",
+        "releasedAt", ARGV[4],
+        "updatedAt", ARGV[4],
+        "error", "Credential revoked before billing")
+end
+return 1`,
+        4,
+        keyRecordKey(keyId),
+        revokedKey(keyId),
+        userKeysKey(normalizedAddress, record.network),
+        keyPaymentIntentsKey(keyId),
+        normalizedAddress,
+        record.network,
+        keyId,
+        String(now),
+        String(ttlSeconds),
+        PAYMENT_INTENT_PREFIX,
+    );
 
-    // Also set a revoked marker (for fast lookup without fetching full record)
-    // TTL matches key expiration
-    const ttlSeconds = Math.ceil((record.expiresAt - Date.now()) / 1000);
-    if (ttlSeconds > 0) {
-        await valkeySet(revokedKey(keyId), "1", ttlSeconds);
+    if (Number(result) === -2) {
+        throw new Error(`Cannot revoke key ${keyId}: canonical reservation state is inconsistent`);
     }
 
-    return true;
+    const revoked = Number(result) === 1;
+    if (revoked) {
+        await publishDomainInvalidationBestEffort("keys", normalizedAddress, "revoked");
+    }
+    return revoked;
 }
 
 /**
@@ -556,39 +674,5 @@ export async function getActiveSessionStatus(
         })
         .filter((candidate): candidate is ActiveSessionCandidate => candidate !== null);
 
-    const sessionNetworks = [...new Set(
-        candidates
-            .filter((candidate) => candidate.purpose === "session")
-            .map((candidate) => candidate.network),
-    )];
-
-    const sessionBudgets = new Map<NetworkId, Awaited<ReturnType<typeof getSessionBudget>> | undefined>();
-    const sessionBudgetInfo = new Map<NetworkId, Awaited<ReturnType<typeof getSessionBudgetInfo>> | undefined>();
-    const sessionBudgetEntries = await Promise.all(
-        sessionNetworks.map(async (candidateNetwork) => {
-            const [budget, info] = await Promise.all([
-                getSessionBudget(normalizedAddress, candidateNetwork),
-                getSessionBudgetInfo(normalizedAddress, candidateNetwork),
-            ]);
-            return [candidateNetwork, budget, info] as const;
-        }),
-    );
-    for (const [candidateNetwork, budget, info] of sessionBudgetEntries) {
-        sessionBudgets.set(candidateNetwork, budget);
-        sessionBudgetInfo.set(candidateNetwork, info);
-    }
-
-    const resolvedCandidates = candidates.map((candidate) => {
-        if (candidate.purpose !== "session") {
-            return candidate;
-        }
-
-        return applySessionBudgetState(
-            candidate,
-            sessionBudgets.get(candidate.network),
-            sessionBudgetInfo.get(candidate.network),
-        );
-    });
-
-    return selectActiveSessionStatus(resolvedCandidates, network);
+    return selectActiveSessionStatus(candidates, network);
 }

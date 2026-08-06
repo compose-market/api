@@ -12,7 +12,9 @@
 import {
     createPublicClient,
     createWalletClient,
+    encodeFunctionData,
     http,
+    keccak256,
     type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -27,6 +29,7 @@ import {
     devnet as solanaDevnet,
     getAddressEncoder as getSolanaAddressEncoder,
     getBase64EncodedWireTransaction as getSolanaBase64EncodedWireTransaction,
+    getSignatureFromTransaction as getSolanaSignatureFromTransaction,
     getProgramDerivedAddress as getSolanaProgramDerivedAddress,
     // mainnet as solanaMainnet,
     pipe as solanaPipe,
@@ -60,8 +63,27 @@ import {
 
 export interface SettlementResult {
     success: boolean;
+    status: "queued" | "submitted" | "confirmed" | "failed";
     txHash?: string;
     error?: string;
+    terminal?: boolean;
+}
+
+export interface PreparedSettlementTransaction {
+    network: NetworkId;
+    txHash: string;
+    payload: string;
+    nonce?: string;
+}
+
+export type SettlementPreparationResult =
+    | { success: true; prepared: PreparedSettlementTransaction }
+    | { success: false; result: SettlementResult };
+
+export interface SettlementErrorContext {
+    network: NetworkId;
+    phase: "prepare" | "broadcast" | "reconcile";
+    txHash?: string;
 }
 
 // =============================================================================
@@ -107,8 +129,55 @@ function getTreasuryAccount() {
     );
 }
 
+/** Opaque public identity used only to scope canonical signer nonce state. */
+export function getEvmSettlementSignerIdentity(): string {
+    return getTreasuryAccount().address.toLowerCase();
+}
+
 function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function settlementErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        const candidate = error as Error & { shortMessage?: string; details?: string };
+        return [candidate.shortMessage, candidate.details, candidate.message]
+            .filter((value): value is string => Boolean(value))
+            .join(" | ");
+    }
+    return String(error);
+}
+
+/**
+ * Only definitive payer-USDC balance/allowance failures detected while
+ * simulating transferFrom are terminal. Signer native-gas shortages, RPC
+ * failures, timeouts, and every ambiguous post-signing failure remain payable
+ * obligations. Confirmed reverts are handled by receipt reconciliation.
+ */
+export function classifySettlementError(
+    error: unknown,
+    context: SettlementErrorContext,
+): SettlementResult {
+    const message = settlementErrorMessage(error);
+    const payerBalanceFailure = /ERC20InsufficientBalance|transfer amount exceeds balance|insufficient (?:token|USDC) balance/i.test(message);
+    const payerAllowanceFailure = /ERC20InsufficientAllowance|insufficient allowance|transfer amount exceeds allowance/i.test(message);
+    if (isEvmNetwork(context.network)
+        && context.phase === "prepare"
+        && (payerBalanceFailure || payerAllowanceFailure)) {
+        return {
+            success: false,
+            status: "failed",
+            terminal: true,
+            error: payerBalanceFailure ? "Insufficient USDC balance" : "Session expired or insufficient allowance",
+        };
+    }
+    const submitted = context.phase === "reconcile" && Boolean(context.txHash);
+    return {
+        success: false,
+        status: submitted ? "submitted" : "queued",
+        ...(submitted ? { txHash: context.txHash } : {}),
+        error: message,
+    };
 }
 
 function encodeTransferCheckedInstructionData(amount: bigint, decimals: number): Uint8Array {
@@ -188,16 +257,16 @@ async function confirmSvmSignature(
     throw new Error("SVM transaction confirmation timeout");
 }
 
-async function settleSvmKeyPayment(
+async function prepareSvmKeyPayment(
     userAddress: string,
     amountWei: number | string,
     network: SolanaNetworkId,
-): Promise<SettlementResult> {
+): Promise<PreparedSettlementTransaction> {
     const amount = typeof amountWei === "string" ? BigInt(amountWei) : BigInt(amountWei);
     const definition = getNetwork(network);
     const merchant = process.env.SVM_MERCHANT_WALLET_ADDRESS?.trim();
     if (!merchant) {
-        return { success: false, error: "SVM_MERCHANT_WALLET_ADDRESS environment variable required" };
+        throw new Error("SVM_MERCHANT_WALLET_ADDRESS environment variable required");
     }
 
     console.log(`[settlement] Initiating SVM on-chain settlement:`);
@@ -206,67 +275,41 @@ async function settleSvmKeyPayment(
     console.log(`[settlement]   Amount: ${amount.toString()} wei ($${(Number(amount) / 1_000_000).toFixed(6)})`);
     console.log(`[settlement]   Network: ${network}`);
 
-    try {
-        const rpc = createSvmRpc(network);
-        const signer = await getSvmSettlementSigner();
-        const mint = solanaAddress(definition.asset.address);
-        const owner = solanaAddress(userAddress);
-        const merchantOwner = solanaAddress(merchant);
-        const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
-        const [sourceAta, destinationAta] = await Promise.all([
-            findAssociatedTokenAddress({ owner, mint, tokenProgram }),
-            findAssociatedTokenAddress({ owner: merchantOwner, mint, tokenProgram }),
-        ]);
+    const rpc = createSvmRpc(network);
+    const signer = await getSvmSettlementSigner();
+    const mint = solanaAddress(definition.asset.address);
+    const owner = solanaAddress(userAddress);
+    const merchantOwner = solanaAddress(merchant);
+    const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
+    const [sourceAta, destinationAta] = await Promise.all([
+        findAssociatedTokenAddress({ owner, mint, tokenProgram }),
+        findAssociatedTokenAddress({ owner: merchantOwner, mint, tokenProgram }),
+    ]);
 
-        const transferInstruction = addSolanaSignersToInstruction([signer], {
-            programAddress: tokenProgram,
-            accounts: [
-                { address: sourceAta, role: SolanaAccountRole.WRITABLE },
-                { address: mint, role: SolanaAccountRole.READONLY },
-                { address: destinationAta, role: SolanaAccountRole.WRITABLE },
-                { address: signer.address, role: SolanaAccountRole.READONLY_SIGNER },
-            ],
-            data: encodeTransferCheckedInstructionData(amount, definition.asset.decimals),
-        } satisfies SolanaInstruction);
+    const transferInstruction = addSolanaSignersToInstruction([signer], {
+        programAddress: tokenProgram,
+        accounts: [
+            { address: sourceAta, role: SolanaAccountRole.WRITABLE },
+            { address: mint, role: SolanaAccountRole.READONLY },
+            { address: destinationAta, role: SolanaAccountRole.WRITABLE },
+            { address: signer.address, role: SolanaAccountRole.READONLY_SIGNER },
+        ],
+        data: encodeTransferCheckedInstructionData(amount, definition.asset.decimals),
+    } satisfies SolanaInstruction);
 
-        const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-        const transactionMessage = solanaPipe(
-            createSolanaTransactionMessage({ version: 0 }),
-            (message) => setSolanaTransactionMessageFeePayerSigner(signer, message),
-            (message) => setSolanaTransactionMessageLifetimeUsingBlockhash(latestBlockhash, message),
-            (message) => appendSolanaTransactionMessageInstruction(transferInstruction, message),
-        );
-        const signedTransaction = await signSolanaTransactionMessageWithSigners(transactionMessage);
-        const encodedTransaction = getSolanaBase64EncodedWireTransaction(signedTransaction);
-        const txHash = await rpc.sendTransaction(encodedTransaction, {
-            encoding: "base64",
-            preflightCommitment: "confirmed",
-        }).send();
-        await confirmSvmSignature(rpc, txHash);
-
-        console.log(`[settlement] SVM transaction confirmed: ${txHash}`);
-        return {
-            success: true,
-            txHash,
-        };
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[settlement] SVM transaction failed:`, errorMessage);
-
-        if (errorMessage.includes("insufficient") || errorMessage.includes("balance")) {
-            return { success: false, error: "Insufficient USDC balance" };
-        }
-        if (
-            errorMessage.includes("owner does not match")
-            || errorMessage.includes("delegate")
-            || errorMessage.includes("authority")
-            || errorMessage.includes("MissingRequiredSignature")
-        ) {
-            return { success: false, error: "Session expired or insufficient allowance" };
-        }
-
-        return { success: false, error: errorMessage };
-    }
+    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+    const transactionMessage = solanaPipe(
+        createSolanaTransactionMessage({ version: 0 }),
+        (message) => setSolanaTransactionMessageFeePayerSigner(signer, message),
+        (message) => setSolanaTransactionMessageLifetimeUsingBlockhash(latestBlockhash, message),
+        (message) => appendSolanaTransactionMessageInstruction(transferInstruction, message),
+    );
+    const signedTransaction = await signSolanaTransactionMessageWithSigners(transactionMessage);
+    return {
+        network,
+        txHash: getSolanaSignatureFromTransaction(signedTransaction),
+        payload: getSolanaBase64EncodedWireTransaction(signedTransaction),
+    };
 }
 
 // =============================================================================
@@ -284,11 +327,12 @@ async function settleSvmKeyPayment(
  * @param network - Network ID (match user's session chain)
  * @returns Settlement result with tx hash or error
  */
-export async function settleKeyPayment(
+async function prepareEvmKeyPayment(
     userAddress: string,
     amountWei: number | string,
     network: EvmNetworkId,
-): Promise<SettlementResult> {
+    nonce?: bigint,
+): Promise<PreparedSettlementTransaction> {
     const amount = typeof amountWei === "string" ? BigInt(amountWei) : BigInt(amountWei);
 
     console.log(`[settlement] Initiating on-chain settlement:`);
@@ -298,61 +342,151 @@ export async function settleKeyPayment(
     console.log(`[settlement]   Network: ${network}`);
     console.log(`[settlement]   Session Key: ${treasuryWalletAddress}`);
 
+    const treasuryAccount = getTreasuryAccount();
+    const chain = getViemChain(network);
+    const rpcUrl = getNetworkRpcUrl(network);
+    const usdcAddress = getNetwork(network).asset.address as `0x${string}`;
+
+    const publicClient = createPublicClient({
+        chain,
+        transport: http(rpcUrl),
+    });
+
+    const walletClient = createWalletClient({
+        account: treasuryAccount,
+        chain,
+        transport: http(rpcUrl),
+    });
+
+    console.log(`[settlement]   Treasury: ${treasuryAccount.address}`);
+
+    await publicClient.simulateContract({
+        address: usdcAddress,
+        abi: ERC20_TRANSFER_FROM_ABI,
+        functionName: "transferFrom",
+        args: [
+            userAddress as `0x${string}`,
+            merchantWalletAddress,
+            amount,
+        ],
+        account: treasuryAccount,
+    });
+    const data = encodeFunctionData({
+        abi: ERC20_TRANSFER_FROM_ABI,
+        functionName: "transferFrom",
+        args: [
+            userAddress as `0x${string}`,
+            merchantWalletAddress,
+            amount,
+        ],
+    });
+    const prepared = await walletClient.prepareTransactionRequest({
+        account: treasuryAccount,
+        to: usdcAddress,
+        data,
+        value: 0n,
+        ...(nonce === undefined ? {} : { nonce: Number(nonce) }),
+    });
+    const payload = await walletClient.signTransaction(prepared);
+    return {
+        network,
+        txHash: keccak256(payload),
+        payload,
+        nonce: String(prepared.nonce),
+    };
+}
+
+export async function getEvmSettlementPendingNonce(network: EvmNetworkId): Promise<bigint> {
+    const account = getTreasuryAccount();
+    const publicClient = createPublicClient({
+        chain: getViemChain(network),
+        transport: http(getNetworkRpcUrl(network)),
+    });
+    return BigInt(await publicClient.getTransactionCount({
+        address: account.address,
+        blockTag: "pending",
+    }));
+}
+
+export async function prepareKeyPaymentForNetwork(
+    userAddress: string,
+    amountWei: number | string,
+    network: NetworkId,
+    options: { evmNonce?: bigint } = {},
+): Promise<SettlementPreparationResult> {
     try {
-        const treasuryAccount = getTreasuryAccount();
-        const chain = getViemChain(network);
-        const rpcUrl = getNetworkRpcUrl(network);
-        const usdcAddress = getNetwork(network).asset.address as `0x${string}`;
-
-        const publicClient = createPublicClient({
-            chain,
-            transport: http(rpcUrl),
-        });
-
-        const walletClient = createWalletClient({
-            account: treasuryAccount,
-            chain,
-            transport: http(rpcUrl),
-        });
-
-        console.log(`[settlement]   Treasury: ${treasuryAccount.address}`);
-
-        // Simulate first to catch errors before sending
-        const { request } = await publicClient.simulateContract({
-            address: usdcAddress,
-            abi: ERC20_TRANSFER_FROM_ABI,
-            functionName: "transferFrom",
-            args: [
-                userAddress as `0x${string}`,
-                merchantWalletAddress,
-                amount,
-            ],
-            account: treasuryAccount,
-        });
-
-        console.log(`[settlement] Sending transaction...`);
-
-        const txHash = await walletClient.writeContract(request);
-
-        console.log(`[settlement] Transaction submitted: ${txHash}`);
-
+        if (isEvmNetwork(network)) {
+            return {
+                success: true,
+                prepared: await prepareEvmKeyPayment(userAddress, amountWei, network, options.evmNonce),
+            };
+        }
+        if (isSolanaNetwork(network)) {
+            return { success: true, prepared: await prepareSvmKeyPayment(userAddress, amountWei, network) };
+        }
         return {
-            success: true,
-            txHash,
+            success: false,
+            result: { success: false, status: "queued", error: `Unsupported settlement network: ${network}` },
         };
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[settlement] Transaction failed:`, errorMessage);
-
-        if (errorMessage.includes("insufficient") || errorMessage.includes("balance")) {
-            return { success: false, error: "Insufficient USDC balance" };
-        }
-        if (errorMessage.includes("allowance") || errorMessage.includes("exceeds")) {
-            return { success: false, error: "Session expired or insufficient allowance" };
-        }
-
-        return { success: false, error: errorMessage };
+        return { success: false, result: classifySettlementError(error, { network, phase: "prepare" }) };
     }
+}
+
+export async function broadcastPreparedKeyPaymentForNetwork(
+    prepared: PreparedSettlementTransaction,
+): Promise<SettlementResult> {
+    try {
+        if (isEvmNetwork(prepared.network)) {
+            const publicClient = createPublicClient({
+                chain: getViemChain(prepared.network),
+                transport: http(getNetworkRpcUrl(prepared.network)),
+            });
+            const returnedHash = await publicClient.sendRawTransaction({
+                serializedTransaction: prepared.payload as Hex,
+            });
+            if (returnedHash.toLowerCase() !== prepared.txHash.toLowerCase()) {
+                throw new Error(`RPC returned transaction hash ${returnedHash} for prepared identity ${prepared.txHash}`);
+            }
+            return { success: false, status: "submitted", txHash: prepared.txHash };
+        }
+        if (isSolanaNetwork(prepared.network)) {
+            const rpc = createSvmRpc(prepared.network);
+            const returnedHash = await rpc.sendTransaction(prepared.payload as ReturnType<typeof getSolanaBase64EncodedWireTransaction>, {
+                encoding: "base64",
+                preflightCommitment: "confirmed",
+            }).send();
+            if (returnedHash !== prepared.txHash) {
+                throw new Error(`RPC returned transaction hash ${returnedHash} for prepared identity ${prepared.txHash}`);
+            }
+            return { success: false, status: "submitted", txHash: prepared.txHash };
+        }
+        return { success: false, status: "submitted", txHash: prepared.txHash, error: `Unsupported settlement network: ${prepared.network}` };
+    } catch (error) {
+        return classifySettlementError(error, {
+            network: prepared.network,
+            phase: "broadcast",
+            txHash: prepared.txHash,
+        });
+    }
+}
+
+export async function submitKeyPaymentForNetwork(
+    userAddress: string,
+    amountWei: number | string,
+    network: NetworkId,
+): Promise<SettlementResult> {
+    const preparation = await prepareKeyPaymentForNetwork(userAddress, amountWei, network);
+    if (!preparation.success) return preparation.result;
+    return broadcastPreparedKeyPaymentForNetwork(preparation.prepared);
+}
+
+export async function settleKeyPayment(
+    userAddress: string,
+    amountWei: number | string,
+    network: EvmNetworkId,
+): Promise<SettlementResult> {
+    return settleKeyPaymentForNetwork(userAddress, amountWei, network);
 }
 
 export async function settleKeyPaymentForNetwork(
@@ -360,11 +494,55 @@ export async function settleKeyPaymentForNetwork(
     amountWei: number | string,
     network: NetworkId,
 ): Promise<SettlementResult> {
+    const submitted = await submitKeyPaymentForNetwork(userAddress, amountWei, network);
+    if (submitted.status !== "submitted" || !submitted.txHash) return submitted;
+    return reconcileKeyPaymentForNetwork(submitted.txHash, network, { wait: true });
+}
+
+export async function reconcileKeyPaymentForNetwork(
+    txHash: string,
+    network: NetworkId,
+    options: { wait?: boolean } = {},
+): Promise<SettlementResult> {
     if (isEvmNetwork(network)) {
-        return settleKeyPayment(userAddress, amountWei, network);
+        try {
+            const publicClient = createPublicClient({
+                chain: getViemChain(network),
+                transport: http(getNetworkRpcUrl(network)),
+            });
+            const receipt = options.wait
+                ? await publicClient.waitForTransactionReceipt({
+                    hash: txHash as Hex,
+                    confirmations: 1,
+                    timeout: 60_000,
+                })
+                : await publicClient.getTransactionReceipt({ hash: txHash as Hex });
+            if (receipt.status !== "success") {
+                return {
+                    success: false,
+                    status: "failed",
+                    terminal: true,
+                    txHash,
+                    error: "Transaction reverted on-chain",
+                };
+            }
+            return { success: true, status: "confirmed", txHash };
+        } catch (error) {
+            return classifySettlementError(error, { network, phase: "reconcile", txHash });
+        }
     }
     if (isSolanaNetwork(network)) {
-        return settleSvmKeyPayment(userAddress, amountWei, network);
+        try {
+            const rpc = createSvmRpc(network);
+            await confirmSvmSignature(rpc, txHash as SolanaSignature);
+            return { success: true, status: "confirmed", txHash };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("transaction failed")) {
+                return { success: false, status: "failed", terminal: true, txHash, error: message };
+            }
+            return classifySettlementError(error, { network, phase: "reconcile", txHash });
+        }
     }
-    return { success: false, error: `Unsupported settlement network: ${network}` };
+    return { success: false, status: "submitted", txHash, error: `Unsupported settlement network: ${network}` };
 }

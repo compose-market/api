@@ -1,7 +1,9 @@
 # x402
 
-x402 v2 payment facilitator with Compose Keys, session budgets, deferred batch
-settlement, evidence, and receipts. Settles USDC on Avalanche.
+x402 v2 payment facilitator with Compose Keys, canonical payment intents,
+continuous checkpoint charging, deferred settlement, evidence, and receipts.
+Every payment is routed by its CAIP-2 `NetworkId` and registry-defined USDC
+asset.
 
 The x402 spec defines a facilitator that verifies client payment signatures and
 settles them on-chain. The reference `@x402/evm` facilitator does verify and
@@ -14,7 +16,7 @@ differences are factual:
 | --- | --- | --- |
 | `exact` / `upto` / `batch-settlement` schemes | Yes | Yes |
 | Compose Keys (budgeted bearer JWTs) | No | Yes |
-| Session budgets (off-chain ledger, deferred on-chain settlement) | No | Yes |
+| Per-key durable budgets (off-chain ledger, confirmed on-chain settlement) | No | Yes |
 | Payment intents (authorize / settle / abort) | No | Yes |
 | Authoritative usage metering | No | Yes |
 | Deferred batch settlement accumulator | No | Yes |
@@ -34,19 +36,17 @@ One harness, two paradigms. Both flow through the same `prepareInferencePayment`
 | Path | Auth | Flow |
 | --- | --- | --- |
 | Raw x402 | `PAYMENT-SIGNATURE` header | Client gets 402, signs the requirement, retries. Facilitator verifies and settles on-chain. |
-| Compose Key | `Authorization: Bearer compose-<jwt>` | Client sends a budgeted bearer token. Server locks budget, settles after execution. No wallet signature per call. |
+| Compose Key | `Authorization: Bearer compose-<jwt>` | Client sends a budgeted bearer token. Authoritative usage checkpoints reserve exact deltas and enter the canonical settlement lifecycle. No wallet signature per call. |
 
 Use raw x402 for wallet-native clients. Use Compose Keys for IDEs, apps, and
 first-party sessions that expect bearer auth.
 
-## Chains
+## Networks
 
-| Chain | Chain ID | USDC address | Testnet |
-| --- | --- | --- | --- |
-| Avalanche Fuji | 43113 | `0x5425890298aed601595a70AB815c96711a31Bc65` | Yes |
-| Avalanche C-Chain | 43114 | `0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E` | No |
-
-Active chain is selected by `DEFAULT_CHAIN` + `USE_MAINNET` env vars.
+`configs/chains.ts` is the only network and asset registry. Public requests use
+`x-network-id`; payment requirements, keys, intents, receipts, evidence, and
+workers persist the same `NetworkId`. No numeric-chain compatibility fields or
+asset fallbacks are supported.
 
 ## Facilitator endpoints
 
@@ -78,10 +78,10 @@ sequenceDiagram
   participant Provider
 
   Client->>API: POST /v1/chat/completions
-  API->>Pay: reserve budget or verify x402
+  API->>Pay: authorize with zero upfront reservation or verify raw x402
   API->>Provider: run selected model
   Provider-->>API: output plus usage
-  API->>Pay: settle or abort
+  API->>Pay: reserve exact metered delta and queue/submit, or release
   API-->>Client: model response plus receipt headers
 ```
 
@@ -90,63 +90,66 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> authorized
-  authorized --> settling
-  authorized --> aborted
-  settling --> settled
-  settling --> failed
+  authorized --> released
+  authorized --> queued
+  queued --> submitted
+  queued --> queued: transient retry
+  submitted --> confirmed
+  submitted --> submitted: pending reconciliation
+  submitted --> failed
 ```
 
-Intents are idempotent. Settled intents replay without double-charging. Aborted
-intents replay without double-releasing. Authorization deduplicates by
-`(keyId, idempotencyKey)`.
+Intents are idempotent. Confirmed intents replay without double-charging and
+released intents replay without double-releasing. Authorization deduplicates
+by `(network, keyId, rootRunId, executionRunId, sequence)`. Only `confirmed`
+commits reserved budget to used budget and projects settled evidence/receipts.
 
 ## Schemes
 
 | Scheme | Meaning |
 | --- | --- |
 | [`exact`](https://docs.x402.org/schemes/exact) | The amount is known before execution. The client authorizes that amount. |
-| [`upto`](https://docs.x402.org/schemes/upto) | The client authorizes a maximum. Compose settles the measured amount, capped by that maximum. Uses Permit2. |
-| [`batch-settlement`](https://docs.x402.org/schemes/batch-settlement) | Off-chain vouchers accumulated per request, redeemed on-chain in batches. Used for realtime and high-throughput. |
+| [`upto`](https://docs.x402.org/schemes/upto) | Single-use authorization for an unknown final amount capped by the signed maximum. Uses Permit2. |
+| [`batch-settlement`](https://docs.x402.org/schemes/batch-settlement) | Reusable cumulative channel vouchers for continuous raw-x402 checkpoints. |
 
-Usage-priced inference uses `upto` because the final token count or media
-evidence is known only after the provider responds. Realtime uses
-`batch-settlement` because charges accumulate during a live session.
+Raw `exact` and `upto` payloads are request-scoped and are never inherited by a
+later call. Continuous raw-x402 streams use `batch-settlement`. Compose Key
+streams use canonical per-checkpoint intents rather than reusing a raw payment
+payload.
 
 ## Session budgets
 
-A session budget is an off-chain ledger in Valkey that enables instant
-authorization with deferred on-chain settlement.
+A Session uses the same per-key durable ledger and canonical intent records as
+an API-purpose Compose Key. `purpose` is credential/UI metadata; it does not
+create another budget authority.
 
 ```text
-user creates session → USDC.approve to treasury
-                     → budget tracked in Valkey
-                     → each request locks budget atomically (HINCRBY)
-                     → batch worker settles locked amounts on-chain
+user creates session → funding readiness checked once
+                     → key:<keyId> stores limit / used / reserved
+                     → authorization reserves zero
+                     → each usage checkpoint reserves its exact positive delta
+                     → worker submits and confirms that checkpoint on-chain
 ```
 
-| Operation | What it does |
-| --- | --- |
-| `lockBudget` | Atomically reserves budget for a request. Double-check rollback on race. |
-| `markSettled` | Moves locked amount to used. |
-| `unlockBudget` | Releases a lock on failed settlement. |
-| `getSpendableSessionBudgetWei` | `min(off-chain remaining, on-chain allowance remaining)`. Both must be sufficient. |
-
-The spendable cap is the minimum of the off-chain budget remaining and the
-on-chain USDC allowance remaining. Both constrain. The server does not let a
-client spend off-chain budget that has no on-chain backing.
+Session discovery reads only durable key identity, expiry, revocation, and
+`budgetLimit`, `budgetUsed`, and `budgetReserved`. Live RPC balance/allowance
+evidence is checked at creation and payment execution boundaries; an RPC
+failure never changes whether a Session exists and is never translated into
+zero allowance.
 
 ## Deferred settlement
 
-Session-path charges are queued off-chain (status `queued`, no txHash) at
-inference time. A batch worker drains them via `runBatchSettlementCycle`:
+Session checkpoints are queued off-chain (status `queued`, no `txHash`) at
+inference time. The settlement worker drains them via
+`runBatchSettlementCycle`:
 
 | Step | What happens |
 | --- | --- |
-| Queue | Each settled session charge locks budget, creates a pending intent. |
+| Queue | Each checkpoint reserves its exact metered delta and creates one payable intent. |
 | Kick | Terminal settlement triggers a deduped, retried batch kick. |
-| Accumulate | The batch worker groups pending intents by `user:chain`. |
-| Settle | One `USDC.transferFrom` per group settles all pending intents. |
-| Reconcile | Evidence and receipts are marked settled with the tx hash. |
+| Submit | A claimed intent is prepared durably and broadcast once. |
+| Reconcile | A submitted hash is polled; it is never rebroadcast merely because confirmation timed out. |
+| Confirm | A successful receipt commits budget and projects settled evidence/receipts. |
 
 ```bash
 # Trigger batch settlement manually
@@ -176,8 +179,8 @@ Compose Keys are JWT tokens with a `compose-` prefix. Two purposes:
 
 | Purpose | Use case |
 | --- | --- |
-| `session` | First-party app sessions. Budget tracked in the session ledger. Deferred settlement. |
-| `api` | External API clients (Cursor, OpenCode, custom scripts). Budget tracked per-key. Synchronous settlement. |
+| `session` | First-party app sessions. Exact checkpoint reservations; deferred worker submission. |
+| `api` | External API clients (Cursor, OpenCode, custom scripts). Exact checkpoint reservations; direct submission. |
 
 ```bash
 # Create a Compose Key
@@ -188,7 +191,7 @@ curl -X POST https://api.compose.market/api/keys \
     "purpose": "api",
     "budgetLimit": 10000000,
     "expiresAt": 1759200000000,
-    "chainId": 43113,
+    "network": "eip155:5042002",
     "name": "my-api-key"
   }'
 ```
@@ -216,20 +219,19 @@ Receipts are key-gated. Listing requires a valid Compose Key, and the returned
 | --- | --- |
 | `index.ts` | Main entry. `prepareInferencePayment`, `settlePreparedInferencePayment`, `runBatchSettlementCycle`, `kickBatchSettlement`. |
 | `facilitator.ts` | x402 facilitator. Verify, settle, supported, chains. Registers `exact`, `upto`, `batch-settlement` schemes. |
-| `envelope.ts` | Per-run payment envelope (maxAmount / used / remaining) in Valkey. 15-min TTL. |
+| `envelope.ts` | Durable raw batch-settlement envelope and checkpoint authority. |
 | `channels.ts` | Native on-chain batch-settlement voucher channels. `BatchSettlementChannelManager`. |
-| `intents.ts` | Payment intents: authorize, settle, abort. Idempotent, Valkey-locked. |
+| `intents.ts` | Canonical Compose payment lifecycle: authorize, reserve/queue, submit, reconcile, confirm/release/fail. |
 | `settlement.ts` | On-chain `USDC.transferFrom` for Compose Key settlement. |
 | `batch.ts` | Batch-settlement voucher channel storage and commit/queue helpers. |
 | `metering.ts` | Authoritative usage metering. Line-item quoting, 1% platform fee, billing model resolution. |
-| `session-budget.ts` | Session budget ledger. Lock, unlock, markSettled. Atomic HINCRBY. |
 | `session-allowance.ts` | On-chain USDC allowance and balance reads. Funding readiness checks. |
 | `evidence.ts` | Charge evidence recording and listing. Indexed by run, parent, channel, intent, session. |
 | `receipts.ts` | Receipts, bills, line items. Store, finalize, list. JSON and header serialization. |
 | `wallets.ts` | Wallet address env config and chain/asset resolution. |
-| `accumulator/` | Batch settlement worker. Groups pending intents, one `transferFrom` per user:chain. |
+| `accumulator/` | Canonical queued/submitted intent worker with retry and receipt reconciliation. |
 | `keys/` | Compose Keys: JWT sign/verify, Valkey storage, middleware, SSE session events, expiry worker. |
-| `configs/chains.ts` | Chain config, USDC addresses, RPC env vars, viem chain map, active chain selection. |
+| `configs/chains.ts` | Authoritative CAIP-2 network, USDC asset, RPC env, and viem-chain registry. |
 
 ## Related
 

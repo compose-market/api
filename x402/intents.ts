@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import { extractKeyFromHeader, getKeyBudgetInfo, validateKey } from "./keys/middleware.js";
 import { getKeyRecord, getKeyReservedBudget } from "./keys/storage.js";
@@ -12,42 +12,59 @@ import {
     type MeteredSettlementInput,
 } from "./metering.js";
 import {
-    cancelBudgetIntent,
-    getBudgetInfo as getSessionBudgetInfo,
-    lockBudget,
-    markIntentsSettled,
-    markSettled,
-    unlockBudget,
-} from "./session/budget.js";
-import {
     valkeyCompareAndDelete,
+    valkeyAcquireFencedLease,
+    valkeyAuthorizePaymentIntent,
+    valkeyClaimPaymentIntentExecution,
+    valkeyCompletePaymentIntentProjection,
     valkeyCommitReservedBudget,
-    valkeyExpire,
     valkeyGet,
     valkeyHGetAll,
-    valkeyHIncrByAmount,
-    valkeyHSet,
+    valkeyMarkClaimedPaymentIntentSubmitted,
+    valkeyPersistPreparedPaymentIntent,
     valkeyReleaseReservedBudget,
+    valkeyReleaseFencedLease,
+    valkeyRenewFencedLease,
+    valkeyRetainClaimedPaymentIntent,
+    valkeyReserveAndQueuePaymentIntent,
+    valkeySRandMembers,
+    valkeySRem,
     valkeySetNXEX,
-    valkeyTryReserveBudget,
+    valkeyZRangeLiveWorkByScore,
+    valkeyZRem,
 } from "./keys/valkey.js";
-import { merchantWalletAddress } from "./wallets.js";
+import { getNetwork, isEvmNetwork } from "./configs/chains.js";
 import {
     createPaymentRequired,
     encodePaymentRequiredHeader,
 } from "./facilitator.js";
 import { isNetworkId, type NetworkId } from "./configs/chains.js";
+import { publishDomainInvalidationBestEffort } from "../data/shared/updates.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
-const KEY_LOCK_PREFIX = "key-lock:";
 const IDEMPOTENCY_PREFIX = "payment-intent-idem:";
-const INTENT_TTL_SECONDS = 15 * 60;
+const KEY_INTENTS_PREFIX = "key-payment-intents:";
+const QUEUED_INTENTS_KEY = "payment-intents:queued";
+const SUBMITTED_INTENTS_KEY = "payment-intents:submitted";
+const DUE_INTENTS_KEY = "payment-intents:due";
+const PROJECTION_INTENTS_KEY = "payment-intents:projections";
+const TERMINAL_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 const LOCK_TTL_SECONDS = 15;
 const LOCK_ATTEMPTS = 80;
 const LOCK_DELAY_MS = 25;
+const EXECUTION_CLAIM_TTL_MS = 60_000;
+const SIGNER_LEASE_TTL_MS = 15_000;
+const SIGNER_LEASE_RENEW_MS = 5_000;
+const SIGNER_LEASE_ATTEMPTS = 80;
 
-export type PaymentIntentStatus = "authorized" | "settling" | "settled" | "aborted" | "failed";
+export type PaymentIntentStatus =
+    | "authorized"
+    | "queued"
+    | "submitted"
+    | "confirmed"
+    | "failed"
+    | "released";
 
 export interface AuthorizePaymentIntentInput {
     authorization: string;
@@ -61,6 +78,10 @@ export interface AuthorizePaymentIntentInput {
     useBudgetCap?: boolean;
     runId?: string;
     idempotencyKey?: string;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
+    sequence?: number;
 }
 
 export interface SettlePaymentIntentInput {
@@ -84,6 +105,7 @@ export interface PaymentIntentRecord {
     purpose: KeyPurpose;
     userAddress: string;
     network: NetworkId;
+    asset: string;
     service: string;
     action: string;
     resource: string;
@@ -91,21 +113,40 @@ export interface PaymentIntentRecord {
     maxAmountWei: string;
     finalAmountWei?: string;
     status: PaymentIntentStatus;
+    rootRunId: string;
+    executionRunId: string;
+    parentExecutionRunId?: string;
+    sequence: number;
     runId?: string;
     idempotencyKey?: string;
     meterSubject?: string;
     meterLineItems?: MeteredQuotedLineItem[];
     providerAmountWei?: string;
     platformFeeWei?: string;
-    sessionBudgetIntentId?: string;
     useBudgetCap?: boolean;
     reservedAmountWei?: string;
     txHash?: string;
+    attemptCount: number;
+    lastAttemptAt?: number;
+    nextAttemptAt?: number;
+    lastError?: string;
     error?: string;
     createdAt: number;
     updatedAt: number;
-    settledAt?: number;
-    abortedAt?: number;
+    submittedAt?: number;
+    confirmedAt?: number;
+    failedAt?: number;
+    releasedAt?: number;
+    executionClaimToken?: string;
+    executionClaimedAt?: number;
+    executionClaimExpiresAt?: number;
+    credentialExpiresAt: number;
+    requestFingerprint: string;
+    settlementFingerprint?: string;
+    preparedTxHash?: string;
+    preparedTxPayload?: string;
+    preparedTxNonce?: string;
+    preparedAt?: number;
 }
 
 export interface PaymentIntentSuccess<TBody> {
@@ -141,6 +182,7 @@ export interface SettledPaymentIntentBody {
     providerAmountWei?: string;
     platformFeeWei?: string;
     txHash?: string;
+    confirmedAt?: number;
 }
 
 export interface AbortedPaymentIntentBody {
@@ -157,32 +199,184 @@ function paymentIntentLockKey(paymentIntentId: string): string {
     return `${INTENT_LOCK_PREFIX}${paymentIntentId}`;
 }
 
-function keyLockKey(keyId: string): string {
-    return `${KEY_LOCK_PREFIX}${keyId}`;
-}
-
 function keyRecordKey(keyId: string): string {
     return `key:${keyId}`;
 }
 
-function idempotencyValkeyKey(keyId: string, idempotencyKey: string): string {
-    return `${IDEMPOTENCY_PREFIX}${keyId}:${idempotencyKey}`;
+function keyPaymentIntentsKey(keyId: string): string {
+    return `${KEY_INTENTS_PREFIX}${keyId}`;
 }
 
-async function settleKeyPaymentOnChain(
+function idempotencyValkeyKey(input: {
+    network: NetworkId;
+    keyId: string;
+    rootRunId: string;
+    executionRunId: string;
+    sequence: number;
+}): string {
+    return [
+        IDEMPOTENCY_PREFIX.slice(0, -1),
+        input.network,
+        input.keyId,
+        encodeURIComponent(input.rootRunId),
+        encodeURIComponent(input.executionRunId),
+        String(input.sequence),
+    ].join(":");
+}
+
+function stableJson(value: unknown): string {
+    if (value === undefined) return "null";
+    if (Array.isArray(value)) {
+        return `[${value.map(stableJson).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value) ?? "null";
+}
+
+function authorizationRequestFingerprint(input: {
+    keyId: string;
+    purpose: KeyPurpose;
+    request: AuthorizePaymentIntentInput;
+    rootRunId: string;
+    executionRunId: string;
+    sequence: number;
+}): string {
+    return createHash("sha256").update(stableJson({
+        keyId: input.keyId,
+        purpose: input.purpose,
+        network: input.request.network,
+        service: input.request.service,
+        action: input.request.action,
+        resource: input.request.resource,
+        method: input.request.method.toUpperCase(),
+        amountMode: input.request.useBudgetCap === true
+            ? { type: "budget_cap" }
+            : input.request.meter
+                ? { type: "meter", meter: input.request.meter }
+                : { type: "exact", maxAmountWei: input.request.maxAmountWei },
+        rootRunId: input.rootRunId,
+        executionRunId: input.executionRunId,
+        parentExecutionRunId: input.request.parentExecutionRunId || null,
+        sequence: input.sequence,
+    })).digest("hex");
+}
+
+function settlementRequestFingerprint(input: ReturnType<typeof resolveSettlementAmount>): string {
+    const lineItems = input.metering?.lineItems || input.explicit?.lineItems || [];
+    return createHash("sha256").update(stableJson({
+        finalAmountWei: input.finalAmountWei,
+        providerAmountWei: input.metering?.providerAmountWei || input.explicit?.providerAmountWei || null,
+        platformFeeWei: input.metering?.platformFeeWei || input.explicit?.platformFeeWei || null,
+        meterSubject: input.metering?.subject || input.explicit?.meterSubject || null,
+        lineItems: [...lineItems].sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+    })).digest("hex");
+}
+
+export function deriveTestSettlementPreparation(input: {
+    network: NetworkId;
+    userAddress: string;
+    amountWei: string;
+    intentIdentity: string;
+    evmNonce?: bigint;
+    forcedTxHash?: string;
+}): import("./settlement.js").PreparedSettlementTransaction {
+    const nonce = input.evmNonce?.toString();
+    const payload = `test-signed:${stableJson({
+        network: input.network,
+        userAddress: input.userAddress,
+        amountWei: input.amountWei,
+        intentIdentity: input.intentIdentity,
+        nonce: nonce || null,
+    })}`;
+    const forcedTxHash = input.forcedTxHash?.trim();
+    if (forcedTxHash && !/^0x[0-9a-fA-F]{64}$/.test(forcedTxHash)) {
+        throw new Error("COMPOSE_TEST_SETTLEMENT_TX_HASH must be a 32-byte hex transaction hash");
+    }
+    const txHash = forcedTxHash
+        || `0x${createHash("sha256").update(payload).digest("hex")}`;
+    return {
+        network: input.network,
+        txHash,
+        payload,
+        ...(nonce === undefined ? {} : { nonce }),
+    };
+}
+
+function testSettlementSeamEnabled(): boolean {
+    return process.env.NODE_ENV === "test"
+        && (process.env.COMPOSE_TEST_SETTLEMENT_MODE === "deterministic"
+            || Boolean(process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH));
+}
+
+async function prepareKeyPaymentOnChain(
     userAddress: string,
     amountWei: string,
     network: NetworkId,
-) {
-    if (process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH) {
+    options: { evmNonce?: bigint; intentIdentity: string },
+): Promise<import("./settlement.js").SettlementPreparationResult> {
+    if (testSettlementSeamEnabled()) {
         return {
             success: true,
-            txHash: process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH,
+            prepared: deriveTestSettlementPreparation({
+                network,
+                userAddress,
+                amountWei,
+                intentIdentity: options.intentIdentity,
+                evmNonce: options.evmNonce,
+                forcedTxHash: process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH,
+            }),
         };
     }
 
-    const { settleKeyPaymentForNetwork } = await import("./settlement.js");
-    return settleKeyPaymentForNetwork(userAddress, amountWei, network);
+    const { prepareKeyPaymentForNetwork } = await import("./settlement.js");
+    return prepareKeyPaymentForNetwork(userAddress, amountWei, network, { evmNonce: options.evmNonce });
+}
+
+async function broadcastPreparedKeyPaymentOnChain(
+    prepared: import("./settlement.js").PreparedSettlementTransaction,
+) {
+    if (testSettlementSeamEnabled()) {
+        const status = process.env.COMPOSE_TEST_SETTLEMENT_STATUS || "confirmed";
+        if (status === "throw") throw new Error("test ambiguous broadcast exception");
+        if (status === "queued") {
+            return { success: false, status: "queued" as const, error: "test transient pre-broadcast failure" };
+        }
+        if (status === "submitted") {
+            return { success: false, status: "submitted" as const, txHash: prepared.txHash, error: "test pending receipt" };
+        }
+        if (status === "failed") {
+            return {
+                success: false,
+                status: "failed" as const,
+                terminal: true,
+                txHash: prepared.txHash,
+                error: "test reverted receipt",
+            };
+        }
+        return { success: true, txHash: prepared.txHash, status: "confirmed" as const };
+    }
+    const { broadcastPreparedKeyPaymentForNetwork } = await import("./settlement.js");
+    return broadcastPreparedKeyPaymentForNetwork(prepared);
+}
+
+async function reconcileKeyPaymentOnChain(txHash: string, network: NetworkId, wait = false) {
+    if (testSettlementSeamEnabled()) {
+        const status = process.env.COMPOSE_TEST_SETTLEMENT_RECONCILE_STATUS
+            || process.env.COMPOSE_TEST_SETTLEMENT_STATUS
+            || "confirmed";
+        if (status === "failed") {
+            return { success: false, status: "failed" as const, terminal: true, txHash, error: "test reverted receipt" };
+        }
+        if (status === "confirmed") return { success: true, status: "confirmed" as const, txHash };
+        return { success: false, status: "submitted" as const, txHash, error: "test pending receipt" };
+    }
+    const { reconcileKeyPaymentForNetwork } = await import("./settlement.js");
+    return reconcileKeyPaymentForNetwork(txHash, network, { wait });
 }
 
 function failure(
@@ -431,6 +625,7 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         purpose: data.purpose === "session" ? "session" : "api",
         userAddress: data.userAddress,
         network: data.network as NetworkId,
+        asset: data.asset,
         service: data.service,
         action: data.action,
         resource: data.resource,
@@ -438,22 +633,161 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         maxAmountWei: data.maxAmountWei,
         finalAmountWei: data.finalAmountWei || undefined,
         status: data.status as PaymentIntentStatus,
+        rootRunId: data.rootRunId,
+        executionRunId: data.executionRunId,
+        parentExecutionRunId: data.parentExecutionRunId || undefined,
+        sequence: Number.parseInt(data.sequence || "0", 10),
         runId: data.runId || undefined,
         idempotencyKey: data.idempotencyKey || undefined,
         meterSubject: data.meterSubject || undefined,
         meterLineItems: parseMeterLineItems(data.meterLineItems),
         providerAmountWei: data.providerAmountWei || undefined,
         platformFeeWei: data.platformFeeWei || undefined,
-        sessionBudgetIntentId: data.sessionBudgetIntentId || undefined,
         useBudgetCap: data.useBudgetCap === "true",
         reservedAmountWei: data.reservedAmountWei || undefined,
         txHash: data.txHash || undefined,
+        attemptCount: Number.parseInt(data.attemptCount || "0", 10),
+        lastAttemptAt: data.lastAttemptAt ? Number.parseInt(data.lastAttemptAt, 10) : undefined,
+        nextAttemptAt: data.nextAttemptAt ? Number.parseInt(data.nextAttemptAt, 10) : undefined,
+        lastError: data.lastError || undefined,
         error: data.error || undefined,
         createdAt: parseInt(data.createdAt, 10),
         updatedAt: parseInt(data.updatedAt, 10),
-        settledAt: data.settledAt ? parseInt(data.settledAt, 10) : undefined,
-        abortedAt: data.abortedAt ? parseInt(data.abortedAt, 10) : undefined,
+        submittedAt: data.submittedAt ? parseInt(data.submittedAt, 10) : undefined,
+        confirmedAt: data.confirmedAt ? parseInt(data.confirmedAt, 10) : undefined,
+        failedAt: data.failedAt ? parseInt(data.failedAt, 10) : undefined,
+        releasedAt: data.releasedAt ? parseInt(data.releasedAt, 10) : undefined,
+        executionClaimToken: data.executionClaimToken || undefined,
+        executionClaimedAt: data.executionClaimedAt ? parseInt(data.executionClaimedAt, 10) : undefined,
+        executionClaimExpiresAt: data.executionClaimExpiresAt ? parseInt(data.executionClaimExpiresAt, 10) : undefined,
+        credentialExpiresAt: Number.parseInt(data.credentialExpiresAt || "0", 10),
+        requestFingerprint: data.requestFingerprint || "",
+        settlementFingerprint: data.settlementFingerprint || undefined,
+        preparedTxHash: data.preparedTxHash || undefined,
+        preparedTxPayload: data.preparedTxPayload || undefined,
+        preparedTxNonce: data.preparedTxNonce || undefined,
+        preparedAt: data.preparedAt ? parseInt(data.preparedAt, 10) : undefined,
     };
+}
+
+export async function getCanonicalPaymentIntent(paymentIntentId: string): Promise<PaymentIntentRecord | null> {
+    return readPaymentIntent(paymentIntentId);
+}
+
+export async function listCanonicalPaymentProjectionIds(limit = 100): Promise<string[]> {
+    return valkeySRandMembers(PROJECTION_INTENTS_KEY, limit);
+}
+
+type CanonicalInferenceProjection =
+    | {
+        paymentIntentId: string;
+        status: "confirmed";
+        transactionHash: string;
+        confirmedAt: number;
+    }
+    | {
+        paymentIntentId: string;
+        status: "failed";
+        transactionHash?: string;
+    };
+
+type AnalyticsProjectionPublisher = NonNullable<
+    NonNullable<Parameters<typeof publishDomainInvalidationBestEffort>[3]>["publish"]
+>;
+
+export interface CanonicalInferenceProjectionDependencies {
+    project?: (input: CanonicalInferenceProjection) => Promise<boolean>;
+    publish?: AnalyticsProjectionPublisher;
+    complete?: typeof valkeyCompletePaymentIntentProjection;
+    logError?: (error: unknown) => void;
+    now?: () => number;
+}
+
+export async function projectCanonicalPaymentIntentAnalytics(
+    intent: PaymentIntentRecord,
+    dependencies: CanonicalInferenceProjectionDependencies = {},
+): Promise<boolean> {
+    let projection: CanonicalInferenceProjection;
+    if (intent.status === "confirmed") {
+        if (!intent.txHash || intent.confirmedAt === undefined) {
+            throw new Error("Confirmed payment intent is missing canonical Analytics settlement data");
+        }
+        projection = {
+            paymentIntentId: intent.paymentIntentId,
+            status: "confirmed",
+            transactionHash: intent.txHash,
+            confirmedAt: intent.confirmedAt,
+        };
+    } else if (intent.status === "failed") {
+        projection = {
+            paymentIntentId: intent.paymentIntentId,
+            status: "failed",
+            ...(intent.txHash ? { transactionHash: intent.txHash } : {}),
+        };
+    } else {
+        throw new Error(`Analytics projection payment intent is not terminal: ${intent.status}`);
+    }
+    const project = dependencies.project ?? (async (input) => {
+        const analytics = await import("../data/analytics/inference/store.js");
+        return analytics.projectCanonicalPaymentIntentSettlement(input);
+    });
+    if (!await project(projection)) return false;
+
+    await publishDomainInvalidationBestEffort(
+        "inference-analytics",
+        intent.userAddress,
+        "telemetry",
+        {
+            ...(dependencies.publish ? { publish: dependencies.publish } : {}),
+            ...(dependencies.logError ? { logError: dependencies.logError } : {}),
+        },
+    );
+    const complete = dependencies.complete ?? valkeyCompletePaymentIntentProjection;
+    await complete({
+        projectionKey: PROJECTION_INTENTS_KEY,
+        intentKey: paymentIntentKey(intent.paymentIntentId),
+        idempotencyKey: idempotencyValkeyKey(intent),
+        intentId: intent.paymentIntentId,
+        terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, (dependencies.now ?? Date.now)()),
+    });
+    return true;
+}
+
+export async function reconcileCanonicalPaymentIntentProjections(
+    paymentIntentId: string,
+    analyticsDependencies: CanonicalInferenceProjectionDependencies = {},
+): Promise<boolean> {
+    if (process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_PROJECTION_FAILURE === "true") {
+        throw new Error("test projection failure");
+    }
+    const intent = await readPaymentIntent(paymentIntentId);
+    if (!intent) throw new Error(`Projection payment intent not found: ${paymentIntentId}`);
+
+    if (intent.status === "confirmed") {
+        if (!intent.txHash) throw new Error("Confirmed payment intent is missing its transaction identity");
+        if (intent.confirmedAt === undefined) throw new Error("Confirmed payment intent is missing its confirmation time");
+        const [{ markIntentEvidenceSettled }, { markIntentReceiptsSettled }] = await Promise.all([
+            import("./evidence.js"),
+            import("./receipts.js"),
+        ]);
+        await Promise.all([
+            markIntentEvidenceSettled({ paymentIntentId, txHash: intent.txHash, network: intent.network }),
+            markIntentReceiptsSettled({ paymentIntentId, txHash: intent.txHash }),
+        ]);
+    } else if (intent.status === "failed") {
+        const [{ markIntentEvidenceFailed }, { markIntentReceiptsFailed }] = await Promise.all([
+            import("./evidence.js"),
+            import("./receipts.js"),
+        ]);
+        await Promise.all([
+            markIntentEvidenceFailed({ paymentIntentId, txHash: intent.txHash, error: intent.error || intent.lastError }),
+            markIntentReceiptsFailed({ paymentIntentId, txHash: intent.txHash, error: intent.error || intent.lastError }),
+        ]);
+    } else {
+        throw new Error(`Projection payment intent is not terminal: ${intent.status}`);
+    }
+
+    return projectCanonicalPaymentIntentAnalytics(intent, analyticsDependencies);
 }
 
 async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>> {
@@ -474,34 +808,20 @@ async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>
     };
 }
 
-async function buildSessionBudgetHeaders(
-    userAddress: string,
-    network: NetworkId,
-): Promise<Record<string, string>> {
-    const budgetInfo = await getSessionBudgetInfo(userAddress, network);
-    if (!budgetInfo) {
-        return {};
-    }
-
-    return {
-        "x-session-budget-limit": budgetInfo.totalWei,
-        "x-session-budget-used": budgetInfo.usedWei,
-        "x-session-budget-locked": budgetInfo.lockedWei,
-        "x-session-budget-remaining": budgetInfo.availableWei,
-    };
-}
-
 async function buildPaymentBudgetHeaders(input: {
     keyId: string;
     purpose: KeyPurpose;
     userAddress: string;
     network: NetworkId;
 }): Promise<Record<string, string>> {
+    const headers = await buildBudgetHeaders(input.keyId);
     if (input.purpose === "session") {
-        return buildSessionBudgetHeaders(input.userAddress, input.network);
+        headers["x-session-budget-limit"] = headers["x-key-budget-limit"] || "0";
+        headers["x-session-budget-used"] = headers["x-key-budget-used"] || "0";
+        headers["x-session-budget-locked"] = headers["x-key-budget-reserved"] || "0";
+        headers["x-session-budget-remaining"] = headers["x-key-budget-remaining"] || "0";
     }
-
-    return buildBudgetHeaders(input.keyId);
+    return headers;
 }
 
 function appendSettlementAmountHeaders(
@@ -542,249 +862,138 @@ export async function authorizePaymentIntent(
             return failure(409, "Compose key network does not match request network");
         }
 
-        // Idempotency: if the caller provided an X-Idempotency-Key, a second
-        // authorize with the same (keyId, idempotencyKey) must return the
-        // exact intent created by the first call instead of creating a new
-        // reservation. We key the dedupe slot on (keyId, idempotencyKey) so
-        // different keys with the same client-chosen idempotency key do not
-        // collide across wallets.
-        if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
-            const idemKey = idempotencyValkeyKey(validation.payload.keyId, input.idempotencyKey.trim());
-            const existingIntentId = await valkeyGet(idemKey);
-            if (existingIntentId) {
-                const existing = await readPaymentIntent(existingIntentId);
-                if (existing) {
-                    const headers = await buildPaymentBudgetHeaders(existing);
-                    headers["x-payment-intent-id"] = existing.paymentIntentId;
-                    headers["x-idempotent-replay"] = "true";
-                    return {
-                        ok: true,
-                        status: 200,
-                        body: {
-                            paymentIntentId: existing.paymentIntentId,
-                            maxAmountWei: existing.maxAmountWei,
-                            status: "authorized",
-                        },
-                        headers,
-                    };
-                }
-                // Stale slot — the intent expired before the replay arrived.
-                // Fall through and create a fresh one; we rewrite the slot below.
-            }
-        }
-
         const normalizedInput = {
             ...input,
             network,
         };
         validateAuthorizeInput(normalizedInput);
         const authorizationAmount = resolveAuthorizationAmount(normalizedInput);
-        const paymentIntentId = randomUUID();
-        const recordKey = keyRecordKey(validation.payload.keyId);
         const purpose = validation.record.purpose;
+        const rootRunId = normalizedInput.rootRunId?.trim()
+            || normalizedInput.runId?.trim()
+            || normalizedInput.idempotencyKey?.trim()
+            || randomUUID();
+        const executionRunId = normalizedInput.executionRunId?.trim() || rootRunId;
+        const sequence = normalizedInput.sequence ?? 0;
+        if (!Number.isSafeInteger(sequence) || sequence < 0) {
+            throw new Error("sequence must be a non-negative safe integer");
+        }
+        const explicitIdempotencyKey = normalizedInput.idempotencyKey?.trim() || undefined;
+        const idemKey = idempotencyValkeyKey({
+            network,
+            keyId: validation.payload.keyId,
+            rootRunId,
+            executionRunId,
+            sequence,
+        });
+        const record = await getKeyRecord(validation.payload.keyId);
+        if (!record) throw new Error("Compose key record not found");
+        const now = Date.now();
+        if (record.revokedAt) return failure(401, "Compose key has been revoked");
+        if (record.expiresAt <= now) return failure(401, "Compose key has expired");
 
-        const authorizationLockKey = purpose === "api"
-            ? paymentIntentLockKey(paymentIntentId)
-            : keyLockKey(validation.payload.keyId);
-        const budgetState = await withValkeyLock(authorizationLockKey, async () => {
-            const record = await getKeyRecord(validation.payload!.keyId);
-            if (!record) {
-                throw new Error("Compose key record not found");
-            }
-
-            if (record.purpose === "session") {
-                const requestedAmountWei = authorizationAmount.useBudgetCap
-                    ? (await getSessionBudgetInfo(validation.payload!.sub, network))?.availableWei
-                    : authorizationAmount.maxAmountWei;
-
-                if (!requestedAmountWei) {
-                    return {
-                        ok: false as const,
-                    };
-                }
-
-                if (BigInt(requestedAmountWei) <= 0n) {
-                    return {
-                        ok: false as const,
-                    };
-                }
-
-                const reservation = await lockBudget(
-                    validation.payload!.sub,
+        const reserved = authorizationAmount.useBudgetCap
+            ? 0n
+            : BigInt(await getKeyReservedBudget(record.keyId));
+        const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - reserved;
+        const maxAmountWei = authorizationAmount.useBudgetCap
+            ? "1"
+            : authorizationAmount.maxAmountWei!;
+        if (!authorizationAmount.useBudgetCap
+            && (available <= 0n || BigInt(maxAmountWei) <= 0n || BigInt(maxAmountWei) > available)) {
+            return failure(402, "Compose key budget exhausted", {
+                headers: await buildPaymentBudgetHeaders({
+                    keyId: record.keyId,
+                    purpose,
+                    userAddress: record.userAddress,
                     network,
-                    requestedAmountWei,
-                    merchantWalletAddress,
-                    paymentIntentId,
-                    authorizationAmount.metering?.subject,
-                );
-
-                if (!reservation.success) {
-                    return {
-                        ok: false as const,
-                    };
-                }
-
-                const resolvedSessionBudgetIntentId = reservation.intentId || "";
-
-                const now = Date.now();
-                await valkeyHSet(paymentIntentKey(paymentIntentId), {
-                    paymentIntentId,
-                    keyId: validation.payload!.keyId,
-                    purpose: "session",
-                    userAddress: validation.payload!.sub.toLowerCase(),
-                    network: String(network),
-                    service: normalizedInput.service,
-                    action: normalizedInput.action,
-                    resource: normalizedInput.resource,
-                    method: normalizedInput.method,
-                    maxAmountWei: requestedAmountWei,
-                    status: "authorized",
-                    runId: toOptionalString(normalizedInput.runId || ""),
-                    idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
-                    sessionBudgetIntentId: toOptionalString(resolvedSessionBudgetIntentId || ""),
-                    useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
-                    reservedAmountWei: requestedAmountWei,
-                    ...meteringValkeyFields(authorizationAmount.metering),
-                    createdAt: String(now),
-                    updatedAt: String(now),
-                });
-                await valkeyExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
-
-                return {
-                    ok: true as const,
-                    reservedAmountWei: requestedAmountWei,
-                };
-            }
-
-            const reserved = BigInt(await getKeyReservedBudget(validation.payload!.keyId));
-            const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - reserved;
-            if (available <= 0n) {
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
-
-            const maxAmountWei = authorizationAmount.useBudgetCap
-                ? available.toString()
-                : authorizationAmount.maxAmountWei!;
-            const reservedAmountWei = maxAmountWei;
-            const reservedAmount = BigInt(reservedAmountWei);
-
-            if (reservedAmount <= 0n || reservedAmount > available) {
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
-
-            const reservedBudget = await valkeyTryReserveBudget({
-                budgetKey: recordKey,
-                intentKey: paymentIntentKey(paymentIntentId),
-                amount: reservedAmount,
+                }),
             });
-            if (!reservedBudget) {
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
+        }
 
-            const sessionReservation = await lockBudget(
-                validation.payload!.sub,
+        const requestFingerprint = authorizationRequestFingerprint({
+            keyId: record.keyId,
+            purpose,
+            request: normalizedInput,
+            rootRunId,
+            executionRunId,
+            sequence,
+        });
+        const paymentIntentId = randomUUID();
+        const authorizationTtlSeconds = Math.max(1, Math.ceil((record.expiresAt - now) / 1000));
+        const authorization = await valkeyAuthorizePaymentIntent({
+            budgetKey: keyRecordKey(record.keyId),
+            intentKey: paymentIntentKey(paymentIntentId),
+            keyIntentsKey: keyPaymentIntentsKey(record.keyId),
+            idempotencyKey: idemKey,
+            intentPrefix: INTENT_PREFIX,
+            intentId: paymentIntentId,
+            requestFingerprint,
+            maxAmountWei,
+            useBudgetCap: authorizationAmount.useBudgetCap === true,
+            now,
+            ttlSeconds: authorizationTtlSeconds,
+            intentFields: {
+                paymentIntentId,
+                keyId: record.keyId,
+                purpose,
+                userAddress: record.userAddress,
                 network,
-                reservedAmountWei,
-                merchantWalletAddress,
-                paymentIntentId,
-                authorizationAmount.metering?.subject,
-            );
-            if (!sessionReservation.success || !sessionReservation.intentId) {
-                await valkeyReleaseReservedBudget({
-                    budgetKey: recordKey,
-                    intentKey: paymentIntentKey(paymentIntentId),
-                    reservedAmount,
-                    intentFields: {
-                        status: "failed",
-                        updatedAt: String(Date.now()),
-                        error: sessionReservation.error || "Session budget exhausted",
-                    },
-                });
-                return {
-                    ok: false as const,
-                    available,
-                };
-            }
-
-            const now = Date.now();
-            await valkeyHSet(paymentIntentKey(paymentIntentId), {
-                paymentIntentId,
-                keyId: validation.payload!.keyId,
-                purpose: "api",
-                userAddress: validation.payload!.sub.toLowerCase(),
-                network: String(network),
+                asset: getNetwork(network).asset.address,
                 service: normalizedInput.service,
                 action: normalizedInput.action,
                 resource: normalizedInput.resource,
                 method: normalizedInput.method,
                 maxAmountWei,
                 status: "authorized",
-                runId: toOptionalString(normalizedInput.runId || ""),
-                idempotencyKey: toOptionalString(normalizedInput.idempotencyKey || ""),
-                sessionBudgetIntentId: sessionReservation.intentId,
+                rootRunId,
+                executionRunId,
+                parentExecutionRunId: toOptionalString(normalizedInput.parentExecutionRunId || ""),
+                sequence: String(sequence),
+                runId: toOptionalString(normalizedInput.runId || rootRunId),
+                idempotencyKey: toOptionalString(explicitIdempotencyKey || ""),
                 useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
-                reservedAmountWei,
+                reservedAmountWei: "0",
+                attemptCount: "0",
+                credentialExpiresAt: String(record.expiresAt),
                 ...meteringValkeyFields(authorizationAmount.metering),
                 createdAt: String(now),
                 updatedAt: String(now),
-            });
-            await valkeyExpire(paymentIntentKey(paymentIntentId), INTENT_TTL_SECONDS);
-
-            return {
-                ok: true as const,
-                reservedAmountWei: maxAmountWei,
-            };
+            },
         });
-
-        if (!budgetState.ok) {
-            const headers = await buildPaymentBudgetHeaders({
-                keyId: validation.payload.keyId,
-                purpose,
-                userAddress: validation.payload.sub.toLowerCase(),
-                network,
+        if (authorization.outcome === "fingerprint_mismatch") {
+            return failure(409, "Idempotency key was already used for a different payment request");
+        }
+        if (authorization.outcome === "revoked") return failure(401, "Compose key has been revoked");
+        if (authorization.outcome === "expired") return failure(401, "Compose key has expired");
+        if (authorization.outcome === "exhausted") {
+            return failure(402, "Compose key budget exhausted", {
+                headers: await buildPaymentBudgetHeaders({
+                    keyId: record.keyId,
+                    purpose,
+                    userAddress: record.userAddress,
+                    network,
+                }),
             });
-            return {
-                ok: false,
-                status: 402,
-                body: { error: "Compose key budget exhausted" },
-                headers,
-            };
+        }
+        if (authorization.outcome === "inconsistent") {
+            return failure(500, "Payment authorization replay state is inconsistent");
         }
 
-        const headers = await buildPaymentBudgetHeaders({
-            keyId: validation.payload.keyId,
-            purpose,
-            userAddress: validation.payload.sub.toLowerCase(),
-            network,
-        });
-        headers["x-payment-intent-id"] = paymentIntentId;
-
-        // Record the idempotency slot so a retried authorize with the same
-        // idempotency key resolves to this intent instead of creating a new one.
-        if (typeof input.idempotencyKey === "string" && input.idempotencyKey.trim().length > 0) {
-            await valkeySetNXEX(
-                idempotencyValkeyKey(validation.payload.keyId, input.idempotencyKey.trim()),
-                paymentIntentId,
-                INTENT_TTL_SECONDS,
-            );
-        }
-
+        const intent = authorization.outcome === "replayed"
+            ? await readPaymentIntent(authorization.paymentIntentId)
+            : await readPaymentIntent(paymentIntentId);
+        if (!intent) return failure(500, "Authorized payment intent disappeared");
+        const headers = await buildPaymentBudgetHeaders(intent);
+        headers["x-payment-intent-id"] = intent.paymentIntentId;
+        if (authorization.outcome === "replayed") headers["x-idempotent-replay"] = "true";
         return {
             ok: true,
             status: 200,
             body: {
-                paymentIntentId,
-                maxAmountWei: budgetState.reservedAmountWei,
-                status: "authorized",
+                paymentIntentId: intent.paymentIntentId,
+                maxAmountWei: intent.maxAmountWei,
+                status: intent.status,
             },
             headers,
         };
@@ -801,16 +1010,20 @@ export async function settlePaymentIntent(
     try {
         validateSettleInput(input);
         const settlementResolved = resolveSettlementAmount(input);
+        const settlementFingerprint = settlementRequestFingerprint(settlementResolved);
         const finalAmountStr = settlementResolved.finalAmountWei;
         const finalAmount = parsePositiveIntegerString(finalAmountStr, "finalAmountWei");
-
-        return await withValkeyLock(paymentIntentLockKey(input.paymentIntentId), async () => {
+        const prepared = await withValkeyLock(paymentIntentLockKey(input.paymentIntentId), async () => {
             const intent = await readPaymentIntent(input.paymentIntentId);
             if (!intent) {
                 return failure(404, "Payment intent not found");
             }
 
-            if (intent.status === "settled") {
+            if (intent.status !== "authorized" && intent.settlementFingerprint !== settlementFingerprint) {
+                return failure(409, "Checkpoint replay does not match the original settlement request");
+            }
+
+            if (intent.status === "confirmed") {
                 const headers = appendSettlementAmountHeaders(
                     await buildPaymentBudgetHeaders(intent),
                     {
@@ -832,153 +1045,71 @@ export async function settlePaymentIntent(
                         providerAmountWei: intent.providerAmountWei,
                         platformFeeWei: intent.platformFeeWei,
                         txHash: intent.txHash,
+                        ...(intent.confirmedAt !== undefined ? { confirmedAt: intent.confirmedAt } : {}),
                     },
                     headers,
                 };
             }
 
+            if (intent.status === "queued" || intent.status === "submitted") {
+                return { intent, execute: intent.purpose === "api" } as const;
+            }
             if (intent.status !== "authorized") {
-                return failure(409, `Payment intent cannot be settled from status ${intent.status}`);
+                return failure(409, `Payment intent cannot be finalized from status ${intent.status}`);
             }
 
             const maxAmount = parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
             if (finalAmount > maxAmount) {
-                return failure(409, "finalAmountWei cannot exceed the reserved amount");
+                return failure(409, "finalAmountWei cannot exceed the authorized amount");
             }
-
-            const sessionBudgetIntentId = intent.sessionBudgetIntentId;
-            let reservedSessionAmount = maxAmount;
-            if (intent.purpose === "session" && !sessionBudgetIntentId) {
-                return failure(409, "Session payment intent is missing its authorization reservation");
-            }
-
-            const apiReservedAmount = intent.reservedAmountWei
-                ? BigInt(intent.reservedAmountWei)
-                : 0n;
-            if (intent.purpose === "api" && apiReservedAmount <= 0n) {
-                return failure(409, "API payment intent is missing its authorization reservation");
-            }
-
-            await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                status: "settling",
-                updatedAt: String(Date.now()),
-                finalAmountWei: finalAmountStr,
-                ...meteringValkeyFields(settlementResolved.metering ?? {
-                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
-                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
-                    providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
-                    platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
-                    finalAmountWei: intent.finalAmountWei || intent.maxAmountWei,
-                }),
+            const updatedAt = Date.now();
+            const reservation = await valkeyReserveAndQueuePaymentIntent({
+                budgetKey: keyRecordKey(intent.keyId),
+                intentKey: paymentIntentKey(intent.paymentIntentId),
+                queueKey: QUEUED_INTENTS_KEY,
+                dueKey: DUE_INTENTS_KEY,
+                keyIntentsKey: keyPaymentIntentsKey(intent.keyId),
+                idempotencyKey: idempotencyValkeyKey(intent),
+                intentId: intent.paymentIntentId,
+                amount: finalAmount,
+                now: updatedAt,
+                settlementFingerprint,
+                intentFields: {
+                    status: "queued",
+                    updatedAt: String(updatedAt),
+                    finalAmountWei: finalAmountStr,
+                    settlementFingerprint,
+                    ...meteringValkeyFields(settlementResolved.metering ?? {
+                        subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
+                        lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
+                        providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
+                        platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
+                        finalAmountWei: finalAmountStr,
+                    }),
+                },
             });
-
-            const settlement = await settleKeyPaymentOnChain(intent.userAddress, finalAmountStr, intent.network);
-
-            const settlementError = !settlement.success
-                ? settlement.error || "Payment settlement failed"
-                : !settlement.txHash
-                    ? "Payment settlement did not return transaction hash"
-                    : null;
-
-            if (settlementError) {
-                if (sessionBudgetIntentId) {
-                    await cancelBudgetIntent(sessionBudgetIntentId, settlementError);
-                }
-                if (intent.purpose === "api" && apiReservedAmount > 0n) {
-                    await valkeyReleaseReservedBudget({
-                        budgetKey: keyRecordKey(intent.keyId),
-                        intentKey: paymentIntentKey(intent.paymentIntentId),
-                        reservedAmount: apiReservedAmount,
-                        intentFields: {
-                            status: "failed",
-                            updatedAt: String(Date.now()),
-                            error: settlementError,
-                        },
-                    });
-                }
-
-                if (intent.purpose === "session") {
-                    await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                        status: "failed",
-                        updatedAt: String(Date.now()),
-                        error: settlementError,
-                    });
-                }
-
-                return buildPaymentRequiredFailure({
-                    resourceUrl: intent.resource,
-                    network: intent.network,
-                    amountWei: finalAmountStr,
-                    error: settlementError,
+            if (reservation === "exhausted") {
+                return failure(402, "Compose key budget exhausted", {
+                    headers: await buildPaymentBudgetHeaders(intent),
                 });
             }
-
-            if (sessionBudgetIntentId) {
-                const unlockedAmount = reservedSessionAmount - finalAmount;
-                if (unlockedAmount > 0n) {
-                    await unlockBudget(intent.userAddress, intent.network, unlockedAmount.toString());
-                }
-                await markSettled(intent.userAddress, intent.network, finalAmountStr);
-                if (sessionBudgetIntentId) {
-                    await markIntentsSettled([sessionBudgetIntentId], settlement.txHash || "");
-                }
-                await valkeyHSet(keyRecordKey(intent.keyId), "lastUsedAt", String(Date.now()));
+            if (reservation === "revoked") return failure(401, "Compose key has been revoked");
+            if (reservation === "expired") return failure(401, "Compose key has expired");
+            if (reservation === "invalid_state") return failure(409, "Payment intent reservation state changed");
+            if (reservation === "reserved") {
+                await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
             }
-            const settledAt = Date.now();
-            const settledFields = {
-                status: "settled",
-                updatedAt: String(settledAt),
-                settledAt: String(settledAt),
-                finalAmountWei: finalAmountStr,
-                txHash: settlement.txHash || "",
-                error: "",
-                ...meteringValkeyFields(settlementResolved.metering ?? {
-                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
-                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
-                    providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
-                    platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
-                    finalAmountWei: finalAmountStr,
-                }),
-            };
-            if (intent.purpose === "api") {
-                await valkeyCommitReservedBudget({
-                    budgetKey: keyRecordKey(intent.keyId),
-                    intentKey: paymentIntentKey(intent.paymentIntentId),
-                    reservedAmount: apiReservedAmount,
-                    finalAmount,
-                    lastUsedAt: settledAt,
-                    intentFields: settledFields,
-                });
-            } else {
-                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), settledFields);
-            }
-
-            const headers = appendSettlementAmountHeaders(
-                await buildPaymentBudgetHeaders(intent),
-                {
-                    finalAmountWei: finalAmountStr,
-                    txHash: settlement.txHash,
-                },
-            );
-
-            return {
-                ok: true,
-                status: 200,
-                body: {
-                    paymentIntentId: intent.paymentIntentId,
-                    network: intent.network,
-                    maxAmountWei: intent.maxAmountWei,
-                    finalAmountWei: finalAmountStr,
-                    status: "settled",
-                    meterSubject: settlementResolved.metering?.subject || settlementResolved.explicit?.meterSubject || intent.meterSubject,
-                    lineItems: settlementResolved.metering?.lineItems || settlementResolved.explicit?.lineItems || intent.meterLineItems,
-                    providerAmountWei: settlementResolved.metering?.providerAmountWei || settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei,
-                    platformFeeWei: settlementResolved.metering?.platformFeeWei || settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei,
-                    txHash: settlement.txHash,
-                },
-                headers,
-            };
+            const queuedIntent = await readPaymentIntent(intent.paymentIntentId);
+            if (!queuedIntent) throw new Error("Queued payment intent disappeared");
+            return { intent: queuedIntent, execute: intent.purpose === "api" } as const;
         });
+
+        if (!("intent" in prepared)) return prepared;
+        const actionable = prepared as { intent: PaymentIntentRecord; execute: boolean };
+        if (actionable.execute) {
+            return executeCanonicalPaymentIntent(actionable.intent.paymentIntentId);
+        }
+        return paymentIntentSuccess(actionable.intent);
     } catch (error) {
         const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
             ? (error as { statusCode: number }).statusCode
@@ -987,6 +1118,495 @@ export async function settlePaymentIntent(
             headers: status === 429 ? { "Retry-After": "1" } : {},
         });
     }
+}
+
+function paymentIntentSuccess(intent: PaymentIntentRecord): PaymentIntentSuccess<SettledPaymentIntentBody> {
+    const headers: Record<string, string> = {
+        "x-payment-intent-id": intent.paymentIntentId,
+        "x-key-final-amount-wei": intent.finalAmountWei || "0",
+        "x-settlement": intent.status,
+    };
+    if (intent.txHash) {
+        headers["x-key-tx-hash"] = intent.txHash;
+        headers["X-Transaction-Hash"] = intent.txHash;
+    }
+    return {
+        ok: true,
+        status: 200,
+        body: {
+            paymentIntentId: intent.paymentIntentId,
+            network: intent.network,
+            maxAmountWei: intent.maxAmountWei,
+            finalAmountWei: intent.finalAmountWei || "0",
+            status: intent.status,
+            meterSubject: intent.meterSubject,
+            lineItems: intent.meterLineItems,
+            providerAmountWei: intent.providerAmountWei,
+            platformFeeWei: intent.platformFeeWei,
+            txHash: intent.txHash,
+            ...(intent.status === "confirmed" && intent.confirmedAt !== undefined
+                ? { confirmedAt: intent.confirmedAt }
+                : {}),
+        },
+        headers,
+    };
+}
+
+function retryDelayMs(attemptCount: number): number {
+    return Math.min(5 * 60_000, 1_000 * (2 ** Math.min(attemptCount, 8)));
+}
+
+function signerStateKey(
+    kind: "lease" | "fence" | "nonce",
+    network: NetworkId,
+    signerIdentity: string,
+): string {
+    const testPrefix = process.env.NODE_ENV === "test" ? "test:" : "";
+    return `${testPrefix}payment-signer-${kind}:${network}:${signerIdentity.toLowerCase()}`;
+}
+
+async function withFencedSignerLease<T>(
+    network: NetworkId,
+    signerIdentity: string,
+    fn: (lease: { leaseKey: string; leaseValue: string; fence: number }) => Promise<T>,
+): Promise<T> {
+    const leaseKey = signerStateKey("lease", network, signerIdentity);
+    const fenceKey = signerStateKey("fence", network, signerIdentity);
+    const owner = randomUUID();
+    let acquired: Awaited<ReturnType<typeof valkeyAcquireFencedLease>> | undefined;
+    for (let attempt = 0; attempt < SIGNER_LEASE_ATTEMPTS; attempt += 1) {
+        acquired = await valkeyAcquireFencedLease({
+            leaseKey,
+            fenceKey,
+            owner,
+            ttlMs: SIGNER_LEASE_TTL_MS,
+        });
+        if (acquired.acquired) break;
+        await new Promise((resolve) => setTimeout(resolve, LOCK_DELAY_MS + Math.floor(Math.random() * LOCK_DELAY_MS)));
+    }
+    if (!acquired?.acquired || !acquired.value || acquired.fence === undefined) {
+        throw Object.assign(new Error(`Signer lease busy: ${network}`), { statusCode: 429 });
+    }
+
+    let lost = false;
+    let renewal = Promise.resolve();
+    const timer = setInterval(() => {
+        renewal = renewal.then(async () => {
+            if (!await valkeyRenewFencedLease(leaseKey, acquired!.value!, SIGNER_LEASE_TTL_MS)) lost = true;
+        }).catch(() => {
+            lost = true;
+        });
+    }, SIGNER_LEASE_RENEW_MS);
+    timer.unref?.();
+
+    try {
+        const result = await fn({ leaseKey, leaseValue: acquired.value, fence: acquired.fence });
+        await renewal;
+        if (lost) throw new Error(`Signer lease lost: ${network}`);
+        return result;
+    } finally {
+        clearInterval(timer);
+        await renewal.catch(() => undefined);
+        await valkeyReleaseFencedLease(leaseKey, acquired.value).catch(() => false);
+    }
+}
+
+type PreparationOutcome =
+    | { prepared: import("./settlement.js").PreparedSettlementTransaction }
+    | { settlement: import("./settlement.js").SettlementResult };
+
+async function prepareCanonicalPaymentIntent(
+    intent: PaymentIntentRecord,
+    claimToken: string,
+): Promise<PreparationOutcome> {
+    if (intent.preparedTxHash || intent.preparedTxPayload) {
+        if (!intent.preparedTxHash || !intent.preparedTxPayload) {
+            throw new Error("Payment intent has incomplete prepared transaction state");
+        }
+        return {
+            prepared: {
+                network: intent.network,
+                txHash: intent.preparedTxHash,
+                payload: intent.preparedTxPayload,
+                ...(intent.preparedTxNonce ? { nonce: intent.preparedTxNonce } : {}),
+            },
+        };
+    }
+    const persist = async (
+        prepared: import("./settlement.js").PreparedSettlementTransaction,
+        options: {
+            leaseKey?: string;
+            leaseValue?: string;
+            nonceKey?: string;
+            nextNonce?: string;
+        } = {},
+    ): Promise<PreparationOutcome> => {
+        const preparedAt = Date.now();
+        const persisted = await valkeyPersistPreparedPaymentIntent({
+            intentKey: paymentIntentKey(intent.paymentIntentId),
+            claimToken,
+            preparedTxHash: prepared.txHash,
+            preparedTxPayload: prepared.payload,
+            preparedTxNonce: prepared.nonce,
+            preparedAt,
+            ...options,
+        });
+        if (persisted !== "persisted" && persisted !== "replayed") {
+            throw new Error(`Prepared transaction persistence rejected: ${persisted}`);
+        }
+        return { prepared };
+    };
+
+    if (isEvmNetwork(intent.network)) {
+        const evmNetwork = intent.network;
+        const settlementModule = await import("./settlement.js");
+        const signerIdentity = process.env.NODE_ENV === "test"
+            ? "test-signer"
+            : settlementModule.getEvmSettlementSignerIdentity();
+        return withFencedSignerLease(evmNetwork, signerIdentity, async (lease) => {
+            const nonceKey = signerStateKey("nonce", evmNetwork, signerIdentity);
+            const storedNonce = await valkeyGet(nonceKey);
+            const pendingNonce = process.env.NODE_ENV === "test"
+                ? 0n
+                : await settlementModule.getEvmSettlementPendingNonce(evmNetwork);
+            const allocatedNonce = storedNonce && BigInt(storedNonce) > pendingNonce
+                ? BigInt(storedNonce)
+                : pendingNonce;
+            const preparation = await prepareKeyPaymentOnChain(
+                intent.userAddress,
+                intent.finalAmountWei!,
+                evmNetwork,
+                { evmNonce: allocatedNonce, intentIdentity: intent.paymentIntentId },
+            );
+            if (!preparation.success) return { settlement: preparation.result };
+            return persist(preparation.prepared, {
+                leaseKey: lease.leaseKey,
+                leaseValue: lease.leaseValue,
+                nonceKey,
+                nextNonce: (allocatedNonce + 1n).toString(),
+            });
+        });
+    }
+
+    const preparation = await prepareKeyPaymentOnChain(
+        intent.userAddress,
+        intent.finalAmountWei!,
+        intent.network,
+        { intentIdentity: intent.paymentIntentId },
+    );
+    if (!preparation.success) return { settlement: preparation.result };
+    return persist(preparation.prepared);
+}
+
+function paymentIntentTerminalTtlSeconds(intent: PaymentIntentRecord, now: number): number {
+    const credentialRemaining = Math.max(0, Math.ceil((intent.credentialExpiresAt - now) / 1000));
+    return Math.max(TERMINAL_RETENTION_SECONDS, credentialRemaining);
+}
+
+function isDefinitiveSettlement(result: import("./settlement.js").SettlementResult): boolean {
+    return (result.success && result.status === "confirmed" && Boolean(result.txHash))
+        || (result.status === "failed" && result.terminal === true && Boolean(result.txHash));
+}
+
+export interface ExecuteCanonicalPaymentIntentOptions {
+    waitForConfirmation?: boolean;
+}
+
+export async function executeCanonicalPaymentIntent(
+    paymentIntentId: string,
+    options: ExecuteCanonicalPaymentIntentOptions = {},
+): Promise<PaymentIntentResult<SettledPaymentIntentBody>> {
+    let claimToken: string | undefined;
+    try {
+        claimToken = randomUUID();
+        const lastAttemptAt = Date.now();
+        const claim = await valkeyClaimPaymentIntentExecution({
+            intentKey: paymentIntentKey(paymentIntentId),
+            claimToken,
+            now: lastAttemptAt,
+            claimExpiresAt: lastAttemptAt + EXECUTION_CLAIM_TTL_MS,
+        });
+        let intent = await readPaymentIntent(paymentIntentId);
+        if (!intent || claim.outcome === "missing") return failure(404, "Payment intent not found");
+        if (claim.outcome !== "claimed") {
+            if (claim.outcome === "invalid_state" && intent.status === "authorized") {
+                return failure(409, `Payment intent cannot execute from status ${intent.status}`);
+            }
+            return paymentIntentSuccess(intent);
+        }
+        if (!intent.finalAmountWei || BigInt(intent.finalAmountWei) <= 0n) {
+            throw Object.assign(new Error("Payment intent has no billable reservation"), { statusCode: 409 });
+        }
+
+        const attemptCount = claim.attemptCount;
+        const finalAmountWei = intent.finalAmountWei;
+        let settlement: import("./settlement.js").SettlementResult;
+        if (intent.status === "submitted") {
+            if (!intent.txHash) throw new Error("Submitted payment intent is missing its transaction identity");
+            if (!intent.preparedTxHash || !intent.preparedTxPayload) {
+                throw new Error("Submitted payment intent is missing its durable prepared transaction");
+            }
+            if (intent.preparedTxHash !== intent.txHash) {
+                throw new Error("Submitted payment intent transaction identity does not match its durable preparation");
+            }
+            settlement = await reconcileKeyPaymentOnChain(intent.txHash, intent.network);
+        } else {
+            const recoveringPreparedIdentity = Boolean(intent.preparedTxHash && intent.preparedTxPayload);
+            const preparation = await prepareCanonicalPaymentIntent(intent, claimToken);
+            if ("settlement" in preparation) {
+                settlement = preparation.settlement;
+            } else {
+                intent = {
+                    ...intent,
+                    preparedTxHash: preparation.prepared.txHash,
+                    preparedTxPayload: preparation.prepared.payload,
+                    preparedTxNonce: preparation.prepared.nonce,
+                };
+                const reconciledBeforeBroadcast = recoveringPreparedIdentity
+                    ? await reconcileKeyPaymentOnChain(preparation.prepared.txHash, intent.network)
+                    : null;
+                if (reconciledBeforeBroadcast && isDefinitiveSettlement(reconciledBeforeBroadcast)) {
+                    settlement = reconciledBeforeBroadcast;
+                } else {
+                    try {
+                        settlement = await broadcastPreparedKeyPaymentOnChain(preparation.prepared);
+                    } catch (error) {
+                        const reconciledAfterError = await reconcileKeyPaymentOnChain(
+                            preparation.prepared.txHash,
+                            intent.network,
+                        );
+                        if (!isDefinitiveSettlement(reconciledAfterError)) throw error;
+                        settlement = reconciledAfterError;
+                    }
+                    if (settlement.status === "queued") {
+                        const reconciledAfterBroadcast = await reconcileKeyPaymentOnChain(
+                            preparation.prepared.txHash,
+                            intent.network,
+                        );
+                        if (isDefinitiveSettlement(reconciledAfterBroadcast)) {
+                            settlement = reconciledAfterBroadcast;
+                        }
+                    }
+                }
+            }
+
+            // The deterministic identity and signed payload are durable before
+            // this branch can broadcast. Once a broadcast may have occurred,
+            // transition to submitted before receipt reconciliation; all later
+            // attempts reconcile this hash and never construct another one.
+            if (settlement.status !== "queued" && settlement.txHash) {
+                const submittedAt = Date.now();
+                const submitted = await valkeyMarkClaimedPaymentIntentSubmitted({
+                    intentKey: paymentIntentKey(intent.paymentIntentId),
+                    queuedKey: QUEUED_INTENTS_KEY,
+                    submittedKey: SUBMITTED_INTENTS_KEY,
+                    intentId: intent.paymentIntentId,
+                    claimToken,
+                    txHash: settlement.txHash,
+                    submittedAt,
+                    intentFields: {
+                        error: settlement.error || "",
+                        lastError: settlement.error || "",
+                    },
+                });
+                if (submitted !== "updated") {
+                    const current = await readPaymentIntent(intent.paymentIntentId);
+                    if (!current) return failure(404, "Payment intent not found");
+                    return paymentIntentSuccess(current);
+                }
+                const submittedIntent = await readPaymentIntent(intent.paymentIntentId);
+                if (!submittedIntent) throw new Error("Submitted payment intent disappeared");
+                intent = submittedIntent;
+
+                if (options.waitForConfirmation !== false
+                    && settlement.status === "submitted"
+                    && !(process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_SETTLEMENT_STATUS === "submitted")) {
+                    settlement = await reconcileKeyPaymentOnChain(settlement.txHash, intent.network, true);
+                }
+            }
+        }
+
+        const settlementStatus = settlement.status
+            || (settlement.success && settlement.txHash ? "confirmed" : settlement.txHash ? "submitted" : "queued");
+        if (settlementStatus === "confirmed" && settlement.success && settlement.txHash) {
+            const confirmedAt = Date.now();
+            const committed = await valkeyCommitReservedBudget({
+                budgetKey: keyRecordKey(intent.keyId),
+                intentKey: paymentIntentKey(intent.paymentIntentId),
+                queuedKey: QUEUED_INTENTS_KEY,
+                submittedKey: SUBMITTED_INTENTS_KEY,
+                keyIntentsKey: keyPaymentIntentsKey(intent.keyId),
+                idempotencyKey: idempotencyValkeyKey(intent),
+                projectionKey: PROJECTION_INTENTS_KEY,
+                dueKey: DUE_INTENTS_KEY,
+                intentId: intent.paymentIntentId,
+                terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, confirmedAt),
+                reservedAmount: intent.reservedAmountWei || finalAmountWei,
+                finalAmount: finalAmountWei,
+                lastUsedAt: confirmedAt,
+                claimToken,
+                expectedStatuses: ["queued", "submitted"],
+                intentFields: {
+                    status: "confirmed",
+                    txHash: settlement.txHash,
+                    updatedAt: String(confirmedAt),
+                    confirmedAt: String(confirmedAt),
+                    error: "",
+                    lastError: "",
+                    nextAttemptAt: "",
+                },
+            });
+            if (committed !== "committed") {
+                const current = await readPaymentIntent(intent.paymentIntentId);
+                if (!current) return failure(404, "Payment intent not found");
+                if (committed === "inconsistent_reservation") {
+                    throw new Error("Payment intent reservation is inconsistent with its key budget");
+                }
+                return paymentIntentSuccess(current);
+            }
+            await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+            await reconcileCanonicalPaymentIntentProjections(intent.paymentIntentId).catch((error) => {
+                console.error("[payment-intent] projection deferred", {
+                    paymentIntentId: intent.paymentIntentId,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            });
+            const confirmed = await readPaymentIntent(intent.paymentIntentId);
+            if (!confirmed) throw new Error("Confirmed payment intent disappeared");
+            return paymentIntentSuccess(confirmed);
+        }
+
+        const errorMessage = settlement.error || "Payment settlement is pending";
+        if (settlementStatus === "failed" && settlement.terminal === true) {
+            const failedAt = Date.now();
+            const retainedTxHash = settlement.txHash || intent.txHash;
+            const released = await valkeyReleaseReservedBudget({
+                budgetKey: keyRecordKey(intent.keyId),
+                intentKey: paymentIntentKey(intent.paymentIntentId),
+                queuedKey: QUEUED_INTENTS_KEY,
+                submittedKey: SUBMITTED_INTENTS_KEY,
+                keyIntentsKey: keyPaymentIntentsKey(intent.keyId),
+                idempotencyKey: idempotencyValkeyKey(intent),
+                projectionKey: PROJECTION_INTENTS_KEY,
+                dueKey: DUE_INTENTS_KEY,
+                intentId: intent.paymentIntentId,
+                terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, failedAt),
+                reservedAmount: intent.reservedAmountWei || finalAmountWei,
+                claimToken,
+                expectedStatuses: ["queued", "submitted"],
+                intentFields: {
+                    status: "failed",
+                    txHash: retainedTxHash || "",
+                    updatedAt: String(failedAt),
+                    failedAt: String(failedAt),
+                    error: errorMessage,
+                    lastError: errorMessage,
+                },
+            });
+            if (released !== "released") {
+                const current = await readPaymentIntent(intent.paymentIntentId);
+                if (!current) return failure(404, "Payment intent not found");
+                if (released === "inconsistent_reservation") {
+                    throw new Error("Payment intent reservation is inconsistent with its key budget");
+                }
+                return paymentIntentSuccess(current);
+            }
+            await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+            await reconcileCanonicalPaymentIntentProjections(intent.paymentIntentId).catch((error) => {
+                console.error("[payment-intent] failed projection deferred", {
+                    paymentIntentId: intent.paymentIntentId,
+                    txHash: retainedTxHash,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            });
+            return buildPaymentRequiredFailure({
+                resourceUrl: intent.resource,
+                network: intent.network,
+                amountWei: finalAmountWei,
+                error: errorMessage,
+            });
+        }
+
+        const nextStatus: "queued" | "submitted" = intent.status === "submitted" || settlement.status === "submitted" || intent.txHash
+            ? "submitted"
+            : "queued";
+        const txHash = settlement.txHash || intent.txHash;
+        const updatedAt = Date.now();
+        const retained = await valkeyRetainClaimedPaymentIntent({
+            intentKey: paymentIntentKey(intent.paymentIntentId),
+            queuedKey: QUEUED_INTENTS_KEY,
+            submittedKey: SUBMITTED_INTENTS_KEY,
+            dueKey: DUE_INTENTS_KEY,
+            intentId: intent.paymentIntentId,
+            claimToken,
+            status: nextStatus,
+            txHash,
+            dueAt: updatedAt + retryDelayMs(attemptCount),
+            intentFields: {
+                nextAttemptAt: String(updatedAt + retryDelayMs(attemptCount)),
+                updatedAt: String(updatedAt),
+                lastError: errorMessage,
+                error: errorMessage,
+            },
+        });
+        const pending = await readPaymentIntent(intent.paymentIntentId);
+        if (!pending) throw new Error("Pending payment intent disappeared");
+        if (retained === "invalid_state") {
+            throw new Error("Payment intent changed state while retaining its retry obligation");
+        }
+        return paymentIntentSuccess(pending);
+    } catch (error) {
+        let current = await readPaymentIntent(paymentIntentId).catch(() => null);
+        if (current?.status === "confirmed") return paymentIntentSuccess(current);
+        if (claimToken && current && (current.status === "queued" || current.status === "submitted")) {
+            const errorMessage = error instanceof Error ? error.message : "Payment execution failed";
+            const nextStatus: "queued" | "submitted" = current.status === "submitted" ? "submitted" : "queued";
+            const updatedAt = Date.now();
+            await valkeyRetainClaimedPaymentIntent({
+                intentKey: paymentIntentKey(current.paymentIntentId),
+                queuedKey: QUEUED_INTENTS_KEY,
+                submittedKey: SUBMITTED_INTENTS_KEY,
+                dueKey: DUE_INTENTS_KEY,
+                intentId: current.paymentIntentId,
+                claimToken,
+                status: nextStatus,
+                txHash: nextStatus === "submitted" ? (current.txHash || current.preparedTxHash) : current.txHash,
+                dueAt: updatedAt + retryDelayMs(current.attemptCount),
+                intentFields: {
+                    nextAttemptAt: String(updatedAt + retryDelayMs(current.attemptCount)),
+                    updatedAt: String(updatedAt),
+                    lastError: errorMessage,
+                    error: errorMessage,
+                },
+            }).catch(() => "stale_claim" as const);
+            current = await readPaymentIntent(paymentIntentId).catch(() => current);
+        }
+        const status = error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number"
+            ? (error as { statusCode: number }).statusCode
+            : 500;
+        return failure(status, error instanceof Error ? error.message : "Payment execution failed", {
+            headers: status === 429 ? { "Retry-After": "1" } : {},
+        });
+    }
+}
+
+export async function listCanonicalPaymentIntentIds(limit = 100): Promise<string[]> {
+    if (!Number.isSafeInteger(limit) || limit <= 0) return [];
+    return valkeyZRangeLiveWorkByScore({
+        dueKey: DUE_INTENTS_KEY,
+        queuedKey: QUEUED_INTENTS_KEY,
+        submittedKey: SUBMITTED_INTENTS_KEY,
+        maxScore: Date.now(),
+        limit,
+    });
+}
+
+export async function removeCanonicalPaymentIntentWorkId(paymentIntentId: string): Promise<void> {
+    await Promise.all([
+        valkeySRem(QUEUED_INTENTS_KEY, paymentIntentId),
+        valkeySRem(SUBMITTED_INTENTS_KEY, paymentIntentId),
+        valkeyZRem(DUE_INTENTS_KEY, paymentIntentId),
+    ]);
 }
 
 export async function abortPaymentIntent(
@@ -1001,70 +1621,75 @@ export async function abortPaymentIntent(
                 return failure(404, "Payment intent not found");
             }
 
-            if (intent.status === "aborted") {
+            if (intent.status === "released") {
                 const headers = await buildPaymentBudgetHeaders(intent);
                 return {
                     ok: true,
                     status: 200,
                     body: {
                         paymentIntentId: intent.paymentIntentId,
-                        status: "aborted",
+                        status: "released",
                         reason: intent.error || input.reason,
                     },
                     headers,
                 };
             }
 
-            if (intent.status === "settled") {
-                return failure(409, "Settled payment intents cannot be aborted");
+            if (intent.status === "confirmed") {
+                return failure(409, "Confirmed payment intents cannot be released");
+            }
+            if (intent.status === "queued" || intent.status === "submitted") {
+                return failure(409, `Delivered ${intent.status} payment intents cannot be released`);
+            }
+            if (intent.status === "failed") {
+                return failure(409, "Failed payment intents cannot be released");
             }
 
-            if (intent.status === "settling") {
-                return failure(409, "Settling payment intents cannot be aborted");
-            }
-
-            const reservedAmount = intent.reservedAmountWei
-                ? BigInt(intent.reservedAmountWei)
-                : intent.useBudgetCap
-                    ? 0n
-                    : parsePositiveIntegerString(intent.maxAmountWei, "maxAmountWei");
-
-            if (intent.sessionBudgetIntentId) {
-                await cancelBudgetIntent(intent.sessionBudgetIntentId, input.reason);
-            }
-            if (intent.purpose === "api" && reservedAmount > 0n) {
-                const abortedAt = Date.now();
-                await valkeyReleaseReservedBudget({
-                    budgetKey: keyRecordKey(intent.keyId),
-                    intentKey: paymentIntentKey(intent.paymentIntentId),
-                    reservedAmount,
-                    intentFields: {
-                        status: "aborted",
-                        updatedAt: String(abortedAt),
-                        abortedAt: String(abortedAt),
-                        error: input.reason,
-                    },
-                });
-            }
-
-            const abortedAt = Date.now();
-            if (intent.purpose === "session" || reservedAmount === 0n) {
-                await valkeyHSet(paymentIntentKey(intent.paymentIntentId), {
-                    status: "aborted",
-                    updatedAt: String(abortedAt),
-                    abortedAt: String(abortedAt),
+            const reservedAmount = BigInt(intent.reservedAmountWei || "0");
+            const releasedAt = Date.now();
+            const released = await valkeyReleaseReservedBudget({
+                budgetKey: keyRecordKey(intent.keyId),
+                intentKey: paymentIntentKey(intent.paymentIntentId),
+                queuedKey: QUEUED_INTENTS_KEY,
+                submittedKey: SUBMITTED_INTENTS_KEY,
+                keyIntentsKey: keyPaymentIntentsKey(intent.keyId),
+                idempotencyKey: idempotencyValkeyKey(intent),
+                projectionKey: PROJECTION_INTENTS_KEY,
+                dueKey: DUE_INTENTS_KEY,
+                intentId: intent.paymentIntentId,
+                terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, releasedAt),
+                reservedAmount,
+                expectedStatuses: ["authorized"],
+                intentFields: {
+                    status: "released",
+                    updatedAt: String(releasedAt),
+                    releasedAt: String(releasedAt),
                     error: input.reason,
-                });
+                },
+            });
+            if (released === "inconsistent_reservation") {
+                throw Object.assign(
+                    new Error("Payment intent reservation is inconsistent with its key budget"),
+                    { statusCode: 500 },
+                );
+            }
+            if (released === "released") {
+                await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+            }
+            const releasedIntent = await readPaymentIntent(intent.paymentIntentId);
+            if (!releasedIntent) return failure(404, "Payment intent not found");
+            if (released !== "released" && releasedIntent.status !== "released") {
+                return failure(409, `Payment intent cannot be released from status ${releasedIntent.status}`);
             }
 
-            const headers = await buildPaymentBudgetHeaders(intent);
+            const headers = await buildPaymentBudgetHeaders(releasedIntent);
             return {
                 ok: true,
                 status: 200,
                 body: {
                     paymentIntentId: intent.paymentIntentId,
-                    status: "aborted",
-                    reason: input.reason,
+                    status: "released",
+                    reason: releasedIntent.error || input.reason,
                 },
                 headers,
             };
