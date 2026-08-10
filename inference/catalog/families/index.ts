@@ -21,7 +21,7 @@ export function normalizeFamily(value: unknown): string | null {
 
 const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "deepgram", patterns: ["deepgram/flux", "=flux", "nova-*", "aura-*"] },
-  { family: "alibaba", patterns: ["qwen*", "qwq*", "happyhorse", "happyhorse-*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*"] },
+  { family: "alibaba", patterns: ["qwen*", "qwq*", "happyhorse", "happyhorse-*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*", "voice-enrollment"] },
   { family: "nvidia", patterns: ["nemotron-*", "nv-*", "nvidia/*"] },
   { family: "xai", patterns: ["grok-*"] },
   { family: "anthropic", patterns: ["claude-*"] },
@@ -29,6 +29,7 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "zai", patterns: ["glm-*", "autoglm-*", "cogview*", "cogvideox"] },
   { family: "moonshot", patterns: ["kimi-*", "moonshot-*"] },
   { family: "deepseek", patterns: ["deepseek-*"] },
+  { family: "inclusionai", patterns: ["ling-*", "inclusionai/*"] },
   { family: "minimax", patterns: ["minimax-*", "hailuo-*"] },
   { family: "tencent", patterns: ["hunyuan-*", "tencent/*", "hy3"] },
   { family: "baidu", patterns: ["ernie-*"] },

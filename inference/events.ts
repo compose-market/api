@@ -37,6 +37,7 @@ export interface InferenceSettlementTelemetry {
   settleTransactionHash?: string;
   paymentIntentId?: string;
   pricedUnits: InferencePricedUnit[];
+  usage: InferenceRequestTelemetry["usage"];
   billing: InferenceBillingTotals;
   settledAt?: string;
   createdAt: string;
@@ -81,11 +82,21 @@ export interface InferenceTelemetryRecord {
 }
 
 type Sink = (record: InferenceTelemetryRecord) => Promise<void>;
+type SettlementSink = (
+  lifecycle: InferenceTelemetryLifecycle,
+  settlement: InferenceSettlementTelemetry,
+) => Promise<void>;
 let sink: Sink | undefined;
+let settlementSink: SettlementSink | undefined;
 
 export function setInferenceTelemetrySink(next: Sink): void {
   if (sink) throw new Error("Inference telemetry sink is already registered");
   sink = next;
+}
+
+export function setInferenceSettlementSink(next: SettlementSink): void {
+  if (settlementSink) throw new Error("Inference settlement sink is already registered");
+  settlementSink = next;
 }
 
 export function startInferenceTelemetry(args: {
@@ -96,10 +107,6 @@ export function startInferenceTelemetry(args: {
 }): InferenceTelemetryLifecycle | null {
   const userAddress = args.userAddress?.trim();
   if (!userAddress || !args.network) return null;
-  const family = args.resolved.card?.family;
-  const type = args.resolved.card?.type;
-  const operation = args.request.operation;
-  if (!family || !type || (Array.isArray(type) && type.length === 0) || !operation) return null;
   return { id: args.request.responseId, userAddress, network: args.network, startedAt: Date.now(),
     request: args.request, resolved: args.resolved, settlements: [], metrics: {} };
 }
@@ -112,18 +119,23 @@ export function addInferenceSettlement(
   lifecycle: InferenceTelemetryLifecycle | null,
   quote: MeteredModelQuote,
   settlement: InferenceSettlementReceipt | null,
-): void {
-  if (!lifecycle || !settlement || !quote.telemetry) return;
-  if (!settlement.lineItems || settlement.lineItems.length !== quote.telemetry.lineItems.length) return;
-  const family = lifecycle.resolved.card?.family;
-  const types = lifecycle.resolved.card?.type;
-  const operation = lifecycle.request.operation;
-  if (!family || !types || (Array.isArray(types) && types.length === 0) || !operation) return;
+  receiptId?: string,
+): InferenceSettlementTelemetry | null {
+  if (!lifecycle || !settlement || !quote.telemetry) return null;
+  if (!settlement.lineItems || settlement.lineItems.length !== quote.telemetry.lineItems.length) return null;
+  const family = lifecycle.resolved.card?.family || lifecycle.resolved.provider;
+  const rawTypes = lifecycle.resolved.card?.type;
+  const types = rawTypes && (!Array.isArray(rawTypes) || rawTypes.length > 0)
+    ? rawTypes
+    : lifecycle.request.modality;
+  const operation = lifecycle.request.operation || lifecycle.request.modality;
   for (const [key, value] of Object.entries(quote.telemetry.metrics)) {
     lifecycle.metrics[key] = (lifecycle.metrics[key] || 0) + value;
   }
-  lifecycle.settlements.push({
-    id: `stl_${randomUUID().replace(/-/gu, "")}`,
+  const telemetrySettlement: InferenceSettlementTelemetry = {
+    id: settlement.paymentIntentId
+      ? `stl_pi_${settlement.paymentIntentId.replace(/[^A-Za-z0-9_.:-]/gu, "_")}`
+      : receiptId || `stl_${randomUUID().replace(/-/gu, "")}`,
     requestId: lifecycle.id,
     network: lifecycle.network,
     family,
@@ -142,12 +154,26 @@ export function addInferenceSettlement(
       unitPriceUsd: item.unitPriceUsd,
       amountAtomic: settlement.lineItems![index].amountWei,
     })),
+    usage: {
+      metrics: { ...quote.telemetry.metrics },
+      units: quote.telemetry.lineItems.map(({ unitPriceUsd: _, source: __, ...unit }) => unit),
+    },
     billing: billing(settlement),
     ...(settlement.settledAt !== undefined
       ? { settledAt: new Date(settlement.settledAt).toISOString() }
       : {}),
     createdAt: new Date().toISOString(),
-  });
+  };
+  lifecycle.settlements.push(telemetrySettlement);
+  return telemetrySettlement;
+}
+
+export async function persistInferenceSettlement(
+  lifecycle: InferenceTelemetryLifecycle | null,
+  settlement: InferenceSettlementTelemetry | null,
+): Promise<void> {
+  if (!lifecycle || !settlement || !settlementSink) return;
+  await settlementSink(lifecycle, settlement);
 }
 
 export async function finishInferenceTelemetry(
@@ -156,10 +182,12 @@ export async function finishInferenceTelemetry(
   error?: unknown,
 ): Promise<void> {
   if (!lifecycle || !sink) return;
-  const family = lifecycle.resolved.card?.family;
-  const type = lifecycle.resolved.card?.type;
-  const operation = lifecycle.request.operation;
-  if (!family || !type || (Array.isArray(type) && type.length === 0) || !operation) return;
+  const family = lifecycle.resolved.card?.family || lifecycle.resolved.provider;
+  const rawType = lifecycle.resolved.card?.type;
+  const type = rawType && (!Array.isArray(rawType) || rawType.length > 0)
+    ? rawType
+    : lifecycle.request.modality;
+  const operation = lifecycle.request.operation || lifecycle.request.modality;
   const completedAt = Date.now();
   const usage: InferenceRequestTelemetry["usage"] = {
     metrics: lifecycle.metrics,

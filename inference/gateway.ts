@@ -107,6 +107,7 @@ import {
   addInferenceSettlement,
   finishInferenceTelemetry,
   markInferenceFirstOutput,
+  persistInferenceSettlement,
   startInferenceTelemetry,
 } from "./events.js";
 
@@ -2041,7 +2042,12 @@ export async function executeRequest(args: {
           paymentTerminal = true;
         },
       });
-      addInferenceSettlement(telemetry, quote, settlement);
+      const telemetrySettlement = addInferenceSettlement(telemetry, quote, settlement, receipt?.id);
+      try {
+        await persistInferenceSettlement(telemetry, telemetrySettlement);
+      } catch (error) {
+        console.error("[analytics] Failed to persist inference settlement checkpoint", error);
+      }
       return receipt;
     })();
     activeSettlement = pending;
@@ -2054,6 +2060,9 @@ export async function executeRequest(args: {
   const abortPaymentOnClose = () => {
     void (async () => {
       try {
+        if (request.modality === "realtime") {
+          await closeRealtimeEngine(request.responseId).catch(() => false);
+        }
         activeSettlementCheckpoint?.();
         if (activeSettlementLane?.hasEvidence()) {
           await activeSettlementLane.flush();
@@ -2212,6 +2221,13 @@ export async function executeRequest(args: {
         }
 
         finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
+        if (!externalCompatibility && !terminalStreamError && !lifecycle.aborted() && !args.res.writableEnded) {
+          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
+            type: "status",
+            status: "finalizing_payment",
+            usage: finalOutput.usage,
+          })));
+        }
         const terminalOutcome = await finalizeDirectStreamPayment({
           output: finalOutput,
           settle: settleOutput,
@@ -2507,6 +2523,17 @@ export async function executeRequest(args: {
             }
             finishReason = event.finishReason || "stop";
             pendingDoneEvent = event;
+            if (!sawProviderDone && !externalCompatibility && !args.res.writableEnded) {
+              const finalizingEvent: Event = {
+                type: "status",
+                status: "finalizing_payment",
+                usage: event.usage || lastUsage,
+              };
+              const payload = args.shape === "chat"
+                ? toChatStreamEvent(request.responseId, modelId, finalizingEvent, isFirstToken)
+                : toResponsesStreamEvent(request.responseId, modelId, finalizingEvent);
+              args.res.write(formatCoreSSE(payload));
+            }
             sawProviderDone = true;
             if (continuousSettlement) checkpointSettlement();
             continue;
@@ -3069,7 +3096,12 @@ async function runDeferredInference(args: {
         paymentTerminal = true;
       },
     });
-    addInferenceSettlement(telemetry, quote, settlement);
+    const telemetrySettlement = addInferenceSettlement(telemetry, quote, settlement, receipt?.id);
+    try {
+      await persistInferenceSettlement(telemetry, telemetrySettlement);
+    } catch (error) {
+      console.error("[analytics] Failed to persist deferred inference settlement", error);
+    }
     paymentTerminal = true;
     applyReceiptHeader(args.res, receipt);
     await args.onSuccess(result, receipt);

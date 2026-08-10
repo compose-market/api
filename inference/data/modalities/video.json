@@ -1,13 +1,13 @@
 {
-  "lastUpdated": "2026-08-05T13:24:57.521Z",
-  "totalModels": 62,
+  "lastUpdated": "2026-08-10T09:36:45.979Z",
+  "totalModels": 63,
   "byProvider": {
-    "alibaba": 34,
+    "alibaba": 35,
     "gemini": 3,
     "deepinfra": 25
   },
   "byType": {
-    "video generation": 62
+    "video generation": 63
   },
   "models": [
     {
@@ -5627,7 +5627,8 @@
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
             "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
             "apiReferences": [
-              "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md"
+              "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md",
+              "https://www.alibabacloud.com/help/en/model-studio/list-quotas.md"
             ]
           }
         }
@@ -6822,63 +6823,6 @@
           }
         ]
       },
-      "params": {
-        "negative_prompt": {
-          "type": "string",
-          "required": false,
-          "description": "A prompt that describes the content to exclude from the video. This helps refine the generated content."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model will use this audio to generate the video."
-        },
-        "parameters": {
-          "type": "object",
-          "required": false,
-          "description": "Video processing parameters, such as setting the video resolution, enabling prompt rewriting, and adding a watermark."
-        },
-        "size": {
-          "type": "string",
-          "required": false
-        },
-        "duration": {
-          "type": "integer",
-          "required": false
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to enable prompt rewriting. When enabled, a model intelligently rewrites the input prompt. This significantly improves the quality of the generated video for shorter prompts but increases the running time.",
-          "options": [
-            "true",
-            "false"
-          ]
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
-          "options": [
-            "single",
-            "multi"
-          ]
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-          "options": [
-            "false",
-            "true"
-          ]
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "If not specified, a random seed is generated. A fixed seed improves reproducibility."
-        }
-      },
       "sourceMetadata": {
         "alibaba": {
           "catalogApi": "https://dashscope-intl.aliyuncs.com/api/v1/models",
@@ -6942,10 +6886,7 @@
           ],
           "documentation": {
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
-            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
-            "apiReferences": [
-              "https://www.alibabacloud.com/help/en/model-studio/legacy-wan-text-to-video-api-reference.md"
-            ]
+            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
           }
         }
       },
@@ -6973,83 +6914,8 @@
           "model_experience",
           "video_generation"
         ],
-        "parameterKeys": [
-          "negative_prompt",
-          "audio_url",
-          "parameters",
-          "size",
-          "duration",
-          "prompt_extend",
-          "shot_type",
-          "watermark",
-          "seed"
-        ],
-        "parameters": [
-          {
-            "name": "negative_prompt",
-            "type": "string",
-            "required": false,
-            "description": "A prompt that describes the content to exclude from the video. This helps refine the generated content."
-          },
-          {
-            "name": "audio_url",
-            "type": "string",
-            "required": false,
-            "description": "The URL of the audio file. The model will use this audio to generate the video."
-          },
-          {
-            "name": "parameters",
-            "type": "object",
-            "required": false,
-            "description": "Video processing parameters, such as setting the video resolution, enabling prompt rewriting, and adding a watermark."
-          },
-          {
-            "name": "size",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "duration",
-            "type": "integer",
-            "required": false
-          },
-          {
-            "name": "prompt_extend",
-            "type": "boolean",
-            "required": false,
-            "description": "Specifies whether to enable prompt rewriting. When enabled, a model intelligently rewrites the input prompt. This significantly improves the quality of the generated video for shorter prompts but increases the running time.",
-            "options": [
-              "true",
-              "false"
-            ]
-          },
-          {
-            "name": "shot_type",
-            "type": "string",
-            "required": false,
-            "description": "Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
-            "options": [
-              "single",
-              "multi"
-            ]
-          },
-          {
-            "name": "watermark",
-            "type": "boolean",
-            "required": false,
-            "description": "Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
-            "options": [
-              "false",
-              "true"
-            ]
-          },
-          {
-            "name": "seed",
-            "type": "integer",
-            "required": false,
-            "description": "If not specified, a random seed is generated. A fixed seed improves reproducibility."
-          }
-        ],
+        "parameterKeys": [],
+        "parameters": [],
         "metadata": [
           "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
           "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
@@ -7123,15 +6989,6 @@
           "modality:video",
           "operation:text-to-video",
           "output:video",
-          "param:audio_url The URL of the audio file. The model will use this audio to generate the video.",
-          "param:duration",
-          "param:negative_prompt A prompt that describes the content to exclude from the video. This helps refine the generated content.",
-          "param:parameters Video processing parameters, such as setting the video resolution, enabling prompt rewriting, and adding a watermark.",
-          "param:prompt_extend Specifies whether to enable prompt rewriting. When enabled, a model intelligently rewrites the input prompt. This significantly improves the quality of the generated video for shorter prompts but increases the running time.",
-          "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
-          "param:shot_type Specifies the shot type of the generated video, that is, whether the video consists of a single continuous shot or multiple changing shots.",
-          "param:size",
-          "param:watermark Specifies whether to add a watermark. The watermark is placed in the lower-right corner of the video with the fixed text \"AI Generated\".",
           "source:video-generation",
           "source:videos"
         ]
@@ -7267,134 +7124,6 @@
           "type": "integer",
           "required": false,
           "description": "If not specified, a random seed is generated. A fixed seed improves reproducibility."
-        },
-        "training_file_ids": {
-          "type": "string",
-          "required": false
-        },
-        "training_type": {
-          "type": "string",
-          "required": false
-        },
-        "hyper_parameters": {
-          "type": "string",
-          "required": false
-        },
-        "learning_rate": {
-          "type": "string",
-          "required": false
-        },
-        "max_steps": {
-          "type": "string",
-          "required": false
-        },
-        "eval_steps": {
-          "type": "string",
-          "required": false
-        },
-        "max_token_length": {
-          "type": "string",
-          "required": false
-        },
-        "gradient_clip": {
-          "type": "string",
-          "required": false
-        },
-        "weight_decay": {
-          "type": "string",
-          "required": false
-        },
-        "max_pixels": {
-          "type": "string",
-          "required": false
-        },
-        "val_img_size": {
-          "type": "string",
-          "required": false
-        },
-        "generation_type": {
-          "type": "string",
-          "required": false
-        },
-        "lora_rank": {
-          "type": "string",
-          "required": false
-        },
-        "save_total_limit": {
-          "type": "string",
-          "required": false
-        },
-        "job_id": {
-          "type": "string",
-          "required": false
-        },
-        "job_name": {
-          "type": "string",
-          "required": false
-        },
-        "status": {
-          "type": "string",
-          "required": false
-        },
-        "base_model": {
-          "type": "string",
-          "required": false
-        },
-        "validation_file_ids": {
-          "type": "string",
-          "required": false
-        },
-        "n_epochs": {
-          "type": "string",
-          "required": false
-        },
-        "batch_size": {
-          "type": "string",
-          "required": false
-        },
-        "max_length": {
-          "type": "string",
-          "required": false
-        },
-        "lr_scheduler_type": {
-          "type": "string",
-          "required": false
-        },
-        "split": {
-          "type": "string",
-          "required": false
-        },
-        "create_time": {
-          "type": "string",
-          "required": false
-        },
-        "workspace_id": {
-          "type": "string",
-          "required": false
-        },
-        "user_identity": {
-          "type": "string",
-          "required": false
-        },
-        "modifier": {
-          "type": "string",
-          "required": false
-        },
-        "creator": {
-          "type": "string",
-          "required": false
-        },
-        "group": {
-          "type": "string",
-          "required": false
-        },
-        "finetuned_output": {
-          "type": "string",
-          "required": false
-        },
-        "eval_epochs": {
-          "type": "string",
-          "required": false
         }
       },
       "sourceMetadata": {
@@ -7502,39 +7231,7 @@
           "duration",
           "prompt_extend",
           "watermark",
-          "seed",
-          "training_file_ids",
-          "training_type",
-          "hyper_parameters",
-          "learning_rate",
-          "max_steps",
-          "eval_steps",
-          "max_token_length",
-          "gradient_clip",
-          "weight_decay",
-          "max_pixels",
-          "val_img_size",
-          "generation_type",
-          "lora_rank",
-          "save_total_limit",
-          "job_id",
-          "job_name",
-          "status",
-          "base_model",
-          "validation_file_ids",
-          "n_epochs",
-          "batch_size",
-          "max_length",
-          "lr_scheduler_type",
-          "split",
-          "create_time",
-          "workspace_id",
-          "user_identity",
-          "modifier",
-          "creator",
-          "group",
-          "finetuned_output",
-          "eval_epochs"
+          "seed"
         ],
         "parameters": [
           {
@@ -7590,166 +7287,6 @@
             "type": "integer",
             "required": false,
             "description": "If not specified, a random seed is generated. A fixed seed improves reproducibility."
-          },
-          {
-            "name": "training_file_ids",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "training_type",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "hyper_parameters",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "learning_rate",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "max_steps",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "eval_steps",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "max_token_length",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "gradient_clip",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "weight_decay",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "max_pixels",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "val_img_size",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "generation_type",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "lora_rank",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "save_total_limit",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "job_id",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "job_name",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "status",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "base_model",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "validation_file_ids",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "n_epochs",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "batch_size",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "max_length",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "lr_scheduler_type",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "split",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "create_time",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "workspace_id",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "user_identity",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "modifier",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "creator",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "group",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "finetuned_output",
-            "type": "string",
-            "required": false
-          },
-          {
-            "name": "eval_epochs",
-            "type": "string",
-            "required": false
           }
         ],
         "metadata": [
@@ -7829,46 +7366,14 @@
           "modality:video",
           "operation:image-to-video",
           "output:video",
-          "param:base_model",
-          "param:batch_size",
-          "param:create_time",
-          "param:creator",
           "param:duration",
-          "param:eval_epochs",
-          "param:eval_steps",
-          "param:finetuned_output",
-          "param:generation_type",
-          "param:gradient_clip",
-          "param:group",
-          "param:hyper_parameters",
-          "param:job_id",
-          "param:job_name",
-          "param:learning_rate",
-          "param:lora_rank",
-          "param:lr_scheduler_type",
-          "param:max_length",
-          "param:max_pixels",
-          "param:max_steps",
-          "param:max_token_length",
-          "param:modifier",
-          "param:n_epochs",
           "param:negative_prompt Describes content to exclude from the video.",
           "param:parameters Video processing parameters: resolution, duration, prompt rewriting, and watermarks.",
           "param:prompt Text prompt that describes the elements and visual characteristics for the generated video.",
           "param:prompt_extend Whether to enable prompt rewriting. When enabled, a model rewrites the input prompt to improve results for short prompts, but increases processing time.",
           "param:resolution",
-          "param:save_total_limit",
           "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
-          "param:split",
-          "param:status",
-          "param:training_file_ids",
-          "param:training_type",
-          "param:user_identity",
-          "param:val_img_size",
-          "param:validation_file_ids",
           "param:watermark Whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
-          "param:weight_decay",
-          "param:workspace_id",
           "source:video-generation",
           "source:videos"
         ]
@@ -8743,6 +8248,66 @@
           }
         ]
       },
+      "params": {
+        "negative_prompt": {
+          "type": "string",
+          "required": false,
+          "description": "Elements to exclude from the generated video."
+        },
+        "audio_url": {
+          "type": "string",
+          "required": false,
+          "description": "URL of the audio file for video generation."
+        },
+        "parameters": {
+          "type": "object",
+          "required": false,
+          "description": "Video generation parameters: resolution, prompt rewriting, and watermark."
+        },
+        "resolution": {
+          "type": "string",
+          "required": false
+        },
+        "ratio": {
+          "type": "string",
+          "required": false,
+          "description": "Aspect ratio of the output video.",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1",
+            "4:3",
+            "3:4"
+          ]
+        },
+        "duration": {
+          "type": "integer",
+          "required": false
+        },
+        "prompt_extend": {
+          "type": "boolean",
+          "required": false,
+          "description": "Enables prompt rewriting. When enabled, an LLM rewrites the input prompt to improve generation quality. Best for short prompts but adds latency.",
+          "options": [
+            "true",
+            "false"
+          ]
+        },
+        "watermark": {
+          "type": "boolean",
+          "required": false,
+          "description": "Adds a watermark in the lower-right corner with the text \"AI Generated\".",
+          "options": [
+            "false",
+            "true"
+          ]
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "description": "If not specified, a random seed is generated. A fixed seed improves reproducibility."
+        }
+      },
       "sourceMetadata": {
         "alibaba": {
           "catalogApi": "https://dashscope-intl.aliyuncs.com/api/v1/models",
@@ -8805,7 +8370,10 @@
           ],
           "documentation": {
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
-            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
+            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+            "apiReferences": [
+              "https://www.alibabacloud.com/help/en/model-studio/text-to-video-api-reference.md"
+            ]
           }
         }
       },
@@ -8833,8 +8401,86 @@
           "model_experience",
           "video_generation"
         ],
-        "parameterKeys": [],
-        "parameters": [],
+        "parameterKeys": [
+          "negative_prompt",
+          "audio_url",
+          "parameters",
+          "resolution",
+          "ratio",
+          "duration",
+          "prompt_extend",
+          "watermark",
+          "seed"
+        ],
+        "parameters": [
+          {
+            "name": "negative_prompt",
+            "type": "string",
+            "required": false,
+            "description": "Elements to exclude from the generated video."
+          },
+          {
+            "name": "audio_url",
+            "type": "string",
+            "required": false,
+            "description": "URL of the audio file for video generation."
+          },
+          {
+            "name": "parameters",
+            "type": "object",
+            "required": false,
+            "description": "Video generation parameters: resolution, prompt rewriting, and watermark."
+          },
+          {
+            "name": "resolution",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "ratio",
+            "type": "string",
+            "required": false,
+            "description": "Aspect ratio of the output video.",
+            "options": [
+              "16:9",
+              "9:16",
+              "1:1",
+              "4:3",
+              "3:4"
+            ]
+          },
+          {
+            "name": "duration",
+            "type": "integer",
+            "required": false
+          },
+          {
+            "name": "prompt_extend",
+            "type": "boolean",
+            "required": false,
+            "description": "Enables prompt rewriting. When enabled, an LLM rewrites the input prompt to improve generation quality. Best for short prompts but adds latency.",
+            "options": [
+              "true",
+              "false"
+            ]
+          },
+          {
+            "name": "watermark",
+            "type": "boolean",
+            "required": false,
+            "description": "Adds a watermark in the lower-right corner with the text \"AI Generated\".",
+            "options": [
+              "false",
+              "true"
+            ]
+          },
+          {
+            "name": "seed",
+            "type": "integer",
+            "required": false,
+            "description": "If not specified, a random seed is generated. A fixed seed improves reproducibility."
+          }
+        ],
         "metadata": [
           "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
           "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
@@ -8908,6 +8554,15 @@
           "modality:video",
           "operation:text-to-video",
           "output:video",
+          "param:audio_url URL of the audio file for video generation.",
+          "param:duration",
+          "param:negative_prompt Elements to exclude from the generated video.",
+          "param:parameters Video generation parameters: resolution, prompt rewriting, and watermark.",
+          "param:prompt_extend Enables prompt rewriting. When enabled, an LLM rewrites the input prompt to improve generation quality. Best for short prompts but adds latency.",
+          "param:ratio Aspect ratio of the output video.",
+          "param:resolution",
+          "param:seed If not specified, a random seed is generated. A fixed seed improves reproducibility.",
+          "param:watermark Adds a watermark in the lower-right corner with the text \"AI Generated\".",
           "source:video-generation",
           "source:videos"
         ]
@@ -9681,6 +9336,306 @@
       }
     },
     {
+      "name": "Wan3.0-Video",
+      "modelId": "wan3.0-video",
+      "family": "alibaba",
+      "description": "Wan3.0-Video is an all-in-one video generation model unified support for multiple creative capabilities, including reference, editing, replication, and driving. It generates videos up to 30 seconds with omni-modal reference, and can parse files, web pages and complex images. With production-grade character consistency and lifelike visuals and sound, it delivers an immersive audiovisual experience.",
+      "type": "video generation",
+      "modelType": "videos",
+      "provider": "alibaba",
+      "input": [
+        "audio",
+        "image",
+        "text",
+        "video"
+      ],
+      "output": [
+        "video"
+      ],
+      "contextWindow": {
+        "inputTokens": null,
+        "outputTokens": null
+      },
+      "capabilities": {
+        "video_generation": true,
+        "model_experience": true,
+        "alibabaCapabilityCodes": [
+          "VG"
+        ],
+        "alibabaFeatures": [
+          "model-experience"
+        ]
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "Default: Video Generation(480P)",
+            "unit": "Per second",
+            "unitKey": "per_second_usd",
+            "entries": {
+              "second": 0.05
+            },
+            "source": {
+              "api": "https://dashscope-intl.aliyuncs.com/api/v1/models",
+              "range": "Default",
+              "rows": [
+                {
+                  "type": "video_ratio_480p",
+                  "priceName": "Video Generation(480P)",
+                  "rawUnit": "Per second",
+                  "rawPrice": "0.05",
+                  "timeBand": null
+                }
+              ]
+            },
+            "selector": {
+              "resolution": "480P"
+            },
+            "default": true
+          },
+          {
+            "header": "Default: Video Generation(720P)",
+            "unit": "Per second",
+            "unitKey": "per_second_usd",
+            "entries": {
+              "second": 0.1
+            },
+            "source": {
+              "api": "https://dashscope-intl.aliyuncs.com/api/v1/models",
+              "range": "Default",
+              "rows": [
+                {
+                  "type": "video_ratio_720p",
+                  "priceName": "Video Generation(720P)",
+                  "rawUnit": "Per second",
+                  "rawPrice": "0.1",
+                  "timeBand": null
+                }
+              ]
+            },
+            "selector": {
+              "resolution": "720P"
+            }
+          },
+          {
+            "header": "Default: Video Generation(1080P)",
+            "unit": "Per second",
+            "unitKey": "per_second_usd",
+            "entries": {
+              "second": 0.2
+            },
+            "source": {
+              "api": "https://dashscope-intl.aliyuncs.com/api/v1/models",
+              "range": "Default",
+              "rows": [
+                {
+                  "type": "video_ratio_1080p",
+                  "priceName": "Video Generation(1080P)",
+                  "rawUnit": "Per second",
+                  "rawPrice": "0.2",
+                  "timeBand": null
+                }
+              ]
+            },
+            "selector": {
+              "resolution": "1080P"
+            }
+          }
+        ]
+      },
+      "sourceMetadata": {
+        "alibaba": {
+          "catalogApi": "https://dashscope-intl.aliyuncs.com/api/v1/models",
+          "compatibleModelsApi": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+          "endpoint": {
+            "name": "international",
+            "origin": "https://dashscope-intl.aliyuncs.com",
+            "apiBase": "https://dashscope-intl.aliyuncs.com/api/v1",
+            "compatibleBase": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "compatibleApiBase": "https://dashscope-intl.aliyuncs.com/compatible-api/v1"
+          },
+          "openAICompatible": false,
+          "provider": "wan",
+          "inferenceProvider": "alibaba-cloud-modelstudio",
+          "features": [
+            "model-experience"
+          ],
+          "capabilities": [
+            "VG"
+          ],
+          "inferenceMetadata": {
+            "response_modality": [
+              "Video"
+            ],
+            "request_modality": [
+              "Audio",
+              "Image",
+              "Text",
+              "Video"
+            ]
+          },
+          "modelInfo": {
+            "context_window": null,
+            "max_input_tokens": null,
+            "max_output_tokens": null,
+            "max_reasoning_tokens": null,
+            "reasoning_max_input_tokens": null,
+            "reasoning_max_output_tokens": null
+          },
+          "publishedTime": "2026-08-06 14:35:58",
+          "equivalentSnapshot": null,
+          "pricingGroups": [
+            {
+              "prices": [
+                {
+                  "type": "video_ratio_480p",
+                  "price": "0.05",
+                  "price_unit": "Per second",
+                  "price_name": "Video Generation(480P)",
+                  "time_band": null
+                },
+                {
+                  "type": "video_ratio_720p",
+                  "price": "0.1",
+                  "price_unit": "Per second",
+                  "price_name": "Video Generation(720P)",
+                  "time_band": null
+                },
+                {
+                  "type": "video_ratio_1080p",
+                  "price": "0.2",
+                  "price_unit": "Per second",
+                  "price_name": "Video Generation(1080P)",
+                  "time_band": null
+                }
+              ],
+              "range_name": "Default"
+            }
+          ],
+          "documentation": {
+            "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope"
+          }
+        }
+      },
+      "deprecated": false,
+      "semantics": {
+        "family": "alibaba",
+        "modalities": [
+          "video"
+        ],
+        "operations": [
+          "video-edit"
+        ],
+        "inputs": [
+          "audio",
+          "image",
+          "text",
+          "video"
+        ],
+        "outputs": [
+          "video"
+        ],
+        "sourceTypes": [
+          "video-generation",
+          "videos"
+        ],
+        "streamable": false,
+        "capabilityKeys": [
+          "model_experience",
+          "video_generation"
+        ],
+        "parameterKeys": [],
+        "parameters": [],
+        "metadata": [
+          "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
+          "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+          "alibaba.endpoint.name: international",
+          "alibaba.endpoint.origin: https://dashscope-intl.aliyuncs.com",
+          "alibaba.endpoint.apiBase: https://dashscope-intl.aliyuncs.com/api/v1",
+          "alibaba.endpoint.compatibleBase: https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+          "alibaba.endpoint.compatibleApiBase: https://dashscope-intl.aliyuncs.com/compatible-api/v1",
+          "alibaba.openAICompatible: false",
+          "alibaba.provider: wan",
+          "alibaba.inferenceProvider: alibaba-cloud-modelstudio",
+          "alibaba.features: model-experience",
+          "alibaba.capabilities: VG",
+          "alibaba.publishedTime: 2026-08-06 14:35:58",
+          "alibaba.documentation.endpointDocs: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope"
+        ],
+        "operationCapabilities": [
+          {
+            "modality": "video",
+            "operation": "video-edit",
+            "input": [
+              "audio",
+              "image",
+              "text",
+              "video"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "videos"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ]
+              },
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ]
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "alibaba.capabilities: VG",
+          "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
+          "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+          "alibaba.documentation.endpointDocs: https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
+          "alibaba.endpoint.apiBase: https://dashscope-intl.aliyuncs.com/api/v1",
+          "alibaba.endpoint.compatibleApiBase: https://dashscope-intl.aliyuncs.com/compatible-api/v1",
+          "alibaba.endpoint.compatibleBase: https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+          "alibaba.endpoint.name: international",
+          "alibaba.endpoint.origin: https://dashscope-intl.aliyuncs.com",
+          "alibaba.features: model-experience",
+          "alibaba.inferenceProvider: alibaba-cloud-modelstudio",
+          "alibaba.openAICompatible: false",
+          "alibaba.provider: wan",
+          "alibaba.publishedTime: 2026-08-06 14:35:58",
+          "capability:model_experience",
+          "capability:video_generation",
+          "input:audio",
+          "input:image",
+          "input:text",
+          "input:video",
+          "modality:video",
+          "operation:video-edit",
+          "output:video",
+          "source:video-generation",
+          "source:videos"
+        ]
+      }
+    },
+    {
       "name": "Veo 3.1",
       "modelId": "veo-3.1-generate-preview",
       "family": "google",
@@ -9724,15 +9679,15 @@
         "notes": "Veo 3.1. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "parameters": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The parameters that govern the prediction call."
-        },
         "instances": {
           "type": "array",
           "required": false,
           "description": "Required. The instances that are the input to the prediction call."
+        },
+        "parameters": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The parameters that govern the prediction call."
         }
       },
       "deprecated": false,
@@ -9759,21 +9714,21 @@
         "streamable": false,
         "capabilityKeys": [],
         "parameterKeys": [
-          "parameters",
-          "instances"
+          "instances",
+          "parameters"
         ],
         "parameters": [
-          {
-            "name": "parameters",
-            "type": "string",
-            "required": false,
-            "description": "Optional. The parameters that govern the prediction call."
-          },
           {
             "name": "instances",
             "type": "array",
             "required": false,
             "description": "Required. The instances that are the input to the prediction call."
+          },
+          {
+            "name": "parameters",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The parameters that govern the prediction call."
           }
         ],
         "metadata": [],
@@ -9887,15 +9842,15 @@
         "notes": "Veo 3.1. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "parameters": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The parameters that govern the prediction call."
-        },
         "instances": {
           "type": "array",
           "required": false,
           "description": "Required. The instances that are the input to the prediction call."
+        },
+        "parameters": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The parameters that govern the prediction call."
         }
       },
       "deprecated": false,
@@ -9922,21 +9877,21 @@
         "streamable": false,
         "capabilityKeys": [],
         "parameterKeys": [
-          "parameters",
-          "instances"
+          "instances",
+          "parameters"
         ],
         "parameters": [
-          {
-            "name": "parameters",
-            "type": "string",
-            "required": false,
-            "description": "Optional. The parameters that govern the prediction call."
-          },
           {
             "name": "instances",
             "type": "array",
             "required": false,
             "description": "Required. The instances that are the input to the prediction call."
+          },
+          {
+            "name": "parameters",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The parameters that govern the prediction call."
           }
         ],
         "metadata": [],
@@ -10051,15 +10006,15 @@
         "notes": "Veo 3.1. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "parameters": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The parameters that govern the prediction call."
-        },
         "instances": {
           "type": "array",
           "required": false,
           "description": "Required. The instances that are the input to the prediction call."
+        },
+        "parameters": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The parameters that govern the prediction call."
         }
       },
       "deprecated": false,
@@ -10086,21 +10041,21 @@
         "streamable": false,
         "capabilityKeys": [],
         "parameterKeys": [
-          "parameters",
-          "instances"
+          "instances",
+          "parameters"
         ],
         "parameters": [
-          {
-            "name": "parameters",
-            "type": "string",
-            "required": false,
-            "description": "Optional. The parameters that govern the prediction call."
-          },
           {
             "name": "instances",
             "type": "array",
             "required": false,
             "description": "Required. The instances that are the input to the prediction call."
+          },
+          {
+            "name": "parameters",
+            "type": "string",
+            "required": false,
+            "description": "Optional. The parameters that govern the prediction call."
           }
         ],
         "metadata": [],

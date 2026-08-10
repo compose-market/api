@@ -251,6 +251,7 @@ export interface Event {
     progress?: number;
     mimeType?: string;
   };
+  status?: "processing" | "finalizing_payment";
   usage?: Usage;
   media?: Media;
   finishReason?: string;
@@ -2116,7 +2117,7 @@ export function toResponsesStreamEvent(requestId: string, model: string, event: 
       type: "response.status",
       response_id: requestId,
       model,
-      status: "processing",
+      status: event.status || "processing",
       usage: event.usage ? responseUsage(event.usage) : undefined,
     };
   }
