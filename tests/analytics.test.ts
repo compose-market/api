@@ -85,6 +85,53 @@ test("analytics summaries are independent from request and settlement pagination
   assert.doesNotMatch(db, /allRequests|allSettlements/);
 });
 
+test("each settlement projects to one request call while retaining response correlation", async () => {
+  const { requestForSettlement } = await import("../data/analytics/inference/db.js");
+  const parent = {
+    id: "resp_realtime",
+    userAddress: `0x${"31".repeat(20)}`,
+    responseId: "resp_realtime",
+    network: "eip155:5042002",
+    family: "google",
+    model: "lyria-realtime-exp",
+    types: ["realtime"],
+    operation: "realtime-music",
+    streamed: true,
+    status: "succeeded",
+    startedAt: "2026-08-08T00:00:00.000Z",
+    completedAt: "2026-08-08T00:01:00.000Z",
+    latencyMs: 60_000,
+    usage: { metrics: {}, units: [] },
+    billing: { inferenceAmountAtomic: "30", platformFeeAtomic: "2", finalAmountAtomic: "32", currency: "USDC", decimals: 6 },
+    settlementIds: ["stl_1", "stl_2"],
+  } as const;
+  const settlement = (id: string, amount: string) => ({
+    id,
+    requestId: parent.id,
+    network: parent.network,
+    family: parent.family,
+    model: parent.model,
+    types: [...parent.types],
+    operation: parent.operation,
+    status: "settled" as const,
+    pricedUnits: [{ key: "audio_second", unit: "second", quantity: 1, unitPriceUsd: 0.001, amountAtomic: amount }],
+    usage: { metrics: { audio_seconds: 1 }, units: [{ key: "audio_second", unit: "second", quantity: 1 }] },
+    billing: { inferenceAmountAtomic: amount, platformFeeAtomic: "1", finalAmountAtomic: String(Number(amount) + 1), currency: "USDC" as const, decimals: 6 as const },
+    settledAt: "2026-08-08T00:00:01.000Z",
+    createdAt: "2026-08-08T00:00:01.000Z",
+  });
+  const first = requestForSettlement(parent as never, settlement("stl_1", "10"));
+  const second = requestForSettlement(parent as never, settlement("stl_2", "20"));
+  assert.equal(first.id, "stl_1");
+  assert.equal(second.id, "stl_2");
+  assert.equal(first.responseId, "resp_realtime");
+  assert.equal(second.responseId, "resp_realtime");
+  assert.deepEqual(first.settlementIds, ["stl_1"]);
+  assert.deepEqual(second.settlementIds, ["stl_2"]);
+  assert.equal(first.billing.inferenceAmountAtomic, "10");
+  assert.equal(second.billing.inferenceAmountAtomic, "20");
+});
+
 test("authoritative inference telemetry owns analytics metrics and units", async () => {
   const telemetry = await readFile(join(process.cwd(), "inference/telemetry.ts"), "utf8");
   const events = await readFile(join(process.cwd(), "inference/events.ts"), "utf8");
@@ -120,7 +167,7 @@ test("inference telemetry preserves submitted payment-intent correlation", async
     },
   } as unknown as Parameters<typeof addInferenceSettlement>[1];
 
-  addInferenceSettlement(lifecycle, quote, {
+  const recorded = addInferenceSettlement(lifecycle, quote, {
     finalAmountWei: "2",
     providerAmountWei: "1",
     platformFeeWei: "1",
@@ -129,14 +176,66 @@ test("inference telemetry preserves submitted payment-intent correlation", async
     txHash: `0x${"22".repeat(32)}`,
     paymentIntentId: "pi_analytics_projection",
     network: "eip155:5042002",
-  });
+  }, "receipt_analytics_projection");
 
   assert.equal(lifecycle.settlements.length, 1);
+  assert.equal(recorded?.id, "stl_pi_pi_analytics_projection");
   assert.equal(lifecycle.settlements[0]?.status, "submitted");
   assert.equal(
     (lifecycle.settlements[0] as unknown as { paymentIntentId?: string }).paymentIntentId,
     "pi_analytics_projection",
   );
+});
+
+test("inference telemetry falls back to provider family and request shape", async () => {
+  const { addInferenceSettlement, startInferenceTelemetry } = await import("../inference/events.js");
+  const lifecycle = startInferenceTelemetry({
+    userAddress: `0x${"21".repeat(20)}`,
+    network: "eip155:5042002",
+    request: {
+      model: "Ling-3.0-flash",
+      modality: "text",
+      operation: "chat",
+      responseId: "resp_ling_fallback",
+      mode: "responses",
+      stream: true,
+      messages: [],
+    },
+    resolved: {
+      modelId: "Ling-3.0-flash",
+      provider: "deepinfra",
+      known: true,
+      card: {
+        modelId: "Ling-3.0-flash",
+        name: "Ling 3.0 Flash",
+        provider: "deepinfra",
+        type: "text generation",
+        description: null,
+        input: ["text"],
+        output: ["text"],
+        contextWindow: null,
+        pricing: null,
+      },
+    },
+  });
+  assert.ok(lifecycle);
+  const recorded = addInferenceSettlement(lifecycle, {
+    telemetry: {
+      metrics: { output_tokens: 1 },
+      lineItems: [{ key: "tokens.output", unit: "token", quantity: 1, unitPriceUsd: 0.000001 }],
+    },
+  } as never, {
+    finalAmountWei: "2",
+    providerAmountWei: "1",
+    platformFeeWei: "1",
+    lineItems: [{ key: "tokens.output", unit: "token", quantity: 1, unitPriceUsd: 0.000001, amountWei: "2" }],
+    settlementStatus: "submitted",
+    paymentIntentId: "pi_ling_fallback",
+    network: "eip155:5042002",
+  }, "receipt_ling_fallback");
+  assert.equal(recorded?.family, "deepinfra");
+  assert.deepEqual(recorded?.types, ["text generation"]);
+  assert.equal(recorded?.operation, "chat");
 });
 
 test("analytics storage persists payment-intent correlation", async () => {
@@ -146,6 +245,10 @@ test("analytics storage persists payment-intent correlation", async () => {
   assert.match(db, /payment_intent_id[^]*settlement\.paymentIntentId/);
   assert.match(db, /s\.payment_intent_id/);
   assert.match(aggregate, /paymentIntentId: text\(row\.payment_intent_id\)/);
+  assert.match(db, /insertSettlementCheckpoint/);
+  assert.match(db, /ON CONFLICT \(id\) DO NOTHING/);
+  assert.match(db, /id: settlement\.id/);
+  assert.match(db, /responseId: lifecycle\.request\.responseId/);
   assert.doesNotMatch(db, /ADD COLUMN|CREATE TABLE/);
 });
 
@@ -160,9 +263,9 @@ test("analytics uses one plural multi-network filter contract", async () => {
   );
   assert.equal(routes.parseFilters({}).networks, undefined);
   assert.equal(routes.parseFilters({ settlementStatus: "submitted" }).settlementStatus, "submitted");
+  assert.equal(routes.parseFilters({ settlementStatus: "claimed" }).settlementStatus, "claimed");
   assert.throws(() => routes.parseFilters({ network: "eip155:5042002" }), /Invalid network filter/);
   assert.throws(() => routes.parseFilters({ networks: "eip155:5042002,invalid" }), /Invalid networks/);
-  assert.throws(() => routes.parseFilters({ settlementStatus: "claimed" }), /Invalid settlementStatus/);
 
   const db = await readFile(join(process.cwd(), "data/analytics/inference/db.ts"), "utf8");
   assert.match(db, /unnest\(\$1::text\[\], \$2::text\[\]\)/);
@@ -301,6 +404,54 @@ test("analytics store exposes the canonical terminal projection", async () => {
   });
 
   assert.equal(ready, false);
+});
+
+test("canonical projection inserts one missing analytics settlement from x402 intent data", async () => {
+  const store = await import("../data/analytics/inference/store.js");
+  const inserted: Array<{ lifecycle: Record<string, unknown>; settlement: Record<string, unknown> }> = [];
+  const projected = await store.projectCanonicalPaymentIntentSettlement({
+    paymentIntentId: "pi_ling_backfill",
+    status: "confirmed",
+    transactionHash: `0x${"23".repeat(32)}`,
+    confirmedAt: 1_754_044_567_890,
+  }, {
+    async query() { return []; },
+  }, {
+    paymentIntentId: "pi_ling_backfill",
+    keyId: "key_ling",
+    purpose: "api",
+    userAddress: `0x${"24".repeat(20)}`,
+    network: "eip155:5042002",
+    asset: `0x${"25".repeat(20)}`,
+    service: "api",
+    action: "inference",
+    resource: "https://api.compose.market/v1/responses",
+    method: "POST",
+    maxAmountWei: "130",
+    finalAmountWei: "130",
+    status: "confirmed",
+    rootRunId: "inference-ling-backfill",
+    executionRunId: "inference-ling-backfill",
+    sequence: 0,
+    meterSubject: "deepinfra:Ling-3.0-flash",
+    meterLineItems: [{ key: "tokens.output", unit: "usd_per_1m_tokens", quantity: 100, unitPriceUsd: 0.22, amountWei: "22" }],
+    providerAmountWei: "129",
+    platformFeeWei: "1",
+    txHash: `0x${"23".repeat(32)}`,
+    attemptCount: 1,
+    createdAt: 1_754_044_500_000,
+    updatedAt: 1_754_044_567_890,
+    confirmedAt: 1_754_044_567_890,
+    credentialExpiresAt: 1_754_144_500_000,
+    requestFingerprint: "fingerprint",
+  }, async (lifecycle, settlement) => {
+    inserted.push({ lifecycle: lifecycle as unknown as Record<string, unknown>, settlement: settlement as unknown as Record<string, unknown> });
+  });
+  assert.equal(projected, true);
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0]?.settlement.id, "stl_pi_pi_ling_backfill");
+  assert.equal(inserted[0]?.settlement.model, "Ling-3.0-flash");
+  assert.equal(inserted[0]?.settlement.family, "inclusionai");
 });
 
 test("confirmed canonical Analytics projection updates, invalidates, then clears its obligation", async () => {

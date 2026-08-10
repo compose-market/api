@@ -752,7 +752,7 @@ test("raw batch checkpoint fields normalize EVM channel case and preserve SVM ch
     }),
   );
 
-  const network = NETWORK_IDS.solanaDevnet;
+  const network = NETWORK_IDS.solana;
   const payer = "CaseSensitivePayer111111111111111111111111111";
   const receiver = "CaseSensitiveReceiver111111111111111111111111";
   const channelId = "ChannelAbCdEf123456789";
@@ -815,7 +815,7 @@ test("raw batch checkpoint fields normalize EVM channel case and preserve SVM ch
 });
 
 test("SVM raw batch checkpoints use the same atomic envelope and durable identity transition", async () => {
-  const network = NETWORK_IDS.solanaDevnet;
+  const network = NETWORK_IDS.solana;
   const payer = "CaseSensitivePayer222222222222222222222222222";
   const receiver = "CaseSensitiveReceiver22222222222222222222222";
   const channelId = "ChannelAtomicAbCdEf987654321";

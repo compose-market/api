@@ -10,6 +10,7 @@ import {
   authorizePaymentIntent,
   executeCanonicalPaymentIntent,
   listCanonicalPaymentIntentIds,
+  reconcileCanonicalPaymentIntentProjections,
   settlePaymentIntent,
 } from "../x402/intents.js";
 import { triggerImmediateSettlement } from "../x402/accumulator/worker.js";
@@ -87,6 +88,19 @@ test("test settlement identities derive from payload and nonce unless explicitly
     forcedTxHash,
   });
   assert.equal(forced.txHash, forcedTxHash);
+});
+
+test("stale payment-intent projection ids remove themselves", async () => {
+  const paymentIntentId = randomUUID();
+  const projectionKey = "payment-intents:projections";
+  await valkeySAdd(projectionKey, paymentIntentId);
+  try {
+    assert.equal(await reconcileCanonicalPaymentIntentProjections(paymentIntentId), false);
+    assert.equal((await valkeySMembers(projectionKey)).includes(paymentIntentId), false);
+  } finally {
+    await valkeySRem(projectionKey, paymentIntentId);
+    await closeValkey();
+  }
 });
 
 test("budget-cap authorization resolves its cap inside the Lua linearization point", () => {

@@ -8,15 +8,15 @@ import test from "node:test";
 import express from "express";
 
 import {
-  DomainEventBroker,
-  type DomainSubscriberClient,
+  EventBroker,
+  type SubscriberClient,
 } from "../data/shared/broker.js";
 import {
-  createDomainEventsHandler,
+  createEventsHandler,
 } from "../data/shared/routes.js";
 import { domainEventChannel } from "../data/shared/updates.js";
 
-class FakeSubscriber implements DomainSubscriberClient {
+class FakeSubscriber implements SubscriberClient {
   readonly subscribed: string[][] = [];
   readonly unsubscribed: string[][] = [];
   private message?: (channel: string, message: string) => void;
@@ -44,7 +44,7 @@ class FakeSubscriber implements DomainSubscriberClient {
 test("one domain broker multiplexes channels, sanitizes messages, and reference-counts unsubscription", async () => {
   const client = new FakeSubscriber();
   let factories = 0;
-  const broker = new DomainEventBroker(async () => {
+  const broker = new EventBroker(async () => {
     factories += 1;
     return client;
   });
@@ -85,7 +85,7 @@ test("domain SSE subscribes to both pair aliases before ready and emits sanitize
   let listener: ((event: any) => void) | undefined;
   let channels: readonly string[] = [];
   const app = express();
-  app.get("/api/keys/events", createDomainEventsHandler("keys", {
+  app.get("/api/keys/events", createEventsHandler("keys", {
     resolvePair: async () => ({ evmAddress, svmAddress }),
     broker: {
       async subscribe(nextChannels, nextListener) {
@@ -142,7 +142,7 @@ test("domain stream routes are mounted before generic key handling without chang
     readFile(join(process.cwd(), "index.ts"), "utf8"),
     readFile(join(process.cwd(), "x402/keys/sse.ts"), "utf8"),
   ]);
-  assert.match(index, /registerDomainEventRoutes/);
-  assert.ok(index.indexOf("registerDomainEventRoutes(app)") < index.indexOf("registerHandlerRoutes(app)"));
-  assert.doesNotMatch(sessionSse, /DomainEventBroker|inference-analytics|\/api\/keys\/events/);
+  assert.match(index, /registerEventRoutes/);
+  assert.ok(index.indexOf("registerEventRoutes(app)") < index.indexOf("registerHandlerRoutes(app)"));
+  assert.doesNotMatch(sessionSse, /EventBroker|inference-analytics|\/api\/keys\/events/);
 });

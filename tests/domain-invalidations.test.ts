@@ -4,18 +4,18 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  publishDomainInvalidationBestEffort,
+  publishInvalidationBestEffort,
 } from "../data/shared/updates.js";
 
 test("domain invalidation publication is best effort and retains sanitized metadata", async () => {
   const calls: unknown[][] = [];
-  await publishDomainInvalidationBestEffort("keys", `0x${"AB".repeat(20)}`, "created", {
+  await publishInvalidationBestEffort("keys", `0x${"AB".repeat(20)}`, "created", {
     publish: async (...args) => { calls.push(args); },
   });
   assert.deepEqual(calls, [["keys", `0x${"AB".repeat(20)}`, "created"]]);
 
   const errors: unknown[] = [];
-  await assert.doesNotReject(publishDomainInvalidationBestEffort(
+  await assert.doesNotReject(publishInvalidationBestEffort(
     "inference-analytics",
     "139ckThCRxYDDFXgfRjH4TCiaTJETbb1UMLwACvWJ1fq",
     "telemetry",
@@ -34,19 +34,19 @@ test("Keys mutations publish only after their existing durable success outcomes"
     readFile(join(process.cwd(), "x402/keys/expiry.ts"), "utf8"),
   ]);
 
-  const created = storage.indexOf('publishDomainInvalidationBestEffort("keys", normalizedAddress, "created")');
+  const created = storage.indexOf('publishInvalidationBestEffort("keys", normalizedAddress, "created")');
   assert.ok(created > storage.indexOf("await valkeySAdd("));
-  const revoked = storage.indexOf('publishDomainInvalidationBestEffort("keys", normalizedAddress, "revoked")');
+  const revoked = storage.indexOf('publishInvalidationBestEffort("keys", normalizedAddress, "revoked")');
   assert.ok(revoked > storage.indexOf("Number(result) === 1", storage.indexOf("export async function revokeKey")));
 
   const reserved = intents.indexOf('if (reservation === "reserved")');
   assert.ok(reserved > intents.indexOf("await valkeyReserveAndQueuePaymentIntent"));
-  assert.match(intents.slice(reserved, reserved + 220), /publishDomainInvalidationBestEffort\("keys", intent\.userAddress, "budget"\)/);
+  assert.match(intents.slice(reserved, reserved + 220), /publishInvalidationBestEffort\("keys", intent\.userAddress, "budget"\)/);
   const commitCall = intents.indexOf("const committed = await valkeyCommitReservedBudget");
-  const committed = intents.indexOf('publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget")', commitCall);
+  const committed = intents.indexOf('publishInvalidationBestEffort("keys", intent.userAddress, "budget")', commitCall);
   assert.ok(committed > intents.indexOf('if (committed !== "committed")', commitCall));
-  assert.equal(intents.match(/publishDomainInvalidationBestEffort\("keys", intent\.userAddress, "budget"\)/g)?.length, 4);
+  assert.equal(intents.match(/publishInvalidationBestEffort\("keys", intent\.userAddress, "budget"\)/g)?.length, 4);
 
   assert.match(expiry, /const removed = await valkeySRem\(userKeyIndex, keyId\)/);
-  assert.match(expiry, /if \(removed > 0\)[^]*publishDomainInvalidationBestEffort\("keys", ownerAddress, "expired"\)/);
+  assert.match(expiry, /if \(removed > 0\)[^]*publishInvalidationBestEffort\("keys", ownerAddress, "expired"\)/);
 });

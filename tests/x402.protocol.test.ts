@@ -24,6 +24,7 @@ import type { PriceLookupParams } from "../x402/types.js";
 const X402_SOURCE = readFileSync(new URL("../x402/index.ts", import.meta.url), "utf8");
 const FACILITATOR_SOURCE = readFileSync(new URL("../x402/facilitator.ts", import.meta.url), "utf8");
 const BATCH_SOURCE = readFileSync(new URL("../x402/batch.ts", import.meta.url), "utf8");
+const SETTLEMENT_SOURCE = readFileSync(new URL("../x402/settlement.ts", import.meta.url), "utf8");
 
 test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requirements with compose extensions", () => {
   const body = createPaymentRequired402Response({
@@ -173,6 +174,12 @@ test("SVM parity lives in the existing global x402 modules without scheme rewrit
 
   assert.match(X402_SOURCE, /import\("\.\/batch\.js"\)/);
   assert.doesNotMatch(X402_SOURCE, /import\("\.\/svm\.js"\)/);
+});
+
+test("SVM settlements carry a fixed public-safe explorer memo", () => {
+  assert.match(SETTLEMENT_SOURCE, /SVM_SETTLEMENT_MEMO\s*=\s*"compose\.market: settle USDC"/);
+  assert.match(SETTLEMENT_SOURCE, /appendSolanaTransactionMessageInstruction\(memoInstruction, message\)/);
+  assert.doesNotMatch(SETTLEMENT_SOURCE, /SVM_SETTLEMENT_MEMO[^\n]*paymentIntentId/);
 });
 
 test("settlePreparedInferencePayment preserves x402 payment-required negotiation details on settlement failures", async () => {

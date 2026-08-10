@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import type { ModelCard } from "../inference/types.js";
 import {
+  aggregateCanonicalFamily,
   familyOf,
   getFamilyCatalog,
   normalizeFamily,
@@ -64,6 +65,12 @@ test("family normalizer emits scalar slugs", () => {
   assert.equal(normalizeFamily("Z.AI / formerly Zhipu"), "z-ai-formerly-zhipu");
   assert.equal(normalizeFamily(""), null);
   assert.equal(normalizeFamily(null), null);
+});
+
+test("canonical family rules cover hosted owner namespaces and provider-native utilities", () => {
+  assert.equal(aggregateCanonicalFamily("Ling-3.0-flash", "Ling 3.0 Flash"), "inclusionai");
+  assert.equal(aggregateCanonicalFamily("inclusionAI/Ling-3.0-flash"), "inclusionai");
+  assert.equal(aggregateCanonicalFamily("voice-enrollment"), "alibaba");
 });
 
 test("compiled catalog has first-class family for every active model", () => {

@@ -38,6 +38,7 @@ test("inference gateway threads cancellation and deadlines into provider work", 
   assert.match(GATEWAY, /execute: \(signal\) => invokeDirectAdapter\(request,\s*signal\)/);
   assert.match(GATEWAY, /class UpstreamTimeoutError/);
   assert.match(GATEWAY, /code = ["']upstream_timeout["']/);
+  assert.match(GATEWAY, /request\.modality === "realtime"[\s\S]{0,160}closeRealtimeEngine\(request\.responseId\)/);
 });
 
 test("inference engine and adapter expose internal abort signals without changing request schema", () => {

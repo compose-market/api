@@ -71,10 +71,12 @@ test("inference checkpoints and receipt metadata complete before terminal events
   const directEnd = source.indexOf('if (request.stream && usesProviderStream(request))', directStart);
   const directBody = source.slice(directStart, directEnd);
   const directSettle = directBody.indexOf("await finalizeDirectStreamPayment({");
+  const directFinalizing = directBody.indexOf('status: "finalizing_payment"');
   const directReceipt = directBody.indexOf("toReceiptStreamEvent(receiptStreamPayload(receipt))");
   const directTerminal = directBody.lastIndexOf('type: "done"');
   const directClose = directBody.lastIndexOf("closeEventStream(args.res)");
   assert.ok(directSettle > 0, "direct Responses streams must enter the payment/terminal ordering boundary");
+  assert.ok(directFinalizing > 0 && directFinalizing < directSettle, "direct streams must expose generation completion before payment finalization");
   assert.ok(directReceipt > directSettle, "direct stream receipt emission must be controlled by that boundary");
   assert.ok(directTerminal > directReceipt, "direct terminal event must follow receipt metadata");
   assert.ok(directClose > directTerminal, "direct EOF must follow the terminal event");
@@ -89,8 +91,10 @@ test("inference checkpoints and receipt metadata complete before terminal events
   const finishItems = providerBody.indexOf("responsesEncoder.finishItems()");
   const terminal = providerBody.indexOf("const terminalEvent = pendingDoneEvent");
   const finalFlush = providerBody.lastIndexOf("await flushSettlement()", terminal);
+  const providerFinalizing = providerBody.indexOf('status: "finalizing_payment"');
   const close = providerBody.indexOf("closeEventStream(args.res)", terminal);
   assert.ok(flush > 0, "provider streams must flush their serialized checkpoint lane");
+  assert.ok(providerFinalizing > 0 && providerFinalizing < finalFlush, "provider streams must expose generation completion before the final settlement flush");
   assert.ok(receipt > 0 && receipt < terminal, "checkpoint receipts must precede the terminal semantic event");
   assert.ok(terminal > flush, "terminal semantic output must follow the final checkpoint flush");
   assert.ok(finalFlush > 0 && finalFlush < deferredImage, "image completion must follow the final checkpoint receipt");
