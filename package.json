@@ -16,9 +16,9 @@
     "init:user-db": "tsx data/user/init.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai": "4.0.32",
-    "@ai-sdk/openai-compatible": "3.0.25",
-    "@composio/core": "^0.14.1",
+    "@ai-sdk/openai": "4.0.36",
+    "@ai-sdk/openai-compatible": "3.0.28",
+    "@composio/core": "^0.15.0",
     "@filoz/synapse-core": "^0.7.1",
     "@filoz/synapse-sdk": "^1.1.1",
     "@google/genai": "^2.16.0",
@@ -31,7 +31,7 @@
     "@x402/extensions": "^2.21.0",
     "@x402/svm": "^2.21.0",
     "@solana/kit": "^7.0.0",
-    "ai": "7.0.55",
+    "ai": "7.0.58",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -40,17 +40,17 @@
     "ioredis": "^6.0.0",
     "puppeteer": "^25.5.0",
     "viem": "^2.55.11",
-    "ws": "^8.21.2",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
     "ajv": "^8.20.0",
-    "esbuild": "^0.28.1",
-    "tsx": "^4.23.9",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "yaml": "^2.9.0"
   }

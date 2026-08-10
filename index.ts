@@ -19,7 +19,7 @@ import { refreshMetricsSnapshot } from "./data/metrics/snapshot.js";
 import { registerAnalyticsRoutes } from "./data/analytics/index.js";
 import { registerSvmRoutes } from "./svm/relay.js";
 import { registerUserRoutes } from "./data/user/routes.js";
-import { registerDomainEventRoutes } from "./data/shared/routes.js";
+import { registerEventRoutes } from "./data/shared/routes.js";
 
 export { handler as apiHandler, batchSettlementHandler } from "./handler.js";
 export { expiryWorker } from "./x402/keys/expiry.js";
@@ -194,7 +194,7 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   registerInferenceRoutes(app);
   registerUserRoutes(app);
   registerAnalyticsRoutes(app);
-  registerDomainEventRoutes(app);
+  registerEventRoutes(app);
   registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
   registerMetricsRoutes(app);
