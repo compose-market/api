@@ -8,7 +8,7 @@ import { validateSvmAddress } from "@x402/svm";
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 
 const REQUEST_STATUSES = new Set<RequestStatus>(["succeeded", "failed", "aborted"]);
-const SETTLEMENT_STATUSES = new Set<SettlementStatus>(["queued", "submitted", "settled", "failed"]);
+const SETTLEMENT_STATUSES = new Set<SettlementStatus>(["queued", "submitted", "claimed", "settled", "failed"]);
 const INTERVALS = new Set<Interval>(["minute", "hour", "day"]);
 
 function value(input: unknown): string | undefined {

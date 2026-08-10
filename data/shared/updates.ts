@@ -1,28 +1,28 @@
 import { getValkeyClient } from "../../x402/keys/valkey.js";
 
-export type DomainEventName = "keys" | "inference-analytics";
-export type DomainInvalidationReason = "created" | "revoked" | "budget" | "expired" | "telemetry";
+export type EventName = "keys" | "inference-analytics";
+export type InvalidationReason = "created" | "revoked" | "budget" | "expired" | "telemetry";
 
-export interface DomainInvalidateEvent {
+export interface InvalidateEvent {
   type: "invalidate";
-  domain: DomainEventName;
-  reason: DomainInvalidationReason;
+  domain: EventName;
+  reason: InvalidationReason;
   timestamp: string;
 }
 
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 
-export function domainEventChannel(domain: DomainEventName, address: string): string {
+export function domainEventChannel(domain: EventName, address: string): string {
   const normalized = EVM_ADDRESS.test(address) ? address.toLowerCase() : address;
   return `compose:domain-events:${domain}:${normalized}`;
 }
 
-export async function publishDomainInvalidation(
-  domain: DomainEventName,
+export async function publishInvalidation(
+  domain: EventName,
   address: string,
-  reason: DomainInvalidationReason,
+  reason: InvalidationReason,
 ): Promise<void> {
-  const event: DomainInvalidateEvent = {
+  const event: InvalidateEvent = {
     type: "invalidate",
     domain,
     reason,
@@ -32,17 +32,17 @@ export async function publishDomainInvalidation(
   await valkey.publish(domainEventChannel(domain, address), JSON.stringify(event));
 }
 
-export async function publishDomainInvalidationBestEffort(
-  domain: DomainEventName,
+export async function publishInvalidationBestEffort(
+  domain: EventName,
   address: string,
-  reason: DomainInvalidationReason,
+  reason: InvalidationReason,
   dependencies: {
-    publish?: typeof publishDomainInvalidation;
+    publish?: typeof publishInvalidation;
     logError?: (error: unknown) => void;
   } = {},
 ): Promise<void> {
   try {
-    await (dependencies.publish ?? publishDomainInvalidation)(domain, address, reason);
+    await (dependencies.publish ?? publishInvalidation)(domain, address, reason);
   } catch (error) {
     (dependencies.logError ?? ((cause: unknown) => {
       console.error("[domain-events] invalidation publish failed", {

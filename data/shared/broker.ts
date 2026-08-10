@@ -1,21 +1,21 @@
 import { getValkeyClient } from "../../x402/keys/valkey.js";
-import type { DomainInvalidateEvent } from "./updates.js";
+import type { InvalidateEvent } from "./updates.js";
 
 const DOMAINS = new Set(["keys", "inference-analytics"]);
 const REASONS = new Set(["created", "revoked", "budget", "expired", "telemetry"]);
 
-export interface DomainSubscriberClient {
+export interface SubscriberClient {
   on(event: "message", listener: (channel: string, message: string) => void): unknown;
   on(event: "error", listener: (error: unknown) => void): unknown;
   subscribe(...channels: string[]): Promise<unknown>;
   unsubscribe(...channels: string[]): Promise<unknown>;
 }
 
-export type DomainEventListener = (event: DomainInvalidateEvent) => void;
-export type DomainEventRelease = () => Promise<void>;
-type SubscriberFactory = () => Promise<DomainSubscriberClient>;
+export type EventListener = (event: InvalidateEvent) => void;
+export type EventRelease = () => Promise<void>;
+type SubscriberFactory = () => Promise<SubscriberClient>;
 
-function parseEvent(message: string): DomainInvalidateEvent | null {
+function parseEvent(message: string): InvalidateEvent | null {
   try {
     const input = JSON.parse(message) as Record<string, unknown>;
     if (
@@ -31,8 +31,8 @@ function parseEvent(message: string): DomainInvalidateEvent | null {
     }
     return {
       type: "invalidate",
-      domain: input.domain as DomainInvalidateEvent["domain"],
-      reason: input.reason as DomainInvalidateEvent["reason"],
+      domain: input.domain as InvalidateEvent["domain"],
+      reason: input.reason as InvalidateEvent["reason"],
       timestamp: input.timestamp,
     };
   } catch {
@@ -40,7 +40,7 @@ function parseEvent(message: string): DomainInvalidateEvent | null {
   }
 }
 
-async function createSubscriber(): Promise<DomainSubscriberClient> {
+async function createSubscriber(): Promise<SubscriberClient> {
   const commands = await getValkeyClient();
   const subscriber = commands.duplicate({
     lazyConnect: true,
@@ -50,15 +50,15 @@ async function createSubscriber(): Promise<DomainSubscriberClient> {
     console.error("[domain-events] subscriber error", error);
   });
   if (subscriber.status === "wait") await subscriber.connect();
-  return subscriber as unknown as DomainSubscriberClient;
+  return subscriber as unknown as SubscriberClient;
 }
 
-export class DomainEventBroker {
-  private subscriberPromise: Promise<DomainSubscriberClient> | null = null;
+export class EventBroker {
+  private subscriberPromise: Promise<SubscriberClient> | null = null;
   private operation: Promise<void> = Promise.resolve();
-  private readonly listeners = new Map<string, Map<DomainEventListener, number>>();
+  private readonly listeners = new Map<string, Map<EventListener, number>>();
 
-  constructor(private readonly factory: SubscriberFactory = createSubscriber) {}
+  constructor(private readonly factory: SubscriberFactory = createSubscriber) { }
 
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     const result = this.operation.then(work, work);
@@ -66,7 +66,7 @@ export class DomainEventBroker {
     return result;
   }
 
-  private subscriber(): Promise<DomainSubscriberClient> {
+  private subscriber(): Promise<SubscriberClient> {
     if (!this.subscriberPromise) {
       this.subscriberPromise = this.factory().then((subscriber) => {
         subscriber.on("message", (channel, message) => {
@@ -92,7 +92,7 @@ export class DomainEventBroker {
     return this.subscriberPromise;
   }
 
-  private removeReferences(channels: readonly string[], listener: DomainEventListener): void {
+  private removeReferences(channels: readonly string[], listener: EventListener): void {
     for (const channel of channels) {
       const channelListeners = this.listeners.get(channel);
       const count = channelListeners?.get(listener);
@@ -102,7 +102,7 @@ export class DomainEventBroker {
     }
   }
 
-  subscribe(channels: readonly string[], listener: DomainEventListener): Promise<DomainEventRelease> {
+  subscribe(channels: readonly string[], listener: EventListener): Promise<EventRelease> {
     const uniqueChannels = [...new Set(channels)];
     if (uniqueChannels.length === 0) return Promise.reject(new Error("At least one domain channel is required"));
 
@@ -145,9 +145,9 @@ export class DomainEventBroker {
   }
 }
 
-let processBroker: DomainEventBroker | null = null;
+let processBroker: EventBroker | null = null;
 
-export function getDomainEventBroker(): DomainEventBroker {
-  processBroker ??= new DomainEventBroker();
+export function getEventBroker(): EventBroker {
+  processBroker ??= new EventBroker();
   return processBroker;
 }

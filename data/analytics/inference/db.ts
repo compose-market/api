@@ -2,6 +2,7 @@ import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
 import type { WalletScope } from "../../user/types.js";
 import type { Filters, Settlement, StoredRequest } from "./types.js";
+import type { InferenceSettlementTelemetry, InferenceTelemetryLifecycle } from "../../../inference/events.js";
 
 type Sql = NeonQueryFunction<false, false>;
 type Row = Record<string, unknown>;
@@ -65,8 +66,7 @@ function defaultReadExecutor(): AnalyticsReadExecutor {
   };
 }
 
-export async function insertRequest(request: StoredRequest, settlements: Settlement[]): Promise<void> {
-  await sql().query(`
+const REQUEST_UPSERT = `
     INSERT INTO inference.requests (
       id, user_address, response_id, network, family, model, types, operation,
       streamed, status, started_at, completed_at, latency_ms, time_to_first_token_ms,
@@ -74,8 +74,40 @@ export async function insertRequest(request: StoredRequest, settlements: Settlem
       settlement_ids, error
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19::jsonb,$20::jsonb
-    )
-  `, [
+    ) ON CONFLICT (id) DO UPDATE SET
+      user_address = EXCLUDED.user_address,
+      response_id = EXCLUDED.response_id,
+      network = EXCLUDED.network,
+      family = EXCLUDED.family,
+      model = EXCLUDED.model,
+      types = EXCLUDED.types,
+      operation = EXCLUDED.operation,
+      streamed = EXCLUDED.streamed,
+      status = EXCLUDED.status,
+      started_at = EXCLUDED.started_at,
+      completed_at = EXCLUDED.completed_at,
+      latency_ms = EXCLUDED.latency_ms,
+      time_to_first_token_ms = EXCLUDED.time_to_first_token_ms,
+      usage = EXCLUDED.usage,
+      inference_amount_atomic = EXCLUDED.inference_amount_atomic,
+      platform_fee_atomic = EXCLUDED.platform_fee_atomic,
+      final_amount_atomic = EXCLUDED.final_amount_atomic,
+      settlement_ids = EXCLUDED.settlement_ids,
+      error = EXCLUDED.error
+`;
+
+const SETTLEMENT_INSERT = `
+    INSERT INTO inference.settlements (
+      id, request_id, user_address, network, family, model, types, operation, status, payment_intent_id, transaction_hash,
+      claim_transaction_hash, settle_transaction_hash, priced_units,
+      inference_amount_atomic, platform_fee_atomic, final_amount_atomic,
+      settled_at, created_at
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19)
+    ON CONFLICT (id) DO NOTHING
+`;
+
+function requestParams(request: StoredRequest): unknown[] {
+  return [
     request.id, request.userAddress, request.responseId, request.network,
     request.family, request.model, JSON.stringify(request.types), request.operation, request.streamed,
     request.status, request.startedAt, request.completedAt, request.latencyMs,
@@ -83,26 +115,86 @@ export async function insertRequest(request: StoredRequest, settlements: Settlem
     request.billing.inferenceAmountAtomic, request.billing.platformFeeAtomic,
     request.billing.finalAmountAtomic, JSON.stringify(request.settlementIds),
     request.error ? JSON.stringify(request.error) : null,
-  ]);
+  ];
+}
 
-  for (const settlement of settlements) {
-    await sql().query(`
-      INSERT INTO inference.settlements (
-        id, request_id, user_address, network, family, model, types, operation, status, payment_intent_id, transaction_hash,
-        claim_transaction_hash, settle_transaction_hash, priced_units,
-        inference_amount_atomic, platform_fee_atomic, final_amount_atomic,
-        settled_at, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18,$19)
-    `, [
-      settlement.id, settlement.requestId, request.userAddress, settlement.network,
+function settlementParams(request: StoredRequest, settlement: Settlement): unknown[] {
+  return [
+      settlement.id, request.id, request.userAddress, settlement.network,
       settlement.family, settlement.model, JSON.stringify(settlement.types), settlement.operation,
       settlement.status, settlement.paymentIntentId ?? null, settlement.transactionHash ?? null,
       settlement.claimTransactionHash ?? null, settlement.settleTransactionHash ?? null,
       JSON.stringify(settlement.pricedUnits), settlement.billing.inferenceAmountAtomic,
       settlement.billing.platformFeeAtomic, settlement.billing.finalAmountAtomic,
       settlement.settledAt ?? null, settlement.createdAt,
+  ];
+}
+
+export function requestForSettlement(request: StoredRequest, settlement: Settlement): StoredRequest {
+  const at = settlement.createdAt;
+  const usage = "usage" in settlement && settlement.usage
+    ? settlement.usage
+    : { metrics: {}, units: settlement.pricedUnits.map(({ unitPriceUsd: _, amountAtomic: __, ...unit }) => unit) };
+  return {
+    ...request,
+    id: settlement.id,
+    family: settlement.family,
+    model: settlement.model,
+    types: settlement.types,
+    operation: settlement.operation,
+    status: settlement.status === "failed" ? "failed" : "succeeded",
+    startedAt: at,
+    completedAt: at,
+    latencyMs: 0,
+    timeToFirstTokenMs: undefined,
+    usage,
+    billing: settlement.billing,
+    settlementIds: [settlement.id],
+    error: undefined,
+  };
+}
+
+export async function insertRequest(request: StoredRequest, settlements: Settlement[]): Promise<void> {
+  if (settlements.length === 0) {
+    await sql().query(REQUEST_UPSERT, requestParams(request));
+    return;
+  }
+  for (const settlement of settlements) {
+    const call = requestForSettlement(request, settlement);
+    await sql().transaction((transaction) => [
+      transaction.query(REQUEST_UPSERT, requestParams(call)),
+      transaction.query(SETTLEMENT_INSERT, settlementParams(call, settlement)),
     ]);
   }
+}
+
+export async function insertSettlementCheckpoint(
+  lifecycle: InferenceTelemetryLifecycle,
+  settlement: InferenceSettlementTelemetry,
+): Promise<void> {
+  const at = settlement.createdAt;
+  const request: StoredRequest = {
+    id: settlement.id,
+    userAddress: lifecycle.userAddress,
+    responseId: lifecycle.request.responseId,
+    network: settlement.network,
+    family: settlement.family,
+    model: settlement.model,
+    types: settlement.types,
+    operation: settlement.operation,
+    streamed: lifecycle.request.stream,
+    status: settlement.status === "failed" ? "failed" : "succeeded",
+    startedAt: at,
+    completedAt: at,
+    latencyMs: 0,
+    usage: settlement.usage,
+    billing: settlement.billing,
+    settlementIds: [settlement.id],
+  };
+  await sql().transaction((transaction) => [
+    transaction.query(REQUEST_UPSERT, requestParams(request)),
+    transaction.query(SETTLEMENT_INSERT, settlementParams(request, settlement)),
+  ]);
 }
 
 export interface AnalyticsQueryExecutor {
@@ -186,6 +278,7 @@ function filterWhere(
   }
   add(`${requestAlias}.operation`, input.operation);
   add(`${requestAlias}.status`, input.status);
+  if (mode === "request") conditions.push(`${requestAlias}.status <> 'in_progress'`);
   if (mode === "settlement") add(`${settlementAlias}.status`, input.settlementStatus);
 
   if (mode !== "settlement-eligible") {

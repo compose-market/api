@@ -2,27 +2,27 @@ import type { Application, NextFunction, Request, RequestHandler, Response } fro
 
 import {
   domainEventChannel,
-  type DomainEventName,
-  type DomainInvalidateEvent,
+  type EventName,
+  type InvalidateEvent,
 } from "./updates.js";
 import { resolveWalletPair } from "../user/store.js";
 import type { WalletPair } from "../user/types.js";
 import {
-  getDomainEventBroker,
-  type DomainEventListener,
-  type DomainEventRelease,
+  getEventBroker,
+  type EventListener,
+  type EventRelease,
 } from "./broker.js";
 
 const HEARTBEAT_MS = 25_000;
 const LEASE_MS = 110_000;
 
-export interface DomainEventSubscriptionBroker {
-  subscribe(channels: readonly string[], listener: DomainEventListener): Promise<DomainEventRelease>;
+export interface EventSubscriptionBroker {
+  subscribe(channels: readonly string[], listener: EventListener): Promise<EventRelease>;
 }
 
-export interface DomainEventRouteDependencies {
+export interface EventRouteDependencies {
   resolvePair?: (address: string) => Promise<WalletPair>;
-  broker?: DomainEventSubscriptionBroker;
+  broker?: EventSubscriptionBroker;
   heartbeatMs?: number;
   leaseMs?: number;
   retryAfterMs?: number;
@@ -39,12 +39,12 @@ function streamError(error: unknown): Error & { statusCode: number } {
   return Object.assign(new Error("Domain event broker is unavailable", { cause: error }), { statusCode: 503 });
 }
 
-export function createDomainEventsHandler(
-  domain: DomainEventName,
-  dependencies: DomainEventRouteDependencies = {},
+export function createEventsHandler(
+  domain: EventName,
+  dependencies: EventRouteDependencies = {},
 ): RequestHandler {
   const resolvePair = dependencies.resolvePair ?? resolveWalletPair;
-  const broker = dependencies.broker ?? getDomainEventBroker();
+  const broker = dependencies.broker ?? getEventBroker();
   const heartbeatMs = dependencies.heartbeatMs ?? HEARTBEAT_MS;
   const leaseMs = dependencies.leaseMs ?? LEASE_MS;
   const retryAfterMs = dependencies.retryAfterMs ?? 1_000 + Math.floor(Math.random() * 2_000);
@@ -64,12 +64,12 @@ export function createDomainEventsHandler(
         domainEventChannel(domain, pair.svmAddress),
       ];
       let ready = false;
-      const pending: DomainInvalidateEvent[] = [];
+      const pending: InvalidateEvent[] = [];
       let closed = false;
-      let release: DomainEventRelease;
-      const onInvalidate: DomainEventListener = (event) => {
+      let release: EventRelease;
+      const onInvalidate: EventListener = (event) => {
         if (closed || event.domain !== domain) return;
-        const sanitized: DomainInvalidateEvent = {
+        const sanitized: InvalidateEvent = {
           type: "invalidate",
           domain,
           reason: event.reason,
@@ -130,7 +130,7 @@ export function createDomainEventsHandler(
   };
 }
 
-export function registerDomainEventRoutes(app: Application): void {
-  app.get("/api/keys/events", createDomainEventsHandler("keys"));
-  app.get("/api/analytics/inference/events", createDomainEventsHandler("inference-analytics"));
+export function registerEventRoutes(app: Application): void {
+  app.get("/api/keys/events", createEventsHandler("keys"));
+  app.get("/api/analytics/inference/events", createEventsHandler("inference-analytics"));
 }

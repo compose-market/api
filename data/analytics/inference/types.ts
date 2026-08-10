@@ -1,7 +1,7 @@
 import type { NetworkId } from "../../../x402/configs/chains.js";
 
 export type RequestStatus = "succeeded" | "failed" | "aborted";
-export type SettlementStatus = "queued" | "submitted" | "settled" | "failed";
+export type SettlementStatus = "queued" | "submitted" | "claimed" | "settled" | "failed";
 export type Interval = "minute" | "hour" | "day";
 
 export interface Filters {
@@ -95,6 +95,7 @@ export interface Settlement {
   settleTransactionHash?: string;
   paymentIntentId?: string;
   pricedUnits: PricedUnit[];
+  usage?: UsageTotals;
   billing: BillingTotals;
   settledAt?: string;
   createdAt: string;
