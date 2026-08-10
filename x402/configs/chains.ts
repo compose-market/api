@@ -47,8 +47,8 @@ export const NETWORK_IDS = {
     // arc: "eip155:5042",
     // seiTestnet: "eip155:1328",
     sei: "eip155:1329",
-    solanaDevnet: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-    // solana: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    // solanaDevnet: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    solana: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
 } as const satisfies Record<string, NetworkId>;
 
 const ALL_SCHEMES = ["exact", "upto", "batch-settlement"] as const;
@@ -62,8 +62,8 @@ export const NETWORKS = [
     // network(NETWORK_IDS.arc, "arc", "Arc", "Arc", "eip155", "mainnet", "https://arcscan.app", "ARC_MAINNET_RPC", "0x3600000000000000000000000000000000000000"),
     // network(NETWORK_IDS.seiTestnet, "sei-testnet", "Sei Testnet", "Sei Testnet", "eip155", "testnet", "https://testnet.seiscan.io", "SEI_TESTNET_RPC", "0x4fCF1784B31630811181f670Aea7A7bEF803eaED"),
     network(NETWORK_IDS.sei, "sei", "Sei", "Sei", "eip155", "mainnet", "https://seiscan.io", "SEI_MAINNET_RPC", "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392"),
-    network(NETWORK_IDS.solanaDevnet, "solana-devnet", "Solana Devnet", "Solana Devnet", "solana", "testnet", "https://explorer.solana.com", "SOLANA_DEVNET_RPC", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", "cluster=devnet"),
-    // network(NETWORK_IDS.solana, "solana", "Solana", "Solana", "solana", "mainnet", "https://explorer.solana.com", "SOLANA_MAINNET_RPC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+    // network(NETWORK_IDS.solanaDevnet, "solana-devnet", "Solana Devnet", "Solana Devnet", "solana", "testnet", "https://explorer.solana.com", "SOLANA_DEVNET_RPC", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", "cluster=devnet"),
+    network(NETWORK_IDS.solana, "solana", "Solana", "Solana", "solana", "mainnet", "https://explorer.solana.com", "SOLANA_MAINNET_RPC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 ] as const satisfies readonly NetworkDefinition[];
 
 function network(

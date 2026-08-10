@@ -24,7 +24,7 @@ import {
 import { signKey } from "./jwt.js";
 import { isEvmNetwork, isNetworkId, type NetworkId } from "../configs/chains.js";
 import type { WalletScope } from "../../data/user/types.js";
-import { publishDomainInvalidationBestEffort } from "../../data/shared/updates.js";
+import { publishInvalidationBestEffort } from "../../data/shared/updates.js";
 import type {
     KeyRecord,
     KeyPurpose,
@@ -337,7 +337,7 @@ export async function createKey(
         await valkeyExpire(userKeysKey(normalizedAddress, request.network), ttlSeconds);
     }
 
-    await publishDomainInvalidationBestEffort("keys", normalizedAddress, "created");
+    await publishInvalidationBestEffort("keys", normalizedAddress, "created");
 
     return {
         keyId,
@@ -614,7 +614,7 @@ return 1`,
 
     const revoked = Number(result) === 1;
     if (revoked) {
-        await publishDomainInvalidationBestEffort("keys", normalizedAddress, "revoked");
+        await publishInvalidationBestEffort("keys", normalizedAddress, "revoked");
     }
     return revoked;
 }

@@ -26,12 +26,12 @@ import {
     createKeyPairSignerFromBytes as createSolanaKeyPairSignerFromBytes,
     createSolanaRpc as createSolanaKitRpc,
     createTransactionMessage as createSolanaTransactionMessage,
-    devnet as solanaDevnet,
+    // devnet as solanaDevnet,
     getAddressEncoder as getSolanaAddressEncoder,
     getBase64EncodedWireTransaction as getSolanaBase64EncodedWireTransaction,
     getSignatureFromTransaction as getSolanaSignatureFromTransaction,
     getProgramDerivedAddress as getSolanaProgramDerivedAddress,
-    // mainnet as solanaMainnet,
+    mainnet as solanaMainnet,
     pipe as solanaPipe,
     setTransactionMessageFeePayerSigner as setSolanaTransactionMessageFeePayerSigner,
     setTransactionMessageLifetimeUsingBlockhash as setSolanaTransactionMessageLifetimeUsingBlockhash,
@@ -107,6 +107,8 @@ const ERC20_TRANSFER_FROM_ABI = [
 const ASSOCIATED_TOKEN_PROGRAM_ADDRESS = solanaAddress("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const SVM_TOKEN_PROGRAM_ADDRESS = solanaAddress("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const SVM_TOKEN_2022_PROGRAM_ADDRESS = solanaAddress("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const SVM_MEMO_PROGRAM_ADDRESS = solanaAddress("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+const SVM_SETTLEMENT_MEMO = "compose.market: settle USDC";
 const SVM_TRANSFER_CHECKED_DISCRIMINATOR = 12;
 const SVM_CONFIRM_ATTEMPTS = 30;
 const SVM_CONFIRM_DELAY_MS = 1_000;
@@ -190,8 +192,8 @@ function encodeTransferCheckedInstructionData(amount: bigint, decimals: number):
 
 function createSvmRpc(network: SolanaNetworkId) {
     const rpcUrl = getNetworkRpcUrl(network);
-    if (network === NETWORK_IDS.solanaDevnet) { return createSolanaKitRpc(solanaDevnet(rpcUrl)); }
-    // if (network === NETWORK_IDS.solana) { return createSolanaKitRpc(solanaMainnet(rpcUrl)); }
+    // if (network === NETWORK_IDS.solanaDevnet) { return createSolanaKitRpc(solanaDevnet(rpcUrl)); }
+    if (network === NETWORK_IDS.solana) { return createSolanaKitRpc(solanaMainnet(rpcUrl)); }
     throw new Error(`Unsupported SVM settlement network: ${network}`);
 }
 
@@ -296,12 +298,18 @@ async function prepareSvmKeyPayment(
         ],
         data: encodeTransferCheckedInstructionData(amount, definition.asset.decimals),
     } satisfies SolanaInstruction);
+    const memoInstruction = {
+        programAddress: SVM_MEMO_PROGRAM_ADDRESS,
+        accounts: [],
+        data: new TextEncoder().encode(SVM_SETTLEMENT_MEMO),
+    } satisfies SolanaInstruction;
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
     const transactionMessage = solanaPipe(
         createSolanaTransactionMessage({ version: 0 }),
         (message) => setSolanaTransactionMessageFeePayerSigner(signer, message),
         (message) => setSolanaTransactionMessageLifetimeUsingBlockhash(latestBlockhash, message),
+        (message) => appendSolanaTransactionMessageInstruction(memoInstruction, message),
         (message) => appendSolanaTransactionMessageInstruction(transferInstruction, message),
     );
     const signedTransaction = await signSolanaTransactionMessageWithSigners(transactionMessage);

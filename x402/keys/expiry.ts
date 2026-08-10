@@ -15,7 +15,7 @@ import {
     valkeySRem,
     getValkeyClient,
 } from "./valkey.js";
-import { publishDomainInvalidationBestEffort } from "../../data/shared/updates.js";
+import { publishInvalidationBestEffort } from "../../data/shared/updates.js";
 
 const USER_KEYS_PREFIX = "user-keys:";
 const KEY_PREFIX = "key:";
@@ -46,7 +46,7 @@ export async function expiryWorker(
                         staleRefsRemoved += 1;
                         const ownerAddress = ownerFromUserKeyIndex(userKeyIndex);
                         if (ownerAddress) {
-                            await publishDomainInvalidationBestEffort("keys", ownerAddress, "expired");
+                            await publishInvalidationBestEffort("keys", ownerAddress, "expired");
                         }
                     }
                 }

@@ -664,8 +664,8 @@ async function registerSvmSchemes(facilitator: x402Facilitator, networks: Networ
     const privateKey = requireEnv("SVM_FACILITATOR_KEY");
     const keypair = await createKeyPairSignerFromBytes(base58.decode(privateKey));
     const signer = toFacilitatorSvmSigner(keypair, {
-        [NETWORK_IDS.solanaDevnet]: createSolanaRpc(devnet(getNetworkRpcUrl(NETWORK_IDS.solanaDevnet))),
-        // [NETWORK_IDS.solana]: createSolanaRpc(mainnet(getNetworkRpcUrl(NETWORK_IDS.solana))),
+        // [NETWORK_IDS.solanaDevnet]: createSolanaRpc(devnet(getNetworkRpcUrl(NETWORK_IDS.solanaDevnet))),
+        [NETWORK_IDS.solana]: createSolanaRpc(mainnet(getNetworkRpcUrl(NETWORK_IDS.solana))),
     });
     const feePayer = requireEnv("SVM_TREASURY_SERVER_WALLET_PUBLIC");
     if (!signer.getAddresses().map(String).includes(feePayer)) {

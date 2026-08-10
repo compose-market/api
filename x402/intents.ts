@@ -39,7 +39,7 @@ import {
     encodePaymentRequiredHeader,
 } from "./facilitator.js";
 import { isNetworkId, type NetworkId } from "./configs/chains.js";
-import { publishDomainInvalidationBestEffort } from "../data/shared/updates.js";
+import { publishInvalidationBestEffort } from "../data/shared/updates.js";
 
 const INTENT_PREFIX = "payment-intent:";
 const INTENT_LOCK_PREFIX = "payment-intent-lock:";
@@ -692,7 +692,7 @@ type CanonicalInferenceProjection =
     };
 
 type AnalyticsProjectionPublisher = NonNullable<
-    NonNullable<Parameters<typeof publishDomainInvalidationBestEffort>[3]>["publish"]
+    NonNullable<Parameters<typeof publishInvalidationBestEffort>[3]>["publish"]
 >;
 
 export interface CanonicalInferenceProjectionDependencies {
@@ -729,11 +729,11 @@ export async function projectCanonicalPaymentIntentAnalytics(
     }
     const project = dependencies.project ?? (async (input) => {
         const analytics = await import("../data/analytics/inference/store.js");
-        return analytics.projectCanonicalPaymentIntentSettlement(input);
+        return analytics.projectCanonicalPaymentIntentSettlement(input, undefined, intent);
     });
     if (!await project(projection)) return false;
 
-    await publishDomainInvalidationBestEffort(
+    await publishInvalidationBestEffort(
         "inference-analytics",
         intent.userAddress,
         "telemetry",
@@ -761,7 +761,10 @@ export async function reconcileCanonicalPaymentIntentProjections(
         throw new Error("test projection failure");
     }
     const intent = await readPaymentIntent(paymentIntentId);
-    if (!intent) throw new Error(`Projection payment intent not found: ${paymentIntentId}`);
+    if (!intent) {
+        await valkeySRem(PROJECTION_INTENTS_KEY, paymentIntentId);
+        return false;
+    }
 
     if (intent.status === "confirmed") {
         if (!intent.txHash) throw new Error("Confirmed payment intent is missing its transaction identity");
@@ -1097,7 +1100,7 @@ export async function settlePaymentIntent(
             if (reservation === "expired") return failure(401, "Compose key has expired");
             if (reservation === "invalid_state") return failure(409, "Payment intent reservation state changed");
             if (reservation === "reserved") {
-                await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+                await publishInvalidationBestEffort("keys", intent.userAddress, "budget");
             }
             const queuedIntent = await readPaymentIntent(intent.paymentIntentId);
             if (!queuedIntent) throw new Error("Queued payment intent disappeared");
@@ -1464,7 +1467,7 @@ export async function executeCanonicalPaymentIntent(
                 }
                 return paymentIntentSuccess(current);
             }
-            await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+            await publishInvalidationBestEffort("keys", intent.userAddress, "budget");
             await reconcileCanonicalPaymentIntentProjections(intent.paymentIntentId).catch((error) => {
                 console.error("[payment-intent] projection deferred", {
                     paymentIntentId: intent.paymentIntentId,
@@ -1511,7 +1514,7 @@ export async function executeCanonicalPaymentIntent(
                 }
                 return paymentIntentSuccess(current);
             }
-            await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+            await publishInvalidationBestEffort("keys", intent.userAddress, "budget");
             await reconcileCanonicalPaymentIntentProjections(intent.paymentIntentId).catch((error) => {
                 console.error("[payment-intent] failed projection deferred", {
                     paymentIntentId: intent.paymentIntentId,
@@ -1674,7 +1677,7 @@ export async function abortPaymentIntent(
                 );
             }
             if (released === "released") {
-                await publishDomainInvalidationBestEffort("keys", intent.userAddress, "budget");
+                await publishInvalidationBestEffort("keys", intent.userAddress, "budget");
             }
             const releasedIntent = await readPaymentIntent(intent.paymentIntentId);
             if (!releasedIntent) return failure(404, "Payment intent not found");

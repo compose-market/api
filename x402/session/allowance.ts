@@ -4,7 +4,7 @@ import {
     Address as SolanaAddress,
     address as solanaAddress,
     createSolanaRpc,
-    devnet as solanaDevnet,
+    // devnet as solanaDevnet,
     getAddressEncoder as getSolanaAddressEncoder,
     getProgramDerivedAddress as getSolanaProgramDerivedAddress,
     mainnet as solanaMainnet,
@@ -144,8 +144,8 @@ const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 function createSvmRpc(network: SolanaNetworkId) {
     const rpcUrl = getNetworkRpcUrl(network);
-    if (network === NETWORK_IDS.solanaDevnet) { return createSolanaRpc(solanaDevnet(rpcUrl)); }
-    // if (network === NETWORK_IDS.solana) { return createSolanaRpc(solanaMainnet(rpcUrl)); }
+    //if (network === NETWORK_IDS.solanaDevnet) { return createSolanaRpc(solanaDevnet(rpcUrl)); }
+    if (network === NETWORK_IDS.solana) { return createSolanaRpc(solanaMainnet(rpcUrl)); }
     throw new Error(`Unsupported SVM network: ${network}`);
 }
 
