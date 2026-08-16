@@ -74,9 +74,35 @@ async function migrate(): Promise<void> {
         END $$
     `);
     await db.query(`ALTER TABLE payments ALTER COLUMN source SET DEFAULT 'settlement'`);
-    await db.query(`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_source_check`);
-    await db.query(`ALTER TABLE payments ADD CONSTRAINT payments_source_check CHECK (source IN ('history', 'settlement'))`);
+    await db.query(`
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = 'payments_source_check'
+              AND conrelid = 'payments'::regclass
+          ) THEN
+            ALTER TABLE payments ADD CONSTRAINT payments_source_check CHECK (source IN ('history', 'settlement'));
+          END IF;
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$
+    `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_payments_updated ON payments(updated_at)`);
+
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS logical_settlements (
+            receipt_id         TEXT PRIMARY KEY,
+            network            TEXT NOT NULL,
+            status             TEXT NOT NULL CHECK (status IN ('queued', 'submitted', 'claimed', 'settled', 'failed')),
+            amount_atomic      NUMERIC(78, 0) NOT NULL CHECK (amount_atomic >= 0),
+            settled_at         TIMESTAMPTZ,
+            transaction_hash   TEXT,
+            payment_intent_id  TEXT,
+            payment_channel_id TEXT,
+            created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_logical_settlements_status_settled ON logical_settlements(status, settled_at)`);
 
     await db.query(`
         CREATE TABLE IF NOT EXISTS sessions (

@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 import { syncDownloads } from "./downloads.js";
-import { syncPayments } from "./payments.js";
+import { syncLogicalSettlements } from "./settlements.js";
 import { setSessionBaseline, syncSessionsFromValkey } from "./sessions.js";
 import { getMetricsSnapshot, refreshMetricsSnapshot } from "./snapshot.js";
 import { syncAllExpenses, syncOpenAIExpenses, syncAzureExpenses, syncFireworksExpenses, volumeTotals } from "./expenses/index.js";
@@ -9,7 +9,7 @@ import { syncAllExpenses, syncOpenAIExpenses, syncAzureExpenses, syncFireworksEx
 async function syncAll(): Promise<void> {
     const downloads = await syncDownloads();
     const sessions = await syncSessionsFromValkey();
-    const payments = await syncPayments();
+    const payments = await syncLogicalSettlements();
     const expenses = await syncAllExpenses();
     const snapshot = await refreshMetricsSnapshot();
     console.log(JSON.stringify({ downloads, sessions, payments, expenses, snapshot }, null, 2));
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
             console.log(JSON.stringify(await syncDownloads({ force: process.argv.includes("--force") }), null, 2));
             break;
         case "payments":
-            console.log(JSON.stringify({ payments: await syncPayments(), snapshot: await refreshMetricsSnapshot() }, null, 2));
+            console.log(JSON.stringify({ payments: await syncLogicalSettlements(), snapshot: await refreshMetricsSnapshot() }, null, 2));
             break;
         case "sessions":
             console.log(JSON.stringify({ sessions: await syncSessionsFromValkey(), snapshot: await refreshMetricsSnapshot() }, null, 2));

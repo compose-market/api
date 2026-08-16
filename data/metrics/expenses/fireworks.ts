@@ -4,8 +4,9 @@ import type { ExpenseSyncResult } from "./openai.js";
 const PROVIDER = "fireworks";
 const ACCOUNTS_URL = "https://api.fireworks.ai/v1/accounts";
 const REQUEST_TIMEOUT_MS = 30_000;
-const BATCH_DAYS = 31;
 const FIRST_DAY = "2025-06-12";
+const REPLAY_DAYS = 7;
+const DAILY_VERSION = "1";
 
 interface MoneyValue { units?: string | number; nanos?: number }
 interface BillingLineItem {
@@ -37,15 +38,19 @@ async function billingSummary(account: string, from: string, to: string): Promis
         startTime: `${from}T00:00:00Z`,
         endTime: `${to}T00:00:00Z`,
     });
-    const response = await fetch(`${ACCOUNTS_URL}/${account}/billing/summary?${query}`, {
-        headers: { Authorization: `Bearer ${process.env.FIREWORKS_API_KEY}` },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+        const response = await fetch(`${ACCOUNTS_URL}/${account}/billing/summary?${query}`, {
+            headers: { Authorization: `Bearer ${process.env.FIREWORKS_API_KEY}` },
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (response.ok) return await response.json() as BillingSummary;
         const body = await response.text().catch(() => "");
-        throw new Error(`Fireworks billing/summary returned ${response.status}: ${body}`);
+        lastError = new Error(`Fireworks billing/summary returned ${response.status}: ${body}`);
+        if (attempt >= 3 || (response.status !== 429 && response.status < 500)) throw lastError;
+        await new Promise((resolve) => setTimeout(resolve, 2_000 * (attempt + 1)));
     }
-    return await response.json() as BillingSummary;
+    throw lastError ?? new Error("Fireworks billing/summary failed after retries");
 }
 
 async function upsertDay(day: string, total: number, details: Record<string, number>): Promise<void> {
@@ -64,46 +69,41 @@ async function upsertDay(day: string, total: number, details: Record<string, num
 export async function syncFireworksExpenses(): Promise<ExpenseSyncResult> {
     const apiKey = process.env.FIREWORKS_API_KEY;
     const account = process.env.FIREWORKS_ID;
-    if (!apiKey || !account) {
-        console.warn("[expenses:fireworks] FIREWORKS_API_KEY or FIREWORKS_ID not set, skipping");
+    if (!apiKey && !account) {
+        console.warn("[expenses:fireworks] FIREWORKS_API_KEY and FIREWORKS_ID not set, skipping");
         return { days: 0, totalCost: 0 };
     }
+    if (!apiKey || !account) throw new Error("FIREWORKS_API_KEY and FIREWORKS_ID must both be set");
     await ensure();
     const lastDay = await getState(`expenses:${PROVIDER}:last_day`);
+    const dailyVersion = await getState(`expenses:${PROVIDER}:daily_version`);
     const endDay = yesterday();
-    const startDay = lastDay ? addDays(lastDay, 1) : FIRST_DAY;
+    const replayDay = dailyVersion === DAILY_VERSION && lastDay
+        ? addDays(lastDay, 1 - REPLAY_DAYS)
+        : FIRST_DAY;
+    const startDay = replayDay < FIRST_DAY ? FIRST_DAY : replayDay;
     if (startDay > endDay) return { days: 0, totalCost: 0 };
-
-    const daily = new Map<string, { total: number; items: Record<string, number> }>();
-    let cursor = startDay;
-    while (cursor <= endDay) {
-        const candidate = addDays(cursor, BATCH_DAYS - 1);
-        const rangeEnd = candidate > endDay ? endDay : candidate;
-        try {
-            const summary = await billingSummary(account, cursor, rangeEnd);
-            for (const lineItem of summary.lineItems ?? []) {
-                const cost = money(lineItem.totalCost);
-                if (cost <= 0) continue;
-                const item = lineItem.groupingValue ?? lineItem.category ?? "unknown";
-                if (!daily.has(cursor)) daily.set(cursor, { total: 0, items: {} });
-                const entry = daily.get(cursor)!;
-                entry.total += cost;
-                entry.items[item] = (entry.items[item] ?? 0) + cost;
-            }
-        } catch (error) {
-            console.warn(`[expenses:fireworks] failed for ${cursor} to ${rangeEnd}:`, error instanceof Error ? error.message : String(error));
-        }
-        cursor = addDays(rangeEnd, 1);
-    }
 
     let days = 0;
     let totalCost = 0;
-    for (const [day, value] of daily) {
-        await upsertDay(day, value.total, value.items);
-        await setState(`expenses:${PROVIDER}:last_day`, day);
+    let cursor = startDay;
+    while (cursor <= endDay) {
+        const summary = await billingSummary(account, cursor, addDays(cursor, 1));
+        let total = 0;
+        const items: Record<string, number> = {};
+        for (const lineItem of summary.lineItems ?? []) {
+            const cost = money(lineItem.totalCost);
+            if (cost <= 0) continue;
+            const item = lineItem.groupingValue ?? lineItem.category ?? "unknown";
+            total += cost;
+            items[item] = (items[item] ?? 0) + cost;
+        }
+        await upsertDay(cursor, total, items);
         days += 1;
-        totalCost += value.total;
+        totalCost += total;
+        cursor = addDays(cursor, 1);
     }
-    if (days === 0) await setState(`expenses:${PROVIDER}:last_day`, endDay);
+    await setState(`expenses:${PROVIDER}:last_day`, endDay);
+    await setState(`expenses:${PROVIDER}:daily_version`, DAILY_VERSION);
     return { days, totalCost };
 }

@@ -4,6 +4,8 @@ const PROVIDER = "openai";
 const COSTS_URL = "https://api.openai.com/v1/organization/costs";
 const REQUEST_TIMEOUT_MS = 30_000;
 const PAGE_LIMIT = 180;
+const REPLAY_DAYS = 7;
+const FIRST_DAY = "2024-01-01";
 
 interface OpenAICostAmount {
     value?: number | string;
@@ -54,9 +56,10 @@ function addDays(day: string, amount: number): string {
     return value.toISOString().slice(0, 10);
 }
 
-async function fetchCosts(startTime: number, page?: string): Promise<OpenAICostPage> {
+async function fetchCosts(startTime: number, endTime: number, page?: string): Promise<OpenAICostPage> {
     const query = new URLSearchParams({
         start_time: String(startTime),
+        end_time: String(endTime),
         limit: String(PAGE_LIMIT),
         group_by: "api_key_id",
     });
@@ -116,19 +119,21 @@ export async function syncOpenAIExpenses(): Promise<ExpenseSyncResult> {
     await ensure();
     const lastDay = await getState(`expenses:${PROVIDER}:last_day`);
     const endDay = yesterday();
-    const startDay = lastDay ? addDays(lastDay, 1) : "2024-01-01";
+    const replayDay = lastDay ? addDays(lastDay, 1 - REPLAY_DAYS) : FIRST_DAY;
+    const startDay = replayDay < FIRST_DAY ? FIRST_DAY : replayDay;
     if (startDay > endDay) return { days: 0, totalCost: 0 };
 
     const startTime = dayStartSeconds(startDay);
-    dayEndSeconds(endDay);
+    const endTime = dayEndSeconds(endDay);
     let page: string | undefined;
     const daily = new Map<string, { total: number; items: Record<string, number> }>();
     do {
-        const response = await fetchCosts(startTime, page);
+        const response = await fetchCosts(startTime, endTime, page);
         for (const bucket of response.data ?? []) {
             const day = bucket.start_time_iso
                 ? bucket.start_time_iso.slice(0, 10)
                 : new Date(bucket.start_time * 1_000).toISOString().slice(0, 10);
+            if (day < startDay || day > endDay) continue;
             if (!daily.has(day)) daily.set(day, { total: 0, items: {} });
             const entry = daily.get(day)!;
             for (const result of bucket.results ?? []) {
@@ -138,17 +143,22 @@ export async function syncOpenAIExpenses(): Promise<ExpenseSyncResult> {
                 entry.items[item] = (entry.items[item] ?? 0) + amount;
             }
         }
-        page = response.has_more ? response.next_page ?? undefined : undefined;
+        if (response.has_more && !response.next_page) {
+            throw new Error("OpenAI costs API indicated another page without a page token");
+        }
+        page = response.has_more ? response.next_page! : undefined;
     } while (page);
 
     let days = 0;
     let totalCost = 0;
-    for (const [day, value] of daily) {
-        await upsertDay(day, value.total, value.items);
-        await setState(`expenses:${PROVIDER}:last_day`, day);
+    let cursor = startDay;
+    while (cursor <= endDay) {
+        const value = daily.get(cursor) ?? { total: 0, items: {} };
+        await upsertDay(cursor, value.total, value.items);
         days += 1;
         totalCost += value.total;
+        cursor = addDays(cursor, 1);
     }
-    if (days === 0) await setState(`expenses:${PROVIDER}:last_day`, endDay);
+    await setState(`expenses:${PROVIDER}:last_day`, endDay);
     return { days, totalCost };
 }

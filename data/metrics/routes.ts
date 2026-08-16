@@ -2,7 +2,7 @@ import type { Application } from "express";
 
 import { ensure, sql } from "./db.js";
 import { syncDownloads } from "./downloads.js";
-import { syncPayments } from "./payments.js";
+import { syncLogicalSettlements } from "./settlements.js";
 import { syncSessionsFromValkey } from "./sessions.js";
 import { syncAllExpenses, volumeTotals } from "./expenses/index.js";
 import { getMetricsSnapshot, refreshMetricsSnapshot } from "./snapshot.js";
@@ -13,7 +13,7 @@ export function registerMetricsRoutes(app: Application): void {
             if (req.query.refresh === "true" || req.query.refresh === "1") {
                 await syncDownloads();
                 await syncSessionsFromValkey();
-                await syncPayments();
+                await syncLogicalSettlements();
                 await syncAllExpenses();
                 res.json(await refreshMetricsSnapshot());
                 return;

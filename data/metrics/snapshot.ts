@@ -1,6 +1,6 @@
 import { totalDownloads, SDK_PACKAGE } from "./downloads.js";
 import { formatUsdcAtomic } from "./format.js";
-import { paymentTotals } from "./payments.js";
+import { settlementTotals } from "./settlements.js";
 import { sessionTotals } from "./sessions.js";
 import { readSnapshot, writeSnapshot } from "./cache.js";
 import type { MetricTotals, MetricsSnapshot } from "./types.js";
@@ -84,8 +84,7 @@ export function buildSnapshot(input: MetricTotals): MetricsSnapshot {
                 updatedAt: input.agents.updatedAt,
             },
             payments: {
-                source: "merchant-wallet-settlements",
-                cutoff: input.payments.cutoff,
+                source: "canonical-x402-receipts",
                 updatedAt: input.payments.updatedAt,
             },
             sessions: {
@@ -100,7 +99,7 @@ export async function refreshMetricsSnapshot(): Promise<MetricsSnapshot> {
     const [downloads, agents, payments, sessions] = await Promise.all([
         totalDownloads(),
         agentCounts(),
-        paymentTotals(),
+        settlementTotals(),
         sessionTotals(),
     ]);
 

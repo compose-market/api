@@ -15,14 +15,27 @@ export async function syncAllExpenses(): Promise<{
         syncAzureExpenses(),
         syncFireworksExpenses(),
     ]);
-    const empty = (): ExpenseSyncResult => ({ days: 0, totalCost: 0 });
-    const openai = results[0].status === "fulfilled" ? results[0].value : empty();
-    const azure = results[1].status === "fulfilled" ? results[1].value : empty();
-    const fireworks = results[2].status === "fulfilled" ? results[2].value : empty();
-    if (results[0].status === "rejected") console.error("[expenses:openai]", results[0].reason);
-    if (results[1].status === "rejected") console.error("[expenses:azure]", results[1].reason);
-    if (results[2].status === "rejected") console.error("[expenses:fireworks]", results[2].reason);
-    return { openai, azure, fireworks };
+    const providers = ["openai", "azure", "fireworks"] as const;
+    const failures = results.flatMap((result, index) => result.status === "rejected"
+        ? [{ provider: providers[index], reason: result.reason }]
+        : []);
+    if (failures.length > 0) {
+        for (const failure of failures) console.error(`[expenses:${failure.provider}]`, failure.reason);
+        throw new AggregateError(
+            failures.map((failure) => failure.reason),
+            `Expense sync failed for: ${failures.map((failure) => failure.provider).join(", ")}`,
+        );
+    }
+    const value = (index: number): ExpenseSyncResult => {
+        const result = results[index];
+        if (!result || result.status !== "fulfilled") throw new Error(`Missing ${providers[index]} expense result`);
+        return result.value;
+    };
+    return {
+        openai: value(0),
+        azure: value(1),
+        fireworks: value(2),
+    };
 }
 
 export async function volumeTotals(): Promise<{ total: string; daily: string; updatedAt?: string }> {
@@ -32,7 +45,8 @@ export async function volumeTotals(): Promise<{ total: string; daily: string; up
             SELECT
                 COALESCE(sum(amount_atomic), 0)::text AS total_atomic,
                 COALESCE(sum(CASE WHEN settled_at >= date_trunc('day', now()) THEN amount_atomic ELSE 0 END), 0)::text AS daily_atomic
-             FROM payments
+             FROM logical_settlements
+             WHERE status = 'settled'
         `),
         rows<{ total: string; daily: string }>(`
             SELECT
@@ -40,7 +54,7 @@ export async function volumeTotals(): Promise<{ total: string; daily: string; up
                 COALESCE(sum(CASE WHEN day = CURRENT_DATE THEN cost_usd ELSE 0 END), 0)::text AS daily
              FROM expenses
         `),
-        stateUpdatedAt("payments"),
+        stateUpdatedAt("logical-settlements"),
     ]);
     const paymentTotal = Number(payments[0]?.total_atomic ?? "0") / 1e6;
     const paymentDaily = Number(payments[0]?.daily_atomic ?? "0") / 1e6;

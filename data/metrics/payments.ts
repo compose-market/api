@@ -17,7 +17,6 @@ import {
     type EvmNetworkId,
 } from "../../x402/configs/chains.js";
 import { merchantWalletAddress } from "../../x402/wallets.js";
-import { bumpPaymentSnapshot } from "./cache.js";
 import { ensure, getState, rows, setState, stateUpdatedAt } from "./db.js";
 import { formatUsdcAtomic, normalizeAtomic } from "./format.js";
 
@@ -181,9 +180,6 @@ export async function recordPayment(input: PaymentRecord): Promise<boolean> {
     );
     if (result.length > 0) {
         await setState("payments", new Date().toISOString());
-        if ((input.source ?? "settlement") === "settlement") {
-            await bumpPaymentSnapshot(amount);
-        }
         return true;
     }
     return false;

@@ -33,7 +33,7 @@ export interface MetricsSnapshot {
             updatedAt?: string;
         };
         payments: {
-            source: "merchant-wallet-settlements";
+            source: "canonical-x402-receipts";
             cutoff?: string;
             updatedAt?: string;
         };

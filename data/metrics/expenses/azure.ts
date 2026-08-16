@@ -7,12 +7,18 @@ import type { ExpenseSyncResult } from "./openai.js";
 const PROVIDER = "azure";
 const REQUEST_TIMEOUT_MS = 30_000;
 const FIRST_DAY = "2024-01-01";
+const REPLAY_DAYS = 7;
 const execAsync = promisify(exec);
 
 interface AzureColumn { name?: string }
 interface AzureCostResponse {
     error?: { message?: string };
     properties?: { columns?: AzureColumn[]; rows?: unknown[][] };
+}
+interface AzureTokenResponse {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
 }
 
 function yesterday(): string {
@@ -28,11 +34,34 @@ function addDays(day: string, amount: number): string {
 }
 
 async function accessToken(): Promise<string> {
+    const tenantId = process.env.AZURE_TENANT_ID?.trim();
+    const clientId = process.env.AZURE_CLIENT_ID?.trim();
+    const clientSecret = process.env.AZURE_CLIENT_SECRET?.trim();
+    if (tenantId && clientId && clientSecret) {
+        const response = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: clientId,
+                client_secret: clientSecret,
+                scope: "https://management.azure.com/.default",
+                grant_type: "client_credentials",
+            }),
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        const payload = await response.json() as AzureTokenResponse;
+        if (!response.ok || !payload.access_token) {
+            throw new Error(`Azure OAuth token request returned ${response.status}: ${payload.error_description ?? payload.error ?? response.statusText}`);
+        }
+        return payload.access_token;
+    }
     const { stdout } = await execAsync(
         "az account get-access-token --resource https://management.azure.com --query accessToken -o tsv",
         { timeout: 15_000 },
     );
-    return stdout.trim();
+    const token = stdout.trim();
+    if (!token) throw new Error("az returned an empty Azure access token");
+    return token;
 }
 
 async function queryCosts(token: string, from: string, to: string): Promise<Array<{ day: string; costUsd: number; meter: string }>> {
@@ -61,6 +90,7 @@ async function queryCosts(token: string, from: string, to: string): Promise<Arra
                     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
                 },
             );
+            if (response.status === 204) return [];
             const payload = await response.json() as AzureCostResponse;
             if (response.status === 429 && attempt < 4) {
                 const retryAfter = Number(response.headers.get("x-ms-ratelimit-microsoft.costmanagement-entity-retry-after") ?? "15");
@@ -113,45 +143,37 @@ export async function syncAzureExpenses(): Promise<ExpenseSyncResult> {
         return { days: 0, totalCost: 0 };
     }
     await ensure();
-    let token: string;
-    try {
-        token = await accessToken();
-    } catch (error) {
-        console.warn("[expenses:azure] Failed to get Azure access token:", error instanceof Error ? error.message : String(error));
-        return { days: 0, totalCost: 0 };
-    }
+    const token = await accessToken();
     const lastDay = await getState(`expenses:${PROVIDER}:last_day`);
     const endDay = yesterday();
-    const startDay = lastDay ? addDays(lastDay, 1) : FIRST_DAY;
+    const replayDay = lastDay ? addDays(lastDay, 1 - REPLAY_DAYS) : FIRST_DAY;
+    const startDay = replayDay < FIRST_DAY ? FIRST_DAY : replayDay;
     if (startDay > endDay) return { days: 0, totalCost: 0 };
 
-    const daily = new Map<string, { total: number; items: Record<string, number> }>();
+    let days = 0;
+    let totalCost = 0;
     let cursor = startDay;
     while (cursor <= endDay) {
         const yearEnd = `${cursor.slice(0, 4)}-12-31`;
         const rangeEnd = yearEnd > endDay ? endDay : yearEnd;
-        try {
-            for (const { day, costUsd, meter } of await queryCosts(token, cursor, rangeEnd)) {
-                if (costUsd <= 0) continue;
-                if (!daily.has(day)) daily.set(day, { total: 0, items: {} });
-                const entry = daily.get(day)!;
-                entry.total += costUsd;
-                entry.items[meter] = (entry.items[meter] ?? 0) + costUsd;
-            }
-        } catch (error) {
-            console.warn(`[expenses:azure] failed for ${cursor} to ${rangeEnd}:`, error instanceof Error ? error.message : String(error));
+        const daily = new Map<string, { total: number; items: Record<string, number> }>();
+        for (const { day, costUsd, meter } of await queryCosts(token, cursor, rangeEnd)) {
+            if (costUsd <= 0 || day < cursor || day > rangeEnd) continue;
+            if (!daily.has(day)) daily.set(day, { total: 0, items: {} });
+            const entry = daily.get(day)!;
+            entry.total += costUsd;
+            entry.items[meter] = (entry.items[meter] ?? 0) + costUsd;
+        }
+        let day = cursor;
+        while (day <= rangeEnd) {
+            const value = daily.get(day) ?? { total: 0, items: {} };
+            await upsertDay(day, value.total, value.items);
+            days += 1;
+            totalCost += value.total;
+            day = addDays(day, 1);
         }
         cursor = addDays(rangeEnd, 1);
     }
-
-    let days = 0;
-    let totalCost = 0;
-    for (const [day, value] of daily) {
-        await upsertDay(day, value.total, value.items);
-        await setState(`expenses:${PROVIDER}:last_day`, day);
-        days += 1;
-        totalCost += value.total;
-    }
-    if (days === 0) await setState(`expenses:${PROVIDER}:last_day`, endDay);
+    await setState(`expenses:${PROVIDER}:last_day`, endDay);
     return { days, totalCost };
 }

@@ -46,7 +46,7 @@ function npmPackagePath(): string {
 
 async function json<T>(fetcher: Fetch, url: string): Promise<T> {
     const response = await fetcher(url, {
-        headers: { "User-Agent": "compose-market-metrics" },
+        headers: { "User-Agent": "metrics" },
         signal: AbortSignal.timeout(12_000),
     });
     if (!response.ok) {
