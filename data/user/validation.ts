@@ -58,3 +58,68 @@ export function parsePairBody(input: unknown): WalletPair {
   }
   return { evmAddress: evm.value, svmAddress: svm.value };
 }
+
+export const DEFAULT_DISCLAIMER_TYPE = "ai_passthrough";
+export const DEFAULT_POLICY_VERSION = "1.0.0";
+
+export class ConsentValidationError extends Error {
+  readonly statusCode = 400;
+
+  constructor(message = "Invalid consent data") {
+    super(message);
+    this.name = "ConsentValidationError";
+  }
+}
+
+export function parseConsentBody(input: unknown): import("./types.js").RecordConsentInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new ConsentValidationError("Consent body must be an object");
+  }
+
+  const record = input as Record<string, unknown>;
+  let address: string;
+  try {
+    address = parsePairLookupAddress(record.address).value;
+  } catch (err) {
+    throw new ConsentValidationError(err instanceof Error ? err.message : "Invalid wallet address");
+  }
+  const disclaimerType = stringValue(record.disclaimerType) ?? DEFAULT_DISCLAIMER_TYPE;
+  const policyVersion = stringValue(record.policyVersion) ?? DEFAULT_POLICY_VERSION;
+  const signature = stringValue(record.signature);
+  const message = stringValue(record.message);
+
+  if (!signature) {
+    throw new ConsentValidationError("signature is required");
+  }
+  if (!message) {
+    throw new ConsentValidationError("message is required");
+  }
+
+  const metadata = record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)
+    ? (record.metadata as Record<string, unknown>)
+    : undefined;
+
+  return {
+    address,
+    disclaimerType,
+    policyVersion,
+    signature,
+    message,
+    metadata,
+  };
+}
+
+export function parseConsentLookup(
+  addressInput: unknown,
+  query?: Record<string, unknown>,
+): import("./types.js").ConsentLookupQuery {
+  const address = parsePairLookupAddress(addressInput).value;
+  const disclaimerType = query?.type ? stringValue(query.type) ?? undefined : undefined;
+  const policyVersion = query?.version ? stringValue(query.version) ?? undefined : undefined;
+
+  return {
+    address,
+    disclaimerType,
+    policyVersion,
+  };
+}

@@ -26,10 +26,26 @@ export async function initializeUserDatabase(
   database: UserDatabaseExecutor = userDatabase(),
 ): Promise<void> {
   await database.query(`
-    CREATE TABLE public.wallet_pairs (
+    CREATE TABLE IF NOT EXISTS public.wallet_pairs (
       evm_address text PRIMARY KEY,
       svm_address text NOT NULL UNIQUE,
-      created_at timestamptz NOT NULL DEFAULT now()
+      created_at timestamptz NOT NULL DEFAULT now(),
+      consented_at timestamptz,
+      consent_version text,
+      consent_signature text,
+      consent_message text,
+      consent_metadata jsonb
     )
+  `);
+  await database.query(`
+    ALTER TABLE public.wallet_pairs
+    ADD COLUMN IF NOT EXISTS consented_at timestamptz,
+    ADD COLUMN IF NOT EXISTS consent_version text,
+    ADD COLUMN IF NOT EXISTS consent_signature text,
+    ADD COLUMN IF NOT EXISTS consent_message text,
+    ADD COLUMN IF NOT EXISTS consent_metadata jsonb
+  `);
+  await database.query(`
+    DROP TABLE IF EXISTS public.user_consents CASCADE
   `);
 }

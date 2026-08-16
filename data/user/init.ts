@@ -5,7 +5,7 @@ import { initializeUserDatabase } from "./db.js";
 
 export async function main(): Promise<void> {
   await initializeUserDatabase();
-  console.log("Initialized public.wallet_pairs in the User database.");
+  console.log("Initialized public.wallet_pairs with consent columns in the User database.");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
