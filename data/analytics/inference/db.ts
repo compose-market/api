@@ -87,7 +87,7 @@ const REQUEST_UPSERT = `
       started_at = EXCLUDED.started_at,
       completed_at = EXCLUDED.completed_at,
       latency_ms = EXCLUDED.latency_ms,
-      time_to_first_token_ms = EXCLUDED.time_to_first_token_ms,
+      time_to_first_token_ms = COALESCE(EXCLUDED.time_to_first_token_ms, inference.requests.time_to_first_token_ms),
       usage = EXCLUDED.usage,
       inference_amount_atomic = EXCLUDED.inference_amount_atomic,
       platform_fee_atomic = EXCLUDED.platform_fee_atomic,
@@ -146,7 +146,6 @@ export function requestForSettlement(request: StoredRequest, settlement: Settlem
     startedAt: at,
     completedAt: at,
     latencyMs: 0,
-    timeToFirstTokenMs: undefined,
     usage,
     billing: settlement.billing,
     settlementIds: [settlement.id],
@@ -172,8 +171,19 @@ export async function insertSettlementCheckpoint(
   lifecycle: InferenceTelemetryLifecycle,
   settlement: InferenceSettlementTelemetry,
 ): Promise<void> {
+  const request = requestForSettlementCheckpoint(lifecycle, settlement);
+  await sql().transaction((transaction) => [
+    transaction.query(REQUEST_UPSERT, requestParams(request)),
+    transaction.query(SETTLEMENT_INSERT, settlementParams(request, settlement)),
+  ]);
+}
+
+export function requestForSettlementCheckpoint(
+  lifecycle: InferenceTelemetryLifecycle,
+  settlement: InferenceSettlementTelemetry,
+): StoredRequest {
   const at = settlement.createdAt;
-  const request: StoredRequest = {
+  return {
     id: settlement.id,
     userAddress: lifecycle.userAddress,
     responseId: lifecycle.request.responseId,
@@ -187,14 +197,13 @@ export async function insertSettlementCheckpoint(
     startedAt: at,
     completedAt: at,
     latencyMs: 0,
+    timeToFirstTokenMs: lifecycle.firstOutputAt === undefined
+      ? undefined
+      : lifecycle.firstOutputAt - lifecycle.startedAt,
     usage: settlement.usage,
     billing: settlement.billing,
     settlementIds: [settlement.id],
   };
-  await sql().transaction((transaction) => [
-    transaction.query(REQUEST_UPSERT, requestParams(request)),
-    transaction.query(SETTLEMENT_INSERT, settlementParams(request, settlement)),
-  ]);
 }
 
 export interface AnalyticsQueryExecutor {
