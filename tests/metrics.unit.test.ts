@@ -9,6 +9,7 @@ import { NETWORK_IDS, getNetwork } from "../x402/configs/chains.js";
 import { merchantWalletAddress } from "../x402/wallets.js";
 import { formatUsdcAtomic } from "../data/metrics/format.js";
 import { aggregatePaymentLogs, incomingAmountFromLogs } from "../data/metrics/payments.js";
+import { logicalSettlementFromReceipt } from "../data/metrics/settlements.js";
 import { buildSnapshot } from "../data/metrics/snapshot.js";
 
 const txA = `0x${"a".repeat(64)}` as const;
@@ -63,6 +64,54 @@ test("payments Neon migration keys rows by network and drops legacy chain_id", (
   assert.match(source, /SET network = 'eip155:' \|\| chain_id::text/u);
   assert.match(source, /ALTER TABLE payments DROP COLUMN chain_id/u);
   assert.doesNotMatch(source, /chain_id\s+INTEGER NOT NULL/u);
+  assert.match(source, /CREATE TABLE IF NOT EXISTS logical_settlements/u);
+  assert.match(source, /receipt_id\s+TEXT PRIMARY KEY/u);
+});
+
+test("canonical receipt projection keeps one logical settlement identity and amount", () => {
+  const settlement = logicalSettlementFromReceipt({
+    id: "rct_test",
+    network: "eip155:5042002",
+    settlementStatus: "settled",
+    finalAmountWei: "1234567",
+    settledAt: 1_786_400_000_000,
+    txHash: txA,
+    paymentIntentId: "pi_test",
+  });
+  assert.deepEqual(settlement, {
+    receiptId: "rct_test",
+    network: "eip155:5042002",
+    status: "settled",
+    amountAtomic: "1234567",
+    settledAt: new Date(1_786_400_000_000),
+    transactionHash: txA,
+    paymentIntentId: "pi_test",
+    paymentChannelId: undefined,
+  });
+  assert.equal(logicalSettlementFromReceipt({
+    id: "rct_incomplete",
+    network: "eip155:5042002",
+    settlementStatus: "settled",
+    finalAmountWei: "1",
+  }), null);
+});
+
+test("metrics sync uses canonical receipts and bounded expense collection", () => {
+  const cli = readFileSync(new URL("../data/metrics/cli.ts", import.meta.url), "utf8");
+  const volume = readFileSync(new URL("../data/metrics/expenses/index.ts", import.meta.url), "utf8");
+  const openai = readFileSync(new URL("../data/metrics/expenses/openai.ts", import.meta.url), "utf8");
+  const azure = readFileSync(new URL("../data/metrics/expenses/azure.ts", import.meta.url), "utf8");
+  const fireworks = readFileSync(new URL("../data/metrics/expenses/fireworks.ts", import.meta.url), "utf8");
+
+  assert.match(cli, /syncLogicalSettlements/u);
+  assert.match(volume, /FROM logical_settlements[\s\S]*WHERE status = 'settled'/u);
+  assert.match(openai, /end_time: String\(endTime\)/u);
+  assert.match(openai, /REPLAY_DAYS = 7/u);
+  assert.match(azure, /grant_type: "client_credentials"/u);
+  assert.match(azure, /REPLAY_DAYS = 7/u);
+  assert.match(fireworks, /billingSummary\(account, cursor, addDays\(cursor, 1\)\)/u);
+  assert.match(fireworks, /daily_version/u);
+  assert.match(volume, /throw new AggregateError/u);
 });
 
 test("buildSnapshot returns public metrics shape with named sources", () => {
@@ -91,7 +140,7 @@ test("buildSnapshot returns public metrics shape with named sources", () => {
   assert.equal(snapshot.daily.payments.amountUsdc, "0.456789");
   assert.equal(snapshot.daily.sessions, 7);
   assert.equal(snapshot.sources.downloads.package, "@compose-market/sdk");
-  assert.equal(snapshot.sources.payments.source, "merchant-wallet-settlements");
-  assert.equal(snapshot.sources.payments.cutoff, "2026-06-02T00:02:00.000Z");
+  assert.equal(snapshot.sources.payments.source, "canonical-x402-receipts");
+  assert.equal(snapshot.sources.payments.cutoff, undefined);
   assert.equal(snapshot.updatedAt, "2026-06-02T00:03:00.000Z");
 });

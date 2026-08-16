@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-08-10T09:36:45.979Z",
+  "lastUpdated": "2026-08-16T20:30:18.355Z",
   "totalModels": 63,
   "byProvider": {
     "alibaba": 35,
@@ -4957,6 +4957,45 @@
           }
         ]
       },
+      "params": {
+        "hyper_parameters": {
+          "type": "object",
+          "required": false
+        },
+        "split": {
+          "type": "string",
+          "required": false,
+          "description": "Training set split ratio. Recommended value: 0.9. Value range: (0, 1)."
+        },
+        "max_split_val_dataset_sample": {
+          "type": "string",
+          "required": false,
+          "description": "Maximum number of samples to automatically split from the training set as validation set. Recommended value: 5. Must be \\&gt;= 1."
+        },
+        "save_total_limit": {
+          "type": "string",
+          "required": false,
+          "description": "Checkpoint save limit. Recommended value: 10. Limits the maximum number of models saved; the system will only keep the last N checkpoints."
+        },
+        "lora_rank": {
+          "type": "string",
+          "required": false
+        },
+        "lora_alpha": {
+          "type": "string",
+          "required": false
+        },
+        "job_name": {
+          "type": "string",
+          "required": false,
+          "description": "Tuning job name."
+        },
+        "model_name": {
+          "type": "string",
+          "required": false,
+          "description": "Model name after tuning is complete."
+        }
+      },
       "sourceMetadata": {
         "alibaba": {
           "catalogApi": "https://dashscope-intl.aliyuncs.com/api/v1/models",
@@ -5025,7 +5064,10 @@
           ],
           "documentation": {
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
-            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
+            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+            "apiReferences": [
+              "https://www.alibabacloud.com/help/en/model-studio/video-generation-create-fine-tuning-job-api.md"
+            ]
           }
         }
       },
@@ -5053,8 +5095,63 @@
           "model_experience",
           "video_generation"
         ],
-        "parameterKeys": [],
-        "parameters": [],
+        "parameterKeys": [
+          "hyper_parameters",
+          "split",
+          "max_split_val_dataset_sample",
+          "save_total_limit",
+          "lora_rank",
+          "lora_alpha",
+          "job_name",
+          "model_name"
+        ],
+        "parameters": [
+          {
+            "name": "hyper_parameters",
+            "type": "object",
+            "required": false
+          },
+          {
+            "name": "split",
+            "type": "string",
+            "required": false,
+            "description": "Training set split ratio. Recommended value: 0.9. Value range: (0, 1)."
+          },
+          {
+            "name": "max_split_val_dataset_sample",
+            "type": "string",
+            "required": false,
+            "description": "Maximum number of samples to automatically split from the training set as validation set. Recommended value: 5. Must be \\&gt;= 1."
+          },
+          {
+            "name": "save_total_limit",
+            "type": "string",
+            "required": false,
+            "description": "Checkpoint save limit. Recommended value: 10. Limits the maximum number of models saved; the system will only keep the last N checkpoints."
+          },
+          {
+            "name": "lora_rank",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "lora_alpha",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "job_name",
+            "type": "string",
+            "required": false,
+            "description": "Tuning job name."
+          },
+          {
+            "name": "model_name",
+            "type": "string",
+            "required": false,
+            "description": "Model name after tuning is complete."
+          }
+        ],
         "metadata": [
           "alibaba.catalogApi: https://dashscope-intl.aliyuncs.com/api/v1/models",
           "alibaba.compatibleModelsApi: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
@@ -5135,6 +5232,14 @@
           "modality:video",
           "operation:image-to-video",
           "output:video",
+          "param:hyper_parameters",
+          "param:job_name Tuning job name.",
+          "param:lora_alpha",
+          "param:lora_rank",
+          "param:max_split_val_dataset_sample Maximum number of samples to automatically split from the training set as validation set. Recommended value: 5. Must be \\&gt;= 1.",
+          "param:model_name Model name after tuning is complete.",
+          "param:save_total_limit Checkpoint save limit. Recommended value: 10. Limits the maximum number of models saved; the system will only keep the last N checkpoints.",
+          "param:split Training set split ratio. Recommended value: 0.9. Value range: (0, 1).",
           "source:video-generation",
           "source:videos"
         ]
@@ -5627,8 +5732,7 @@
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
             "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
             "apiReferences": [
-              "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md",
-              "https://www.alibabacloud.com/help/en/model-studio/list-quotas.md"
+              "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md"
             ]
           }
         }
@@ -7192,8 +7296,7 @@
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
             "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
             "apiReferences": [
-              "https://www.alibabacloud.com/help/en/model-studio/image-to-video-general-api-reference.md",
-              "https://www.alibabacloud.com/help/en/model-studio/create-fine-tuning-job-api.md"
+              "https://www.alibabacloud.com/help/en/model-studio/image-to-video-general-api-reference.md"
             ]
           }
         }
@@ -13145,15 +13248,15 @@
             "unit": "Per frame",
             "unitKey": "per_frame_usd",
             "entries": {
-              "frame": 0.0010417
+              "frame": 0.0014583333000000001
             },
             "source": {
               "api": "https://api.deepinfra.com/models/list",
               "pricingType": "frame_units",
               "raw": {
-                "short": "$0.0250 / second (720p)",
+                "short": "$0.0350 / second (720p)",
                 "type": "frame_units",
-                "cents_per_frame_unit": 0.10417
+                "cents_per_frame_unit": 0.14583333
               }
             },
             "default": true
@@ -13169,12 +13272,12 @@
         "image_url": {
           "type": "string",
           "required": false,
-          "description": "First-frame image for image-to-video: URL or base64-encoded image data. Omit for text-to-video. Mutually exclusive with video_url."
+          "description": "First-frame image for image-to-video: an http(s) URL or a data: URI (PNG, JPEG or WebP). Omit for text-to-video. Mutually exclusive with video_url."
         },
         "video_url": {
           "type": "string",
           "required": false,
-          "description": "Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url."
+          "description": "Conditioning video for video-to-video: an http(s) URL or a data: URI (MP4). Omit for text-to-video. Mutually exclusive with image_url."
         },
         "seed": {
           "type": "integer",
@@ -13285,13 +13388,13 @@
             "name": "image_url",
             "type": "string",
             "required": false,
-            "description": "First-frame image for image-to-video: URL or base64-encoded image data. Omit for text-to-video. Mutually exclusive with video_url."
+            "description": "First-frame image for image-to-video: an http(s) URL or a data: URI (PNG, JPEG or WebP). Omit for text-to-video. Mutually exclusive with video_url."
           },
           {
             "name": "video_url",
             "type": "string",
             "required": false,
-            "description": "Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url."
+            "description": "Conditioning video for video-to-video: an http(s) URL or a data: URI (MP4). Omit for text-to-video. Mutually exclusive with image_url."
           },
           {
             "name": "seed",
@@ -13391,12 +13494,12 @@
           "output:video",
           "param:aspect_ratio Output aspect ratio.",
           "param:duration_seconds Video duration in seconds (1–5). Ignored when output_type is 'image'.",
-          "param:image_url First-frame image for image-to-video: URL or base64-encoded image data. Omit for text-to-video. Mutually exclusive with video_url.",
+          "param:image_url First-frame image for image-to-video: an http(s) URL or a data: URI (PNG, JPEG or WebP). Omit for text-to-video. Mutually exclusive with video_url.",
           "param:output_type Output type: 'video' for a video clip, 'image' for a single image.",
           "param:prompt Text prompt describing the desired content",
           "param:resolution Output resolution. Per-second price relative to 720p: 720p (1x), 480p (0.5x), 256p (0.25x).",
           "param:seed Random seed for reproducible output",
-          "param:video_url Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url.",
+          "param:video_url Conditioning video for video-to-video: an http(s) URL or a data: URI (MP4). Omit for text-to-video. Mutually exclusive with image_url.",
           "source:video-generation",
           "source:world-model"
         ]
@@ -13454,12 +13557,12 @@
         "image_url": {
           "type": "string",
           "required": false,
-          "description": "First-frame image for image-to-video: URL or base64-encoded image data. Omit for text-to-video. Mutually exclusive with video_url."
+          "description": "First-frame image for image-to-video: an http(s) URL or a data: URI (PNG, JPEG or WebP). Omit for text-to-video. Mutually exclusive with video_url."
         },
         "video_url": {
           "type": "string",
           "required": false,
-          "description": "Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url."
+          "description": "Conditioning video for video-to-video: an http(s) URL or a data: URI (MP4). Omit for text-to-video. Mutually exclusive with image_url."
         },
         "seed": {
           "type": "integer",
@@ -13570,13 +13673,13 @@
             "name": "image_url",
             "type": "string",
             "required": false,
-            "description": "First-frame image for image-to-video: URL or base64-encoded image data. Omit for text-to-video. Mutually exclusive with video_url."
+            "description": "First-frame image for image-to-video: an http(s) URL or a data: URI (PNG, JPEG or WebP). Omit for text-to-video. Mutually exclusive with video_url."
           },
           {
             "name": "video_url",
             "type": "string",
             "required": false,
-            "description": "Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url."
+            "description": "Conditioning video for video-to-video: an http(s) URL or a data: URI (MP4). Omit for text-to-video. Mutually exclusive with image_url."
           },
           {
             "name": "seed",
@@ -13676,12 +13779,12 @@
           "output:video",
           "param:aspect_ratio Output aspect ratio.",
           "param:duration_seconds Video duration in seconds (1–5). Ignored when output_type is 'image'.",
-          "param:image_url First-frame image for image-to-video: URL or base64-encoded image data. Omit for text-to-video. Mutually exclusive with video_url.",
+          "param:image_url First-frame image for image-to-video: an http(s) URL or a data: URI (PNG, JPEG or WebP). Omit for text-to-video. Mutually exclusive with video_url.",
           "param:output_type Output type: 'video' for a video clip, 'image' for a single image.",
           "param:prompt Text prompt describing the desired content",
           "param:resolution Output resolution. Per-second price relative to 720p: 720p (1x), 480p (0.5x), 256p (0.25x).",
           "param:seed Random seed for reproducible output",
-          "param:video_url Conditioning video for video-to-video: URL or base64-encoded video data. Omit for text-to-video. Mutually exclusive with image_url.",
+          "param:video_url Conditioning video for video-to-video: an http(s) URL or a data: URI (MP4). Omit for text-to-video. Mutually exclusive with image_url.",
           "source:video-generation",
           "source:world-model"
         ]

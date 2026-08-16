@@ -286,17 +286,17 @@ steps:
             --quiet
         fi
 
-        deploy_metric_job "compose-market-metrics-payments" "metrics-payments" "120s"
-        deploy_metric_job "compose-market-metrics-sessions" "metrics-sessions" "120s"
-        deploy_metric_job "compose-market-metrics-downloads" "metrics-downloads" "120s"
-        deploy_metric_job "compose-market-metrics-sync" "metrics-sync" "300s"
-        deploy_metric_job "compose-market-metrics-expenses" "metrics-expenses" "300s"
+        deploy_metric_job "metrics-payments" "metrics-payments" "120s"
+        deploy_metric_job "metrics-sessions" "metrics-sessions" "120s"
+        deploy_metric_job "metrics-downloads" "metrics-downloads" "120s"
+        deploy_metric_job "metrics-sync" "metrics-sync" "300s"
+        deploy_metric_job "metrics-expenses" "metrics-expenses" "300s"
 
-        deploy_metric_scheduler "compose-market-metrics-payments-every-2-min" "*/2 * * * *" "compose-market-metrics-payments"
-        deploy_metric_scheduler "compose-market-metrics-sessions-every-5-min" "*/5 * * * *" "compose-market-metrics-sessions"
-        deploy_metric_scheduler "compose-market-metrics-downloads-hourly" "0 * * * *" "compose-market-metrics-downloads"
-        deploy_metric_scheduler "compose-market-metrics-sync-every-15-min" "*/15 * * * *" "compose-market-metrics-sync"
-        deploy_metric_scheduler "compose-market-metrics-expenses-hourly" "0 * * * *" "compose-market-metrics-expenses"
+        deploy_metric_scheduler "metrics-payments-every-2-min" "*/2 * * * *" "metrics-payments"
+        deploy_metric_scheduler "metrics-sessions-every-5-min" "*/5 * * * *" "metrics-sessions"
+        deploy_metric_scheduler "metrics-downloads-hourly" "0 * * * *" "metrics-downloads"
+        deploy_metric_scheduler "metrics-sync-every-15-min" "*/15 * * * *" "metrics-sync"
+        deploy_metric_scheduler "metrics-expenses-hourly" "0 * * * *" "metrics-expenses"
     waitFor: ['deploy-service']
 
 # Output the service URL

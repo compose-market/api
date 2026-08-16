@@ -101,6 +101,7 @@ test("each settlement projects to one request call while retaining response corr
     startedAt: "2026-08-08T00:00:00.000Z",
     completedAt: "2026-08-08T00:01:00.000Z",
     latencyMs: 60_000,
+    timeToFirstTokenMs: 320,
     usage: { metrics: {}, units: [] },
     billing: { inferenceAmountAtomic: "30", platformFeeAtomic: "2", finalAmountAtomic: "32", currency: "USDC", decimals: 6 },
     settlementIds: ["stl_1", "stl_2"],
@@ -130,6 +131,31 @@ test("each settlement projects to one request call while retaining response corr
   assert.deepEqual(second.settlementIds, ["stl_2"]);
   assert.equal(first.billing.inferenceAmountAtomic, "10");
   assert.equal(second.billing.inferenceAmountAtomic, "20");
+  assert.equal(first.timeToFirstTokenMs, 320);
+  assert.equal(second.timeToFirstTokenMs, 320);
+});
+
+test("settlement checkpoints retain lifecycle TTFT", async () => {
+  const { requestForSettlementCheckpoint } = await import("../data/analytics/inference/db.js");
+  const request = requestForSettlementCheckpoint({
+    userAddress: `0x${"31".repeat(20)}`,
+    startedAt: 1_000,
+    firstOutputAt: 1_275,
+    request: { responseId: "resp_ttft", stream: true },
+  } as never, {
+    id: "stl_ttft",
+    createdAt: "2026-08-08T00:00:01.000Z",
+    network: "eip155:5042002",
+    family: "openai",
+    model: "gpt-5",
+    types: ["text"],
+    operation: "responses.create",
+    status: "settled",
+    usage: { metrics: {}, units: [] },
+    billing: { inferenceAmountAtomic: "1", platformFeeAtomic: "0", finalAmountAtomic: "1", currency: "USDC", decimals: 6 },
+  } as never);
+
+  assert.equal(request.timeToFirstTokenMs, 275);
 });
 
 test("authoritative inference telemetry owns analytics metrics and units", async () => {

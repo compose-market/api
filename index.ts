@@ -12,7 +12,7 @@ import { buildError } from "./http/errors.js";
 import { errors as bodyErrors, form, json } from "./http/body.js";
 import { registerMetricsRoutes } from "./data/metrics/routes.js";
 import { syncDownloads } from "./data/metrics/downloads.js";
-import { syncPayments } from "./data/metrics/payments.js";
+import { syncLogicalSettlements } from "./data/metrics/settlements.js";
 import { syncSessionsFromValkey } from "./data/metrics/sessions.js";
 import { syncAllExpenses } from "./data/metrics/expenses/index.js";
 import { refreshMetricsSnapshot } from "./data/metrics/snapshot.js";
@@ -44,12 +44,12 @@ async function runJob() {
       case "metrics-sync":
         await syncDownloads();
         await syncSessionsFromValkey();
-        await syncPayments();
+        await syncLogicalSettlements();
         await syncAllExpenses();
         await refreshMetricsSnapshot();
         break;
       case "metrics-payments":
-        await syncPayments();
+        await syncLogicalSettlements();
         await refreshMetricsSnapshot();
         break;
       case "metrics-downloads":

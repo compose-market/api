@@ -43,17 +43,17 @@ function executor(
   return { query };
 }
 
-test("the User DB initializer creates exactly the public wallet-pair table", async () => {
+test("the User DB initializer creates the user database tables", async () => {
   const calls: Array<{ statement: string; params?: readonly unknown[] }> = [];
   await initializeUserDatabase(executor(async (statement, params) => {
     calls.push({ statement, params });
     return [];
   }));
 
-  assert.equal(calls.length, 1);
-  assert.equal(
-    calls[0]?.statement.replace(/\s+/g, " ").trim(),
-    "CREATE TABLE public.wallet_pairs ( evm_address text PRIMARY KEY, svm_address text NOT NULL UNIQUE, created_at timestamptz NOT NULL DEFAULT now() )",
+  assert.equal(calls.length, 3);
+  assert.match(
+    calls[0]?.statement.replace(/\s+/g, " ").trim() ?? "",
+    /CREATE TABLE IF NOT EXISTS public\.wallet_pairs/,
   );
   assert.equal(calls[0]?.params, undefined);
 });

@@ -548,6 +548,20 @@ type JobConfig = {
     secretNames: string[];
 };
 
+type SchedulerConfig = {
+    name: string;
+    schedule: string;
+    jobName: string;
+    attemptDeadline: string;
+};
+
+const METRICS_BASE_SECRETS = [
+    "METRICS_DATABASE_URL",
+    "VALKEY_KEYS_SERVICE_URI",
+    "VALKEY_KEYS_PASSWORD",
+    "VALKEY_TLS",
+];
+
 function jobExists(jobName: string): boolean {
     const projectId = requireProjectId();
     const output = getOutput(
@@ -633,12 +647,62 @@ async function deployJobs(image: string) {
                 "VALKEY_TLS",
             ],
         },
+        {
+            name: "metrics-payments",
+            task: "metrics-payments",
+            timeout: "300s",
+            secretNames: METRICS_BASE_SECRETS,
+        },
+        {
+            name: "metrics-sessions",
+            task: "metrics-sessions",
+            timeout: "300s",
+            secretNames: METRICS_BASE_SECRETS,
+        },
+        {
+            name: "metrics-downloads",
+            task: "metrics-downloads",
+            timeout: "300s",
+            secretNames: ["METRICS_DATABASE_URL"],
+        },
     ];
 
     for (const job of jobs) {
         console.log(`\n📦 Deploying job: ${job.name}`);
         const mode = jobExists(job.name) ? "update" : "create";
         run(buildJobDeployCommand(mode, job, image));
+    }
+}
+
+function buildSchedulerCommand(mode: "create" | "update", scheduler: SchedulerConfig): string {
+    const projectId = requireProjectId();
+    const projectNumber = getProjectNumber();
+    const serviceAccount = getServiceAccount();
+    const uri = `https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${projectNumber}/jobs/${scheduler.jobName}:run`;
+    return [
+        `gcloud scheduler jobs ${mode} http ${scheduler.name}`,
+        `--location ${REGION}`,
+        `--project ${projectId}`,
+        `--schedule "${scheduler.schedule}"`,
+        `--time-zone "Etc/UTC"`,
+        `--uri "${uri}"`,
+        `--http-method POST`,
+        `--oauth-service-account-email ${serviceAccount}`,
+        `--oauth-token-scope "https://www.googleapis.com/auth/cloud-platform"`,
+        `--attempt-deadline ${scheduler.attemptDeadline}`,
+        "--quiet",
+    ].join(" \\\n      ");
+}
+
+async function deployMetricsSchedulers() {
+    const schedulers: SchedulerConfig[] = [
+        { name: "metrics-payments-every-5-min", schedule: "*/5 * * * *", jobName: "metrics-payments", attemptDeadline: "300s" },
+        { name: "metrics-sessions-every-5-min", schedule: "*/5 * * * *", jobName: "metrics-sessions", attemptDeadline: "300s" },
+        { name: "metrics-downloads-hourly", schedule: "0 * * * *", jobName: "metrics-downloads", attemptDeadline: "300s" },
+    ];
+    for (const scheduler of schedulers) {
+        const mode = schedulerJobExists(scheduler.name) ? "update" : "create";
+        run(buildSchedulerCommand(mode, scheduler));
     }
 }
 
@@ -722,6 +786,7 @@ async function deploy() {
     if (!skipJobs) {
         await deployJobs(image);
         await deploySettlementScheduler();
+        await deployMetricsSchedulers();
     }
 
     const url = getOutput(

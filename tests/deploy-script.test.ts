@@ -28,3 +28,18 @@ test("both settlement job deployment paths bind the Analytics database", async (
   const bindings = cloudBuild.slice(staticStart, staticEnd).match(/ANALYTICS_DATABASE_URL=ANALYTICS_DATABASE_URL:latest/gu) || [];
   assert.equal(bindings.length, 2, "settlement job update and create commands must both bind Analytics Neon");
 });
+
+test("default deployment restores canonical metrics jobs and schedules", async () => {
+  const source = await readFile(new URL("../deploy.ts", import.meta.url), "utf8");
+  for (const task of ["metrics-payments", "metrics-sessions", "metrics-downloads"]) {
+    assert.match(source, new RegExp(`task: "${task}"`, "u"));
+  }
+  for (const schedule of [
+    "metrics-payments-every-5-min",
+    "metrics-sessions-every-5-min",
+    "metrics-downloads-hourly",
+  ]) {
+    assert.match(source, new RegExp(schedule, "u"));
+  }
+  assert.match(source, /await deployMetricsSchedulers\(\)/u);
+});
