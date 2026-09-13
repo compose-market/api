@@ -626,6 +626,7 @@ async function deployJobs(image: string) {
                 "AVALANCHE_MAINNET_RPC",
                 "ARC_TESTNET_RPC",
                 "SEI_MAINNET_RPC",
+                "BOTCHAIN_MAINNET_RPC",
                 "MERCHANT_WALLET_ADDRESS",
                 "SVM_MERCHANT_WALLET_ADDRESS",
                 "ANALYTICS_DATABASE_URL",
@@ -665,6 +666,15 @@ async function deployJobs(image: string) {
             timeout: "300s",
             secretNames: ["METRICS_DATABASE_URL"],
         },
+        {
+            name: "compose-market-benchmarks",
+            task: "benchmarks-ingest",
+            timeout: "900s",
+            secretNames: [
+                "BENCHMARKS_DATABASE_URL",
+                "ARTIFICIAL_ANALYSIS_API_KEY",
+            ],
+        },
     ];
 
     for (const job of jobs) {
@@ -699,6 +709,7 @@ async function deployMetricsSchedulers() {
         { name: "metrics-payments-every-5-min", schedule: "*/5 * * * *", jobName: "metrics-payments", attemptDeadline: "300s" },
         { name: "metrics-sessions-every-5-min", schedule: "*/5 * * * *", jobName: "metrics-sessions", attemptDeadline: "300s" },
         { name: "metrics-downloads-hourly", schedule: "0 * * * *", jobName: "metrics-downloads", attemptDeadline: "300s" },
+        { name: "benchmarks-ingest-every-6-hours", schedule: "15 */6 * * *", jobName: "compose-market-benchmarks", attemptDeadline: "900s" },
     ];
     for (const scheduler of schedulers) {
         const mode = schedulerJobExists(scheduler.name) ? "update" : "create";

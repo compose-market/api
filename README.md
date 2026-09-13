@@ -65,7 +65,6 @@ The API reads secrets from env. The names that matter:
 | `COMPOSE_SESSION_SECRET` | HMAC secret for Compose Key JWTs. |
 | `DEFAULT_CHAIN` | `avalanche` (default). |
 | `USE_MAINNET` | `true` for mainnet, else testnet. |
-| `AVALANCHE_FUJI_RPC` | RPC endpoint for Avalanche Fuji (43113). |
 | `AVALANCHE_MAINNET_RPC` | RPC endpoint for Avalanche C-Chain (43114). |
 | `VALKEY_KEYS_SERVICE_URI` | Valkey connection URI for keys, budgets, intents, evidence, receipts. |
 | `USER_DATABASE_URL` | Neon connection URL for the public smart-account pair registry. |
@@ -93,6 +92,17 @@ flowchart LR
 The inference gateway and the routes proxy both wrap each call in the same
 x402 prepare/settle harness. The handler exposes the facilitator and key
 management endpoints directly. Settlement lands on Avalanche.
+
+### Agent stream forwarding
+
+`routes.ts` proxies the runtime's SSE streams verbatim: the runtime emits a
+typed domain protocol (`activity.*` + `model.*` events) and the gateway
+forwards every frame unchanged. Gateway-side stream logic is domain-aware —
+terminal detection reads `activity.run`/`activity.error` (with their
+`payload.usage`/`payload.agent` terminal metadata), text-delta detection reads
+`model.text.delta`, and settlement detection accepts both the legacy receipt
+frames and the domain terminals. The gateway adds nothing to the event
+vocabulary; `@compose-market/core` on the client side is the decoder.
 
 ## Related
 
