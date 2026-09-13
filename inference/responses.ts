@@ -48,14 +48,18 @@ export function normalizeResponsesTools(value: unknown): ResponsesFunctionTool[]
   for (const raw of value) {
     const tool = object(raw);
     if (tool?.type !== "function") continue;
-    const name = nonEmpty(tool.name);
+    const fn = object(tool.function);
+    const name = nonEmpty(tool.name) || nonEmpty(fn?.name);
     if (!name) continue;
+    const description = nonEmpty(tool.description) || nonEmpty(fn?.description);
+    const parameters = object(tool.parameters) || object(fn?.parameters);
+    const strict = typeof tool.strict === "boolean" ? tool.strict : typeof fn?.strict === "boolean" ? fn.strict : undefined;
     tools.push({
       type: "function",
       name,
-      ...(nonEmpty(tool.description) ? { description: tool.description as string } : {}),
-      ...(object(tool.parameters) ? { parameters: tool.parameters as JsonSchema } : {}),
-      ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
+      ...(description ? { description: description as string } : {}),
+      ...(parameters ? { parameters: parameters as JsonSchema } : {}),
+      ...(strict !== undefined ? { strict } : {}),
       ...(object(tool.cache_control) ? { cache_control: tool.cache_control as Record<string, unknown> } : {}),
       ...(tool.prompt_cache_breakpoint !== undefined ? { prompt_cache_breakpoint: tool.prompt_cache_breakpoint } : {}),
     });
@@ -88,7 +92,8 @@ export function normalizeChatTools(value: unknown): ResponsesFunctionTool[] | un
 export function normalizeResponsesToolChoice(value: unknown): ResponsesToolChoice | undefined {
   if (value === "none" || value === "auto" || value === "required") return value;
   const choice = object(value);
-  const name = nonEmpty(choice?.name);
+  const fn = object(choice?.function);
+  const name = nonEmpty(choice?.name) || nonEmpty(fn?.name);
   return choice?.type === "function" && name ? { type: "function", name } : undefined;
 }
 

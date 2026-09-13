@@ -318,7 +318,7 @@ export interface EmbeddingResponse {
 // =============================================================================
 
 export interface VideoGenerationRequest {
-    prompt: string;
+    prompt?: string;
     model: string;
     attachments?: Array<Attachment | string>;
     attachment?: Attachment | string;
@@ -328,6 +328,12 @@ export interface VideoGenerationRequest {
     fps?: number;
     size?: string;  // e.g., "1920x1080"
     aspect_ratio?: string;  // e.g., "16:9"
+    resolution?: string;
+    video_url?: string;
+    audio_url?: string;
+    operation?: string;
+    custom_params?: Record<string, unknown>;
+    params?: Record<string, unknown>;
     user?: string;
 }
 
@@ -566,18 +572,46 @@ export const PROVIDER_PRIORITY: Record<ModelProvider, number> = {
     "gemini": 1,
     "azure": 1,
     "fireworks": 1,
-    "alibaba": 1,
-    "vertex": 1,
+    "deepgram": 1,
+    "elevenlabs": 1,
+    "cartesia": 1,
     "openai": 2,
     "hugging face": 2,
-    "deepgram": 2,
-    "elevenlabs": 2,
-    "cartesia": 2,
-    "deepinfra": 2,
-    "asicloud": 3,
     "cloudflare": 3,
     "roboflow": 3,
+    "deepinfra": 3,
+    "alibaba": 4,
+    "vertex": 4,
+    "asicloud": 4,
 };
+
+/**
+ * One serving provider for a model in the compiled catalog.
+ * Multi-provider models collapse to a single catalog row whose
+ * `providerRoutes` list is the ordered fallback chain: the priority
+ * winner first, then the next providers by PROVIDER_PRIORITY. Each route
+ * keeps its own provider-wire model ID, pricing, and dispatch metadata so
+ * routing, adapters, and settlement behave exactly like the old
+ * per-provider rows on every route — primary or fallback.
+ */
+export interface ProviderRoute {
+    /** Inference provider serving this model on this route. */
+    provider: ModelProvider;
+    /** Provider-wire model ID sent to this provider's adapter. */
+    upstreamModelId: string;
+    /** This provider's raw pricing for the model (normalized at load). */
+    pricing?: ModelPricing | null;
+    /** This provider's raw source metadata (endpoints, deployments) for vendor dispatch. */
+    sourceMetadata?: unknown;
+    /** This provider's request parameter schema. */
+    params?: unknown;
+    /** This provider's display name for the model. */
+    name?: string | null;
+    /** This provider's description of the model. */
+    description?: string | null;
+    /** This provider's capability contract used by adapter dispatch. */
+    capabilities?: unknown;
+}
 
 // =============================================================================
 // Capability Types
@@ -650,14 +684,6 @@ export type TaskType =
 
 export type ModelPricing = Record<string, unknown>;
 
-export interface ModelSemanticParameter {
-    name: string;
-    type?: string;
-    required?: boolean;
-    description?: string;
-    [key: string]: unknown;
-}
-
 export interface ModelOperationCapability {
     modality: string;
     operation: string;
@@ -672,17 +698,7 @@ export interface ModelOperationCapability {
 /** Compiled, provider-neutral facts produced by the catalog classifiers. */
 export interface ModelSemantics {
     family?: string;
-    modalities?: string[];
-    operations?: string[];
-    inputs?: string[];
-    outputs?: string[];
-    sourceTypes?: string[];
-    streamable?: boolean;
-    capabilityKeys?: string[];
-    parameterKeys?: string[];
-    parameters?: ModelSemanticParameter[];
-    metadata?: string[];
-    operationCapabilities?: ModelOperationCapability[];
+    capabilities?: ModelOperationCapability[];
     characteristics?: string[];
     [key: string]: unknown;
 }
@@ -742,6 +758,8 @@ export interface ModelCard {
     available?: boolean;
     /** Optional source tracking. */
     availableFrom?: ModelProvider[];
+    /** Ordered provider fallback chain (priority winner first) for multi-provider models. */
+    providerRoutes?: ProviderRoute[];
     /** Derived semantic routing/search profile compiled from catalog classifiers. */
     semantics?: ModelSemantics;
 }
