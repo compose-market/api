@@ -1315,6 +1315,7 @@ export function getBatchAsset(network: EvmNetworkId): {
         name: asset.name,
         version: asset.version,
         decimals: asset.decimals,
+        ...(asset.assetTransferMethod ? { assetTransferMethod: asset.assetTransferMethod } : {}),
     };
 }
 
@@ -1397,6 +1398,7 @@ export async function rememberBatchChannel(
         paymentPayload,
         payer: verifyResult?.payer || raw.channelConfig.payer,
     });
+    const verified = (verifyResult?.extra ?? {}) as Record<string, unknown>;
 
     await getBatchChannelStorage().updateChannel(raw.voucher.channelId, (current) => {
         const existing = current as StoredChannel | undefined;
@@ -1416,6 +1418,13 @@ export async function rememberBatchChannel(
                 signedMaxClaimable: backing.signedMaxClaimable,
                 signature: backing.voucherSignature,
                 backingFingerprint: backing.backingFingerprint,
+                ...(verifyResult?.extra ? {
+                    balance: stringExtra(verified, "balance", existing.balance),
+                    totalClaimed: stringExtra(verified, "totalClaimed", existing.totalClaimed),
+                    withdrawRequestedAt: numberExtra(verified, "withdrawRequestedAt", existing.withdrawRequestedAt),
+                    refundNonce: numberExtra(verified, "refundNonce", existing.refundNonce),
+                    onchainSyncedAt: Date.now(),
+                } : {}),
                 lastRequestTimestamp: Date.now(),
             };
         }
@@ -1433,6 +1442,7 @@ export async function commitRawBatchCheckpoint(input: {
     amountWei: string;
     rootRunId: string;
     executionRunId: string;
+    idempotencyKey?: string;
     sequence: number;
 }): Promise<RawBatchCheckpointCommit> {
     const raw = getBatchPayload(input.paymentPayload);
@@ -1462,6 +1472,7 @@ export async function commitRawBatchCheckpoint(input: {
         amountWei: input.amountWei,
         rootRunId: input.rootRunId,
         executionRunId: input.executionRunId,
+        idempotencyKey: input.idempotencyKey,
         sequence: input.sequence,
         channelStorage: isSolanaNetwork(backing.network) ? "svm-hash" : "evm-json",
         channelKey: isSolanaNetwork(backing.network)

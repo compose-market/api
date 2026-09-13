@@ -61,7 +61,8 @@ import {
     settlePaymentIntent,
 } from "./intents.js";
 import {
-    valkeyDel,
+    valkeyCompareAndDelete,
+    valkeyCompareAndExpire,
     valkeyGet,
     valkeySetNXEX,
 } from "./keys/valkey.js";
@@ -150,9 +151,14 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
 
     activeSettlementCycle = (async () => {
         const owner = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+        // Short TTL + heartbeat extension: if the process holding the lock
+        // dies (or its Valkey release fails mid-outage), the lock frees in
+        // ~TTL instead of freezing every settlement cycle for 10 minutes.
+        const lockTtlSeconds = intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 120);
         let locked = false;
+        let heartbeat: ReturnType<typeof setInterval> | null = null;
         try {
-            locked = await valkeySetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, intEnv("SETTLEMENT_RUN_LOCK_SECONDS", 600));
+            locked = await valkeySetNXEX(SETTLEMENT_RUN_LOCK_KEY, owner, lockTtlSeconds);
             if (!locked) {
                 console.log("[batch-settlement] skipped; another settlement cycle is active", { reason });
                 return {
@@ -163,6 +169,18 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
                     intents: null,
                 };
             }
+            heartbeat = setInterval(() => {
+                void valkeyCompareAndExpire(SETTLEMENT_RUN_LOCK_KEY, owner, lockTtlSeconds)
+                    .then((extended) => {
+                        if (!extended) {
+                            console.warn("[batch-settlement] run lock lost mid-cycle; a concurrent cycle may start", { reason });
+                        }
+                    })
+                    .catch(() => {
+                        // Transient Valkey failure; the TTL heartbeat retries next tick.
+                    });
+            }, Math.max(10_000, Math.floor((lockTtlSeconds * 1000) / 4)));
+            heartbeat.unref?.();
 
             console.log("[batch-settlement] cycle started", { reason });
             const [{ runNativeBatchSettlement }, { runSvmBatchSettlement }, { runBatchSettlement }] = await Promise.all([
@@ -190,9 +208,17 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
             return { reason, native, svm, intents };
         } finally {
             if (locked) {
-                const current = await valkeyGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
-                if (current === owner) {
-                    await valkeyDel(SETTLEMENT_RUN_LOCK_KEY).catch(() => false);
+                if (heartbeat) {
+                    clearInterval(heartbeat);
+                }
+                // Atomic compare-and-delete with retries: a single failed
+                // release during a Valkey blip must not strand the lock.
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    const released = await valkeyCompareAndDelete(SETTLEMENT_RUN_LOCK_KEY, owner).catch(() => false);
+                    if (released) break;
+                    const current = await valkeyGet(SETTLEMENT_RUN_LOCK_KEY).catch(() => null);
+                    if (current !== owner) break;
+                    await delay(250);
                 }
             }
             activeSettlementCycle = null;
@@ -578,10 +604,14 @@ function verifiedResultFromEvmDepositState(state: EvmBatchDepositState) {
 
 function durableEvmBatchDepositDependencies() {
     return createEvmBatchDepositDependencies(async ({ paymentPayload, requirements, onSubmitted }) => {
-        // @x402/evm 2.20 exposes deposit as one settle() call: it broadcasts and
+        // @x402/evm 2.23 exposes deposit as one settle() call: it broadcasts and
         // waits for a receipt before returning the hash. There is no prepared
-        // transaction or post-broadcast callback to persist earlier. If this
-        // call disappears after broadcast, the durable state deliberately
+        // transaction or post-broadcast callback to persist earlier. When the
+        // receipt wait fails after broadcast, 2.23 returns a non-terminal
+        // `settlement_pending` result that preserves the hash so callers can
+        // reconcile it on-chain; we persist the hash as `submitted` and let the
+        // durable state machine reconcile instead of rebroadcasting. If this
+        // call disappears before any result, the durable state deliberately
         // remains `broadcast` and retries fail closed instead of rebroadcasting.
         let result;
         try {
@@ -599,7 +629,7 @@ function durableEvmBatchDepositDependencies() {
         if (result.success && txHash) {
             return { status: "confirmed" as const, txHash };
         }
-        if (!result.success && txHash) {
+        if (!result.success && txHash && result.errorReason !== "settlement_pending") {
             return {
                 status: "failed" as const,
                 terminal: true as const,
@@ -620,6 +650,7 @@ function createPreparedRawBatchPayment(input: {
     rootRunId: string;
     executionRunId: string;
     parentExecutionRunId?: string;
+    idempotencyKey?: string;
 }): PreparedInferencePayment {
     let currentHeaders: Record<string, string> = {};
     let checkpointSequence = 0;
@@ -705,13 +736,26 @@ function createPreparedRawBatchPayment(input: {
                     amountWei: finalAmountWei,
                     rootRunId: input.rootRunId,
                     executionRunId: input.executionRunId,
+                    idempotencyKey: input.idempotencyKey,
                     sequence,
                 });
             } catch (error) {
+                const message = error instanceof Error ? error.message : "Raw batch checkpoint failed";
+                const paymentRequired = createPaymentRequired({
+                    amountWei: input.envelope.maxAmountWei,
+                    network: input.requiredNetwork,
+                    scheme: "batch-settlement",
+                    resourceUrl: input.envelope.resource,
+                    description: "Compose.Market Inference & Agents Marketplace",
+                    mimeType: "application/json",
+                    error: message,
+                });
                 return {
                     success: false,
-                    error: error instanceof Error ? error.message : "Raw batch checkpoint failed",
+                    error: message,
                     statusCode: 402,
+                    paymentRequired,
+                    paymentRequiredHeader: encodePaymentRequiredHeader(paymentRequired),
                 };
             }
             checkpointSequence += 1;
@@ -764,7 +808,15 @@ async function prepareRawInferenceX402Payment(
         return null;
     }
     const resourceUrl = publicResourceUrl(req);
+    const requestBody = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const modalities = Array.isArray(requestBody.modalities) ? requestBody.modalities : [];
+    const requestPath = typeof req.path === "string" ? req.path : req.originalUrl || req.url || "";
+    const videoAuthorization = requestPath.includes("/videos/")
+        || requestBody.modality === "video"
+        || modalities.includes("video");
+    const maxTimeoutSeconds = videoAuthorization ? 3_600 : 300;
     const runId = getRunIdFromRequest(req);
+    const requestIdempotencyKey = getIdempotencyKeyFromRequest(req);
     const executionHeader = req.get?.("x-execution-run-id") || req.headers["x-execution-run-id"];
     const parentHeader = req.get?.("x-parent-run-id") || req.headers["x-parent-run-id"];
     const explicitExecutionRunId = typeof executionHeader === "string" && executionHeader.trim()
@@ -782,8 +834,24 @@ async function prepareRawInferenceX402Payment(
         resourceUrl,
         description: "Compose.Market AI Agent Inference",
         mimeType: "application/json",
+        maxTimeoutSeconds,
         ...(error ? { error } : {}),
     });
+
+    // x402 v2 recovery: when the client's channel state has drifted from the
+    // immutable pinned backing (e.g. a re-deposit that raises the ceiling, or a
+    // voucher signed against a stale channel), do not fail with an opaque 400.
+    // Return a corrective 402 carrying a fresh challenge so a compliant client
+    // (wrapFetchWithPayment) re-signs against the pinned envelope and recovers.
+    const rejectWithCorrectivePaymentRequired = (error: unknown): null => {
+        const paymentRequired = buildPaymentRequired(
+            requiredNetwork,
+            error instanceof Error ? error.message : "Payment channel state requires a fresh signature",
+        );
+        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+        res.status(402).json(paymentRequired);
+        return null;
+    };
 
     const paymentSignature = getPaymentSignatureFromRequest(req);
     if (!paymentSignature) {
@@ -799,7 +867,15 @@ async function prepareRawInferenceX402Payment(
                 return null;
             }
             if (inherited) {
-                if (inherited.resource !== resourceUrl) {
+                // The envelope is signed resource-bound to the root resource
+                // (e.g. the agent stream). Same-execution redials (retry/resume)
+                // must hit that exact resource; nested executions under the
+                // same root run (runtime-forwarded model/search/etc. calls with
+                // their own execution run id or a parent execution run id) are
+                // covered by the root envelope budget and settle continuously
+                // against it.
+                const isNestedExecution = executionRunId !== runId || Boolean(parentExecutionRunId);
+                if (inherited.resource !== resourceUrl && !isNestedExecution) {
                     const paymentRequired = buildPaymentRequired(
                         requiredNetwork,
                         "Inherited x402 envelope resource does not match the requested resource",
@@ -831,6 +907,7 @@ async function prepareRawInferenceX402Payment(
                     rootRunId: runId,
                     executionRunId,
                     parentExecutionRunId,
+                    idempotencyKey: requestIdempotencyKey,
                 });
             }
         }
@@ -869,6 +946,7 @@ async function prepareRawInferenceX402Payment(
         amountWei: requirement.maxAmountWei,
         network: requiredNetwork,
         scheme: requirement.scheme,
+        maxTimeoutSeconds,
     });
     const decodedBatchPayload = getBatchPayload(paymentPayload);
     const evmDepositDependencies = decodedBatchPayload?.type === "deposit" && isEvmNetwork(requiredNetwork)
@@ -889,10 +967,14 @@ async function prepareRawInferenceX402Payment(
             res.status(402).json(paymentRequired);
             return null;
         }
-        resumedDeposit = await ensureEvmBatchDeposit({
-            paymentPayload,
-            requirements: verificationRequirement,
-        }, evmDepositDependencies);
+        try {
+            resumedDeposit = await ensureEvmBatchDeposit({
+                paymentPayload,
+                requirements: verificationRequirement,
+            }, evmDepositDependencies);
+        } catch (error) {
+            return rejectWithCorrectivePaymentRequired(error);
+        }
         if (resumedDeposit && resumedDeposit.status !== "confirmed") {
             const paymentRequired = buildPaymentRequired(
                 requiredNetwork,
@@ -942,38 +1024,42 @@ async function prepareRawInferenceX402Payment(
             return null;
         }
         let depositState = resumedDeposit;
-        if (verifiedBatchPayload.type === "deposit" && evmDepositDependencies) {
-            depositState = depositState || await ensureEvmBatchDeposit({
-                paymentPayload,
-                requirements: verificationRequirement,
-                verifyResult,
-            }, evmDepositDependencies);
-            if (!depositState || depositState.status !== "confirmed") {
-                const paymentRequired = buildPaymentRequired(
-                    requiredNetwork,
-                    depositState?.status === "failed"
-                        ? `EVM batch deposit failed: ${depositState.error || "definitive on-chain failure"}`
-                        : `EVM batch deposit is ${depositState?.status || "unprepared"}, not confirmed`,
+        try {
+            if (verifiedBatchPayload.type === "deposit" && evmDepositDependencies) {
+                depositState = depositState || await ensureEvmBatchDeposit({
+                    paymentPayload,
+                    requirements: verificationRequirement,
+                    verifyResult,
+                }, evmDepositDependencies);
+                if (!depositState || depositState.status !== "confirmed") {
+                    const paymentRequired = buildPaymentRequired(
+                        requiredNetwork,
+                        depositState?.status === "failed"
+                            ? `EVM batch deposit failed: ${depositState.error || "definitive on-chain failure"}`
+                            : `EVM batch deposit is ${depositState?.status || "unprepared"}, not confirmed`,
+                    );
+                    res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+                    res.status(402).json(paymentRequired);
+                    return null;
+                }
+                await rememberBatchChannel(
+                    paymentPayload,
+                    verificationRequirement,
+                    verifiedResultFromEvmDepositState(depositState),
                 );
-                res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
-                res.status(402).json(paymentRequired);
-                return null;
             }
-            await rememberBatchChannel(
+            await saveRawEnvelope({
+                rootRunId: runId,
+                maxAmountWei: requirement.maxAmountWei,
+                network: requiredNetwork,
                 paymentPayload,
-                verificationRequirement,
-                verifiedResultFromEvmDepositState(depositState),
-            );
-        }
-        await saveRawEnvelope({
-            rootRunId: runId,
-            maxAmountWei: requirement.maxAmountWei,
-            network: requiredNetwork,
-            paymentPayload,
-            payer: depositState?.payer || verifyResult.payer,
-        });
-        if (!(verifiedBatchPayload.type === "deposit" && evmDepositDependencies)) {
-            await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
+                payer: depositState?.payer || verifyResult.payer,
+            });
+            if (!(verifiedBatchPayload.type === "deposit" && evmDepositDependencies)) {
+                await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);
+            }
+        } catch (error) {
+            return rejectWithCorrectivePaymentRequired(error);
         }
         const envelope = await readRawEnvelope(runId);
         if (!envelope) {
@@ -985,6 +1071,7 @@ async function prepareRawInferenceX402Payment(
             rootRunId: runId,
             executionRunId,
             parentExecutionRunId,
+            idempotencyKey: requestIdempotencyKey,
         });
     }
     if (isBatchSettlementScheme(paymentPayload.accepted.scheme)) {
@@ -1076,6 +1163,7 @@ async function prepareRawInferenceX402Payment(
                 amountWei: finalAmountWei,
                 network: requiredNetwork,
                 scheme: requirement.scheme,
+                maxTimeoutSeconds,
             });
             let settled;
             try {

@@ -755,6 +755,12 @@ export function createPaymentRequirement(input: {
         extra.assetTransferMethod = "permit2";
         extra.facilitatorAddress = getFacilitatorAccount().address;
     }
+    if (scheme === "exact" && isEvmNetwork(input.network)) {
+        const assetTransferMethod = getNetwork(input.network).asset.assetTransferMethod;
+        if (assetTransferMethod) {
+            extra.assetTransferMethod = assetTransferMethod;
+        }
+    }
     if (isBatchSettlementScheme(scheme) && isEvmNetwork(input.network)) {
         Object.assign(extra, createBatchPaymentExtra(input.network, getReceiverAuthorizer().address));
     }
@@ -785,6 +791,7 @@ export function createPaymentRequired(input: {
     resourceUrl: string;
     description: string;
     mimeType: string;
+    maxTimeoutSeconds?: number;
     error?: string;
 }): PaymentRequired {
     return parseV2PaymentRequired({
@@ -799,6 +806,7 @@ export function createPaymentRequired(input: {
             amountWei: input.amountWei,
             network: input.network,
             scheme: input.scheme,
+            maxTimeoutSeconds: input.maxTimeoutSeconds,
         })],
         extensions: createPaymentExtensions(),
     });

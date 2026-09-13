@@ -213,15 +213,27 @@ function idempotencyValkeyKey(input: {
     rootRunId: string;
     executionRunId: string;
     sequence: number;
+    idempotencyKey?: string;
 }): string {
-    return [
+    const parts = [
         IDEMPOTENCY_PREFIX.slice(0, -1),
         input.network,
         input.keyId,
         encodeURIComponent(input.rootRunId),
         encodeURIComponent(input.executionRunId),
         String(input.sequence),
-    ].join(":");
+    ];
+    // One execution fans out into many nested billable requests that all share
+    // (rootRunId, executionRunId) and restart sequence at 0 per request. Scoping
+    // the replay identity by the request idempotency key keeps each settlement
+    // request distinct while retries of the same request (which reuse the same
+    // key) stay replay-protected. Mirrors the raw-batch checkpoint identity
+    // (envelope.ts). Omitted when absent so legacy identities remain addressable.
+    const explicitIdempotencyKey = input.idempotencyKey?.trim();
+    if (explicitIdempotencyKey) {
+        parts.push(encodeURIComponent(explicitIdempotencyKey));
+    }
+    return parts.join(":");
 }
 
 function stableJson(value: unknown): string {
@@ -703,6 +715,12 @@ export interface CanonicalInferenceProjectionDependencies {
     now?: () => number;
 }
 
+const INFERENCE_ANALYTICS_SERVICES = new Set(["api", "inference"]);
+
+function isInferenceAnalyticsPaymentIntent(intent: PaymentIntentRecord): boolean {
+    return INFERENCE_ANALYTICS_SERVICES.has(intent.service);
+}
+
 export async function projectCanonicalPaymentIntentAnalytics(
     intent: PaymentIntentRecord,
     dependencies: CanonicalInferenceProjectionDependencies = {},
@@ -727,6 +745,18 @@ export async function projectCanonicalPaymentIntentAnalytics(
     } else {
         throw new Error(`Analytics projection payment intent is not terminal: ${intent.status}`);
     }
+    const complete = dependencies.complete ?? valkeyCompletePaymentIntentProjection;
+    const completeProjection = () => complete({
+        projectionKey: PROJECTION_INTENTS_KEY,
+        intentKey: paymentIntentKey(intent.paymentIntentId),
+        idempotencyKey: idempotencyValkeyKey(intent),
+        intentId: intent.paymentIntentId,
+        terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, (dependencies.now ?? Date.now)()),
+    });
+    if (!dependencies.project && !isInferenceAnalyticsPaymentIntent(intent)) {
+        await completeProjection();
+        return true;
+    }
     const project = dependencies.project ?? (async (input) => {
         const analytics = await import("../data/analytics/inference/store.js");
         return analytics.projectCanonicalPaymentIntentSettlement(input, undefined, intent);
@@ -742,14 +772,7 @@ export async function projectCanonicalPaymentIntentAnalytics(
             ...(dependencies.logError ? { logError: dependencies.logError } : {}),
         },
     );
-    const complete = dependencies.complete ?? valkeyCompletePaymentIntentProjection;
-    await complete({
-        projectionKey: PROJECTION_INTENTS_KEY,
-        intentKey: paymentIntentKey(intent.paymentIntentId),
-        idempotencyKey: idempotencyValkeyKey(intent),
-        intentId: intent.paymentIntentId,
-        terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, (dependencies.now ?? Date.now)()),
-    });
+    await completeProjection();
     return true;
 }
 
@@ -888,6 +911,7 @@ export async function authorizePaymentIntent(
             rootRunId,
             executionRunId,
             sequence,
+            idempotencyKey: explicitIdempotencyKey,
         });
         const record = await getKeyRecord(validation.payload.keyId);
         if (!record) throw new Error("Compose key record not found");

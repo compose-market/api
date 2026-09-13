@@ -333,13 +333,21 @@ export function rawBatchCheckpointField(input: {
   channelId: string;
   rootRunId: string;
   executionRunId: string;
+  idempotencyKey?: string;
   sequence: number;
 }): string {
+  const idempotencyKey = input.idempotencyKey?.trim() || "";
   return `checkpoint:${fingerprint({
     network: input.network,
     channelId: checkpointChannelId(input.network, input.channelId),
     rootRunId: input.rootRunId,
     executionRunId: input.executionRunId,
+    // One agent execution fans out into many nested billable requests that
+    // all share (rootRunId, executionRunId). Scoping the checkpoint identity
+    // by the request idempotency key keeps each settlement request distinct
+    // while retries of the same request stay replay-protected. Omitted when
+    // absent so legacy fingerprints remain addressable.
+    ...(idempotencyKey ? { idempotencyKey } : {}),
     sequence: input.sequence,
   })}`;
 }
@@ -349,6 +357,7 @@ export async function commitRawBatchCheckpointTransition(input: {
   amountWei: string;
   rootRunId: string;
   executionRunId: string;
+  idempotencyKey?: string;
   sequence: number;
   channelStorage: "evm-json" | "svm-hash";
   channelKey: string;
@@ -364,11 +373,13 @@ export async function commitRawBatchCheckpointTransition(input: {
     throw new Error("Raw batch checkpoint sequence must be a non-negative safe integer");
   }
 
+  const idempotencyKey = input.idempotencyKey?.trim() || "";
   const checkpointField = rawBatchCheckpointField({
     network: input.backing.network,
     channelId: input.backing.channelId,
     rootRunId: input.rootRunId,
     executionRunId: input.executionRunId,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
     sequence: input.sequence,
   });
   const valkey = await getValkeyClient();
@@ -473,7 +484,8 @@ export async function commitRawBatchCheckpointTransition(input: {
         or checkpoint.executionRunId ~= ARGV[8]
         or tostring(checkpoint.sequence) ~= ARGV[9]
         or checkpoint.amountWei ~= ARGV[2]
-        or checkpoint.backingFingerprint ~= ARGV[17] then
+        or checkpoint.backingFingerprint ~= ARGV[17]
+        or (checkpoint.idempotencyKey or "") ~= ARGV[19] then
         return {-5, ""}
       end
       redis.call("EXPIRE", KEYS[1], ARGV[4])
@@ -508,7 +520,7 @@ export async function commitRawBatchCheckpointTransition(input: {
     end
     redis.call("HSET", KEYS[1], "usedWei", nextUsed, "updatedAt", ARGV[3])
     redis.call("EXPIRE", KEYS[1], ARGV[4])
-    redis.call("HSET", KEYS[1], ARGV[18], cjson.encode({
+    local storedCheckpoint = {
       network = ARGV[5],
       channelId = ARGV[6],
       rootRunId = ARGV[7],
@@ -517,7 +529,11 @@ export async function commitRawBatchCheckpointTransition(input: {
       amountWei = ARGV[2],
       cumulativeAmountWei = nextCharged,
       backingFingerprint = ARGV[17]
-    }))
+    }
+    if ARGV[19] ~= "" then
+      storedCheckpoint.idempotencyKey = ARGV[19]
+    end
+    redis.call("HSET", KEYS[1], ARGV[18], cjson.encode(storedCheckpoint))
     return {1, nextCharged}`,
     3,
     key(input.rootRunId),
@@ -541,6 +557,7 @@ export async function commitRawBatchCheckpointTransition(input: {
     input.backing.channelConfigFingerprint,
     input.backing.backingFingerprint,
     checkpointField,
+    idempotencyKey,
   );
   if (!Array.isArray(result) || result.length < 2) {
     throw new Error("Unexpected raw batch checkpoint transition response");

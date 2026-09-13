@@ -17,6 +17,7 @@ import {
     getDefaultUptoEnvelopeWei,
     getNetworkFromRequest,
     getPaymentSignatureFromRequest,
+    getRawInferenceMaxAmount,
 } from "./index.js";
 import type { NetworkId } from "./configs/chains.js";
 import { extractKeyFromHeader } from "./keys/middleware.js";
@@ -206,15 +207,18 @@ function uniqueStrings(values: string[]): string[] {
     return [...new Set(values.filter(Boolean))];
 }
 
-async function paymentAcceptsForScheme(scheme: DiscoveryScheme): Promise<PaymentRequirements[]> {
+async function paymentAcceptsForScheme(scheme: DiscoveryScheme, amountWei?: string): Promise<PaymentRequirements[]> {
     const supported = await getFacilitatorSupported();
     const networks = uniqueStrings(
         supported.kinds
             .filter((kind) => kind.scheme === scheme)
             .map((kind) => kind.network),
     );
+    const amount = amountWei && /^\d+$/u.test(amountWei) && BigInt(amountWei) > 0n
+        ? amountWei
+        : getDefaultUptoEnvelopeWei();
     return networks.map((network) => createPaymentRequirement({
-        amountWei: getDefaultUptoEnvelopeWei(),
+        amountWei: amount,
         network: network as NetworkId,
         scheme,
     }));
@@ -407,8 +411,9 @@ async function buildPaymentRequired(params: {
     resourceUrl: string;
     description: string;
     extensions: Record<string, unknown>;
+    amountWei?: string;
 }): Promise<PaymentRequired> {
-    const accepts = await paymentAcceptsForScheme(params.scheme);
+    const accepts = await paymentAcceptsForScheme(params.scheme, params.amountWei);
     return parsePaymentRequiredV2({
         x402Version: 2,
         error: "payment_required",
@@ -467,14 +472,19 @@ export async function buildModelEndpointPaymentRequired(modelId: string, resourc
     });
 }
 
-export async function buildAgentStreamPaymentRequired(walletAddress: string, resourceUrl?: string): Promise<PaymentRequired> {
+export async function buildAgentStreamPaymentRequired(
+    walletAddress: string,
+    resourceUrl?: string,
+    amountWei?: string,
+): Promise<PaymentRequired> {
     const count = await getAgentCatalogCount();
     const origin = resourceUrl ? new URL(resourceUrl).origin : SELLER_ORIGIN;
     return buildPaymentRequired({
         scheme: "batch-settlement",
         resourceUrl: resourceUrl || agentEndpoint(walletAddress),
-        description: `Pay to stream agent ${walletAddress}. It is selected from ${count} currently payable agent streams in GET ${absoluteUrl(AGENTS_CATALOG, origin)}. Set x-network-id from the selected accept entry before sending PAYMENT-SIGNATURE.`,
+        description: `Pay to stream agent ${walletAddress}. Use GET ${absoluteUrl(AGENTS_CATALOG, origin)} to discover agents. ${count} agents available. Set x-network-id from the selected accept entry before sending PAYMENT-SIGNATURE.`,
         extensions: agentExecutionBazaarExtension(walletAddress, origin),
+        amountWei,
     });
 }
 
@@ -496,6 +506,27 @@ export function shouldDirectChallenge(req: Request): boolean {
     return !requestHasComposeKey(req) && !getPaymentSignatureFromRequest(req);
 }
 
+function headerValue(req: Request, name: string): string | undefined {
+    const value = req.get?.(name) ?? req.headers[name];
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// A nested execution (runtime-forwarded child call under a paid root run) carries
+// its own execution run id or a parent execution run id and settles continuously
+// against the root run's pinned x402 envelope. It has no Compose Key and no fresh
+// PAYMENT-SIGNATURE, so it must not be treated as a blind dial that needs a
+// discovery challenge; prepareInferencePayment resolves the inherited envelope
+// (and fails closed with a corrective 402 if none exists). Mirrors the
+// isNestedExecution condition in prepareRawInferenceX402Payment.
+function requestIsNestedExecution(req: Request): boolean {
+    const runId = headerValue(req, "x-run-id");
+    if (!runId) return false;
+    const explicitExecutionRunId = headerValue(req, "x-execution-run-id");
+    const parentExecutionRunId = headerValue(req, "x-parent-run-id");
+    const executionRunId = explicitExecutionRunId ?? runId;
+    return executionRunId !== runId || Boolean(parentExecutionRunId);
+}
+
 export async function maybeSendAgentStreamDiscoveryChallenge(
     req: Request,
     res: Response,
@@ -504,11 +535,17 @@ export async function maybeSendAgentStreamDiscoveryChallenge(
         res.status(400).json({ error: "x-network-id header is required" });
         return true;
     }
+    if (requestIsNestedExecution(req)) {
+        return false;
+    }
     if (!shouldDirectChallenge(req)) {
         return false;
     }
     const wallet = typeof req.params.walletAddress === "string" ? req.params.walletAddress : "";
-    sendPaymentRequired(res, await buildAgentStreamPaymentRequired(wallet, publicResourceUrl(req)));
+    sendPaymentRequired(
+        res,
+        await buildAgentStreamPaymentRequired(wallet, publicResourceUrl(req), getRawInferenceMaxAmount(req) ?? undefined),
+    );
     return true;
 }
 
