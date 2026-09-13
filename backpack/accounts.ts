@@ -1,9 +1,11 @@
 /**
- * Per-agent Composio account broker.
+ * User-scoped Composio account broker.
  *
  * Browser/channel routing is deliberately absent from this module. It only
- * creates, lists, checks, executes, and disconnects Composio connected accounts
- * scoped by (userAddress, agentWallet, toolkit, connectedAccountId).
+ * creates, lists, checks, executes, and disconnects Composio connected
+ * accounts. Connections are owned by the USER (sub-agents at any depth see
+ * the user's backpack); usage is authorized by a (userAddress, agentWallet,
+ * toolkit) grant.
  */
 
 import { Composio } from "@composio/core";
@@ -57,16 +59,24 @@ function authKey(toolkit: string): string {
     return store.key("account", "auth", toolkit);
 }
 
-function routeKey(userAddress: string, agentWallet: string, toolkit: string, connectedAccountId: string): string {
-    return store.key("account", "route", userAddress, agentWallet, toolkit, connectedAccountId);
+function routeKey(userAddress: string, toolkit: string, connectedAccountId: string): string {
+    return store.key("account", "route", userAddress, toolkit, connectedAccountId);
 }
 
-function indexKey(userAddress: string, agentWallet: string): string {
-    return store.key("account", "index", userAddress, agentWallet);
+function indexKey(userAddress: string): string {
+    return store.key("account", "index", userAddress);
 }
 
-function toolkitKey(userAddress: string, agentWallet: string, toolkit: string): string {
-    return store.key("account", "toolkit", userAddress, agentWallet, toolkit);
+function toolkitKey(userAddress: string, toolkit: string): string {
+    return store.key("account", "toolkit", userAddress, toolkit);
+}
+
+function accountGrantKey(userAddress: string, agentWallet: string, toolkit: string): string {
+    return store.key("account", "grant", userAddress, agentWallet, toolkit);
+}
+
+function accountGrantsKey(userAddress: string): string {
+    return store.key("account", "grants", userAddress);
 }
 
 function routeId(toolkit: string, connectedAccountId: string): string {
@@ -150,8 +160,8 @@ async function auth(toolkit: string): Promise<AuthConfigResolution> {
     return { id, mode: "created-managed" };
 }
 
-export function buildComposioUserId(userAddress: string, agentWallet: string): string {
-    return `compose:${wallet(userAddress, "userAddress")}:agent:${wallet(agentWallet, "agentWallet")}`;
+export function buildComposioUserId(userAddress: string): string {
+    return `compose:${wallet(userAddress, "userAddress")}`;
 }
 
 export interface ToolRouterSessionConfig {
@@ -207,6 +217,14 @@ export interface AccountRoute {
     updatedAt: number;
 }
 
+export interface AccountGrant {
+    userAddress: string;
+    agentWallet: string;
+    toolkit: string;
+    granted: boolean;
+    grantedAt: number;
+}
+
 export interface ConnectionRequest {
     redirectUrl: string;
     userAddress: string;
@@ -224,28 +242,81 @@ export interface ConnectionInfo {
     accountId: string;
     status: string;
     source: "composio";
+    granted?: boolean;
 }
 
 async function save(route: AccountRoute): Promise<void> {
     const id = routeId(route.toolkit, route.connectedAccountId);
-    await store.put(routeKey(route.userAddress, route.agentWallet, route.toolkit, route.connectedAccountId), route);
-    await store.add(indexKey(route.userAddress, route.agentWallet), id);
-    await store.add(toolkitKey(route.userAddress, route.agentWallet, route.toolkit), route.connectedAccountId);
+    await store.put(routeKey(route.userAddress, route.toolkit, route.connectedAccountId), route);
+    await store.add(indexKey(route.userAddress), id);
+    await store.add(toolkitKey(route.userAddress, route.toolkit), route.connectedAccountId);
 }
 
 async function read(
     userAddress: string,
-    agentWallet: string,
     toolkit: string,
     connectedAccountId: string,
 ): Promise<AccountRoute | null> {
-    return store.json<AccountRoute>(routeKey(userAddress, agentWallet, toolkit, connectedAccountId));
+    return store.json<AccountRoute>(routeKey(userAddress, toolkit, connectedAccountId));
 }
 
 async function drop(route: AccountRoute): Promise<void> {
-    await store.del(routeKey(route.userAddress, route.agentWallet, route.toolkit, route.connectedAccountId));
-    await store.rem(indexKey(route.userAddress, route.agentWallet), routeId(route.toolkit, route.connectedAccountId));
-    await store.rem(toolkitKey(route.userAddress, route.agentWallet, route.toolkit), route.connectedAccountId);
+    const id = routeId(route.toolkit, route.connectedAccountId);
+    await store.del(routeKey(route.userAddress, route.toolkit, route.connectedAccountId));
+    await store.rem(indexKey(route.userAddress), id);
+    await store.rem(toolkitKey(route.userAddress, route.toolkit), route.connectedAccountId);
+}
+
+export async function grantAccount(input: {
+    userAddress: string;
+    agentWallet: string;
+    toolkit: string;
+}): Promise<AccountGrant> {
+    const user = wallet(input.userAddress, "userAddress");
+    const agent = wallet(input.agentWallet, "agentWallet");
+    const tool = slug(input.toolkit);
+    const record: AccountGrant = {
+        userAddress: user,
+        agentWallet: agent,
+        toolkit: tool,
+        granted: true,
+        grantedAt: Date.now(),
+    };
+    await store.put(accountGrantKey(user, agent, tool), record);
+    await store.add(accountGrantsKey(user), `${agent}:${tool}`);
+    return record;
+}
+
+export async function revokeAccount(input: {
+    userAddress: string;
+    agentWallet: string;
+    toolkit: string;
+}): Promise<void> {
+    const user = wallet(input.userAddress, "userAddress");
+    const agent = wallet(input.agentWallet, "agentWallet");
+    const tool = slug(input.toolkit);
+    await store.del(accountGrantKey(user, agent, tool));
+    await store.rem(accountGrantsKey(user), `${agent}:${tool}`);
+}
+
+export async function hasAccountGrant(userAddress: string, agentWallet: string, toolkit: string): Promise<boolean> {
+    const user = wallet(userAddress, "userAddress");
+    const agent = wallet(agentWallet, "agentWallet");
+    const tool = slug(toolkit);
+    const record = await store.json<AccountGrant>(accountGrantKey(user, agent, tool));
+    return Boolean(record?.granted);
+}
+
+export async function listAccountGrants(userAddress: string): Promise<AccountGrant[]> {
+    const user = wallet(userAddress, "userAddress");
+    const ids = await store.members(accountGrantsKey(user));
+    const records = await Promise.all(ids.map((id) => {
+        const split = id.indexOf(":");
+        return store.json<AccountGrant>(accountGrantKey(user, id.slice(0, split), id.slice(split + 1)));
+    }));
+    return records
+        .filter((record): record is AccountGrant => Boolean(record?.granted))
+        .sort((left, right) => left.toolkit.localeCompare(right.toolkit) || left.agentWallet.localeCompare(right.agentWallet));
 }
 
 function map(account: any, route: AccountRoute): ConnectionInfo {
@@ -261,9 +332,9 @@ function map(account: any, route: AccountRoute): ConnectionInfo {
     };
 }
 
-async function remote(userAddress: string, agentWallet: string): Promise<any[]> {
+async function remote(userAddress: string): Promise<any[]> {
     const result = await client().connectedAccounts.list({
-        user_id: buildComposioUserId(userAddress, agentWallet),
+        user_id: buildComposioUserId(userAddress),
     } as any);
     return Array.isArray((result as any).items) ? (result as any).items : [];
 }
@@ -283,7 +354,7 @@ export async function initiateConnection(
 
     const linked = await client().link.create({
         auth_config_id: config.id,
-        user_id: buildComposioUserId(user, agent),
+        user_id: buildComposioUserId(user),
         callback_url: callback,
         connection_data: {
             redirectUrl: callback,
@@ -310,6 +381,7 @@ export async function initiateConnection(
         updatedAt: Date.now(),
     };
     await save(route);
+    await grantAccount({ userAddress: user, agentWallet: agent, toolkit: tool });
 
     return {
         redirectUrl,
@@ -323,43 +395,51 @@ export async function initiateConnection(
 
 export async function listConnections(
     userAddress: string,
-    agentWallet: string,
+    agentWallet?: string,
     toolkit?: string,
 ): Promise<ConnectionInfo[]> {
     const user = wallet(userAddress, "userAddress");
-    const agent = wallet(agentWallet, "agentWallet");
+    const agent = agentWallet ? wallet(agentWallet, "agentWallet") : undefined;
     const tool = toolkit ? slug(toolkit) : undefined;
     const ids = tool
-        ? (await store.members(toolkitKey(user, agent, tool))).map((id) => routeId(tool, id))
-        : await store.members(indexKey(user, agent));
+        ? (await store.members(toolkitKey(user, tool))).map((id) => routeId(tool, id))
+        : await store.members(indexKey(user));
     const routes = (await Promise.all(ids.map((id) => {
         const split = id.indexOf(":");
         const routeToolkit = id.slice(0, split);
         const account = id.slice(split + 1);
-        return read(user, agent, routeToolkit, account);
+        return read(user, routeToolkit, account);
     }))).filter((item): item is AccountRoute => Boolean(item));
-    const accounts = await remote(user, agent);
-    return routes.map((route) => {
+    const accounts = await remote(user);
+    const grantCache = new Map<string, boolean>();
+    const grantedFor = async (routeToolkit: string): Promise<boolean | undefined> => {
+        if (!agent) return undefined;
+        if (!grantCache.has(routeToolkit)) {
+            grantCache.set(routeToolkit, await hasAccountGrant(user, agent, routeToolkit));
+        }
+        return grantCache.get(routeToolkit);
+    };
+    const mapped = await Promise.all(routes.map(async (route) => {
         const account = accounts.find((item) => item?.id === route.connectedAccountId);
-        return map(account, route);
-    }).sort((left, right) => left.slug.localeCompare(right.slug) || left.connectedAccountId.localeCompare(right.connectedAccountId));
+        const granted = await grantedFor(route.toolkit);
+        return { ...map(account, route), ...(granted === undefined ? {} : { granted }) };
+    }));
+    return mapped.sort((left, right) => left.slug.localeCompare(right.slug) || left.connectedAccountId.localeCompare(right.connectedAccountId));
 }
 
 export async function checkConnection(input: {
     userAddress: string;
-    agentWallet: string;
     toolkit: string;
     connectedAccountId: string;
 }): Promise<ConnectionInfo> {
     const user = wallet(input.userAddress, "userAddress");
-    const agent = wallet(input.agentWallet, "agentWallet");
     const tool = slug(input.toolkit);
     const accountId = text(input.connectedAccountId, "connectedAccountId");
-    const route = await read(user, agent, tool, accountId);
+    const route = await read(user, tool, accountId);
     if (!route) {
         throw new Error(`Connected account route not found for ${tool}:${accountId}`);
     }
-    const account = (await remote(user, agent)).find((item) => item?.id === accountId);
+    const account = (await remote(user)).find((item) => item?.id === accountId);
     return map(account, route);
 }
 
@@ -382,9 +462,11 @@ export async function executeToolkitAction(
         const tool = slug(params.toolkit);
         const accountId = text(params.connectedAccountId, "connectedAccountId");
         const action = text(params.action, "action");
+        if (!(await hasAccountGrant(user, agent, tool))) {
+            return { success: false, error: `Agent ${agent} is not granted access to account toolkit ${tool}` };
+        }
         const status = await checkConnection({
             userAddress: user,
-            agentWallet: agent,
             toolkit: tool,
             connectedAccountId: accountId,
         });
@@ -394,7 +476,7 @@ export async function executeToolkitAction(
 
         const result = await client().tools.execute(action, {
             connected_account_id: accountId,
-            user_id: buildComposioUserId(user, agent),
+            user_id: buildComposioUserId(user),
             arguments: params.params,
             text: params.text,
         } as any);
@@ -406,18 +488,22 @@ export async function executeToolkitAction(
 
 export async function disconnectToolkit(input: {
     userAddress: string;
-    agentWallet: string;
     toolkit: string;
     connectedAccountId: string;
 }): Promise<{ success: boolean }> {
     const user = wallet(input.userAddress, "userAddress");
-    const agent = wallet(input.agentWallet, "agentWallet");
     const tool = slug(input.toolkit);
     const accountId = text(input.connectedAccountId, "connectedAccountId");
-    const route = await read(user, agent, tool, accountId);
+    const route = await read(user, tool, accountId);
     if (route) {
         await client().connectedAccounts.delete(accountId);
         await drop(route);
+    }
+    const ids = await store.members(accountGrantsKey(user));
+    const stale = ids.filter((id) => id.endsWith(`:${tool}`));
+    if (stale.length > 0) {
+        await store.rem(accountGrantsKey(user), ...stale);
+        await store.del(...stale.map((id) => accountGrantKey(user, id.slice(0, id.indexOf(":")), tool)));
     }
     return { success: true };
 }
