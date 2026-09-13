@@ -19,6 +19,37 @@ const VALKEY_KEEP_ALIVE_MS = 10_000;
 
 let client: ValkeyClientType | null = null;
 let connectionPromise: Promise<ValkeyClientType> | null = null;
+let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
+// Aiven Valkey enforces `valkey_timeout` (default 300s) as an *application-level*
+// idle close: TCP keepalive packets do not count as commands, so a quiet
+// connection is dropped every 5 minutes and the next command pays a reconnect.
+// A periodic PING below that threshold keeps the connection warm and also
+// surfaces half-open sockets early (a failed PING forces a clean reconnect
+// before user traffic hits the dead socket).
+const VALKEY_KEEPALIVE_PING_MS = 60_000;
+
+function startKeepAlive(instance: ValkeyClientType): void {
+    stopKeepAlive();
+    keepAliveTimer = setInterval(() => {
+        if (instance.status !== "ready") return;
+        instance.ping().catch(() => {
+            try {
+                instance.disconnect(true);
+            } catch {
+                // Already disconnecting.
+            }
+        });
+    }, VALKEY_KEEPALIVE_PING_MS);
+    keepAliveTimer.unref?.();
+}
+
+function stopKeepAlive(): void {
+    if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+    }
+}
 
 /**
  * Get ValKey client connection
@@ -75,12 +106,14 @@ async function connect(): Promise<ValkeyClientType> {
         if (client === instance && instance.status !== "ready") {
             client = null;
         }
+        stopKeepAlive();
     });
 
     await instance.connect();
     await instance.ping();
     client = instance;
     connectionPromise = null;
+    startKeepAlive(instance);
     console.log("[valkey] Connected successfully");
 
     return instance;
@@ -91,6 +124,7 @@ async function connect(): Promise<ValkeyClientType> {
  * Call during cleanup/shutdown
  */
 export async function closeValkey(): Promise<void> {
+    stopKeepAlive();
     if (client) {
         await client.quit();
         client = null;
@@ -1265,6 +1299,19 @@ export async function valkeyCompareAndDelete(key: string, expectedValue: string)
         1,
         key,
         expectedValue,
+    );
+    return Number(result) > 0;
+}
+
+/** Extend a lease TTL only when it is still owned by the expected token. */
+export async function valkeyCompareAndExpire(key: string, expectedValue: string, ttlSeconds: number): Promise<boolean> {
+    const valkey = await getValkeyClient();
+    const result = await valkey.eval(
+        'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("EXPIRE", KEYS[1], ARGV[2]) else return 0 end',
+        1,
+        key,
+        expectedValue,
+        ttlSeconds,
     );
     return Number(result) > 0;
 }
