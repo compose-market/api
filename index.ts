@@ -17,6 +17,7 @@ import { syncSessionsFromValkey } from "./data/metrics/sessions.js";
 import { syncAllExpenses } from "./data/metrics/expenses/index.js";
 import { refreshMetricsSnapshot } from "./data/metrics/snapshot.js";
 import { registerAnalyticsRoutes } from "./data/analytics/index.js";
+import { registerBenchmarkRoutes } from "./data/benchmarks/routes.js";
 import { registerSvmRoutes } from "./svm/relay.js";
 import { registerUserRoutes } from "./data/user/routes.js";
 import { registerEventRoutes } from "./data/shared/routes.js";
@@ -64,6 +65,12 @@ async function runJob() {
         await syncAllExpenses();
         await refreshMetricsSnapshot();
         break;
+      case "benchmarks-ingest": {
+        const { ingestBenchmarks } = await import("./data/benchmarks/ingest.js");
+        const summary = await ingestBenchmarks();
+        log(`Benchmark ingestion: ${summary.succeeded} endpoints succeeded, ${summary.failed} failed.`, "job");
+        break;
+      }
       default:
         throw new Error(`Unknown job task: ${task}`);
     }
@@ -132,7 +139,10 @@ app.use((req, res, next) => {
         settlementRows: Array.isArray(body.settlements?.data) ? body.settlements.data.length : 0,
         responseBytes: Buffer.byteLength(JSON.stringify(bodyJson)),
       };
-    } else {
+    } else if (!path.startsWith("/api/benchmarks")) {
+      // Benchmark list payloads can contain hundreds of benchmark rows. Do not
+      // dump the full response into request logs; cache headers and row counts
+      // provide the operational signal without duplicating upstream data.
       capturedJsonResponse = bodyJson;
     }
     return originalResJson.apply(res, [bodyJson, ...args]);
@@ -198,6 +208,7 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
   registerFeedbackRoutes(app);
   registerSessionEventsRoute(app);
   registerMetricsRoutes(app);
+  registerBenchmarkRoutes(app);
   registerHandlerRoutes(app);
   registerSvmRoutes(app);
 

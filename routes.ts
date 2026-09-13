@@ -890,17 +890,28 @@ function terminalAgentMetadata(body: Record<string, unknown>, req: Request): {
   model?: string;
   creatorFee: number;
 } {
-  const agent = body.agent && typeof body.agent === "object" && !Array.isArray(body.agent)
-    ? body.agent as Record<string, unknown>
-    : {};
+  const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+    ? body.payload as Record<string, unknown>
+    : null;
+  const payloadAgent = payload?.agent && typeof payload.agent === "object" && !Array.isArray(payload.agent)
+    ? payload.agent as Record<string, unknown>
+    : null;
+  const agent = payloadAgent
+    ?? (body.agent && typeof body.agent === "object" && !Array.isArray(body.agent)
+      ? body.agent as Record<string, unknown>
+      : {});
   const root = stringField(body.rootRunId)
+    || stringField(body.rootId)
+    || stringField(payload?.rootRunId)
     || getHeader(req, "x-run-id")
     || rootRunId(req);
   const execution = stringField(body.runId)
+    || stringField(payload?.runId)
     || stringField(body.executionRunId)
     || getHeader(req, "x-execution-run-id")
     || root;
   const parent = stringField(body.parentExecutionRunId)
+    || stringField(payload?.parentExecutionRunId)
     || getHeader(req, "x-parent-run-id");
   const creatorFee = numberField(agent.creatorFee)
     ?? numberField(body.creatorFee)
@@ -1231,10 +1242,18 @@ function parseSseEventBlock(rawEvent: string): ParsedSseEvent | null {
 }
 
 function terminal(data: Record<string, unknown>): boolean {
+  if (data.domain === "activity") {
+    // The runtime opens every stream with an `activity.run` frame in the
+    // `running` status; only the non-running frames are terminals.
+    return (data.type === "activity.run" || data.type === "activity.error") && data.status !== "running";
+  }
   return data.type === "done" || data.type === "stopped" || data.type === "error";
 }
 
 function sseDataHasTextDelta(data: Record<string, unknown>): boolean {
+  if (data.domain === "model" && data.type === "model.text.delta" && typeof data.delta === "string") {
+    return true;
+  }
   const choices = data.choices;
   if (!Array.isArray(choices) || choices.length === 0) {
     return false;
@@ -1248,9 +1267,16 @@ function sseDataHasTextDelta(data: Record<string, unknown>): boolean {
 }
 
 function usageful(data: Record<string, unknown>): boolean {
-  const usage = data.usage && typeof data.usage === "object" && !Array.isArray(data.usage)
-    ? data.usage as Record<string, unknown>
-    : data;
+  const payload = data.payload && typeof data.payload === "object" && !Array.isArray(data.payload)
+    ? data.payload as Record<string, unknown>
+    : null;
+  const payloadUsage = payload?.usage && typeof payload.usage === "object" && !Array.isArray(payload.usage)
+    ? payload.usage as Record<string, unknown>
+    : null;
+  const usage = payloadUsage
+    || (data.usage && typeof data.usage === "object" && !Array.isArray(data.usage)
+      ? data.usage as Record<string, unknown>
+      : data);
   const numericKeys = [
     "prompt_tokens",
     "completion_tokens",
@@ -1312,6 +1338,66 @@ function command(path: string): string {
     .replace(/[:]/gu, "")
     .replace(/[/.]+/gu, ".")
     .replace(/^\.+|\.+$/gu, "");
+}
+
+/**
+ * Unpaid byte-for-byte SSE passthrough for observation streams (run watch).
+ * The runtime owns the event vocabulary; the gateway only pipes frames and
+ * lifecycle. Non-OK runtime responses surface as JSON with the runtime's
+ * status, mirroring passthroughJsonRoute.
+ */
+function passthroughStreamRoute() {
+  return (req: Request, res: ExpressResponse, next: NextFunction) => {
+    void (async () => {
+      const lifecycle = createRequestAbort(req, res);
+      try {
+        const runtimeResponse = await callRuntime(req, req.originalUrl, {}, lifecycle.signal);
+        if (!runtimeResponse.ok) {
+          const { text } = await readRuntimeJson(runtimeResponse);
+          if (lifecycle.aborted()) {
+            return;
+          }
+          applyRuntimeHeaders(res, runtimeResponse);
+          res.status(runtimeResponse.status).send(text);
+          lifecycle.done();
+          return;
+        }
+        if (lifecycle.aborted()) {
+          return;
+        }
+        writeSseOpen(res);
+        if (!runtimeResponse.body) {
+          res.write("data: [DONE]\n\n");
+          res.end();
+          lifecycle.done();
+          return;
+        }
+        const reader = runtimeResponse.body.getReader();
+        res.on("close", () => {
+          void reader.cancel().catch(() => undefined);
+        });
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          if (lifecycle.aborted()) {
+            void reader.cancel().catch(() => undefined);
+            return;
+          }
+          if (!res.write(value)) {
+            await new Promise<void>((resolve) => res.once("drain", resolve));
+          }
+        }
+        if (!res.writableEnded) {
+          res.end();
+        }
+        lifecycle.done();
+      } finally {
+        lifecycle.cleanup();
+      }
+    })().catch(next);
+  };
 }
 
 function zeroResourceSettlement(req: Request, kind: "memory", action: string): RouteSettlement {
@@ -1486,6 +1572,13 @@ function connectorsProxyRoute() {
         if (target.body !== undefined) {
           headers.set("Content-Type", "application/json");
         }
+        // The connectors Worker Bearer-gates privileged routes when
+        // CONNECTORS_API_TOKEN is set; the browser never holds this token,
+        // so the API injects it server-side.
+        const connectorsToken = (process.env.CONNECTORS_API_TOKEN || "").trim();
+        if (connectorsToken) {
+          headers.set("Authorization", `Bearer ${connectorsToken}`);
+        }
         const response = await fetch(`${requireConnectorsUrl()}${target.path}`, {
           method,
           headers,
@@ -1504,6 +1597,79 @@ function connectorsProxyRoute() {
       }
     })().catch(next);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Server-side Pinata pin proxy.
+//
+// The web client used to embed VITE_PINATA_JWT and call api.pinata.cloud
+// directly, which leaks full pin/unpin authority to every browser. These
+// routes keep the JWT server-side and forward only the three pin operations
+// the UI needs.
+// ---------------------------------------------------------------------------
+
+const PINATA_PIN_API_URL = "https://api.pinata.cloud";
+const PIN_PROXY_LIMIT_BYTES = 10 * 1024 * 1024;
+
+function pinataJwt(): string | null {
+  const jwt = (process.env.PINATA_JWT || "").trim();
+  return jwt.length > 0 ? jwt : null;
+}
+
+function readCappedBody(req: Request): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > PIN_PROXY_LIMIT_BYTES) {
+        reject(new Error("pin_proxy_body_too_large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+async function proxyPinataPin(req: Request, res: ExpressResponse, pinataPath: string): Promise<void> {
+  const jwt = pinataJwt();
+  if (!jwt) {
+    res.status(503).json({ error: "IPFS pinning is not configured" });
+    return;
+  }
+  try {
+    const rawBody = (req as Request & { rawBody?: unknown }).rawBody;
+    const buffer = Buffer.isBuffer(rawBody) ? rawBody : await readCappedBody(req);
+    const body = new Uint8Array(buffer.byteLength);
+    body.set(buffer);
+    const contentType = req.headers["content-type"];
+    const response = await fetch(`${PINATA_PIN_API_URL}${pinataPath}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        ...(typeof contentType === "string" && contentType.length > 0
+          ? { "Content-Type": contentType }
+          : {}),
+      },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    });
+    const text = await response.text();
+    res.status(response.status);
+    if (response.headers.get("content-type")?.includes("application/json")) {
+      res.type("application/json");
+    }
+    res.send(text);
+  } catch (error) {
+    res.status(502).json({
+      error: error instanceof Error && error.message === "pin_proxy_body_too_large"
+        ? "Upload exceeds the pin proxy size limit"
+        : "IPFS pinning failed",
+    });
+  }
 }
 
 function payableJsonRoute(config: {
@@ -1768,6 +1934,7 @@ function payableStreamRoute(config: {
             if (
               parsed.data.type === "model_start"
               || (parsed.data.type === "timing" && parsed.data.mark === "model_start")
+              || (parsed.data.domain === "model" && parsed.data.type === "model.start")
             ) {
               markTiming("first_runtime_model_start");
             }
@@ -1964,21 +2131,61 @@ export function registerManowarRoutes(app: Application): void {
   app.use("/api/onchain", connectorsProxyRoute());
   app.get("/api/receipts", receiptsRoute());
 
+  app.post("/api/ipfs/pin/file", (req, res) => {
+    void proxyPinataPin(req, res, "/pinning/pinFileToIPFS");
+  });
+  app.post("/api/ipfs/pin/json", (req, res) => {
+    void proxyPinataPin(req, res, "/pinning/pinJSONToIPFS");
+  });
+  app.delete("/api/ipfs/unpin/:cid", (req, res) => {
+    const jwt = pinataJwt();
+    if (!jwt) {
+      res.status(503).json({ error: "IPFS pinning is not configured" });
+      return;
+    }
+    const cid = req.params.cid || "";
+    if (!/^[A-Za-z0-9]{20,128}$/.test(cid)) {
+      res.status(400).json({ error: "Invalid CID" });
+      return;
+    }
+    void fetch(`${PINATA_PIN_API_URL}/pinning/unpin/${cid}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${jwt}` },
+      signal: AbortSignal.timeout(30_000),
+    })
+      .then(async (response) => {
+        if (response.ok) {
+          res.json({ ok: true, cid });
+          return;
+        }
+        const text = await response.text().catch(() => "");
+        res.status(response.status).json({ error: `Unpin failed (${response.status})`, detail: text.slice(0, 300) });
+      })
+      .catch(() => res.status(502).json({ error: "IPFS unpin failed" }));
+  });
+
   app.post(
     "/agent/:walletAddress/stream",
     payableStreamRoute({
       service: "agent",
       action: "stream",
       isSettlementEvent: (_eventName, data) => (
-        data.type === "done" || data.type === "stopped" || data.type === "error"
+        data.domain === "activity"
+          ? (data.type === "activity.run" || data.type === "activity.error") && data.status !== "running"
+          : data.type === "done" || data.type === "stopped" || data.type === "error"
       ),
       resolveSettlement: (_eventName, data, req) => {
-        // Settle on any terminal event that carries usage metering. `done` is the
-        // normal path; `stopped` (user-issued abort via /runs/:id/stop) and
-        // `error` (runtime failure with partial usage already accumulated) MUST
-        // also settle so partial work the model performed is paid for and the
-        // x402 prepared payment is never silently aborted.
-        if (data.type !== "done" && data.type !== "stopped" && data.type !== "error") {
+        // Settle on any terminal event. The domain protocol closes every
+        // stream with a non-running `activity.run` (completed/cancelled) or an
+        // `activity.error`, both carrying `payload.usage`/`payload.agent` —
+        // the runtime's opening `activity.run` frame has status `running` and
+        // is NOT a terminal. The legacy wire names remain accepted so
+        // pre-cutover runtimes still settle.
+        const domainTerminal = data.domain === "activity"
+          && (data.type === "activity.run" || data.type === "activity.error")
+          && data.status !== "running";
+        const legacyTerminal = data.type === "done" || data.type === "stopped" || data.type === "error";
+        if (!domainTerminal && !legacyTerminal) {
           return null;
         }
         return resolveAgentTextSettlement(data, req, "stream");
@@ -1995,7 +2202,9 @@ export function registerManowarRoutes(app: Application): void {
   );
   app.get("/agent/:walletAddress/runs/:runId/state", passthroughJsonRoute());
   app.post("/agent/:walletAddress/runs/:runId/approval", passthroughJsonRoute());
+  app.post("/agent/:walletAddress/runs/:runId/connector", passthroughJsonRoute());
   app.post("/agent/:walletAddress/runs/:runId/stop", passthroughJsonRoute());
+  app.get("/agent/:walletAddress/runs/:runId/events", passthroughStreamRoute());
 
   app.post(
     "/workflow/execute",
