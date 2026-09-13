@@ -13,6 +13,7 @@ import type {
 } from "../../../inference/events.js";
 import { aggregateCanonicalFamily } from "../../../inference/catalog/families/index.js";
 import { getModelCapabilities } from "../../../inference/catalog/modalities/index.js";
+import { getModelById } from "../../../inference/catalog/registry.js";
 import { resolveBillingModel } from "../../../x402/metering.js";
 import type { PaymentIntentRecord } from "../../../x402/intents.js";
 import {
@@ -70,6 +71,7 @@ export async function projectCanonicalPaymentIntentSettlement(
 
   const separator = intent.meterSubject.indexOf(":");
   const modelId = separator >= 0 ? intent.meterSubject.slice(separator + 1) : intent.meterSubject;
+  if (!getModelById(modelId)) return true;
   const resolved = resolveBillingModel(modelId);
   const card = resolved.card;
   const capability = card ? getModelCapabilities(card)[0] : undefined;
