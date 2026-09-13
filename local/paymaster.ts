@@ -1,8 +1,8 @@
-import { createWalletClient, http } from "viem";
+import { Chain, createWalletClient, http } from "viem";
 import { createNonceManager, jsonRpc } from "viem/nonce";
 import { privateKeyToAccount } from "viem/accounts";
 import * as SessionKey from "@filoz/synapse-core/session-key";
-import { METADATA_KEYS, Synapse, calibration, mainnet, type Chain } from "@filoz/synapse-sdk";
+import { METADATA_KEYS, Synapse, calibration, mainnet, type FilecoinChain } from "@filoz/synapse-sdk";
 import { depositUSDFC } from "filecoin-pin/core/payments";
 import { z } from "zod";
 import { evmChainId, isEvmNetwork, isNetworkId, type EvmNetworkId } from "../x402/configs/chains.js";
@@ -330,7 +330,7 @@ function createPaymasterClients(config: SynapseRouteConfig): PaymasterClients {
     }) as Parameters<typeof SessionKey.loginSync>[0],
     synapse: Synapse.create({
       account,
-      chain,
+      chain: chain as FilecoinChain,
       transport,
       source: config.source,
       withCDN: false,
@@ -455,7 +455,7 @@ async function handleEnsureLocalFilecoinPinSession(
 
     let preparation = await clients.synapse.storage.prepare({
       context: contexts,
-      dataSize: BigInt(fileSizeBytes),
+      pieceSizes: [BigInt(fileSizeBytes)],
     });
     const initialDepositAmount = preparation.transaction?.depositAmount ?? 0n;
 
@@ -467,7 +467,7 @@ async function handleEnsureLocalFilecoinPinSession(
       });
       preparation = await clients.synapse.storage.prepare({
         context: contexts,
-        dataSize: BigInt(fileSizeBytes),
+        pieceSizes: [BigInt(fileSizeBytes)],
       });
       if (preparation.transaction != null) {
         throw new Error(
