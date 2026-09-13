@@ -1,15 +1,13 @@
 /**
  * Universal parameter aggregator.
  *
- * Single responsibility: every inference call must succeed. When a third-
- * party request omits a required-by-the-vendor parameter (count, duration,
- * quality, resolution, …), this module fills the lowest-cost default
- * taken from the per-model parameter schema in models.json. No
- * network calls happen here.
+ * Resolves and validates model-specific request parameters from models.json.
+ * No network calls happen here.
  */
 import type { Request, Response } from "express";
 
 import { getModelById } from "./catalog/registry.js";
+import { familyOf, normalizeFamily } from "./catalog/families/index.js";
 import { getModelCapabilities, type CanonicalModality } from "./catalog/modalities/index.js";
 import type { ModelCard } from "./types.js";
 
@@ -18,14 +16,16 @@ import type { ModelCard } from "./types.js";
 // ---------------------------------------------------------------------------
 
 export interface ParamDefinition {
-  type: "string" | "integer" | "number" | "boolean" | "array" | "object";
+  type: ParamType | ParamType[];
   required: boolean;
-  default?: string | number | boolean;
+  default?: unknown;
   options?: (string | number)[];
   minimum?: number;
   maximum?: number;
   description?: string;
 }
+
+type ParamType = "string" | "integer" | "number" | "boolean" | "array" | "object";
 
 export interface ModelParams {
   modelId: string;
@@ -41,40 +41,40 @@ export interface ResolvedModelParams {
   defaults: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
-// Public helpers — kept for telemetry.ts compatibility.
-// ---------------------------------------------------------------------------
+export interface FamilyModalityDefaultContext {
+  family: string;
+  modality: CanonicalModality;
+  provider: string;
+  params: Readonly<Record<string, ParamDefinition>>;
+}
 
-/**
- * Rank a single option value for cost-ordering. Numeric → as-is; tier
- * names → ordinal; "1280x720" → pixels; "720p" → 720. Used by
- * `telemetry.ts` to detect monotonic option ladders for tier selection.
- */
-export function rankOptionValue(value: string | number): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "string") return null;
+export type FamilyModalityDefaultResolver = (
+  context: FamilyModalityDefaultContext,
+) => Record<string, unknown>;
 
-  const trimmed = value.trim().toLowerCase();
-  switch (trimmed) {
-    case "low": case "standard": case "draft": return 1;
-    case "medium": case "auto": return 2;
-    case "high": case "hd": return 3;
-    case "max": case "ultra": return 4;
-  }
+const familyModalityDefaultResolvers = new Map<string, FamilyModalityDefaultResolver>();
 
-  const numeric = Number(trimmed);
-  if (Number.isFinite(numeric)) return numeric;
+function familyModalityKey(family: string, modality: CanonicalModality): string {
+  return `${family}\u0000${modality}`;
+}
 
-  const dim = trimmed.match(/^(\d+)\s*[x*]\s*(\d+)$/);
-  if (dim) return Number(dim[1]) * Number(dim[2]);
-
-  const res = trimmed.match(/^(\d+)\s*p$/);
-  if (res) return Number(res[1]);
-
-  const sec = trimmed.match(/^(\d+(?:\.\d+)?)\s*s$/);
-  if (sec) return Number(sec[1]);
-
-  return null;
+/** Register defaults owned by a provider family and modality, never a model id. */
+export function registerFamilyModalityDefaultResolver(
+  family: string,
+  modality: CanonicalModality,
+  resolver: FamilyModalityDefaultResolver,
+): () => void {
+  const normalizedFamily = normalizeFamily(family);
+  if (!normalizedFamily) throw new Error("family is required");
+  const key = familyModalityKey(normalizedFamily, modality);
+  const previous = familyModalityDefaultResolvers.get(key);
+  familyModalityDefaultResolvers.set(key, resolver);
+  return () => {
+    if (familyModalityDefaultResolvers.get(key) === resolver) {
+      if (previous) familyModalityDefaultResolvers.set(key, previous);
+      else familyModalityDefaultResolvers.delete(key);
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -83,10 +83,6 @@ export function rankOptionValue(value: string | number): number | null {
 
 function isAllowedOption(value: unknown): value is string | number {
   return typeof value === "string" || typeof value === "number";
-}
-
-function isDefaultValue(value: unknown): value is string | number | boolean {
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -103,8 +99,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function isParamDefinition(raw: unknown): boolean {
   const record = asRecord(raw);
   if (!record) return false;
-  const type = typeof record.type === "string" ? record.type : "";
-  return ["string", "integer", "number", "boolean", "array", "object"].includes(type);
+  const types = Array.isArray(record.type) ? record.type : [record.type];
+  return types.length > 0 && types.every((type) => typeof type === "string"
+    && ["string", "integer", "number", "boolean", "array", "object"].includes(type));
 }
 
 function normalizeParamDefinition(raw: unknown): ParamDefinition | null {
@@ -112,20 +109,27 @@ function normalizeParamDefinition(raw: unknown): ParamDefinition | null {
   if (!record) return null;
   if (!isParamDefinition(record)) return null;
 
-  const rawType = typeof record.type === "string" ? record.type : "";
+  const rawTypes = Array.isArray(record.type) ? record.type : [record.type];
   const options = Array.isArray(record.options) ? record.options.filter(isAllowedOption) : undefined;
-  const defaultValue = isDefaultValue(record.default) ? record.default : undefined;
-  const type = rawType as ParamDefinition["type"];
-
-  return {
+  const types = rawTypes as ParamType[];
+  const type: ParamDefinition["type"] = types.length === 1 ? types[0]! : types;
+  const definition: ParamDefinition = {
     type,
     required: record.required === true,
-    ...(defaultValue !== undefined ? { default: defaultValue } : {}),
     ...(options && options.length > 0 ? { options } : {}),
-    ...(typeof record.minimum === "number" ? { minimum: record.minimum } : {}),
-    ...(typeof record.maximum === "number" ? { maximum: record.maximum } : {}),
+    ...(typeof record.minimum === "number" && Number.isFinite(record.minimum) ? { minimum: record.minimum } : {}),
+    ...(typeof record.maximum === "number" && Number.isFinite(record.maximum) ? { maximum: record.maximum } : {}),
     ...(typeof record.description === "string" ? { description: record.description } : {}),
   };
+
+  if (record.default !== undefined) {
+    try {
+      definition.default = coerceAndValidate(definition, record.default);
+    } catch {
+      // Invalid catalog defaults are not applied to requests.
+    }
+  }
+  return definition;
 }
 
 function normalizeDefinitions(raw: unknown): Record<string, ParamDefinition> {
@@ -140,56 +144,31 @@ function normalizeDefinitions(raw: unknown): Record<string, ParamDefinition> {
   return out;
 }
 
-/**
- * Extract the lowest value from a set of options.
- * For numeric options: return the minimum.
- * For string options: try to extract a numeric component for ranking
- * (e.g. "512x512" → 512*512, "720P" → 720, "5" → 5).
- * If no numeric component can be extracted, return the first option
- * (provider's declared order).
- */
-function lowestOption(options: Array<string | number>): string | number | undefined {
-  if (options.length === 0) return undefined;
-
-  const numeric = options.filter((o): o is number => typeof o === "number" && Number.isFinite(o));
-  if (numeric.length > 0) return Math.min(...numeric);
-
-  const ranked = options
-    .map((opt, index) => ({ opt, index, rank: rankOptionValue(opt) }))
-    .filter((entry): entry is { opt: string | number; index: number; rank: number } => entry.rank !== null);
-  if (ranked.length > 0) {
-    ranked.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
-    return ranked[0].opt;
-  }
-
-  return options[0];
-}
-
-/**
- * Compute the lowest-cost default for a single parameter.
- * Only generates a default for params that have options or min/max ranges
- * but no explicit provider default.
- */
-function lowestDefaultForParam(def: ParamDefinition): unknown {
-  if (def.default !== undefined) {
-    if (typeof def.default === "string" && def.default.trim().toLowerCase() === "auto") {
-      return undefined;
-    }
-    return def.default;
-  }
-
-  if (def.options && def.options.length > 0) {
-    return lowestOption(def.options);
-  }
-
-  return undefined;
-}
-
 export function buildModelParamDefaults(params: Record<string, ParamDefinition>): Record<string, unknown> {
   const defaults: Record<string, unknown> = {};
   for (const [key, def] of Object.entries(params)) {
-    const value = lowestDefaultForParam(def);
-    if (value !== undefined) defaults[key] = value;
+    if (def.default !== undefined) defaults[key] = def.default;
+  }
+  return defaults;
+}
+
+function resolveFamilyModalityDefaults(
+  card: ModelCard,
+  modality: CanonicalModality,
+  params: Record<string, ParamDefinition>,
+): Record<string, unknown> {
+  const family = familyOf(card);
+  if (!family) return {};
+  const resolver = familyModalityDefaultResolvers.get(familyModalityKey(family, modality));
+  if (!resolver) return {};
+
+  const resolved = resolver({ family, modality, provider: card.provider, params });
+  const defaults: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(resolved)) {
+    const definition = params[key];
+    if (!definition || definition.default !== undefined) continue;
+    const validated = coerceAndValidate(definition, value);
+    if (validated !== undefined) defaults[key] = validated;
   }
   return defaults;
 }
@@ -203,55 +182,109 @@ function pickModalityFromCard(modelId: string, preferred?: CanonicalModality): {
   provider: string;
 } {
   const card = getModelById(modelId);
-  if (preferred) return { modality: preferred, provider: card?.provider ?? "" };
   if (!card) return { modality: null, provider: "" };
   const caps = getModelCapabilities(card);
-  const order: CanonicalModality[] = ["video", "image", "audio", "text", "embedding", "realtime"];
-  for (const m of order) {
-    if (caps.some((c) => c.modality === m)) {
-      return { modality: m, provider: card.provider };
-    }
+  if (preferred) {
+    return {
+      modality: caps.some((capability) => capability.modality === preferred) ? preferred : null,
+      provider: card.provider,
+    };
   }
-  return { modality: null, provider: card.provider };
+  return { modality: caps[0]?.modality ?? null, provider: card.provider };
 }
 
-function coerce(def: ParamDefinition, value: unknown): unknown {
+function invalidParam(message: string): Error {
+  return Object.assign(new Error(message), {
+    statusCode: 400,
+    code: "invalid_model_parameter",
+  });
+}
+
+function coerceSingleType(type: ParamType, value: unknown): unknown {
   if (value === undefined || value === null) return undefined;
-  if (def.type === "integer") {
+  if (type === "string") {
+    if (typeof value === "string") return value;
+    throw invalidParam("string parameters must be strings");
+  }
+  if (type === "integer") {
     if (typeof value === "number") {
       if (Number.isSafeInteger(value)) return value;
-      throw Object.assign(new Error("integer parameters must be safe integers"), {
-        statusCode: 400,
-        code: "unsafe_integer_parameter",
-      });
+      throw invalidParam("integer parameters must be safe integers");
     }
     if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
       const parsed = BigInt(value.trim());
       if (parsed < BigInt(Number.MIN_SAFE_INTEGER) || parsed > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw Object.assign(new Error("integer parameters must be safe integers"), {
-          statusCode: 400,
-          code: "unsafe_integer_parameter",
-        });
+        throw invalidParam("integer parameters must be safe integers");
       }
       return Number(parsed);
     }
+    throw invalidParam("integer parameters must be integers");
   }
-  if (def.type === "number") {
+  if (type === "number") {
     if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string") {
+    if (typeof value === "string" && value.trim().length > 0) {
       const n = Number(value.trim());
       if (Number.isFinite(n)) return n;
     }
+    throw invalidParam("number parameters must be finite numbers");
   }
-  if (def.type === "boolean") {
+  if (type === "boolean") {
     if (typeof value === "boolean") return value;
     if (typeof value === "string") {
       const t = value.trim().toLowerCase();
       if (t === "true") return true;
       if (t === "false") return false;
     }
+    throw invalidParam("boolean parameters must be booleans");
   }
-  return value;
+  if (type === "array") {
+    if (Array.isArray(value)) return value;
+    throw invalidParam("array parameters must be arrays");
+  }
+  if (type === "object") {
+    if (asRecord(value)) return value;
+    throw invalidParam("object parameters must be objects");
+  }
+  throw invalidParam("unsupported parameter type");
+}
+
+function coerceType(def: ParamDefinition, value: unknown): unknown {
+  const types = Array.isArray(def.type) ? def.type : [def.type];
+  let lastError: unknown;
+  for (const type of types) {
+    try {
+      return coerceSingleType(type, value);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : invalidParam("parameter does not match any allowed type");
+}
+
+function coerceAndValidate(def: ParamDefinition, value: unknown): unknown {
+  const coerced = coerceType(def, value);
+  if (coerced === undefined) return undefined;
+
+  if (def.options?.length) {
+    const allowed = def.options.some((option) => {
+      try {
+        return Object.is(coerceType({ ...def, options: undefined }, option), coerced);
+      } catch {
+        return false;
+      }
+    });
+    if (!allowed) throw invalidParam("parameter value is not in the allowed options");
+  }
+
+  if (typeof coerced === "number") {
+    if (def.minimum !== undefined && coerced < def.minimum) {
+      throw invalidParam(`parameter value must be at least ${def.minimum}`);
+    }
+    if (def.maximum !== undefined && coerced > def.maximum) {
+      throw invalidParam(`parameter value must be at most ${def.maximum}`);
+    }
+  }
+  return coerced;
 }
 
 function extractProvided(
@@ -265,7 +298,7 @@ function extractProvided(
     const raw = [key]
       .map((candidate) => custom?.[candidate] ?? body[candidate])
       .find((value) => value !== undefined);
-    const coerced = coerce(def, raw);
+    const coerced = coerceAndValidate(def, raw);
     if (coerced !== undefined) out[key] = coerced;
   }
   return out;
@@ -279,8 +312,7 @@ function extractProvided(
  * Resolve the per-model parameter schema from card.params.
  *
  * Given a model id (and optionally a preferred modality hint), returns
- * the schema from that model's own params field in models.json, with
- * lowest-cost defaults pre-computed.
+ * the schema and explicit defaults from that model's own params field.
  */
 export function resolveModelParams(
   modelId: string,
@@ -294,22 +326,26 @@ export function resolveModelParams(
     decoded,
     preferredType as CanonicalModality | undefined,
   );
-  if (!modality) return null;
+  if (!card || !modality) return null;
 
   const params = normalizeDefinitions(card?.params);
+  const defaults = {
+    ...resolveFamilyModalityDefaults(card, modality, params),
+    ...buildModelParamDefaults(params),
+  };
   return {
     modelId: decoded,
     type: modality,
     provider,
     params,
-    defaults: buildModelParamDefaults(params),
+    defaults,
   };
 }
 
 /**
  * Resolve schema + values, where every key in the schema is filled.
  * - Provided keys (in `body` or `body.custom_params`) override defaults.
- * - Missing keys fall back to the lowest-cost default.
+ * - Missing keys fall back only to an explicit valid provider default.
  */
 export function resolveOptionalModelParamValues(
   modelId: string,
