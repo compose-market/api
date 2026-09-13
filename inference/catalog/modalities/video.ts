@@ -199,6 +199,7 @@ export function buildGoogleVideoGenerationRequest(
   options?: VideoSubmissionOptions,
   referenceImage?: GoogleVideoReferenceImage,
 ): Record<string, unknown> {
+  const custom = options?.customParams || {};
   const config: Record<string, unknown> = {};
   if (typeof options?.duration === "number" && options.duration > 0) {
     config.durationSeconds = options.duration;
@@ -208,6 +209,20 @@ export function buildGoogleVideoGenerationRequest(
   }
   if (options?.resolution) {
     config.resolution = options.resolution;
+  }
+  const configFields: Array<[string, string]> = [
+    ["fps", "fps"],
+    ["seed", "seed"],
+    ["sample_count", "numberOfVideos"],
+    ["number_of_videos", "numberOfVideos"],
+    ["negative_prompt", "negativePrompt"],
+    ["enhance_prompt", "enhancePrompt"],
+    ["generate_audio", "generateAudio"],
+    ["person_generation", "personGeneration"],
+    ["compression_quality", "compressionQuality"],
+  ];
+  for (const [source, target] of configFields) {
+    if (custom[source] !== undefined) config[target] = custom[source];
   }
 
   return {
@@ -233,6 +248,13 @@ interface Mp4VideoMetadata {
   durationSeconds?: number;
   width?: number;
   height?: number;
+  frameCount?: number;
+}
+
+interface Mp4TrackMetadata extends Mp4VideoMetadata {
+  handlerType?: string;
+  stszSampleCount?: number;
+  sttsSampleCount?: number;
 }
 
 const MP4_CONTAINER_BOXES = new Set([
@@ -246,6 +268,76 @@ const MP4_CONTAINER_BOXES = new Set([
 
 function readBoxType(buffer: Buffer, offset: number): string {
   return buffer.toString("ascii", offset, offset + 4);
+}
+
+function readMp4Duration(buffer: Buffer, payloadStart: number, payloadEnd: number): number | undefined {
+  const version = buffer[payloadStart];
+  if (version === 0 && payloadStart + 20 <= payloadEnd) {
+    const timescale = buffer.readUInt32BE(payloadStart + 12);
+    const duration = buffer.readUInt32BE(payloadStart + 16);
+    return timescale > 0 && duration > 0 ? duration / timescale : undefined;
+  }
+  if (version === 1 && payloadStart + 32 <= payloadEnd) {
+    const timescale = buffer.readUInt32BE(payloadStart + 20);
+    const duration = buffer.readBigUInt64BE(payloadStart + 24);
+    return timescale > 0 && duration > 0n ? Number(duration) / timescale : undefined;
+  }
+  return undefined;
+}
+
+function parseMp4TrackBoxes(buffer: Buffer, start: number, end: number, track: Mp4TrackMetadata): void {
+  let offset = start;
+
+  while (offset + 8 <= end) {
+    const size32 = buffer.readUInt32BE(offset);
+    const type = readBoxType(buffer, offset + 4);
+    let headerSize = 8;
+    let boxSize = size32;
+
+    if (size32 === 1) {
+      if (offset + 16 > end) return;
+      const largeSize = buffer.readBigUInt64BE(offset + 8);
+      if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return;
+      boxSize = Number(largeSize);
+      headerSize = 16;
+    } else if (size32 === 0) {
+      boxSize = end - offset;
+    }
+
+    if (boxSize < headerSize || offset + boxSize > end) return;
+    const payloadStart = offset + headerSize;
+    const payloadEnd = offset + boxSize;
+
+    if (type === "hdlr" && payloadStart + 12 <= payloadEnd) {
+      track.handlerType = readBoxType(buffer, payloadStart + 8);
+    } else if (type === "mdhd") {
+      track.durationSeconds = readMp4Duration(buffer, payloadStart, payloadEnd);
+    } else if (type === "tkhd" && payloadEnd - payloadStart >= 8) {
+      const width = buffer.readUInt32BE(payloadEnd - 8) / 65536;
+      const height = buffer.readUInt32BE(payloadEnd - 4) / 65536;
+      if (width > 0 && height > 0) {
+        track.width = width;
+        track.height = height;
+      }
+    } else if ((type === "stsz" || type === "stz2") && payloadStart + 12 <= payloadEnd) {
+      const sampleCount = buffer.readUInt32BE(payloadStart + 8);
+      if (sampleCount > 0) track.stszSampleCount = sampleCount;
+    } else if (type === "stts" && payloadStart + 8 <= payloadEnd) {
+      const entryCount = buffer.readUInt32BE(payloadStart + 4);
+      if (payloadStart + 8 + entryCount * 8 <= payloadEnd) {
+        let sampleCount = 0;
+        for (let index = 0; index < entryCount; index += 1) {
+          sampleCount += buffer.readUInt32BE(payloadStart + 8 + index * 8);
+        }
+        if (sampleCount > 0) track.sttsSampleCount = sampleCount;
+      }
+    }
+
+    if (MP4_CONTAINER_BOXES.has(type)) {
+      parseMp4TrackBoxes(buffer, payloadStart, payloadEnd, track);
+    }
+    offset += boxSize;
+  }
 }
 
 function parseMp4Boxes(buffer: Buffer, start: number, end: number, metadata: Mp4VideoMetadata): void {
@@ -278,33 +370,22 @@ function parseMp4Boxes(buffer: Buffer, start: number, end: number, metadata: Mp4
     const payloadStart = offset + headerSize;
     const payloadEnd = offset + boxSize;
 
-    if (type === "mvhd" && payloadStart + 20 <= payloadEnd) {
-      const version = buffer[payloadStart];
-      if (version === 0 && payloadStart + 20 <= payloadEnd) {
-        const timescale = buffer.readUInt32BE(payloadStart + 12);
-        const duration = buffer.readUInt32BE(payloadStart + 16);
-        if (timescale > 0 && duration > 0) {
-          metadata.durationSeconds = duration / timescale;
-        }
-      } else if (version === 1 && payloadStart + 32 <= payloadEnd) {
-        const timescale = buffer.readUInt32BE(payloadStart + 20);
-        const duration = buffer.readBigUInt64BE(payloadStart + 24);
-        if (timescale > 0 && duration > 0n) {
-          metadata.durationSeconds = Number(duration) / timescale;
-        }
+    if (type === "mvhd" && metadata.durationSeconds === undefined) {
+      metadata.durationSeconds = readMp4Duration(buffer, payloadStart, payloadEnd);
+    } else if (type === "trak" && metadata.frameCount === undefined) {
+      const track: Mp4TrackMetadata = {};
+      parseMp4TrackBoxes(buffer, payloadStart, payloadEnd, track);
+      const isVideoTrack = track.handlerType === "vide"
+        || (track.handlerType === undefined && track.width !== undefined && track.height !== undefined);
+      if (isVideoTrack) {
+        if (track.durationSeconds !== undefined) metadata.durationSeconds = track.durationSeconds;
+        if (track.width !== undefined) metadata.width = track.width;
+        if (track.height !== undefined) metadata.height = track.height;
+        metadata.frameCount = track.stszSampleCount ?? track.sttsSampleCount;
       }
     }
 
-    if (type === "tkhd" && payloadEnd - payloadStart >= 8) {
-      const width = buffer.readUInt32BE(payloadEnd - 8) / 65536;
-      const height = buffer.readUInt32BE(payloadEnd - 4) / 65536;
-      if (width > 0 && height > 0) {
-        metadata.width = width;
-        metadata.height = height;
-      }
-    }
-
-    if (MP4_CONTAINER_BOXES.has(type)) {
+    if (MP4_CONTAINER_BOXES.has(type) && type !== "trak") {
       parseMp4Boxes(buffer, payloadStart, payloadEnd, metadata);
     }
 
@@ -329,9 +410,10 @@ export function videoBillingMetricsFromOutput(args: {
   const metadata = readMp4VideoMetadata(args.buffer);
 
   if (typeof metadata.durationSeconds === "number" && Number.isFinite(metadata.durationSeconds) && metadata.durationSeconds > 0) {
-    if (metrics.second === undefined) metrics.second = metadata.durationSeconds;
-    if (metrics.duration === undefined) metrics.duration = metadata.durationSeconds;
-    if (metrics.minute === undefined) metrics.minute = metadata.durationSeconds / 60;
+    metrics.second = metadata.durationSeconds;
+    metrics.duration = metadata.durationSeconds;
+    metrics.minute = metadata.durationSeconds / 60;
+    metrics.compute_second = metadata.durationSeconds;
   }
 
   if (
@@ -345,10 +427,16 @@ export function videoBillingMetricsFromOutput(args: {
     const pixels = metadata.width * metadata.height * args.generatedUnits;
     metrics.width = metadata.width;
     metrics.height = metadata.height;
-    if (metrics.pixel === undefined) metrics.pixel = pixels;
-    if (metrics.megapixel === undefined) metrics.megapixel = pixels / 1_000_000;
-    if (metrics.processed_pixel === undefined) metrics.processed_pixel = pixels;
-    if (metrics.processed_megapixel === undefined) metrics.processed_megapixel = pixels / 1_000_000;
+    metrics.size = `${metadata.width}x${metadata.height}`;
+    metrics.resolution = `${Math.min(metadata.width, metadata.height)}P`;
+    metrics.pixel = pixels;
+    metrics.megapixel = pixels / 1_000_000;
+    metrics.processed_pixel = pixels;
+    metrics.processed_megapixel = pixels / 1_000_000;
+  }
+
+  if (typeof metadata.frameCount === "number" && Number.isInteger(metadata.frameCount) && metadata.frameCount > 0) {
+    metrics.frame = metadata.frameCount * args.generatedUnits;
   }
 
   return metrics;

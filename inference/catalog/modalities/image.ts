@@ -48,7 +48,11 @@ export function classifyImageModel(model: ModelCard, source: ModelSourceShape): 
   }
 
   if (hasSourceType(source, ["image-generation", "unconditional-image-generation"]) && outputsImage) {
-    if (hasInput(source, "text")) {
+    const imageOnly = Boolean(model.capabilities
+      && typeof model.capabilities === "object"
+      && !Array.isArray(model.capabilities)
+      && (model.capabilities as Record<string, unknown>).requires_image_input === true);
+    if (hasInput(source, "text") && !imageOnly) {
       capabilities.push(buildCapability(model, source, "image", "text-to-image", true, {
         input: ["text"],
         output: ["image"],
@@ -209,7 +213,8 @@ export function supportsOpenAINativeImageStreaming(card: ModelCard | null): bool
     const endpoint = value as Record<string, unknown>;
     return endpoint.name === "Image generation" && endpoint.supported === true;
   });
-  return supportsImages && "partial_images" in params;
+  const identity = `${card.modelId || ""} ${card.upstreamModelId || ""}`.toLowerCase();
+  return supportsImages && ("partial_images" in params || /\bgpt-image-/.test(identity));
 }
 
 // ===========================================================================
@@ -356,7 +361,7 @@ export interface ImageRequestNative {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI (dall-e-2, dall-e-3, gpt-image-*, gpt-image-1)
+// OpenAI
 // ---------------------------------------------------------------------------
 
 export interface OpenAINativeImage {
@@ -455,8 +460,8 @@ export interface StabilityNativeImage {
   mode?: "text-to-image" | "image-to-image";
   /** Stability style preset (17 values). */
   style_preset?: "3d-model" | "analog-film" | "anime" | "cinematic" | "comic-book" | "digital-art"
-    | "enhance" | "fantasy-art" | "isometric" | "line-art" | "low-poly" | "modeling-compound"
-    | "neon-punk" | "origami" | "photographic" | "pixel-art" | "tile-texture";
+  | "enhance" | "fantasy-art" | "isometric" | "line-art" | "low-poly" | "modeling-compound"
+  | "neon-punk" | "origami" | "photographic" | "pixel-art" | "tile-texture";
   /** Aspect-ratio enum. */
   aspect_ratio?: "16:9" | "1:1" | "21:9" | "2:3" | "3:2" | "4:5" | "5:4" | "9:16" | "9:21";
   /** Replace-background-and-relight extras. */

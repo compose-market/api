@@ -1,4 +1,4 @@
-import { audioDurationSeconds } from "../modalities/speech.js";
+import { audioDurationSeconds } from "../modalities/audio.js";
 
 /**
  * ElevenLabs speech/audio family wire.

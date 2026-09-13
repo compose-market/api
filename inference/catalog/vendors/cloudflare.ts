@@ -2,6 +2,7 @@ import {
     bufferFromPayload,
     imageMimeType,
 } from "../shared/media.js";
+import { throwHttpError } from "../shared/http.js";
 import { getModelById } from "../registry.js";
 import { rerankBillingMetrics } from "../modalities/rerank.js";
 
@@ -80,12 +81,23 @@ function unwrap(data: unknown): unknown {
 
 function params(modelId: string): Set<string> {
     const card = getModelById(modelId, "cloudflare");
-    const input = asRecord(card?.params)?.input;
-    return new Set(
-        (Array.isArray(input) ? input : [])
-            .map((entry) => clean(entry))
-            .filter(Boolean),
-    );
+    const definitions = asRecord(card?.params) || {};
+    const legacyInput = Array.isArray(definitions.input) ? definitions.input : [];
+    return new Set([
+        ...Object.entries(definitions)
+            .filter(([, definition]) => asRecord(definition)?.type)
+            .map(([key]) => key),
+        ...legacyInput.map((entry) => clean(entry)).filter(Boolean),
+    ]);
+}
+
+function usesRawAudioInput(modelId: string): boolean {
+    const definitions = asRecord(getModelById(modelId, "cloudflare")?.params) || {};
+    const legacyInput = Array.isArray(definitions.input) ? definitions.input.map(clean) : [];
+    const audio = asRecord(definitions.audio);
+    const properties = asRecord(audio?.properties);
+    return (legacyInput.includes("body") && legacyInput.includes("contentType"))
+        || Boolean(properties?.body && properties?.contentType);
 }
 
 function scalar(value: unknown): value is string | number | boolean {
@@ -113,10 +125,7 @@ async function cfFetch(
     const response = await fetch(url, init);
 
     if (!response.ok) {
-        const errorBody = await response.text().catch(() => "");
-        throw new Error(
-            `Cloudflare API error: ${response.status} ${response.statusText} — ${errorBody.substring(0, 500)}`
-        );
+        await throwHttpError("Cloudflare API", url, response);
     }
 
     return response;
@@ -225,6 +234,10 @@ export interface CloudflareImageOptions {
     guidance?: number;
     /** Provider-native request parameters */
     parameters?: Record<string, unknown>;
+    image?: Buffer;
+    imageMimeType?: string;
+    mask?: Buffer;
+    maskMimeType?: string;
     signal?: AbortSignal;
 }
 
@@ -250,6 +263,8 @@ export async function generateCloudflareImage(
         append(form, "height", options.height ?? native.height);
         append(form, "steps", native.steps ?? native.num_steps ?? options.num_steps);
         append(form, "guidance", options.guidance ?? native.guidance ?? native.guidance_scale);
+        if (options.image) form.append("image", new Blob([new Uint8Array(options.image)], { type: options.imageMimeType || "image/png" }), "image");
+        if (options.mask) form.append("mask", new Blob([new Uint8Array(options.mask)], { type: options.maskMimeType || "image/png" }), "mask");
         for (const [key, value] of Object.entries(native)) {
             if (["prompt", "width", "height", "steps", "num_steps", "guidance", "guidance_scale"].includes(key)) {
                 continue;
@@ -259,14 +274,18 @@ export async function generateCloudflareImage(
         return imageFromResponse(await cfMultipartRequest(modelId, form, options.signal));
     }
 
-    const body: Record<string, unknown> = {
-        prompt,
-        ...(options.parameters || {}),
-    };
-    if (options.width != null) body.width = options.width;
-    if (options.height != null) body.height = options.height;
-    if (options.num_steps != null) body.num_steps = options.num_steps;
-    if (options.guidance != null) body.guidance = options.guidance;
+    const body: Record<string, unknown> = {};
+    if (keys.has("prompt")) body.prompt = prompt;
+    for (const [key, value] of Object.entries(options.parameters || {})) {
+        if (keys.has(key) && value !== undefined) body[key] = value;
+    }
+    if (options.width != null && keys.has("width")) body.width = options.width;
+    if (options.height != null && keys.has("height")) body.height = options.height;
+    if (options.num_steps != null && keys.has("num_steps")) body.num_steps = options.num_steps;
+    if (options.guidance != null && keys.has("guidance")) body.guidance = options.guidance;
+    if (options.image && keys.has("image")) body.image = Array.from(options.image.values());
+    if (options.image && keys.has("image_b64")) body.image_b64 = options.image.toString("base64");
+    if (options.mask && keys.has("mask")) body.mask = Array.from(options.mask.values());
 
     // Request raw image bytes
     return imageFromResponse(await cfRequest(modelId, body, "image/*", options.signal));
@@ -491,7 +510,7 @@ export async function transcribeCloudflareAudio(
     const keys = params(modelId);
     const native = options.customParams || {};
     let response: Response;
-    if (keys.has("body") && keys.has("contentType")) {
+    if (usesRawAudioInput(modelId)) {
         const query = new URLSearchParams();
         if (options.language && keys.has("language")) {
             query.set("language", options.language);

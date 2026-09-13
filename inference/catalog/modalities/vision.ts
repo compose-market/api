@@ -27,7 +27,11 @@ function hasEvidence(model: ModelCard, pattern: RegExp): boolean {
 }
 
 function hasDepthEvidence(model: ModelCard): boolean {
-  return hasEvidence(model, /\bdepth(?:[-_\s]+estimation)?\b/);
+  // Require actual depth-estimation semantics: bare "depth" also appears
+  // in unrelated param prose (e.g. "maximum depth of the model's internal
+  // reasoning process"), which must never classify a chat model as a
+  // depth-estimation vision task.
+  return hasEvidence(model, /\bdepth[-_\s]*(?:estimation|estimator|anything|map)\b/i);
 }
 
 function hasCompareEvidence(model: ModelCard): boolean {

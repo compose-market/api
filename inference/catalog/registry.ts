@@ -45,32 +45,64 @@ const INTERACTIVE_TEXT_OPERATIONS = new Set(["chat", "vision-chat", "deep-resear
 const TOOL_CAPABILITIES = new Set(["functionCalling", "function_calling", "tool_calling", "tool_usage"]);
 const REASONING_CAPABILITIES = new Set(["reasoning", "thinking"]);
 
+function recordOf(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function truthyKeys(value: unknown): Set<string> {
+    const out = new Set<string>();
+    for (const [key, item] of Object.entries(recordOf(value))) {
+        if (item === true || (typeof item === "number" && item > 0) || (typeof item === "string" && item.trim().length > 0)) {
+            out.add(key);
+        }
+    }
+    return out;
+}
+
 /**
- * Return the protocol-facing view of already-compiled catalog semantics.
- * Consumers must not reinterpret raw provider capability spellings themselves.
+ * Return the protocol-facing view of the compiled catalog semantics,
+ * derived from the real catalog shape: per-operation entries in
+ * `semantics.capabilities[]`, the card's top-level `capabilities` record,
+ * and the card's `params` keys. Consumers must not reinterpret raw
+ * provider capability spellings themselves.
  */
 export function getModelProtocolProfile(model: ModelCard): ModelProtocolProfile {
-    const semantics = model.semantics;
-    const operations = Array.isArray(semantics?.operations) ? [...semantics.operations] : [];
-    const inputs = Array.isArray(semantics?.inputs) ? [...semantics.inputs] : [];
-    const outputs = Array.isArray(semantics?.outputs) ? [...semantics.outputs] : [];
-    const capabilities = new Set(Array.isArray(semantics?.capabilityKeys) ? semantics.capabilityKeys : []);
-    const parameters = new Set(Array.isArray(semantics?.parameterKeys) ? semantics.parameterKeys : []);
-    const toolCalls = [...TOOL_CAPABILITIES].some((key) => capabilities.has(key));
-    const family = typeof semantics?.family === "string" ? semantics.family : undefined;
+    const capabilities = Array.isArray(model.semantics?.capabilities) ? model.semantics.capabilities : [];
+    const operations = new Set<string>();
+    const inputs = new Set<string>();
+    const outputs = new Set<string>();
+    let operationStreamable = false;
+    for (const capability of capabilities) {
+        if (!capability || typeof capability !== "object") continue;
+        if (typeof capability.operation === "string" && capability.operation.trim()) {
+            operations.add(capability.operation);
+        }
+        for (const input of Array.isArray(capability.input) ? capability.input : []) {
+            if (typeof input === "string" && input.trim()) inputs.add(input);
+        }
+        for (const output of Array.isArray(capability.output) ? capability.output : []) {
+            if (typeof output === "string" && output.trim()) outputs.add(output);
+        }
+        if (capability.streamable === true) operationStreamable = true;
+    }
+    const capabilityKeys = truthyKeys(model.capabilities);
+    const toolCalls = [...TOOL_CAPABILITIES].some((key) => capabilityKeys.has(key));
+    const family = typeof model.semantics?.family === "string" ? model.semantics.family : undefined;
     const familyReasoning = family === "moonshot"
         && moonshotProtocolCapabilities(model.upstreamModelId || model.modelId).reasoning;
 
     return {
         ...(family ? { family } : {}),
-        operations,
-        inputModalities: inputs,
-        outputModalities: outputs,
-        interactiveText: outputs.includes("text") && operations.some((operation) => INTERACTIVE_TEXT_OPERATIONS.has(operation)),
+        operations: [...operations].sort(),
+        inputModalities: [...inputs].sort(),
+        outputModalities: [...outputs].sort(),
+        interactiveText: outputs.has("text") && [...operations].some((operation) => INTERACTIVE_TEXT_OPERATIONS.has(operation)),
         toolCalls,
-        parallelToolCalls: toolCalls && parameters.has("parallel_tool_calls"),
-        reasoning: familyReasoning || [...REASONING_CAPABILITIES].some((key) => capabilities.has(key)),
-        streamable: semantics?.streamable === true,
+        parallelToolCalls: toolCalls && "parallel_tool_calls" in recordOf(model.params),
+        reasoning: familyReasoning || [...REASONING_CAPABILITIES].some((key) => capabilityKeys.has(key)),
+        streamable: operationStreamable || capabilityKeys.has("streaming"),
     };
 }
 
@@ -155,6 +187,7 @@ let compiledModelsCache: CompiledModelsData | null = null;
 let compiledModelsCachePath: string | null = null;
 let compiledModelsCacheSignature: string | null = null;
 let compiledModelIndex: Map<string, ModelCard> | null = null;
+let compiledModelLowerIndex: Map<string, ModelCard> | null = null;
 let compiledModelProviderIndex: Map<string, Map<ModelProvider, ModelCard>> | null = null;
 const modalityModelsCache = new Map<string, { signature: string | null; models: ModelCard[] }>();
 
@@ -190,6 +223,7 @@ function loadCompiledModels(): CompiledModelsData {
             compiledModelsCachePath = modelsPath;
             compiledModelsCacheSignature = signature;
             compiledModelIndex = null;
+            compiledModelLowerIndex = null;
             compiledModelProviderIndex = null;
             console.log(`[models] Loaded ${compiledModelsCache?.totalModels || 0} models from ${modelsPath}`);
         } else {
@@ -198,6 +232,7 @@ function loadCompiledModels(): CompiledModelsData {
             compiledModelsCachePath = modelsPath;
             compiledModelsCacheSignature = null;
             compiledModelIndex = null;
+            compiledModelLowerIndex = null;
             compiledModelProviderIndex = null;
         }
     } catch (e) {
@@ -206,6 +241,7 @@ function loadCompiledModels(): CompiledModelsData {
         compiledModelsCachePath = modelsPath;
         compiledModelsCacheSignature = signature;
         compiledModelIndex = null;
+        compiledModelLowerIndex = null;
         compiledModelProviderIndex = null;
     }
 
@@ -215,6 +251,7 @@ function loadCompiledModels(): CompiledModelsData {
 // Extended models (full 43k+ catalog) - loaded lazily only when needed
 let extendedModelsCache: CompiledModelsData | null = null;
 let extendedModelIndex: Map<string, ModelCard> | null = null;
+let extendedModelLowerIndex: Map<string, ModelCard> | null = null;
 let extendedModelProviderIndex: Map<string, Map<ModelProvider, ModelCard>> | null = null;
 
 function loadExtendedModels(): CompiledModelsData {
@@ -233,6 +270,7 @@ function loadExtendedModels(): CompiledModelsData {
                 models: Array.isArray(parsed.models) ? parsed.models.map(normalizeCompiledModel) : [],
             };
             extendedModelIndex = null;
+            extendedModelLowerIndex = null;
             extendedModelProviderIndex = null;
             console.log(`[models] Loaded ${extendedModelsCache?.totalModels || 0} extended models from ${extendedPath}`);
         } else {
@@ -249,9 +287,11 @@ function loadExtendedModels(): CompiledModelsData {
 
 function buildIndexes(models: ModelCard[]): {
     byId: Map<string, ModelCard>;
+    byIdLower: Map<string, ModelCard>;
     byIdProvider: Map<string, Map<ModelProvider, ModelCard>>;
 } {
     const byId = new Map<string, ModelCard>();
+    const byIdLower = new Map<string, ModelCard>();
     const byIdProvider = new Map<string, Map<ModelProvider, ModelCard>>();
 
     const indexProvider = (modelId: string, model: ModelCard) => {
@@ -262,15 +302,32 @@ function buildIndexes(models: ModelCard[]): {
         byIdProvider.set(modelId, providerMap);
     };
 
-    for (const model of models) {
-        const existingPrimary = byId.get(model.modelId);
+    const indexId = (modelId: string, model: ModelCard, provider?: ModelProvider) => {
+        const indexed = provider ? routeView(model, provider) ?? model : model;
+        const existingPrimary = byId.get(modelId);
         if (!existingPrimary) {
-            byId.set(model.modelId, model);
+            byId.set(modelId, indexed);
+            byIdLower.set(modelId.toLowerCase(), indexed);
         } else {
             const existingPriority = PROVIDER_PRIORITY[existingPrimary.provider] ?? 99;
-            const incomingPriority = PROVIDER_PRIORITY[model.provider] ?? 99;
+            const incomingPriority = PROVIDER_PRIORITY[indexed.provider] ?? 99;
             if (incomingPriority < existingPriority) {
-                byId.set(model.modelId, model);
+                byId.set(modelId, indexed);
+                byIdLower.set(modelId.toLowerCase(), indexed);
+            }
+        }
+    };
+
+    for (const model of models) {
+        indexId(model.modelId, model);
+        if (typeof model.upstreamModelId === "string" && model.upstreamModelId.length > 0) {
+            indexId(model.upstreamModelId, model, model.provider);
+        }
+        // Every serving provider's wire ID addresses the model, exactly like
+        // the old per-provider rows did.
+        for (const route of model.providerRoutes ?? []) {
+            if (typeof route.upstreamModelId === "string" && route.upstreamModelId.length > 0) {
+                indexId(route.upstreamModelId, model, route.provider);
             }
         }
 
@@ -278,19 +335,30 @@ function buildIndexes(models: ModelCard[]): {
         if (typeof model.upstreamModelId === "string" && model.upstreamModelId.length > 0) {
             indexProvider(model.upstreamModelId, model);
         }
+        for (const route of model.providerRoutes ?? []) {
+            if (typeof route.upstreamModelId === "string" && route.upstreamModelId.length > 0) {
+                indexProvider(route.upstreamModelId, model);
+            }
+        }
     }
 
-    return { byId, byIdProvider };
+    return { byId, byIdLower, byIdProvider };
 }
 
 function normalizeCompiledModel(model: ModelCard): ModelCard {
-    if (!model.pricing) {
+    if (!model.pricing && !Array.isArray(model.providerRoutes)) {
         return model;
     }
 
     return {
         ...model,
-        pricing: normalizeCompiledPricing(model.pricing) as ModelPricing,
+        ...(model.pricing ? { pricing: normalizeCompiledPricing(model.pricing) as ModelPricing } : {}),
+        ...(Array.isArray(model.providerRoutes) ? {
+            providerRoutes: model.providerRoutes.map((route) => ({
+                ...route,
+                ...(route.pricing ? { pricing: normalizeCompiledPricing(route.pricing) as ModelPricing } : {}),
+            })),
+        } : {}),
     };
 }
 
@@ -300,6 +368,7 @@ function ensureCompiledIndexes(): void {
     }
     const indexes = buildIndexes(loadCompiledModels().models);
     compiledModelIndex = indexes.byId;
+    compiledModelLowerIndex = indexes.byIdLower;
     compiledModelProviderIndex = indexes.byIdProvider;
 }
 
@@ -309,6 +378,7 @@ function ensureExtendedIndexes(): void {
     }
     const indexes = buildIndexes(loadExtendedModels().models);
     extendedModelIndex = indexes.byId;
+    extendedModelLowerIndex = indexes.byIdLower;
     extendedModelProviderIndex = indexes.byIdProvider;
 }
 
@@ -358,6 +428,107 @@ export function getExtendedModels(): CompiledModelsData {
     return loadExtendedModels();
 }
 
+// =============================================================================
+// Provider routes + alias resolution
+// =============================================================================
+
+function providerSlug(value: string): string {
+    return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Pinned-provider view of a collapsed multi-provider card: the same model,
+ * addressed through one specific serving provider. The view carries that
+ * provider's wire ID, pricing, and dispatch metadata (source metadata,
+ * parameter schema) so adapters, authorization, and metering behave
+ * exactly like the old per-provider catalog rows.
+ */
+function routeView(card: ModelCard, provider: ModelProvider): ModelCard | null {
+    if (card.provider === provider) return card;
+    const route = (card.providerRoutes ?? []).find((entry) => entry.provider === provider);
+    if (!route) return null;
+    return {
+        ...card,
+        provider,
+        upstreamModelId: route.upstreamModelId,
+        pricing: route.pricing !== undefined && route.pricing !== null ? route.pricing : card.pricing,
+        sourceMetadata: route.sourceMetadata !== undefined ? route.sourceMetadata : undefined,
+        params: route.params !== undefined ? route.params : undefined,
+        capabilities: route.capabilities !== undefined ? route.capabilities : undefined,
+    };
+}
+
+interface AliasMatch {
+    card: ModelCard;
+    pinnedProvider: ModelProvider | null;
+}
+
+/**
+ * Resolve legacy qualified IDs against collapsed rows:
+ * `<provider>/<model-id>` pins that provider's route (e.g. `openai/gpt-5.5`),
+ * `<family>/<model-id>` and `<family>/<provider>/<model-id>` resolve to the
+ * primary row (e.g. `deepseek/deepseek-v4-flash-0731`). The suffix must
+ * match a catalog model ID; prefix segments never match raw model IDs.
+ */
+function resolveAlias(
+    modelId: string,
+    byId: Map<string, ModelCard>,
+    byIdLower: Map<string, ModelCard>,
+): AliasMatch | null {
+    const separator = modelId.lastIndexOf("/");
+    if (separator <= 0 || separator === modelId.length - 1) return null;
+
+    const prefixSegments = modelId.slice(0, separator).split("/");
+    const suffix = modelId.slice(separator + 1);
+    const card = byId.get(suffix) ?? byIdLower.get(suffix.toLowerCase());
+    if (!card) return null;
+
+    // Provider pin: the last prefix segment naming a serving provider wins.
+    for (let index = prefixSegments.length - 1; index >= 0; index -= 1) {
+        const slug = providerSlug(prefixSegments[index] ?? "");
+        const route = (card.providerRoutes ?? []).find((entry) => providerSlug(entry.provider) === slug);
+        if (route) {
+            return { card, pinnedProvider: route.provider };
+        }
+    }
+
+    // Family-qualified alias: resolve to the primary row.
+    const family = card.family ? providerSlug(card.family) : "";
+    if (family && prefixSegments.some((segment) => providerSlug(segment) === family)) {
+        return { card, pinnedProvider: null };
+    }
+
+    return null;
+}
+
+function lookupWithAliases(
+    modelId: string,
+    provider: ModelProvider | undefined,
+    byId: Map<string, ModelCard> | null,
+    byIdLower: Map<string, ModelCard> | null,
+    byIdProvider: Map<string, Map<ModelProvider, ModelCard>> | null,
+): ModelCard | null {
+    if (!byId || !byIdLower || !byIdProvider) return null;
+
+    // Direct hit first — exact, then case-folded (providers disagree on
+    // casing for the same model, e.g. `Wan2.7-I2V` vs `wan2.7-i2v`).
+    let card: ModelCard | null = byId.get(modelId) ?? byIdLower.get(modelId.toLowerCase()) ?? null;
+    let pinned: ModelProvider | null = null;
+    if (!card) {
+        const alias = resolveAlias(modelId, byId, byIdLower);
+        if (alias) {
+            card = alias.card;
+            pinned = alias.pinnedProvider;
+        }
+    }
+    if (!card) return null;
+
+    if (provider) {
+        return routeView(card, provider);
+    }
+    return pinned ? routeView(card, pinned) : card;
+}
+
 /**
  * Get model by ID from optimized set
  * Falls back to extended set if not found
@@ -365,25 +536,26 @@ export function getExtendedModels(): CompiledModelsData {
 export function getModelById(modelId: string, provider?: ModelProvider): ModelCard | null {
     ensureCompiledIndexes();
 
-    if (provider) {
-        const compiledByProvider = compiledModelProviderIndex?.get(modelId)?.get(provider);
-        if (compiledByProvider) {
-            return compiledByProvider;
-        }
-    } else {
-        const compiledMatch = compiledModelIndex?.get(modelId);
-        if (compiledMatch) {
-            return compiledMatch;
-        }
+    const compiled = lookupWithAliases(
+        modelId,
+        provider,
+        compiledModelIndex,
+        compiledModelLowerIndex,
+        compiledModelProviderIndex,
+    );
+    if (compiled) {
+        return compiled;
     }
 
     ensureExtendedIndexes();
 
-    if (provider) {
-        return extendedModelProviderIndex?.get(modelId)?.get(provider) || null;
-    }
-
-    return extendedModelIndex?.get(modelId) || null;
+    return lookupWithAliases(
+        modelId,
+        provider,
+        extendedModelIndex,
+        extendedModelLowerIndex,
+        extendedModelProviderIndex,
+    );
 }
 
 /**
@@ -484,8 +656,10 @@ export async function refreshRegistry(): Promise<{
     compiledModelsCachePath = null;
     compiledModelsCacheSignature = null;
     compiledModelIndex = null;
+    compiledModelLowerIndex = null;
     compiledModelProviderIndex = null;
     extendedModelIndex = null;
+    extendedModelLowerIndex = null;
     extendedModelProviderIndex = null;
     extendedModelsCache = null;
     modalityModelsCache.clear();
@@ -545,25 +719,26 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
 
     const filtered: ModelCard[] = [];
     for (const model of registry.models) {
-        if (provider && model.provider !== provider) continue;
+        const providerView = provider ? routeView(model, provider) : model;
+        if (!providerView) continue;
 
         if (contextMin > 0) {
-            const ctx = typeof model.contextWindow === "number" ? model.contextWindow : 0;
+            const ctx = typeof providerView.contextWindow === "number" ? providerView.contextWindow : 0;
             if (ctx < contextMin) continue;
         }
 
         if (priceMax !== Number.POSITIVE_INFINITY) {
-            const inputPrice = extractInputPricePerMTok(model.pricing);
+            const inputPrice = extractInputPricePerMTok(providerView.pricing);
             if (inputPrice === null || inputPrice > priceMax) continue;
         }
 
         if (q) {
-            const haystack = `${model.modelId} ${model.name || ""} ${model.description || ""} ${model.provider}`.toLowerCase();
+            const haystack = `${model.modelId} ${model.name || ""} ${model.description || ""} ${(model.availableFrom ?? [model.provider]).join(" ")}`.toLowerCase();
             if (!haystack.includes(q)) continue;
         }
 
         if (modality || operation || streaming === true) {
-            if (!modelMatchesModalityOperation(model, {
+            if (!modelMatchesModalityOperation(providerView, {
                 modality,
                 operation,
                 streamable: streaming === true,

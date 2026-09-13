@@ -2,10 +2,11 @@ import { getModelById } from "../registry.js";
 import type { Call, Choice, Event, Message, Tool, Usage } from "../../core.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { normalizeOpenAIUsage, throwHttpError } from "../shared/index.js";
+import { imagesFromResponse, normalizeOpenAIUsage, throwHttpError } from "../shared/index.js";
 import {
   buildChatBody as buildAlibabaChatBody,
   buildWanVideoSubmission,
+  type AlibabaVideoRequestContract,
 } from "../families/alibaba.js";
 
 interface AlibabaBases {
@@ -19,6 +20,8 @@ type AlibabaRoute =
   | "openai_chat"
   | "openai_embeddings"
   | "openai_image"
+  | "dashscope_image_synthesis"
+  | "dashscope_image_edit_synthesis"
   | "dashscope_multimodal_generation"
   | "dashscope_multimodal_embeddings"
   | "dashscope_rerank"
@@ -44,6 +47,7 @@ export interface AlibabaEmbeddingResult {
 export interface AlibabaImageResult {
   buffer: Buffer;
   mimeType: string;
+  images: Array<{ buffer: Buffer; mimeType: string; revisedPrompt?: string }>;
   usage?: Usage;
   raw: unknown;
 }
@@ -73,6 +77,10 @@ export interface AlibabaVideoStatus {
   url?: string;
   error?: string;
   progress?: number;
+  duration?: number;
+  billingMetrics?: Record<string, unknown>;
+  usage?: Usage;
+  raw: unknown;
 }
 
 function clean(value: unknown): string {
@@ -101,22 +109,6 @@ function sourceMetadata(modelId: string): Record<string, unknown> {
   return alibaba;
 }
 
-function sourceProvider(modelId: string): string {
-  return clean(sourceMetadata(modelId).provider).toLowerCase();
-}
-
-function isHappyHorse(modelId: string): boolean {
-  return sourceProvider(modelId) === "happyhorse";
-}
-
-function isHappyHorseReferenceToVideo(modelId: string): boolean {
-  return isHappyHorse(modelId) && /\br2v\b/i.test(modelId);
-}
-
-function isHappyHorseVideoEdit(modelId: string): boolean {
-  return isHappyHorse(modelId) && /video-edit/i.test(modelId);
-}
-
 function basesForModel(modelId: string): AlibabaBases {
   const metadata = sourceMetadata(modelId);
   const endpoint = asRecord(metadata.endpoint);
@@ -129,6 +121,38 @@ function basesForModel(modelId: string): AlibabaBases {
   };
 }
 
+function videoRequestContractForModel(modelId: string): AlibabaVideoRequestContract | undefined {
+  const contract = asRecord(sourceMetadata(modelId).requestContract);
+  const contractPath = clean(contract?.path);
+  if (!contractPath) return undefined;
+  return {
+    path: contractPath,
+    inputFields: stringList(contract?.inputFields),
+    parameterFields: stringList(contract?.parameterFields),
+    mediaTypes: stringList(contract?.mediaTypes),
+  };
+}
+
+function deriveVideoOperation(contract: AlibabaVideoRequestContract, modelId: string): string {
+  if (modelId.includes("video-edit") || contract.mediaTypes.includes("video")) return "video-edit";
+  if (contract.mediaTypes.includes("reference_image") && !contract.mediaTypes.includes("first_frame")) {
+    return "reference-to-video";
+  }
+  if (modelId.includes("r2v")) return "reference-to-video";
+  if (contract.mediaTypes.includes("first_frame")
+    || contract.inputFields.some((field) => field === "img_url" || field === "image_url" || field === "first_frame_url")) {
+    return "image-to-video";
+  }
+  return "text-to-video";
+}
+
+function videoOperationForModel(modelId: string): string | undefined {
+  const explicit = clean(sourceMetadata(modelId).operation);
+  if (explicit) return explicit;
+  const contract = videoRequestContractForModel(modelId);
+  return contract ? deriveVideoOperation(contract, modelId) : undefined;
+}
+
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => clean(entry)).filter(Boolean);
@@ -136,8 +160,13 @@ function stringList(value: unknown): string[] {
 
 function modelTypes(modelId: string): string[] {
   const card = getModelById(modelId, "alibaba");
-  const rawTypes = Array.isArray(card?.type) ? card.type : [card?.type];
-  return rawTypes.map((type) => clean(type).toLowerCase()).filter(Boolean);
+  const rawTypes = [
+    ...(Array.isArray(card?.type) ? card.type : [card?.type]),
+    card?.modelType,
+  ];
+  return rawTypes
+    .map((type) => clean(type).toLowerCase().replace(/[\s_]+/g, "-"))
+    .filter(Boolean);
 }
 
 function pricingSections(modelId: string): Record<string, unknown>[] {
@@ -176,6 +205,9 @@ function routeForModel(modelId: string): AlibabaRoute {
   if (capabilities.has("ASR") && compatible) return "openai_chat";
   if (capabilities.has("ASR")) return "dashscope_speech_transcription";
   if (types.has("feature-extraction") && compatible) return "openai_embeddings";
+  if (types.has("image-generation") && /^wan2\.5-i2i/i.test(modelId)) return "dashscope_image_edit_synthesis";
+  if (types.has("image-generation") && /^wan2\.(?:6-(?:image|t2i)|7-image(?:-pro)?)/i.test(modelId)) return "dashscope_multimodal_generation";
+  if (types.has("image-generation") && clean(metadata.provider).toLowerCase() === "wan") return "dashscope_image_synthesis";
   if (types.has("image-generation")) return "dashscope_multimodal_generation";
   if (types.has("videos")) return "dashscope_video_synthesis";
   if (types.has("text-to-speech")) return "dashscope_speech_generation";
@@ -220,7 +252,10 @@ async function postJson(
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
+    throw Object.assign(new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`), {
+      statusCode: response.status,
+      retryAfter: response.headers.get("retry-after") || undefined,
+    });
   }
 
   if (!text) return {};
@@ -233,13 +268,17 @@ async function postJson(
   return parsed;
 }
 
-async function getJson(url: string): Promise<unknown> {
+async function getJson(url: string, signal?: AbortSignal): Promise<unknown> {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${credential()}` },
+    signal,
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
+    throw Object.assign(new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`), {
+      statusCode: response.status,
+      retryAfter: response.headers.get("retry-after") || undefined,
+    });
   }
   return text ? JSON.parse(text) : {};
 }
@@ -251,7 +290,10 @@ async function postEmptyJson(url: string): Promise<unknown> {
   });
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`);
+    throw Object.assign(new Error(`Alibaba provider HTTP ${response.status}: ${text.slice(0, 500)}`), {
+      statusCode: response.status,
+      retryAfter: response.headers.get("retry-after") || undefined,
+    });
   }
   return text ? JSON.parse(text) : {};
 }
@@ -301,20 +343,6 @@ function primaryText(messages: Message[]): string {
     }
   }
   return "";
-}
-
-function promptWithReferenceMarkers(modelId: string, prompt: string, mediaCount: number): string {
-  const value = clean(prompt);
-  if (!isHappyHorseReferenceToVideo(modelId) || mediaCount <= 0) return value;
-  if (/\[Image\s+\d+\]/i.test(value)) return value;
-  const refs = Array.from({ length: mediaCount }, (_, index) => `[Image ${index + 1}]`).join(" ");
-  return clean(`${refs} ${value}`) || refs;
-}
-
-function defaultVideoEditPrompt(modelId: string, prompt: string): string {
-  const value = clean(prompt);
-  if (value || !isHappyHorseVideoEdit(modelId)) return value;
-  return "Edit the source media while preserving its main subject and natural motion.";
 }
 
 function urlFromPart(value: unknown): string | undefined {
@@ -543,6 +571,7 @@ async function synthesizeAlibabaQwenSpeech(
   modelId: string,
   text: string,
   options: {
+    operation?: string;
     voice?: string;
     responseFormat?: string;
     speed?: number;
@@ -825,6 +854,37 @@ function dashscopeImageSize(size: string | undefined): string | undefined {
   const value = clean(size);
   if (!value) return undefined;
   return value.replace(/^(\d+)x(\d+)$/i, "$1*$2");
+}
+
+async function waitForAlibabaImageTask(
+  bases: AlibabaBases,
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  let status: unknown = null;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    status = await getJson(`${bases.apiBase}/tasks/${encodeURIComponent(taskId)}`, signal);
+    const output = asRecord(asRecord(status)?.output);
+    const state = clean(output?.task_status).toUpperCase();
+    if (["SUCCEEDED", "SUCCESS", "COMPLETED"].includes(state)) return status;
+    if (["FAILED", "CANCELED", "CANCELLED", "UNKNOWN"].includes(state)) {
+      throw Object.assign(
+        new Error(`Alibaba image generation failed: ${JSON.stringify(status).slice(0, 500)}`),
+        { statusCode: 400, retryable: false },
+      );
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 10_000);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(signal.reason instanceof Error ? signal.reason : new Error("request aborted"));
+      }, { once: true });
+    });
+  }
+  throw Object.assign(new Error(`Alibaba image generation did not complete before the request deadline: ${JSON.stringify(status).slice(0, 500)}`), {
+    statusCode: 504,
+    retryable: false,
+  });
 }
 
 export async function generateAlibabaChat(
@@ -1117,25 +1177,49 @@ export async function generateAlibabaImage(
     size?: string;
     quality?: string;
     imageUrl?: string;
+    imageUrls?: string[];
     customParams?: Record<string, unknown>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<AlibabaImageResult> {
   const route = routeForModel(modelId);
   const bases = basesForModel(modelId);
   const customParams = options.customParams || {};
+  const card = getModelById(modelId, "alibaba");
+  const acceptsImage = Array.isArray(card?.input) && card.input.some((value) => typeof value === "string" && value.toLowerCase() === "image");
+  const suppliedImageUrls = options.imageUrls?.length
+    ? options.imageUrls
+    : options.imageUrl ? [options.imageUrl] : [];
+  const imageUrls = acceptsImage ? suppliedImageUrls : [];
   let raw: unknown;
 
   if (route === "openai_image") {
     raw = await postJson(`${bases.compatibleBase}/images/generations`, {
       model: modelId,
       prompt,
-      response_format: "b64_json",
       ...(typeof options.n === "number" ? { n: options.n } : {}),
       ...(options.size ? { size: options.size } : {}),
       ...(options.quality ? { quality: options.quality } : {}),
-      ...(options.imageUrl ? { image_url: options.imageUrl } : {}),
+      ...(imageUrls.length > 0 ? { image: imageUrls.length === 1 ? imageUrls[0] : imageUrls } : {}),
       ...customParams,
-    });
+    }, {}, options.signal);
+  } else if (route === "dashscope_image_synthesis" || route === "dashscope_image_edit_synthesis") {
+    const editing = route === "dashscope_image_edit_synthesis";
+    raw = await postJson(`${bases.apiBase}/services/aigc/${editing ? "image2image" : "text2image"}/image-synthesis`, {
+      model: modelId,
+      input: editing
+        ? { prompt, images: imageUrls }
+        : { prompt },
+      parameters: {
+        ...customParams,
+        ...(typeof options.n === "number" ? { n: options.n } : {}),
+        ...(dashscopeImageSize(options.size) ? { size: dashscopeImageSize(options.size) } : {}),
+      },
+    }, { "X-DashScope-Async": "enable" }, options.signal);
+    const taskId = clean(asRecord(asRecord(raw)?.output)?.task_id);
+    if (taskId) {
+      raw = await waitForAlibabaImageTask(bases, taskId, options.signal);
+    }
   } else {
     raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, {
       model: modelId,
@@ -1144,7 +1228,7 @@ export async function generateAlibabaImage(
           role: "user",
           content: [
             { text: prompt },
-            ...(options.imageUrl ? [{ image: options.imageUrl }] : []),
+            ...imageUrls.map((image) => ({ image })),
           ],
         }],
       },
@@ -1153,19 +1237,20 @@ export async function generateAlibabaImage(
         ...(typeof options.n === "number" ? { n: options.n } : {}),
         ...(dashscopeImageSize(options.size) ? { size: dashscopeImageSize(options.size) } : {}),
       },
-    });
+    }, {}, options.signal);
   }
 
-  const payload = findMediaPayload(raw, ["b64_json", "image", "image_url", "url"]);
-  if (!payload) throw new Error("Alibaba returned no image data");
-  const image = await bufferFromPayload(payload, "image/png");
+  const images = await imagesFromResponse(raw, "image/png", options.signal);
+  if (images.length === 0) throw new Error("Alibaba returned no image data");
+  const providerUsage = usageFromDashScope(raw);
   return {
-    ...image,
-    usage: {
+    ...images[0],
+    images,
+    usage: providerUsage || {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
-      billingMetrics: { request: 1, image: options.n || 1 },
+      billingMetrics: { request: 1, image: images.length },
     },
     raw,
   };
@@ -1354,6 +1439,7 @@ export async function submitAlibabaVideo(
   modelId: string,
   prompt: string,
   options: {
+    operation?: string;
     duration?: number;
     aspectRatio?: string;
     resolution?: string;
@@ -1361,20 +1447,17 @@ export async function submitAlibabaVideo(
     imageUrl?: string;
     imageUrls?: string[];
     videoUrl?: string;
+    videoUrls?: string[];
+    audioUrl?: string;
+    audioUrls?: string[];
     customParams?: Record<string, unknown>;
+    requestContract?: AlibabaVideoRequestContract;
   } = {},
 ): Promise<AlibabaVideoSubmission> {
   const bases = basesForModel(modelId);
-  const media = isHappyHorse(modelId)
-    ? [
-      ...(clean(options.imageUrl) ? [{
-        type: "reference_image",
-        url: clean(options.imageUrl),
-      }] : []),
-      ...(clean(options.videoUrl) ? [{ type: "video", url: clean(options.videoUrl) }] : []),
-    ]
-    : undefined;
+  const requestContract = options.requestContract ?? videoRequestContractForModel(modelId);
   const submission = buildWanVideoSubmission(modelId, prompt, {
+    operation: options.operation ?? videoOperationForModel(modelId),
     duration: options.duration,
     aspectRatio: options.aspectRatio,
     resolution: options.resolution,
@@ -1382,16 +1465,15 @@ export async function submitAlibabaVideo(
     imageUrl: options.imageUrl,
     imageUrls: options.imageUrls,
     videoUrl: options.videoUrl,
-    media,
+    videoUrls: options.videoUrls,
+    audioUrl: options.audioUrl,
+    audioUrls: options.audioUrls,
     customParams: options.customParams,
+    requestContract,
   });
-  if (isHappyHorse(modelId)) {
-    const input = asRecord(submission.body.input);
-    if (input) {
-      input.prompt = promptWithReferenceMarkers(modelId, defaultVideoEditPrompt(modelId, prompt), media?.length ?? 0);
-    }
-  }
-  const raw = await postJson(`${bases.origin}${submission.path}`, submission.body, { "X-DashScope-Async": "enable" });
+  const origin = bases.origin;
+  const apiBase = `${origin}/api/v1`;
+  const raw = await postJson(`${origin}${submission.path}`, submission.body, { "X-DashScope-Async": "enable" });
 
   const output = asRecord(asRecord(raw)?.output) || {};
   const taskId = clean(output.task_id) || clean(output.taskId) || clean(asRecord(raw)?.task_id);
@@ -1400,34 +1482,112 @@ export async function submitAlibabaVideo(
   }
 
   const status = clean(output.task_status).toUpperCase() === "PENDING" ? "queued" : "processing";
-  return { jobId: `alibaba:${taskId}`, status, raw };
+  const defaultApiBase = "https://dashscope-intl.aliyuncs.com/api/v1";
+  const providerJobId = apiBase === defaultApiBase
+    ? taskId
+    : `${Buffer.from(apiBase, "utf8").toString("base64url")}:${taskId}`;
+  return { jobId: `alibaba:${providerJobId}`, status, raw };
+}
+
+function alibabaVideoJob(providerJobId: string): { apiBase: string; taskId: string } {
+  const separator = providerJobId.indexOf(":");
+  if (separator < 0) {
+    return { apiBase: "https://dashscope-intl.aliyuncs.com/api/v1", taskId: providerJobId };
+  }
+  const encodedBase = providerJobId.slice(0, separator);
+  const taskId = providerJobId.slice(separator + 1);
+  let apiBase = "";
+  try {
+    apiBase = Buffer.from(encodedBase, "base64url").toString("utf8");
+    const url = new URL(apiBase);
+    if (url.protocol !== "https:" || !url.hostname.endsWith(".aliyuncs.com")) throw new Error("invalid host");
+  } catch {
+    throw new Error("Invalid Alibaba video job origin");
+  }
+  if (!taskId) throw new Error("Invalid Alibaba video task id");
+  return { apiBase: apiBase.replace(/\/$/, ""), taskId };
+}
+
+function videoCompletionUsage(raw: unknown): { duration?: number; billingMetrics?: Record<string, unknown>; usage?: Usage } {
+  const providerUsage = asRecord(asRecord(raw)?.usage) || asRecord(asRecord(asRecord(raw)?.output)?.usage);
+  if (!providerUsage) return {};
+  const numeric = (keys: string[]): number | undefined => {
+    for (const key of keys) {
+      const value = providerUsage[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+      if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+    }
+    return undefined;
+  };
+  const duration = numeric(["duration", "video_duration", "output_video_duration"]);
+  const sr = providerUsage.SR ?? providerUsage.sr;
+  const size = providerUsage.size;
+  const ratio = providerUsage.ratio ?? providerUsage.video_ratio;
+  const videoCount = numeric(["video_count"]);
+  const billingMetrics: Record<string, unknown> = {};
+  if (duration !== undefined) Object.assign(billingMetrics, { duration, second: duration, video_second: duration });
+  if (sr !== undefined && sr !== "") {
+    billingMetrics.SR = sr;
+    billingMetrics.resolution = /^\d+$/.test(String(sr)) ? `${sr}P` : sr;
+  }
+  if (size !== undefined && size !== "") billingMetrics.size = size;
+  if (ratio !== undefined && ratio !== "") billingMetrics.ratio = ratio;
+  if (videoCount !== undefined) {
+    billingMetrics.video_count = videoCount;
+    billingMetrics.video = videoCount;
+  }
+  return {
+    ...(duration !== undefined ? { duration } : {}),
+    billingMetrics,
+    usage: {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      billingMetrics,
+      raw: providerUsage,
+    },
+  };
 }
 
 export async function retrieveAlibabaVideo(providerJobId: string): Promise<AlibabaVideoStatus> {
-  const bases: AlibabaBases = {
-    origin: "https://dashscope-intl.aliyuncs.com",
-    apiBase: "https://dashscope-intl.aliyuncs.com/api/v1",
-    compatibleBase: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-    compatibleApiBase: "https://dashscope-intl.aliyuncs.com/compatible-api/v1",
-  };
-  const raw = await getJson(`${bases.apiBase}/tasks/${encodeURIComponent(providerJobId)}`);
+  const job = alibabaVideoJob(providerJobId);
+  const raw = await getJson(`${job.apiBase}/tasks/${encodeURIComponent(job.taskId)}`);
   const root = asRecord(raw) || {};
   const output = asRecord(root.output) || root;
   const taskStatus = clean(output.task_status || root.task_status).toUpperCase();
   const error = clean(output.message) || clean(root.message) || clean(asRecord(output.task_metrics)?.failed);
-  const url = clean(output.video_url)
-    || clean(output.output_video_url)
-    || clean(output.url)
-    || clean(asRecord(output.results)?.video_url);
+  const videoUrlFrom = (value: unknown): string => {
+    const direct = clean(value);
+    if (direct) return direct;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = videoUrlFrom(item);
+        if (found) return found;
+      }
+      return "";
+    }
+    const record = asRecord(value);
+    if (!record) return "";
+    for (const key of ["video_url", "output_video_url", "file_url", "download_url", "url", "video", "results", "result", "output", "data"]) {
+      const found = videoUrlFrom(record[key]);
+      if (found) return found;
+    }
+    return "";
+  };
+  const url = videoUrlFrom(output);
 
   if (taskStatus === "SUCCEEDED" || taskStatus === "SUCCESS" || taskStatus === "COMPLETED") {
-    return { status: "completed", url };
+    if (!url) return { status: "failed", error: "Alibaba video task completed without a video URL", raw };
+    return { status: "completed", url, ...videoCompletionUsage(raw), raw };
   }
   if (taskStatus === "FAILED" || taskStatus === "CANCELED" || taskStatus === "CANCELLED") {
-    return { status: "failed", error: error || "Alibaba video generation failed" };
+    return { status: "failed", error: error || "Alibaba video generation failed", raw };
+  }
+  if (taskStatus === "UNKNOWN") {
+    return { status: "failed", error: error || "Alibaba video task is unknown or expired", raw };
   }
   if (taskStatus === "PENDING") {
-    return { status: "queued", progress: 0 };
+    return { status: "queued", progress: 0, raw };
   }
-  return { status: "processing" };
+  return { status: "processing", raw };
 }

@@ -20,7 +20,7 @@ export function normalizeFamily(value: unknown): string | null {
 }
 
 const RULES: Array<{ family: string; patterns: string[] }> = [
-  { family: "deepgram", patterns: ["deepgram/flux", "=flux", "nova-*", "aura-*"] },
+  { family: "deepgram", patterns: ["deepgram/flux", "nova-*", "aura-*"] },
   { family: "alibaba", patterns: ["qwen*", "qwq*", "happyhorse", "happyhorse-*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*", "voice-enrollment"] },
   { family: "nvidia", patterns: ["nemotron-*", "nv-*", "nvidia/*"] },
   { family: "xai", patterns: ["grok-*"] },
@@ -36,10 +36,10 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "microsoft", patterns: ["mai-*", "phi-*", "orca-*", "e5-*", "resnet-*", "intfloat/*", "microsoft/*", "wizardlm-*"] },
   { family: "aisingapore", patterns: ["aisingapore/sea-lion"] },
   { family: "google", patterns: ["gemma-*", "embeddinggemma*", "gemini-*", "imagen-*", "veo-*", "lyria-*", "deep-research-*", "nano-banana", "google/*", "codegemma*"] },
-  { family: "meta", patterns: ["llama-*", "seamless", "m2m100", "bart-*", "detr-*", "meta-llama/*"] },
+  { family: "meta", patterns: ["llama-*", "seamless", "m2m100", "bart-*", "detr-*", "meta-llama/*", "meta-models/*", "muse-*"] },
   { family: "mistral", patterns: ["mistral-*", "mixtral-*", "pixtral-*", "codestral-*", "magistral-*", "devstral-*", "ministral-*", "mistralai/*", "voxtral-*"] },
   { family: "cohere", patterns: ["command-*", "rerank-*", "embed-*", "cohere-rerank-*", "cohere-embed-*", "aya-*", "c4ai-*"] },
-  { family: "openai", patterns: ["whisper-*", "gpt-*", "o1", "o3", "o4", "dall-e-*", "sora", "chat-*", "chatgpt-*", "omni-moderation-*", "tts-*", "text-embedding-*", "gpt-oss-*", "openai/*", "clip-*"] },
+  { family: "openai", patterns: ["whisper-*", "gpt-*", "o1", "o3", "o4", "sora", "chat-*", "chatgpt-*", "omni-moderation-*", "tts-*", "text-embedding-*", "gpt-oss-*", "openai/*", "clip-*"] },
   { family: "elevenlabs", patterns: ["eleven-*", "music-*", "scribe-*"] },
   { family: "cartesia", patterns: ["sonic-*", "ink-*"] },
   { family: "roboflow", patterns: ["roboflow-*"] },
@@ -82,7 +82,6 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "xiaomi", patterns: ["xiaomimimo/*", "mimo-*"] },
   { family: "pixverse", patterns: ["pixverse/*"] },
   { family: "inworld", patterns: ["inworld-ai/*"] },
-  { family: "stepfun", patterns: ["stepfun-ai/*", "step-*"] },
   { family: "resemble", patterns: ["resembleai/*", "chatterbox-*"] },
   { family: "hexgrad", patterns: ["hexgrad/*", "kokoro-*"] },
   { family: "boson", patterns: ["bosonai/*", "higgs-*"] },
@@ -96,7 +95,8 @@ const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "zyphra", patterns: ["zyphra/*", "zyphra-*", "zonos-*"] },
   { family: "deepinfra", patterns: ["deepinfra/*", "deepinfra-*"] },
   { family: "thinkingmachines", patterns: ["thinkingmachines/*", "inkling"] },
-  { family: "acestep", patterns: ["acestep/*", "acestep-*"] },
+  { family: "acestep", patterns: ["acestep/*", "acestep-*", "stepfun-ai/*", "step-*"] },
+  { family: "audio8", patterns: ["audio8/*"] },
   { family: "openbmb", patterns: ["openbmb/*", "openbmb-*", "minicpm-*"] },
   { family: "novasky", patterns: ["novasky-ai/*", "novasky/*", "sky-*"] },
   { family: "lizpreciatior", patterns: ["lizpreciatior/*", "lizpreciatior-*", "lzlv-*"] },
@@ -172,6 +172,14 @@ function match(candidate: string, pattern: string): boolean {
 
 export function aggregateCanonicalFamily(modelId: string, name?: string | null): string | undefined {
   const candidates = tokens(modelId, name);
+  const upstreamIdentities = candidates.filter((candidate) => candidate.includes("/"));
+  for (const rule of RULES) {
+    for (const pattern of rule.patterns.filter((value) => token(value.replace(/^=/, "")).includes("/"))) {
+      if (upstreamIdentities.some((candidate) => match(candidate, pattern))) {
+        return rule.family;
+      }
+    }
+  }
   for (const rule of RULES) {
     for (const pattern of rule.patterns) {
       if (candidates.some((candidate) => match(candidate, pattern))) {

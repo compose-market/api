@@ -1,5 +1,5 @@
 import type { ModelCard } from "../../types.js";
-import { classifyAudioModel } from "./speech.js";
+import { classifyAudioModel } from "./audio.js";
 import { classifyEmbeddingModel } from "./embeddings.js";
 import { classifyImageModel } from "./image.js";
 import { mergePricingUnits } from "../pricing.js";
@@ -152,7 +152,7 @@ export type {
   BytedanceNativeSpeech,
   PipecatNativeSpeech,
   TencentNativeSpeech,
-} from "./speech.js";
+} from "./audio.js";
 
 // Embedding modality
 export type {

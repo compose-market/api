@@ -17,6 +17,7 @@ import {
   buildBodyResponses,
   mapMessagesForResponsesWire,
 } from "../families/openai.js";
+import { resolveFluxPath } from "../families/bfl.js";
 import {
   MAI_PATH_IMAGES,
   buildImageBody as buildMaiImageBody,
@@ -30,6 +31,8 @@ import {
   clean,
   findAttachmentUrl,
   normalizeOpenAIUsage,
+  imagesFromResponse,
+  imageDimensions,
   postJson,
   primaryText,
   sizeToDimensions,
@@ -82,6 +85,7 @@ export interface AzureEmbeddingResult {
 export interface AzureImageResult {
   buffer: Buffer;
   mimeType: string;
+  images: Array<{ buffer: Buffer; mimeType: string; revisedPrompt?: string }>;
   usage?: Usage;
   raw: unknown;
 }
@@ -170,8 +174,8 @@ function routeForModel(modelId: string, operation?: string): AzureRoute {
     return "cohere_rerank";
   }
   if (format === "mistral ai" && joined.includes("mistral-document-ai")) return "mistral_ocr";
-  if (format === "black forest labs" && joined.includes("flux.2")) return "blackforestlabs_image";
-  if (joined.includes("mai-image-2")) return "mai_image";
+  if (format === "black forest labs") return "blackforestlabs_image";
+  if (format === "microsoft" && (type === "image generation" || capabilities.image_generation === true)) return "mai_image";
   if (type === "feature-extraction" || capabilities.embeddings === true) return "openai_embeddings";
   if (type === "text-to-image" || type === "image-to-image" || capabilities.image_generation === true || capabilities.image_generations === true) {
     return "openai_image";
@@ -205,11 +209,13 @@ async function postAzureForm(
   path: string,
   form: FormData,
   auth: "api-key" | "bearer" = "api-key",
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const response = await fetch(azureUrl(credential, path), {
     method: "POST",
     headers: azureHeaders(credential, auth),
     body: form,
+    signal,
   });
   const text = await response.text();
   if (!response.ok) {
@@ -389,13 +395,34 @@ function chatText(raw: unknown): { text: string; reasoning?: string; finishReaso
   };
 }
 
-async function azureImageFromRaw(raw: unknown): Promise<{ buffer: Buffer; mimeType: string }> {
-  const root = asRecord(raw) || {};
-  const data = Array.isArray(root.data) ? root.data : [];
-  const first = asRecord(data[0]) || root;
-  const payload = clean(first.b64_json) || clean(first.base64) || clean(first.image) || clean(first.url);
-  if (!payload) throw new Error("Azure returned no image data");
-  return bufferFromPayload(payload, "image/png");
+async function azureImagesFromRaw(raw: unknown, signal?: AbortSignal): Promise<Array<{ buffer: Buffer; mimeType: string; revisedPrompt?: string }>> {
+  const images = await imagesFromResponse(raw, "image/png", signal);
+  if (images.length === 0) throw new Error("Azure returned no image data");
+  return images;
+}
+
+function imageCustomParams(modelId: string, customParams: Record<string, unknown>): Record<string, unknown> {
+  const card = getModelById(modelId, "azure");
+  const schema = asRecord(card?.params) || {};
+  const supportsOutputFormat = asRecord(schema.output_format) !== null;
+  const canonical = new Set(["model", "prompt", "n", "size", "quality", "image", "image_url"]);
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(customParams)) {
+    if (canonical.has(key)) continue;
+    if (value === undefined || !asRecord(schema[key])) continue;
+    if (key === "response_format" && supportsOutputFormat) continue;
+    if ((key === "width" || key === "height") && (typeof value !== "number" || value <= 0)) continue;
+    filtered[key] = value;
+  }
+  return filtered;
+}
+
+function bflImagePath(modelId: string): string {
+  const deployment = deploymentMetadata(modelId);
+  const sourceName = deployment.modelName || deployment.deploymentName || modelId;
+  const path = resolveFluxPath(sourceName);
+  if (!path) throw new Error(`Azure BFL deployment has no catalogued FLUX path: ${sourceName}`);
+  return `/providers/blackforestlabs${path}?api-version=preview`;
 }
 
 // ---------------------------------------------------------------------------
@@ -959,26 +986,29 @@ export async function generateAzureImage(
     quality?: string;
     imageUrl?: string;
     customParams?: Record<string, unknown>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<AzureImageResult> {
   const credential = credentialForModel(modelId);
   const route = routeForModel(modelId);
   const dimensions = sizeToDimensions(options.size);
-  const customParams = options.customParams || {};
+  const customParams = imageCustomParams(modelId, options.customParams || {});
   let raw: unknown;
 
   if (route === "blackforestlabs_image") {
-    const path = modelId.toLowerCase().includes("flux.2-flex")
-      ? "/providers/blackforestlabs/v1/flux-2-flex?api-version=preview"
-      : "/providers/blackforestlabs/v1/flux-2-pro?api-version=preview";
-    raw = await postAzure(credential, path, {
+    const inputImage = options.imageUrl
+      ? (await bufferFromPayload(options.imageUrl, "image/png", options.signal)).buffer.toString("base64")
+      : undefined;
+    const schema = asRecord(getModelById(modelId, "azure")?.params) || {};
+    const inputKey = ["input_image", "image_prompt"].find((key) => asRecord(schema[key]));
+    raw = await postAzure(credential, bflImagePath(modelId), {
       model: deploymentNameForModel(modelId),
       prompt,
-      ...(dimensions.width ? { width: dimensions.width } : {}),
-      ...(dimensions.height ? { height: dimensions.height } : {}),
-      output_format: "png",
+      ...(typeof dimensions.width === "number" && dimensions.width > 0 ? { width: dimensions.width } : {}),
+      ...(typeof dimensions.height === "number" && dimensions.height > 0 ? { height: dimensions.height } : {}),
+      ...(inputImage && inputKey ? { [inputKey]: inputImage } : {}),
       ...customParams,
-    }, "bearer");
+    }, "bearer", options.signal);
   } else if (route === "mai_image") {
     const maiOptions = {
       n: options.n,
@@ -987,9 +1017,12 @@ export async function generateAzureImage(
       height: dimensions.height,
       customParams,
     };
-    raw = await postAzure(credential, MAI_PATH_IMAGES, buildMaiImageBody(deploymentNameForModel(modelId), prompt, maiOptions));
+    raw = await postAzure(credential, MAI_PATH_IMAGES, buildMaiImageBody(deploymentNameForModel(modelId), prompt, maiOptions), "api-key", options.signal);
     const image = await parseMaiImageResponse(raw, { n: options.n });
-    const usage = image.usage || (tokenPriced(modelId) ? meteredMaiImageUsage(prompt, raw, maiOptions) : undefined);
+    const measured = imageDimensions(image.buffer);
+    const usageRaw = measured ? { ...(asRecord(raw) || {}), size: `${measured.width}x${measured.height}` } : raw;
+    const providerUsage = image.usage && image.usage.totalTokens > 0 ? image.usage : undefined;
+    const usage = providerUsage || (tokenPriced(modelId) ? meteredMaiImageUsage(prompt, usageRaw, maiOptions) : undefined);
     if (!usage && tokenPriced(modelId)) {
       throw missingMaiUsage(modelId);
     }
@@ -998,7 +1031,7 @@ export async function generateAzureImage(
       ...(usage ? { usage } : {}),
     };
   } else if (options.imageUrl) {
-    const media = await bufferFromPayload(options.imageUrl, "image/png");
+    const media = await bufferFromPayload(options.imageUrl, "image/png", options.signal);
     const form = new FormData();
     form.append("model", deploymentNameForModel(modelId));
     form.append("prompt", prompt);
@@ -1010,27 +1043,33 @@ export async function generateAzureImage(
       if (["model", "prompt", "image", "image_url", "n", "size", "quality"].includes(key)) continue;
       if (scalar(value)) form.append(key, String(value));
     }
-    raw = await postAzureForm(credential, "/openai/v1/images/edits", form);
+    raw = await postAzureForm(credential, "/openai/v1/images/edits", form, "api-key", options.signal);
   } else {
+    const openAiCustomParams = omit(customParams, [
+      "width", "height", "input_image", "input_image_2", "input_image_3", "input_image_4",
+      "input_image_5", "input_image_6", "input_image_7", "input_image_8", "output_format",
+      "prompt_upsampling", "disable_pup", "safety_tolerance", "seed",
+    ]) || {};
     raw = await postAzure(credential, "/openai/v1/images/generations", {
       model: deploymentNameForModel(modelId),
       prompt,
       ...(typeof options.n === "number" ? { n: options.n } : {}),
       ...(options.size ? { size: options.size } : {}),
       ...(options.quality ? { quality: options.quality } : {}),
-      ...customParams,
-    });
+      ...openAiCustomParams,
+    }, "api-key", options.signal);
   }
 
-  const image = await azureImageFromRaw(raw);
+  const images = await azureImagesFromRaw(raw, options.signal);
   const root = asRecord(raw) || {};
   return {
-    ...image,
+    ...images[0],
+    images,
     usage: normalizeOpenAIUsage(root.usage) || {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
-      billingMetrics: { request: 1, image: options.n || 1 },
+      billingMetrics: { request: 1, image: images.length },
     },
     raw,
   };

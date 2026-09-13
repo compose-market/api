@@ -367,13 +367,16 @@ export async function generateImage(
     modelId: string,
     prompt: string,
     options?: {
-        referenceImages?: Buffer[];
+        referenceImages?: Array<Buffer | { buffer: Buffer; mimeType: string }>;
         aspectRatio?: "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
         numberOfImages?: number;
         outputMimeType?: "image/png" | "image/jpeg" | "image/webp";
+        signal?: AbortSignal;
     }
 ): Promise<{
     buffer: Buffer;
+    mimeType: string;
+    images: Array<{ buffer: Buffer; mimeType: string }>;
     usage?: {
         promptTokens: number;
         completionTokens: number;
@@ -394,21 +397,28 @@ export async function generateImage(
                 config: {
                     ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
                     ...(options?.numberOfImages && { numberOfImages: options.numberOfImages }),
-                    ...(options?.outputMimeType && { outputMimeType: options.outputMimeType }),
-                },
-            });
-            const generated = response.generatedImages?.find((image) => image.image?.imageBytes);
-            const image = generated?.image;
-            if (!image?.imageBytes) {
+                     ...(options?.outputMimeType && { outputMimeType: options.outputMimeType }),
+                     ...(options?.signal ? { abortSignal: options.signal } : {}),
+                 },
+             });
+            const images = (response.generatedImages || [])
+                .map((generated) => generated.image)
+                .filter((image): image is NonNullable<typeof image> => Boolean(image?.imageBytes))
+                .map((image) => ({
+                    buffer: Buffer.from(image.imageBytes!, "base64"),
+                    mimeType: image.mimeType || options?.outputMimeType || "image/png",
+                }));
+            if (images.length === 0) {
                 throw new Error("No generated image data in response");
             }
             return {
-                buffer: Buffer.from(image.imageBytes, "base64"),
+                ...images[0],
+                images,
                 usage: {
                     promptTokens: 0,
                     completionTokens: 0,
                     totalTokens: 0,
-                    billingMetrics: { image: 1 },
+                    billingMetrics: { image: images.length },
                 },
             };
         }
@@ -418,11 +428,12 @@ export async function generateImage(
 
         // Add reference images if provided (for image editing / multi-image reference)
         if (options?.referenceImages) {
-            for (const imageBuffer of options.referenceImages) {
+            for (const reference of options.referenceImages) {
+                const imageBuffer = Buffer.isBuffer(reference) ? reference : reference.buffer;
                 parts.push({
                     inlineData: {
                         data: imageBuffer.toString("base64"),
-                        mimeType: "image/png",
+                        mimeType: Buffer.isBuffer(reference) ? "image/png" : reference.mimeType,
                     },
                 });
             }
@@ -437,31 +448,29 @@ export async function generateImage(
                 ...(options?.aspectRatio && { aspectRatio: options.aspectRatio }),
                 ...(options?.numberOfImages && { numberOfImages: options.numberOfImages }),
                 ...(options?.outputMimeType && { outputMimeType: options.outputMimeType }),
+                ...(options?.signal ? { abortSignal: options.signal } : {}),
             },
         }) as GenerateContentResponse;
 
         const usage = normalizeUsageMetadata(response.usageMetadata);
 
-        // Extract image from response
         const candidates = response.candidates;
         if (!candidates || candidates.length === 0) {
             throw new Error("No candidates in response");
         }
 
-        const parts2 = candidates[0]?.content?.parts;
-        if (!parts2 || parts2.length === 0) {
+        const parts2 = candidates.flatMap((candidate) => candidate.content?.parts || []);
+        if (parts2.length === 0) {
             throw new Error("No content parts in response");
         }
 
-        // Find the inline data part (base64 image)
-        for (const part of parts2) {
-            if ("inlineData" in part && part.inlineData?.data) {
-                return {
-                    buffer: Buffer.from(part.inlineData.data, "base64"),
-                    ...(usage ? { usage } : {}),
-                };
-            }
-        }
+        const images = parts2.flatMap((part) => "inlineData" in part && part.inlineData?.data
+            ? [{
+                buffer: Buffer.from(part.inlineData.data, "base64"),
+                mimeType: part.inlineData.mimeType || options?.outputMimeType || "image/png",
+            }]
+            : []);
+        if (images.length > 0) return { ...images[0], images, ...(usage ? { usage } : {}) };
 
         // Check for text response (model may return text describing why it couldn't generate)
         const textPart = parts2.find(p => "text" in p);

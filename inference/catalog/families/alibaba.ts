@@ -701,6 +701,9 @@ export function parseAsyncJobStatus(raw: unknown): DashScopeJobStatus {
     if (taskStatus === "FAILED" || taskStatus === "CANCELED" || taskStatus === "CANCELLED") {
         return { status: "failed", error: error || "DashScope job failed", raw };
     }
+    if (taskStatus === "UNKNOWN") {
+        return { status: "failed", error: error || "DashScope task is unknown or expired", raw };
+    }
     if (taskStatus === "PENDING" || taskStatus === "QUEUED") return { status: "queued", progress: 0, raw };
     return { status: "processing", raw };
 }
@@ -710,6 +713,7 @@ export function parseAsyncJobStatus(raw: unknown): DashScopeJobStatus {
 // ---------------------------------------------------------------------------
 
 export interface WanVideoOptions {
+    operation?: string;
     duration?: number;
     aspectRatio?: string;
     resolution?: string;
@@ -717,147 +721,96 @@ export interface WanVideoOptions {
     imageUrl?: string;
     imageUrls?: string[];
     videoUrl?: string;
+    videoUrls?: string[];
+    audioUrl?: string;
+    audioUrls?: string[];
     media?: Array<Record<string, unknown>>;
     seed?: number;
     promptExtend?: boolean;
     customParams?: Record<string, unknown>;
+    requestContract?: AlibabaVideoRequestContract;
 }
 
-function wanResolution(resolution: string | undefined, size: string | undefined): string | undefined {
-    const direct = clean(resolution);
-    if (direct) return direct.replace(/p$/i, "P");
-    const value = clean(size);
-    const match = value.match(/^\d+\s*x\s*(\d+)$/i);
-    if (match) return `${match[1]}P`;
-    return value.replace(/p$/i, "P") || undefined;
+export interface AlibabaVideoRequestContract {
+    origin?: string;
+    path: string;
+    inputFields: string[];
+    parameterFields: string[];
+    mediaTypes: string[];
 }
 
-function wanParams(params: Record<string, unknown> | undefined): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(params ?? {})) {
-        if ([
-            "size",
-            "image_url",
-            "video_url",
-            "first_frame_url",
-            "last_frame_url",
-            "function",
-            "ref_images_url",
-            "control_condition",
-            "obj_or_bg",
-        ].includes(key)) continue;
-        out[key] = value;
-    }
-    return out;
-}
-
-function isKf2v(modelId: string): boolean {
-    return /\bkf2v\b/i.test(modelId);
-}
-
-function isVace(modelId: string): boolean {
-    return /\bvace\b/i.test(modelId);
+function unique(values: Array<string | undefined>): string[] {
+    return values.map(clean).filter(Boolean).filter((value, index, all) => all.indexOf(value) === index);
 }
 
 function mediaUrls(options: WanVideoOptions): string[] {
-    return [
-        ...(options.imageUrls ?? []),
-        ...(options.imageUrl ? [options.imageUrl] : []),
-    ].map(clean).filter(Boolean).filter((url, index, list) => list.indexOf(url) === index);
+    return unique([...(options.imageUrls ?? []), options.imageUrl]);
 }
 
-function customString(params: Record<string, unknown> | undefined, key: string): string {
-    return clean(params?.[key]);
+function videoUrls(options: WanVideoOptions): string[] {
+    return unique([...(options.videoUrls ?? []), options.videoUrl]);
 }
 
-function vaceFunction(options: WanVideoOptions): string {
-    const custom = options.customParams || {};
-    return customString(custom, "function")
-        || (options.videoUrl ? "video_repainting" : "image_reference");
+function customMedia(params: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
+    const nested = asRecord(params?.input);
+    const value = params?.media ?? nested?.media;
+    return (Array.isArray(value) ? value : [])
+        .map((item) => asRecord(item))
+        .filter((item): item is Record<string, unknown> => Boolean(item));
 }
 
-function vaceRefs(options: WanVideoOptions): string[] {
-    const images = mediaUrls(options).slice(0, 3);
-    const custom = options.customParams || {};
-    return Array.isArray(custom.ref_images_url)
-        ? custom.ref_images_url.map(clean).filter(Boolean).slice(0, 3)
-        : images;
-}
-
-function buildKf2vInput(prompt: string, options: WanVideoOptions): Record<string, unknown> {
+function contractMedia(options: WanVideoOptions, supported: Set<string>): Array<Record<string, unknown>> {
+    const explicit = customMedia(options.customParams);
+    if (explicit.length > 0) return explicit.filter((item) => supported.has(clean(item.type)));
     const images = mediaUrls(options);
-    const first = customString(options.customParams, "first_frame_url") || images[0];
-    const last = customString(options.customParams, "last_frame_url") || images[1];
-    if (!first || !last) {
-        throw Object.assign(
-            new Error("Alibaba KF2V requires first and last frame image URLs"),
-            { statusCode: 400 },
-        );
+    const videos = videoUrls(options);
+    const audio = unique([...(options.audioUrls ?? []), options.audioUrl]);
+    const media: Array<Record<string, unknown>> = [];
+    if (options.operation === "video-edit" || options.operation === "reference-to-video") {
+        if (supported.has("video")) {
+            for (const url of images) media.push({ type: "reference_image", url });
+            for (const url of videos) media.push({ type: "video", url });
+        } else {
+            for (const url of videos) media.push({ type: "reference_video", url });
+            for (const url of images) media.push({ type: "reference_image", url });
+        }
+    } else if (options.operation === "image-to-video") {
+        if (supported.has("reference_image") && !supported.has("first_frame")) {
+            for (const url of images) media.push({ type: "reference_image", url });
+        } else {
+            if (images[0] && supported.has("first_frame")) media.push({ type: "first_frame", url: images[0] });
+            if (images[1] && supported.has("last_frame")) media.push({ type: "last_frame", url: images[1] });
+        }
+        if (videos[0] && supported.has("first_clip")) media.push({ type: "first_clip", url: videos[0] });
     }
-    return {
-        prompt,
-        first_frame_url: first,
-        last_frame_url: last,
-    };
+    if (audio[0] && supported.has("driving_audio")) media.push({ type: "driving_audio", url: audio[0] });
+    if (audio[0] && supported.has("reference_audio")) media.push({ type: "reference_audio", url: audio[0] });
+    return media.filter((item) => supported.has(clean(item.type)));
 }
 
-function buildVaceInput(prompt: string, options: WanVideoOptions): Record<string, unknown> {
-    const custom = options.customParams || {};
-    const fn = vaceFunction(options);
-    const input: Record<string, unknown> = { function: fn, prompt };
+const WAN_VIDEO_EDIT_DEFAULT_PROMPT = "Edit the source media while preserving its main subject and natural motion.";
 
-    if (fn === "video_repainting") {
-        const video = customString(custom, "video_url") || clean(options.videoUrl);
-        if (!video) {
-            throw Object.assign(
-                new Error("Alibaba VACE video_repainting requires a public video URL"),
-                { statusCode: 400 },
-            );
+function wanVideoPrompt(
+    prompt: string,
+    operation: string | undefined,
+    media: Array<Record<string, unknown>>,
+): string | undefined {
+    let value = clean(prompt);
+    if (!value && operation === "video-edit") value = WAN_VIDEO_EDIT_DEFAULT_PROMPT;
+    if (!value) return undefined;
+    if (operation === "reference-to-video" && !value.startsWith("[Image")) {
+        const referenceImages = media.filter((item) => clean(item.type) === "reference_image");
+        if (referenceImages.length > 0) {
+            const markers = referenceImages.map((_, index) => `[Image ${index + 1}]`).join(" ");
+            value = `${markers} ${value}`;
         }
-        input.video_url = video;
-        return input;
     }
-
-    if (fn === "image_reference") {
-        const refs = vaceRefs(options);
-        if (refs.length === 0) {
-            throw Object.assign(
-                new Error("Alibaba VACE image_reference requires at least one public image URL"),
-                { statusCode: 400 },
-            );
-        }
-        input.ref_images_url = refs;
-        return input;
-    }
-
-    const video = customString(custom, "video_url") || clean(options.videoUrl);
-    if (video) input.video_url = video;
-    for (const key of ["first_clip_url", "last_clip_url", "first_frame_url", "last_frame_url", "mask_image_url", "mask_video_url"]) {
-        const value = customString(custom, key);
-        if (value) input[key] = value;
-    }
-    return input;
+    return value;
 }
 
-function vaceParameters(options: WanVideoOptions, params: Record<string, unknown>): Record<string, unknown> {
-    const custom = options.customParams || {};
-    const fn = vaceFunction(options);
-    if (fn === "video_repainting") {
-        return {
-            ...params,
-            control_condition: customString(custom, "control_condition") || "depth",
-        };
-    }
-    if (fn === "image_reference") {
-        const refs = vaceRefs(options);
-        return {
-            ...params,
-            obj_or_bg: Array.isArray(custom.obj_or_bg) && custom.obj_or_bg.length === refs.length
-                ? custom.obj_or_bg
-                : refs.map(() => "obj"),
-        };
-    }
-    return params;
+function wanVideoResolutionFromSize(value: unknown): string | undefined {
+    const match = /^\s*(\d+)\s*[xX*]\s*(\d+)\s*$/.exec(clean(value));
+    return match ? `${match[2]}P` : undefined;
 }
 
 export function buildWanVideoSubmission(
@@ -865,81 +818,89 @@ export function buildWanVideoSubmission(
     prompt: string,
     options: WanVideoOptions = {},
 ): DashScopeAsyncSubmission {
-    const customParams = wanParams(options.customParams);
-    const resolution = wanResolution(
-        options.resolution || clean(options.customParams?.resolution),
-        options.size || clean(options.customParams?.size),
-    );
-    const promptExtend = typeof options.promptExtend === "boolean"
-        ? options.promptExtend
-        : typeof options.customParams?.prompt_extend === "boolean"
-            ? options.customParams.prompt_extend
-            : false;
-    const media = (options.media ?? [])
-        .map((item) => asRecord(item))
-        .filter((item): item is Record<string, unknown> => Boolean(item));
+    const contract = options.requestContract;
+    if (!contract) {
+        throw Object.assign(new Error(`Alibaba video model ${modelId} has no authoritative request contract`), {
+            statusCode: 400,
+            retryable: false,
+        });
+    }
+    const inputFields = new Set(contract.inputFields);
+    const parameterFields = new Set(contract.parameterFields);
+    const nestedInput = asRecord(options.customParams?.input) || {};
+    const nestedParameters = asRecord(options.customParams?.parameters) || {};
+    const input: Record<string, unknown> = {};
+    const parameters: Record<string, unknown> = {};
+    const images = mediaUrls(options);
+    const videos = videoUrls(options);
+    const audios = unique([...(options.audioUrls ?? []), options.audioUrl]);
 
-    if (isKf2v(modelId)) {
-        return {
-            path: `${DASHSCOPE_PATH_API}/services/aigc/image2video/video-synthesis`,
-            requiresAsyncHeader: true,
-            body: {
-                model: modelId,
-                input: buildKf2vInput(prompt, options),
-                parameters: {
-                    ...(typeof options.duration === "number" ? { duration: options.duration } : {}),
-                    ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
-                    ...(resolution ? { resolution } : {}),
-                    ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
-                    prompt_extend: promptExtend,
-                    ...customParams,
-                },
-            },
-        };
+    const media = inputFields.has("media") ? contractMedia(options, new Set(contract.mediaTypes)) : [];
+
+    for (const field of inputFields) {
+        const custom = options.customParams?.[field] ?? nestedInput[field];
+        if (custom !== undefined) input[field] = custom;
+    }
+    if (inputFields.has("prompt") && input.prompt === undefined) {
+        const finalPrompt = wanVideoPrompt(prompt, options.operation, media);
+        if (finalPrompt) input.prompt = finalPrompt;
+    }
+    if (inputFields.has("image_url") && input.image_url === undefined && images[0]) input.image_url = images[0];
+    if (inputFields.has("img_url") && input.img_url === undefined && images[0]) input.img_url = images[0];
+    if (inputFields.has("video_url") && input.video_url === undefined && videos[0]) input.video_url = videos[0];
+    if (inputFields.has("audio_url") && input.audio_url === undefined && audios[0]) input.audio_url = audios[0];
+    if (inputFields.has("first_frame_url") && input.first_frame_url === undefined && images[0]) input.first_frame_url = images[0];
+    if (inputFields.has("last_frame_url") && input.last_frame_url === undefined && images[1]) input.last_frame_url = images[1];
+    if (inputFields.has("reference_urls") && input.reference_urls === undefined) input.reference_urls = [...videos, ...images];
+    if (inputFields.has("reference_video_urls") && input.reference_video_urls === undefined && videos.length > 0) {
+        input.reference_video_urls = videos;
+    }
+    if (inputFields.has("media") && input.media === undefined && media.length > 0) {
+        input.media = media;
+    }
+    if (inputFields.has("function") && input.function === undefined) {
+        if (videos[0]) input.function = "video_repainting";
+        else if (images.length > 0) input.function = "image_reference";
+    }
+    if (input.function === "image_reference" && input.ref_images_url === undefined && images.length > 0) {
+        input.ref_images_url = [...images];
     }
 
-    if (isVace(modelId)) {
-        const parameters = {
-            ...(typeof options.duration === "number" ? { duration: options.duration } : {}),
-            ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
-            ...(resolution ? { resolution } : {}),
-            ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
-            prompt_extend: promptExtend,
-            ...customParams,
-        };
-        return {
-            path: `${DASHSCOPE_PATH_API}/services/aigc/video-generation/video-synthesis`,
-            requiresAsyncHeader: true,
-            body: {
-                model: modelId,
-                input: buildVaceInput(prompt, options),
-                parameters: vaceParameters(options, parameters),
-            },
-        };
+    for (const field of parameterFields) {
+        const custom = options.customParams?.[field] ?? nestedParameters[field];
+        if (custom !== undefined) parameters[field] = custom;
+    }
+    if (parameterFields.has("duration") && parameters.duration === undefined && options.duration !== undefined) parameters.duration = options.duration;
+    if (parameterFields.has("seed") && parameters.seed === undefined && options.seed !== undefined) parameters.seed = options.seed;
+    if (parameterFields.has("prompt_extend") && parameters.prompt_extend === undefined && options.promptExtend !== undefined) parameters.prompt_extend = options.promptExtend;
+    if (parameterFields.has("ratio") && parameters.ratio === undefined && options.aspectRatio) parameters.ratio = options.aspectRatio;
+    if (parameterFields.has("aspect_ratio") && parameters.aspect_ratio === undefined && options.aspectRatio) parameters.aspect_ratio = options.aspectRatio;
+    if (parameterFields.has("resolution") && parameters.resolution === undefined && options.resolution) parameters.resolution = options.resolution;
+    if (parameterFields.has("resolution") && parameters.resolution === undefined) {
+        const resolutionFromSize = wanVideoResolutionFromSize(options.size ?? options.customParams?.size);
+        if (resolutionFromSize) parameters.resolution = resolutionFromSize;
+    }
+    if (parameterFields.has("size") && parameters.size === undefined && options.size) parameters.size = options.size.replace(/x/gi, "*");
+    if (parameterFields.has("prompt_extend") && parameters.prompt_extend === undefined) parameters.prompt_extend = false;
+    if (input.function === "video_repainting"
+        && parameterFields.has("control_condition")
+        && parameters.control_condition === undefined) {
+        parameters.control_condition = "depth";
+    }
+    if (input.function === "image_reference"
+        && parameterFields.has("obj_or_bg")
+        && parameters.obj_or_bg === undefined
+        && images.length > 0) {
+        parameters.obj_or_bg = images.map(() => "obj");
     }
 
     return {
-        path: `${DASHSCOPE_PATH_API}/services/aigc/video-generation/video-synthesis`,
+        path: contract.path,
         requiresAsyncHeader: true,
         body: {
             model: modelId,
-            input: {
-                prompt,
-                ...(media.length > 0
-                    ? { media }
-                    : {
-                        ...(options.imageUrl ? { img_url: options.imageUrl } : {}),
-                        ...(options.videoUrl ? { video_url: options.videoUrl } : {}),
-                    }),
-            },
-            parameters: {
-                ...(typeof options.duration === "number" ? { duration: options.duration } : {}),
-                ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
-                ...(resolution ? { resolution } : {}),
-                ...(typeof options.seed === "number" ? { seed: options.seed } : {}),
-                prompt_extend: promptExtend,
-                ...customParams,
-            },
+            input,
+            ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
         },
     };
 }

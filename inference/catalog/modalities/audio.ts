@@ -116,34 +116,115 @@ export function classifyAudioModel(model: ModelCard, source: ModelSourceShape): 
   return uniqueCapabilities(capabilities);
 }
 
+// MPEG audio (mp3) duration — billing-aware byte parsing for providers that
+// return bare audio/mpeg with no metadata envelope (ElevenLabs et al.).
+// Layer III only: every vendor on this wire emits L3.
+const MPEG1_LAYER3_BITRATES_KBPS = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+const MPEG2_LAYER3_BITRATES_KBPS = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+const MPEG1_SAMPLE_RATES = [44100, 48000, 32000, 0];
+const MPEG2_SAMPLE_RATES = [22050, 24000, 16000, 0];
+const MPEG25_SAMPLE_RATES = [11025, 12000, 8000, 0];
+
+function mp3DurationSeconds(buffer: Buffer): number | undefined {
+  // Skip an ID3v2 tag (10-byte header, syncsafe 28-bit size).
+  let start = 0;
+  if (buffer.length >= 10 && buffer.toString("ascii", 0, 3) === "ID3") {
+    const tagSize = (buffer.readUInt8(6) & 0x7f) << 21
+      | (buffer.readUInt8(7) & 0x7f) << 14
+      | (buffer.readUInt8(8) & 0x7f) << 7
+      | (buffer.readUInt8(9) & 0x7f);
+    start = 10 + tagSize;
+  }
+
+  // Scan for the first Layer III frame sync: 0xFF Ex, non-reserved version.
+  let frame = -1;
+  for (let index = start; index + 4 <= buffer.length; index += 1) {
+    if (buffer.readUInt8(index) === 0xff && (buffer.readUInt8(index + 1) & 0xe0) === 0xe0) {
+      const versionBits = (buffer.readUInt8(index + 1) >> 3) & 0x03;
+      const layerBits = (buffer.readUInt8(index + 1) >> 1) & 0x03;
+      if (versionBits !== 0x01 && layerBits === 0x01) {
+        frame = index;
+        break;
+      }
+    }
+  }
+  if (frame === -1) return undefined;
+
+  const versionBits = (buffer.readUInt8(frame + 1) >> 3) & 0x03; // 3 = MPEG1, 2 = MPEG2, 0 = MPEG2.5
+  const bitrateIndex = (buffer.readUInt8(frame + 2) >> 4) & 0x0f;
+  const sampleRateIndex = (buffer.readUInt8(frame + 2) >> 2) & 0x03;
+
+  const isMpeg1 = versionBits === 0x03;
+  const bitrateKbps = (isMpeg1 ? MPEG1_LAYER3_BITRATES_KBPS : MPEG2_LAYER3_BITRATES_KBPS)[bitrateIndex] ?? 0;
+  const sampleRate = (versionBits === 0x03 ? MPEG1_SAMPLE_RATES : versionBits === 0x02 ? MPEG2_SAMPLE_RATES : MPEG25_SAMPLE_RATES)[sampleRateIndex] ?? 0;
+  const samplesPerFrame = isMpeg1 ? 1152 : 576;
+  if (bitrateKbps <= 0 || sampleRate <= 0) {
+    return undefined;
+  }
+
+  // VBR: a Xing/Info header after the first frame's side info carries an exact
+  // frame count. The side info is at most 32 bytes (MPEG1 stereo), so a short
+  // window scan finds it for every channel mode.
+  const windowEnd = Math.min(frame + 4 + 64, buffer.length - 12);
+  for (let index = frame + 4; index <= windowEnd; index += 1) {
+    const tag = buffer.toString("ascii", index, index + 4);
+    if (tag === "Xing" || tag === "Info") {
+      const flags = buffer.readUInt32BE(index + 4);
+      if (flags & 0x00000001) {
+        const frames = buffer.readUInt32BE(index + 8);
+        if (frames > 0) {
+          const seconds = (frames * samplesPerFrame) / sampleRate;
+          if (Number.isFinite(seconds) && seconds > 0) return seconds;
+        }
+      }
+      break;
+    }
+  }
+
+  // CBR estimate: payload bytes × 8 / bitrate.
+  const seconds = ((buffer.length - frame) * 8) / (bitrateKbps * 1000);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
 export function audioDurationSeconds(buffer: Buffer, mimeType?: string): number | undefined {
   const type = typeof mimeType === "string" ? mimeType.toLowerCase() : "";
   const looksWav = type.includes("wav")
     || (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WAVE");
-  if (!looksWav || buffer.length < 44) {
-    return undefined;
-  }
-
-  let byteRate = 0;
-  let dataSize = 0;
-  let offset = 12;
-  while (offset + 8 <= buffer.length) {
-    const id = buffer.toString("ascii", offset, offset + 4);
-    const size = buffer.readUInt32LE(offset + 4);
-    const start = offset + 8;
-    if (id === "fmt " && start + 16 <= buffer.length) {
-      byteRate = buffer.readUInt32LE(start + 8);
-    } else if (id === "data") {
-      dataSize = size;
+  if (looksWav) {
+    if (buffer.length < 44) {
+      return undefined;
     }
-    offset = start + size + (size % 2);
+
+    let byteRate = 0;
+    let dataSize = 0;
+    let offset = 12;
+    while (offset + 8 <= buffer.length) {
+      const id = buffer.toString("ascii", offset, offset + 4);
+      const size = buffer.readUInt32LE(offset + 4);
+      const start = offset + 8;
+      if (id === "fmt " && start + 16 <= buffer.length) {
+        byteRate = buffer.readUInt32LE(start + 8);
+      } else if (id === "data") {
+        dataSize = size;
+      }
+      offset = start + size + (size % 2);
+    }
+
+    if (!Number.isFinite(byteRate) || byteRate <= 0 || !Number.isFinite(dataSize) || dataSize <= 0) {
+      return undefined;
+    }
+
+    return dataSize / byteRate;
   }
 
-  if (!Number.isFinite(byteRate) || byteRate <= 0 || !Number.isFinite(dataSize) || dataSize <= 0) {
+  const looksMpeg = type.includes("mpeg") || type.includes("mp3")
+    || (buffer.length >= 10 && buffer.toString("ascii", 0, 3) === "ID3")
+    || (buffer.length >= 2 && buffer.readUInt8(0) === 0xff && (buffer.readUInt8(1) & 0xe0) === 0xe0);
+  if (!looksMpeg) {
     return undefined;
   }
 
-  return dataSize / byteRate;
+  return mp3DurationSeconds(buffer);
 }
 
 function hasMusicGenerationParams(model?: ModelCard | null): boolean {

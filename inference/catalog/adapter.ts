@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import { GenerateVideosOperation, GoogleGenAI } from "@google/genai";
 
 import { getModelById } from "./registry.js";
+import { normalizeSourceValue } from "./source.js";
 import type { ModelProvider } from "../types.js";
 import type {
   Message,
@@ -60,6 +61,7 @@ import {
   transcribeAlibabaAudio,
 } from "./vendors/alibaba.js";
 import {
+  analyzeDeepInfraVision,
   generateDeepInfraImage,
   generateDeepInfraVideo,
   generateDeepInfraSpeech,
@@ -115,15 +117,20 @@ import {
   embeddingInputValues,
   normalizeFeatureExtractionEmbeddings,
 } from "./modalities/embeddings.js";
-import { audioDurationSeconds } from "./modalities/speech.js";
+import { audioDurationSeconds } from "./modalities/audio.js";
 import { bufferFromPayload } from "./shared/media.js";
 
 export interface AdapterTarget {
   modelId: string;
+  catalogModelId?: string;
   provider: ModelProvider;
   family?: string;
   signal?: AbortSignal;
   params?: Record<string, unknown>;
+}
+
+function targetCard(target: AdapterTarget): ReturnType<typeof getModelById> {
+  return getModelById(target.catalogModelId || target.modelId, target.provider);
 }
 
 export interface AdapterResult {
@@ -133,8 +140,13 @@ export interface AdapterResult {
 export interface AdapterStatus {
   status: "queued" | "processing" | "completed" | "failed";
   url?: string;
+  buffer?: Buffer;
+  mimeType?: string;
   error?: string;
   progress?: number;
+  duration?: number;
+  billingMetrics?: Record<string, unknown>;
+  usage?: Usage;
 }
 
 function normalizeContentToString(content: unknown): string {
@@ -863,18 +875,57 @@ function numericMetrics(value: unknown): Record<string, unknown> {
 }
 
 function hasType(card: ReturnType<typeof getModelById>, expected: string): boolean {
-  const raw = card?.type;
+  if (!card) return false;
+  // `modelType` is the canonical task type ("music-generation", "text-to-music",
+  // "text-to-speech"); `type` is the catalog's display umbrella ("music
+  // generation") and only discriminates at modality granularity, so it is a
+  // fallback. Normalize separators the way compiled semantics do so umbrella
+  // spellings match their hyphenated canonical form.
+  const raw = typeof card.modelType === "string" && card.modelType.trim().length > 0
+    ? card.modelType
+    : card.type;
   const types = Array.isArray(raw) ? raw : [raw];
+  const expectedType = normalizeSourceValue(expected);
   return types
     .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim().toLowerCase())
-    .includes(expected);
+    .map((value) => normalizeSourceValue(value))
+    .includes(expectedType);
 }
 
 function catalogParamDescription(card: ReturnType<typeof getModelById>, key: string): string {
   const params = asRecord(card?.params);
   const param = asRecord(params?.[key]);
   return typeof param?.description === "string" ? param.description : "";
+}
+
+function catalogImageCustomParams(
+  card: ReturnType<typeof getModelById>,
+  customParams: Record<string, unknown>,
+  stream = false,
+): Record<string, unknown> {
+  const schema = asRecord(card?.params) || {};
+  const identities = [card?.modelId, card?.upstreamModelId]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.toLowerCase());
+  const outputFormat = typeof customParams.output_format === "string"
+    ? customParams.output_format.toLowerCase()
+    : undefined;
+  return Object.fromEntries(Object.entries(customParams).filter(([key, value]) => {
+    const definition = asRecord(schema[key]);
+    if (value === undefined || !definition) return false;
+    if (key === "partial_images" && !stream) return false;
+    if (key === "output_compression" && outputFormat !== "jpeg" && outputFormat !== "webp") return false;
+    const description = typeof definition.description === "string" ? definition.description : "";
+    const onlyModels = [...description.matchAll(/only supported for\s+`([^`]+)`/gi)].map((match) => match[1]!.toLowerCase());
+    if (onlyModels.length > 0 && !onlyModels.some((model) => identities.some((identity) => identity.includes(model)))) {
+      return false;
+    }
+    if (/isn't supported for the gpt image models/i.test(description)
+      && identities.some((identity) => identity.includes("gpt-image"))) {
+      return false;
+    }
+    return true;
+  }));
 }
 
 function supportsTranscriptionPrompt(card: ReturnType<typeof getModelById>): boolean {
@@ -1024,7 +1075,7 @@ class AsyncEventQueue<T> {
 async function transcribe(request: Request, target: AdapterTarget): Promise<Output> {
   const audioUrl = findUrl(request.messages, "input_audio");
   const prompt = getPrimaryText(request.messages);
-  const card = getModelById(target.modelId, target.provider);
+  const card = targetCard(target);
   const audioMedia = await fetchRemoteMedia(audioUrl, target.signal);
   if (!audioMedia) {
     throw new Error("No audio data available for transcription");
@@ -1334,6 +1385,29 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
     };
   }
 
+  if (target.provider === "deepinfra" && isImageAnalysisOperation(request)) {
+    const imageUrl = findUrl(request.messages, "image_url");
+    if (!imageUrl) {
+      throw new Error("DeepInfra vision requires an image input");
+    }
+    const result = await analyzeDeepInfraVision(
+      target.modelId,
+      imageUrl,
+      getPrimaryText(request.messages),
+      {
+        catalogModelId: target.catalogModelId,
+        customParams: request.customParams,
+        signal: target.signal,
+      },
+    );
+    return {
+      modality: "text",
+      content: result.text,
+      usage: result.usage,
+      finishReason: "stop",
+    };
+  }
+
   // Gemini chat: direct against the Google Generative Language wire family.
   if (target.provider === "gemini") {
     const result = await googleFamily.chat(googleFamily.geminiEndpoint(), target.modelId, request.messages, {
@@ -1362,13 +1436,13 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
         ? request.inputItems
         : openaiFamily.mapMessagesForResponsesWire(request.messages),
       {
-      ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
-      ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
-      ...(request.tools ? { tools: request.tools } : {}),
-      ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
-      ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
-      customParams: request.customParams,
-      signal: target.signal,
+        ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+        ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
+        ...(request.tools ? { tools: request.tools } : {}),
+        ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+        ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+        customParams: request.customParams,
+        signal: target.signal,
       },
     );
   }
@@ -1419,7 +1493,7 @@ async function invokeEmbedding(request: Request, target: AdapterTarget): Promise
   }
 
   if (target.provider === "hugging face") {
-    const card = getModelById(target.modelId, target.provider);
+    const card = targetCard(target);
     const result = await executeHFInference({
       modelId: target.modelId,
       task: "feature-extraction",
@@ -1483,10 +1557,13 @@ async function invokeEmbedding(request: Request, target: AdapterTarget): Promise
 
 async function invokeImage(request: Request, target: AdapterTarget): Promise<Output> {
   const prompt = getPrimaryText(request.messages);
-  const imageUrl = request.imageOptions?.imageUrl || findUrl(request.messages, "image_url");
-  const card = getModelById(target.modelId, target.provider);
+  const attachedImageUrls = findUrls(request.messages, "image_url");
+  const imageUrls = request.imageOptions?.imageUrl
+    ? [request.imageOptions.imageUrl, ...attachedImageUrls.filter((url) => url !== request.imageOptions?.imageUrl)]
+    : attachedImageUrls;
+  const imageUrl = imageUrls[0];
+  const card = targetCard(target);
   const customParams = request.customParams || {};
-  const imageCount = generatedImageCount(request);
 
   if (target.provider === "roboflow" && isImageAnalysisOperation(request)) {
     const imageBuffer = await fetchRemoteBuffer(imageUrl, target.signal);
@@ -1548,20 +1625,31 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
   const output = await withRetry(async (): Promise<{
     buffer: Buffer;
     mimeType: string;
+    images?: Array<{ buffer: Buffer; mimeType: string; revisedPrompt?: string }>;
     usage?: Usage;
     duration?: number;
     billingMetrics?: Record<string, unknown>;
   }> => {
     switch (target.provider) {
       case "gemini": {
+        const referenceImages = await Promise.all(imageUrls.map((url) => fetchRemoteMedia(url, target.signal)));
+        const numberOfImages = number(request.imageOptions?.n)
+          ?? number(customParams.numberOfImages)
+          ?? number(customParams.number_of_images)
+          ?? number(customParams.n);
+        const aspectRatio = customParams.aspect_ratio ?? customParams.aspectRatio;
+        const outputMimeType = customParams.output_mime_type ?? customParams.outputMimeType;
         const result = await googleGenerateImage(target.modelId, prompt, {
-          numberOfImages: request.imageOptions?.n,
-          aspectRatio: request.customParams?.aspect_ratio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | undefined,
-          outputMimeType: request.customParams?.output_mime_type as "image/png" | "image/jpeg" | "image/webp" | undefined,
+          referenceImages: referenceImages.filter((media): media is { buffer: Buffer; mimeType: string } => media !== null),
+          numberOfImages,
+          aspectRatio: aspectRatio as "1:1" | "3:4" | "4:3" | "9:16" | "16:9" | undefined,
+          outputMimeType: outputMimeType as "image/png" | "image/jpeg" | "image/webp" | undefined,
+          signal: target.signal,
         });
         return {
           buffer: result.buffer,
-          mimeType: "image/png",
+          mimeType: result.mimeType,
+          images: result.images,
           ...(result.usage ? { usage: result.usage } : {}),
         };
       }
@@ -1571,11 +1659,14 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
           quality: request.imageOptions?.quality as any,
           n: request.imageOptions?.n,
           imageUrl,
+          imageUrls,
+          customParams: catalogImageCustomParams(card, customParams),
           signal: target.signal,
         });
         return {
           buffer: result.buffer,
           mimeType: result.mimeType,
+          images: result.images,
           ...(result.usage ? { usage: result.usage } : {}),
         };
       }
@@ -1592,11 +1683,13 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
           quality: request.imageOptions?.quality,
           n: request.imageOptions?.n,
           imageUrl,
-          customParams,
+          customParams: catalogImageCustomParams(card, customParams),
+          signal: target.signal,
         });
         return {
           buffer: result.buffer,
           mimeType: result.mimeType,
+          images: result.images,
           ...(result.usage ? { usage: result.usage } : {}),
         };
       }
@@ -1606,11 +1699,14 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
           quality: request.imageOptions?.quality,
           n: request.imageOptions?.n,
           imageUrl,
+          imageUrls,
           customParams,
+          signal: target.signal,
         });
         return {
           buffer: result.buffer,
           mimeType: result.mimeType,
+          images: result.images,
           ...(result.usage ? { usage: result.usage } : {}),
         };
       }
@@ -1634,7 +1730,7 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
             ? request.customParams.num_steps
             : typeof request.customParams?.num_inference_steps === "number"
               ? request.customParams.num_inference_steps
-              : 4;
+              : undefined;
         const result = await generateFireworksImage(target.modelId, prompt, {
           parameters: request.customParams,
           steps,
@@ -1653,16 +1749,24 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
             promptTokens: 0,
             completionTokens: 0,
             totalTokens: 0,
-            billingMetrics: { step: steps },
+            ...(typeof steps === "number" ? { billingMetrics: { step: steps } } : {}),
           },
         };
       }
       case "cloudflare": {
+        const inpainting = request.operation === "inpainting"
+          || target.modelId.toLowerCase().includes("inpainting");
         const steps = typeof request.customParams?.num_steps === "number"
           ? request.customParams.num_steps
           : typeof request.customParams?.steps === "number"
             ? request.customParams.steps
-            : 4;
+            : undefined;
+        const sourceImage = request.operation === "image-to-image" || inpainting
+          ? await fetchRemoteMedia(imageUrls[0], target.signal)
+          : null;
+        const maskImage = inpainting
+          ? await fetchRemoteMedia(imageUrls[1], target.signal)
+          : null;
         const result = await generateCloudflareImage(target.modelId, prompt, {
           parameters: request.customParams,
           num_steps: steps,
@@ -1673,8 +1777,11 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
               : undefined,
           width: request.imageOptions?.size ? parseInt(request.imageOptions.size.split("x")[0]) : undefined,
           height: request.imageOptions?.size ? parseInt(request.imageOptions.size.split("x")[1]) : undefined,
+          ...(sourceImage ? { image: sourceImage.buffer, imageMimeType: sourceImage.mimeType } : {}),
+          ...(maskImage ? { mask: maskImage.buffer, maskMimeType: maskImage.mimeType } : {}),
           signal: target.signal,
         });
+        const stepMetrics = typeof steps === "number" ? { step: steps } : undefined;
         return {
           buffer: result.buffer,
           mimeType: result.mimeType,
@@ -1682,51 +1789,55 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
             promptTokens: 0,
             completionTokens: 0,
             totalTokens: 0,
-            billingMetrics: { step: steps },
+            ...(stepMetrics ? { billingMetrics: stepMetrics } : {}),
           },
         };
       }
       case "deepinfra": {
-        const imageUrls = findUrls(request.messages, "image_url");
-        const imgUrl = request.imageOptions?.imageUrl || imageUrls[0];
-        const maskUrl = imageUrls[1];
-
         const result = await generateDeepInfraImage(target.modelId, prompt, {
+          catalogModelId: target.catalogModelId,
+          operation: request.operation,
           size: request.imageOptions?.size,
           quality: request.imageOptions?.quality,
           n: request.imageOptions?.n,
-          imageUrl: imgUrl,
-          maskUrl,
+          imageUrl,
+          imageUrls,
+          maskUrl: imageUrls[1],
           signal: target.signal,
           customParams,
         });
         return {
           buffer: result.buffer,
           mimeType: result.mimeType,
-          usage: {
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            billingMetrics: { image: 1 },
-          },
+          images: result.images,
+          usage: result.usage,
         };
       }
       default:
         throw new Error(`Image generation not supported for provider: ${target.provider}`);
     }
-  }, 3, target.signal);
+  }, 1, target.signal);
   const elapsedSeconds = elapsedSecondsSince(startedAt);
+  const images = output.images?.length ? output.images : [{ buffer: output.buffer, mimeType: output.mimeType }];
+  const imageCount = images.length;
+  const primary = images[0];
 
   return {
     modality: "image",
     media: {
-      mimeType: output.mimeType,
-      base64: output.buffer.toString("base64"),
+      mimeType: primary.mimeType,
+      base64: primary.buffer.toString("base64"),
+      ...(primary.revisedPrompt ? { revisedPrompt: primary.revisedPrompt } : {}),
+      images: images.map((image) => ({
+        mimeType: image.mimeType,
+        base64: image.buffer.toString("base64"),
+        ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
+      })),
       generatedUnits: imageCount,
       status: "completed",
       billingMetrics: imageBillingMetricsFromOutput({
         request,
-        buffer: output.buffer,
+        buffer: primary.buffer,
         usage: output.usage,
         generatedUnits: imageCount,
         elapsedSeconds,
@@ -1737,6 +1848,7 @@ async function invokeImage(request: Request, target: AdapterTarget): Promise<Out
 }
 
 async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
+  operation?: string;
   duration?: number;
   aspectRatio?: string;
   resolution?: string;
@@ -1744,6 +1856,9 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
   imageUrl?: string;
   imageUrls?: string[];
   videoUrl?: string;
+  videoUrls?: string[];
+  audioUrl?: string;
+  audioUrls?: string[];
   customParams?: Record<string, unknown>;
 }): Promise<{ jobId: string; status: "queued" | "processing"; duration?: number; usage?: Usage }> {
   switch (target.provider) {
@@ -1786,20 +1901,27 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
       }
 
       const genai = new GoogleGenAI({ apiKey });
-      const imageBuffer = await fetchRemoteBuffer(options?.imageUrl, target.signal);
+      const imageMedia = await fetchRemoteMedia(options?.imageUrl, target.signal);
       const operation = await genai.models.generateVideos(buildGoogleVideoGenerationRequest(
         target.modelId,
         prompt,
         options,
-        imageBuffer ? { imageBytes: imageBuffer.toString("base64"), mimeType: "image/png" } : undefined,
+        imageMedia ? { imageBytes: imageMedia.buffer.toString("base64"), mimeType: imageMedia.mimeType } : undefined,
       ) as any);
       if (!operation.name) {
         throw new Error("Google returned no operation name");
       }
 
       const duration = findProviderDurationSeconds(operation);
+      const operationState = Buffer.from(JSON.stringify({
+        name: operation.name,
+        metadata: operation.metadata,
+        done: operation.done,
+        error: operation.error,
+        response: operation.response,
+      }), "utf8").toString("base64url");
       return {
-        jobId: `gemini:${operation.name}`,
+        jobId: `gemini:operation_${operationState}`,
         status: "processing",
         ...(typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? { duration } : {}),
       };
@@ -1851,6 +1973,7 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
 
     case "alibaba": {
       return submitAlibabaVideo(target.modelId, prompt, {
+        operation: options?.operation,
         duration: options?.duration,
         aspectRatio: options?.aspectRatio,
         resolution: options?.resolution,
@@ -1858,6 +1981,9 @@ async function submitVideoJob(target: AdapterTarget, prompt: string, options?: {
         imageUrl: options?.imageUrl,
         imageUrls: options?.imageUrls,
         videoUrl: options?.videoUrl,
+        videoUrls: options?.videoUrls,
+        audioUrl: options?.audioUrl,
+        audioUrls: options?.audioUrls,
         customParams: options?.customParams,
       });
     }
@@ -1872,18 +1998,39 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
   const imageUrl = request.videoOptions?.imageUrl || findUrl(request.messages, "image_url");
   const imageUrls = findUrls(request.messages, "image_url");
   const videoUrl = request.videoOptions?.videoUrl || findUrl(request.messages, "video_url");
-  const card = getModelById(target.modelId, target.provider);
-  const customParams = request.customParams || {};
+  const videoUrls = findUrls(request.messages, "video_url");
+  const audioUrls = findUrls(request.messages, "input_audio");
+  const card = targetCard(target);
+  const customParams: Record<string, unknown> = {
+    ...(request.customParams || {}),
+    ...(audioUrls[0] && request.customParams?.audio_url === undefined
+      && request.customParams?.driving_audio === undefined ? { audio_url: audioUrls[0] } : {}),
+  };
+  const requestedResolution = request.videoOptions?.resolution;
+  const resolutionIsDimensions = typeof requestedResolution === "string"
+    && /^\d+\s*[x*×]\s*\d+$/i.test(requestedResolution);
+  const dimensionSize = typeof customParams.size === "string"
+    ? customParams.size
+    : resolutionIsDimensions
+      ? requestedResolution.replace(/[×*]/g, "x")
+      : undefined;
+  const resolutionTier = resolutionIsDimensions ? undefined : requestedResolution;
 
   if (["openai", "gemini", "vertex", "alibaba", "azure", "fireworks", "fal", "huggingface"].includes(target.provider)) {
     const job = await submitVideoJob(target, prompt, {
+      operation: request.operation,
       duration: request.videoOptions?.duration,
       aspectRatio: request.videoOptions?.aspectRatio,
-      resolution: request.videoOptions?.resolution,
-      size: typeof request.customParams?.size === "string" ? request.customParams.size : undefined,
+      resolution: resolutionTier,
+      size: dimensionSize,
       imageUrl,
       imageUrls: request.videoOptions?.imageUrl ? [request.videoOptions.imageUrl, ...imageUrls.filter((url) => url !== request.videoOptions?.imageUrl)] : imageUrls,
       videoUrl,
+      videoUrls: request.videoOptions?.videoUrl
+        ? [request.videoOptions.videoUrl, ...videoUrls.filter((url) => url !== request.videoOptions?.videoUrl)]
+        : videoUrls,
+      audioUrl: audioUrls[0],
+      audioUrls,
       customParams,
     });
 
@@ -1910,13 +2057,13 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
     };
   }
 
-  const output = await withRetry(async () => {
+  const output: { buffer: Buffer; mimeType: string; url?: string; usage?: Usage } = await withRetry(async () => {
     switch (target.provider) {
       case "gemini": {
         const result = await googleGenerateVideo(target.modelId, prompt, {
           duration: request.videoOptions?.duration,
           aspectRatio: request.videoOptions?.aspectRatio as "16:9" | "9:16" | undefined,
-          resolution: request.videoOptions?.resolution as "720p" | "1080p" | undefined,
+          resolution: resolutionTier as "720p" | "1080p" | undefined,
           negativePrompt: typeof request.customParams?.negative_prompt === "string" ? request.customParams.negative_prompt : undefined,
         });
         return { buffer: result.videoBuffer, mimeType: result.mimeType };
@@ -1924,7 +2071,7 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
       case "openai": {
         const result = await openaiGenerateVideo(target.modelId, prompt, {
           duration: request.videoOptions?.duration,
-          size: typeof request.customParams?.size === "string" ? request.customParams.size : undefined,
+          size: dimensionSize,
           imageUrl,
         });
         return { buffer: result.videoBuffer, mimeType: result.mimeType };
@@ -1951,23 +2098,33 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
       }
       case "deepinfra": {
         const result = await generateDeepInfraVideo(target.modelId, prompt, {
+          catalogModelId: target.catalogModelId,
+          operation: request.operation,
           imageUrl,
+          imageUrls: request.videoOptions?.imageUrl
+            ? [request.videoOptions.imageUrl, ...imageUrls.filter((url) => url !== request.videoOptions?.imageUrl)]
+            : imageUrls,
           videoUrl,
+          videoUrls: request.videoOptions?.videoUrl
+            ? [request.videoOptions.videoUrl, ...videoUrls.filter((url) => url !== request.videoOptions?.videoUrl)]
+            : videoUrls,
+          audioUrl: audioUrls[0],
+          audioUrls,
           signal: target.signal,
           customParams,
         });
-        return { buffer: result.buffer, mimeType: result.mimeType };
+        return { buffer: result.buffer, mimeType: result.mimeType, url: result.url, usage: result.usage };
       }
       default:
         throw new Error(`Video generation not supported for provider: ${target.provider}`);
     }
-  }, 3, target.signal);
+  }, 1, target.signal);
 
   return {
     modality: "video",
     media: {
       mimeType: output.mimeType,
-      base64: output.buffer.toString("base64"),
+      ...(output.url ? { url: output.url } : { base64: output.buffer.toString("base64") }),
       status: "completed",
       duration: request.videoOptions?.duration,
       generatedUnits: 1,
@@ -1977,13 +2134,13 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
         generatedUnits: 1,
       }),
     },
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    usage: output.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   };
 }
 
 async function invokeAudio(request: Request, target: AdapterTarget): Promise<Output> {
   const prompt = getPrimaryText(request.messages);
-  const card = getModelById(target.modelId, target.provider);
+  const card = targetCard(target);
   const promptCharacterCount = prompt ? Array.from(prompt).length : 0;
 
   if (isSpeechToTextOperation(request)) {
@@ -2171,7 +2328,10 @@ async function invokeAudio(request: Request, target: AdapterTarget): Promise<Out
           customParams: request.customParams,
         });
       case "deepinfra":
-        if (operation(request) === "music-generation" || hasType(card, "music-generation")) {
+        if (operation(request) === "music-generation"
+          || operation(request) === "text-to-audio"
+          || hasType(card, "music-generation")
+          || hasType(card, "text-to-music")) {
           return generateDeepInfraMusic(target.modelId, prompt, {
             language: request.audioOptions?.language,
             signal: target.signal,
@@ -2188,7 +2348,7 @@ async function invokeAudio(request: Request, target: AdapterTarget): Promise<Out
       default:
         throw new Error(`Text-to-speech not supported for provider: ${target.provider}`);
     }
-  }, 3, target.signal);
+  }, 1, target.signal);
   const promptTokens = prompt ? estimateTokens(prompt) : 0;
   const usage = output.usage || {
     promptTokens,
@@ -2312,7 +2472,7 @@ export async function* streamWithTools(
   if (request.modality === "image") {
     // Provider-native partial-image streaming where available.
     if (target.provider === "openai") {
-      const card = getModelById(target.modelId, target.provider);
+      const card = targetCard(target);
       if (!supportsOpenAINativeImageStreaming(card)) {
         yield* streamFinalImageFromInvoke(request, target);
         return;
@@ -2548,7 +2708,7 @@ export async function* streamWithTools(
     return;
   }
 
-  if (target.provider === "deepinfra" && operation(request) === "rerank") {
+  if (target.provider === "deepinfra" && (operation(request) === "rerank" || isImageAnalysisOperation(request))) {
     const output = await invokeText(request, target);
     if (output.content) {
       yield { type: "text-delta", text: output.content };
@@ -2642,13 +2802,13 @@ export async function* streamWithTools(
         ? request.inputItems
         : openaiFamily.mapMessagesForResponsesWire(request.messages),
       {
-      ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
-      ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
-      ...(request.tools ? { tools: request.tools } : {}),
-      ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
-      ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
-      customParams: request.customParams,
-      signal: target.signal,
+        ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+        ...(request.maxTokens ? { maxOutputTokens: request.maxTokens } : {}),
+        ...(request.tools ? { tools: request.tools } : {}),
+        ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+        ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+        customParams: request.customParams,
+        signal: target.signal,
       },
     );
     return;
@@ -2716,6 +2876,8 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
               : "processing";
 
       let url = data.video?.url || data.output_url;
+      let buffer: Buffer | undefined;
+      let mimeType: string | undefined;
       if (status === "completed" && !url) {
         const contentResponse = await fetch(`https://api.openai.com/v1/videos/${encodeURIComponent(providerJobId)}/content`, {
           headers: { Authorization: `Bearer ${apiKey}` },
@@ -2723,9 +2885,13 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
         if (!contentResponse.ok) {
           throw new Error(`OpenAI video download failed: ${contentResponse.status}`);
         }
-        const contentType = contentResponse.headers.get("content-type") || "video/mp4";
-        const buffer = Buffer.from(await contentResponse.arrayBuffer());
-        url = `data:${contentType};base64,${buffer.toString("base64")}`;
+        mimeType = contentResponse.headers.get("content-type") || "video/mp4";
+        buffer = Buffer.from(await contentResponse.arrayBuffer());
+        url = `data:${mimeType};base64,${buffer.toString("base64")}`;
+      } else if (status === "completed" && url) {
+        const media = await bufferFromPayload(url, "video/mp4");
+        buffer = media.buffer;
+        mimeType = media.mimeType;
       }
 
       const error = typeof data.error === "string" ? data.error : data.error?.message;
@@ -2733,6 +2899,8 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
       return {
         status,
         url,
+        ...(buffer ? { buffer } : {}),
+        ...(mimeType ? { mimeType } : {}),
         error,
         progress: typeof data.progress === "number" ? data.progress : undefined,
       };
@@ -2746,7 +2914,12 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
 
       const genai = new GoogleGenAI({ apiKey });
       const operation = new GenerateVideosOperation();
-      operation.name = providerJobId;
+      if (providerJobId.startsWith("operation_")) {
+        const state = JSON.parse(Buffer.from(providerJobId.slice("operation_".length), "base64url").toString("utf8")) as GenerateVideosOperation;
+        Object.assign(operation, state);
+      } else {
+        operation.name = providerJobId;
+      }
       const updated = await genai.operations.getVideosOperation({ operation });
 
       if (!updated.done) {
@@ -2763,7 +2936,9 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
         : video?.uri
           ? await downloadGoogleFileDataUrl(video.uri, apiKey)
           : undefined;
-      return { status: "completed", url };
+      if (!url) return { status: "failed", error: "Google completed without a generated video" };
+      const media = await bufferFromPayload(url, video?.mimeType || "video/mp4");
+      return { status: "completed", url, buffer: media.buffer, mimeType: media.mimeType };
     }
 
     case "vertex": {
@@ -2803,11 +2978,17 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
       return {
         status: "completed",
         url: `data:video/mp4;base64,${base64}`,
+        buffer: Buffer.from(base64, "base64"),
+        mimeType: "video/mp4",
       };
     }
 
-    case "alibaba":
-      return retrieveAlibabaVideo(providerJobId);
+    case "alibaba": {
+      const status = await retrieveAlibabaVideo(providerJobId);
+      if (status.status !== "completed" || !status.url) return status;
+      const media = await bufferFromPayload(status.url, "video/mp4");
+      return { ...status, buffer: media.buffer, mimeType: media.mimeType };
+    }
 
     default:
       throw new Error(`Unsupported async status provider: ${provider}`);
@@ -2815,7 +2996,12 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
 }
 
 export async function downloadGoogleFileDataUrl(uri: string, apiKey: string): Promise<string> {
-  const response = await fetch(uri, {
+  const url = new URL(uri);
+  if (/\/files\/[^/]+$/u.test(url.pathname) && !url.pathname.endsWith(":download")) {
+    url.pathname = `${url.pathname}:download`;
+    url.searchParams.set("alt", "media");
+  }
+  const response = await fetch(url, {
     headers: { "x-goog-api-key": apiKey },
   });
   if (!response.ok) {

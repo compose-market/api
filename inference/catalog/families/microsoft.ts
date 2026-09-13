@@ -11,7 +11,7 @@
  * (Azure, future direct) own the transport.
  */
 
-import { asRecord, bufferFromPayload, clean, normalizeOpenAIUsage, sizeToDimensions } from "../shared/index.js";
+import { asRecord, clean, imagesFromResponse, normalizeOpenAIUsage, sizeToDimensions } from "../shared/index.js";
 import type { Usage } from "../../core.js";
 
 /** Path under the host's MAI surface. */
@@ -32,6 +32,7 @@ export interface MaiImageOptions {
 export interface MaiImageResult {
     buffer: Buffer;
     mimeType: string;
+    images: Array<{ buffer: Buffer; mimeType: string; revisedPrompt?: string }>;
     usage?: Usage;
     raw: unknown;
 }
@@ -122,14 +123,12 @@ export async function parseImageResponse(
     options: { n?: number } = {},
 ): Promise<MaiImageResult> {
     const root = asRecord(raw) || {};
-    const data = Array.isArray(root.data) ? root.data : [];
-    const first = asRecord(data[0]) ?? root;
-    const payload = clean(first.b64_json) || clean(first.base64) || clean(first.image) || clean(first.url);
-    if (!payload) throw new Error("MAI returned no image data");
-    const image = await bufferFromPayload(payload, "image/png");
+    const images = await imagesFromResponse(raw, "image/png");
+    if (images.length === 0) throw new Error("MAI returned no image data");
     const usage = normalizeOpenAIUsage(root.usage);
     return {
-        ...image,
+        ...images[0],
+        images,
         ...(usage ? { usage } : {}),
         raw,
     };

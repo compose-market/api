@@ -7,6 +7,15 @@
 export { clean, asRecord, readNonNeg, assignMetric } from "./coerce.js";
 export { fetchJson, postJson, getJson, fetchBuffer, readErrorBody, throwHttpError, type HttpFetchInit } from "./http.js";
 export { normalizeContentToString, messageText, primaryText, findAttachmentUrl } from "./messages.js";
-export { bufferFromPayload, sizeToDimensions, audioMimeType } from "./media.js";
+export {
+    bufferFromPayload,
+    sizeToDimensions,
+    audioMimeType,
+    imageMimeType,
+    imageDimensions,
+    imagePayloadsFromResponse,
+    imagesFromResponse,
+    type ImagePayload,
+} from "./media.js";
 export { normalizeOpenAIUsage } from "./usage.js";
 export { object, json, google } from "./schema.js";

@@ -19,6 +19,7 @@ import type {
     ResponsesOutputItem,
 } from "../../core.js";
 import * as lower from "../shared/schema.js";
+import { imagesFromResponse, normalizeOpenAIUsage } from "../shared/index.js";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -48,11 +49,6 @@ export interface OpenAIModelInfo {
 
 function detectOpenAITask(modelId: string): string {
     const id = modelId.toLowerCase();
-
-    // Image generation
-    if (id.includes("dall-e") || id.includes("dalle") || id.includes("gpt-image")) {
-        return "text-to-image";
-    }
 
     // Video generation (Sora)
     if (id.includes("sora")) {
@@ -145,9 +141,9 @@ export function clearOpenAICache(): void {
 // =============================================================================
 
 /**
- * Generate image using OpenAI DALL-E models
+ * Generate image using OpenAI models
  * 
- * @param modelId - The model ID (dall-e-2, dall-e-3, gpt-image-1, etc.)
+ * @param modelId - The model ID
  * @param prompt - Text prompt for image generation
  * @param options - Optional parameters (size, quality, etc.)
  * @returns Buffer containing the generated image
@@ -160,11 +156,14 @@ export async function openaiGenerateImage(
         quality?: "standard" | "hd";
         n?: number;
         imageUrl?: string;
+        imageUrls?: string[];
+        customParams?: Record<string, unknown>;
         signal?: AbortSignal;
     }
 ): Promise<{
     buffer: Buffer;
     mimeType: string;
+    images: Array<{ buffer: Buffer; mimeType: string; revisedPrompt?: string }>;
     usage?: {
         promptTokens: number;
         completionTokens: number;
@@ -180,21 +179,30 @@ export async function openaiGenerateImage(
     console.log(`[openai] Generating image with ${modelId}: "${prompt.slice(0, 50)}..."`);
 
     try {
-        if (options?.imageUrl) {
-            const sourceResponse = await fetch(options.imageUrl, { signal: options.signal });
-            if (!sourceResponse.ok) {
-                throw new Error(`Failed to fetch input image: ${sourceResponse.status}`);
-            }
-
-            const sourceContentType = sourceResponse.headers.get("content-type") || "image/png";
-            const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer());
+        const inputImages = options?.imageUrls?.length
+            ? options.imageUrls
+            : options?.imageUrl ? [options.imageUrl] : [];
+        if (inputImages.length > 0) {
             const formData = new FormData();
             formData.append("model", modelId);
             formData.append("prompt", prompt);
-            formData.append("image", new Blob([new Uint8Array(sourceBuffer)], { type: sourceContentType }), "input-image");
-            if (options.n !== undefined) formData.append("n", String(options.n));
-            if (options.size) formData.append("size", options.size);
-            if (options.quality) formData.append("quality", options.quality);
+            const imageField = inputImages.length > 1 ? "image[]" : "image";
+            for (const [index, imageUrl] of inputImages.entries()) {
+                const sourceResponse = await fetch(imageUrl, { signal: options?.signal });
+                if (!sourceResponse.ok) throw new Error(`Failed to fetch input image: ${sourceResponse.status}`);
+                const contentType = sourceResponse.headers.get("content-type") || "image/png";
+                const sourceBuffer = Buffer.from(await sourceResponse.arrayBuffer());
+                formData.append(imageField, new Blob([new Uint8Array(sourceBuffer)], { type: contentType }), `input-image-${index}`);
+            }
+            if (options?.n !== undefined) formData.append("n", String(options.n));
+            if (options?.size) formData.append("size", options.size);
+            if (options?.quality) formData.append("quality", options.quality);
+            for (const [key, value] of Object.entries(options?.customParams || {})) {
+                if (["model", "prompt", "image", "n", "size", "quality"].includes(key) || value === undefined) continue;
+                if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+                    formData.append(key, String(value));
+                }
+            }
 
             const response = await fetch("https://api.openai.com/v1/images/edits", {
                 method: "POST",
@@ -202,7 +210,7 @@ export async function openaiGenerateImage(
                     Authorization: `Bearer ${OPENAI_API_KEY}`,
                 },
                 body: formData,
-                signal: options.signal,
+                signal: options?.signal,
             });
 
             if (!response.ok) {
@@ -214,37 +222,13 @@ export async function openaiGenerateImage(
                 data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
                 usage?: Record<string, unknown>;
             };
-            const first = data.data?.[0];
-            if (!first) {
-                throw new Error("OpenAI image edit returned no image data");
-            }
-
-            let buffer: Buffer;
-            if (first.b64_json) {
-                buffer = Buffer.from(first.b64_json, "base64");
-            } else if (first.url) {
-                const editedImageResponse = await fetch(first.url, { signal: options.signal });
-                if (!editedImageResponse.ok) {
-                    throw new Error(`Failed to download edited image: ${editedImageResponse.status}`);
-                }
-                buffer = Buffer.from(await editedImageResponse.arrayBuffer());
-            } else {
-                throw new Error("OpenAI image edit returned no image payload");
-            }
-
-            const rawUsage = data.usage && typeof data.usage === "object" ? data.usage : null;
-            const usage = rawUsage
-                ? {
-                    promptTokens: typeof rawUsage.input_tokens === "number" ? rawUsage.input_tokens : 0,
-                    completionTokens: typeof rawUsage.output_tokens === "number" ? rawUsage.output_tokens : 0,
-                    totalTokens: typeof rawUsage.total_tokens === "number" ? rawUsage.total_tokens : 0,
-                    raw: rawUsage,
-                }
-                : undefined;
+            const images = await imagesFromResponse(data, "image/png", options?.signal);
+            if (images.length === 0) throw new Error("OpenAI image edit returned no image data");
+            const usage = normalizeOpenAIUsage(data.usage);
 
             return {
-                buffer,
-                mimeType: "image/png",
+                ...images[0],
+                images,
                 ...(usage ? { usage } : {}),
             };
         }
@@ -261,6 +245,7 @@ export async function openaiGenerateImage(
                 ...(options?.n !== undefined ? { n: options.n } : {}),
                 ...(options?.size ? { size: options.size } : {}),
                 ...(options?.quality ? { quality: options.quality } : {}),
+                ...(options?.customParams || {}),
             }),
             signal: options?.signal,
         });
@@ -293,7 +278,6 @@ export async function openaiGenerateImage(
             throw new Error("No image generated");
         }
 
-        const image = { base64: result.data[0].b64_json };
         const providerImages = result.data;
         const firstProviderImage = providerImages[0];
         const inputTextTokensFromDetails = result.usage?.input_tokens_details?.text_tokens ?? 0;
@@ -323,36 +307,16 @@ export async function openaiGenerateImage(
         const promptTokens = result.usage?.input_tokens ?? (inputTextTokens + inputImageTokens);
         const completionTokens = result.usage?.output_tokens ?? (typeof billingMetrics.output_image_tokens === "number" ? billingMetrics.output_image_tokens as number : 0);
         const totalTokens = result.usage?.total_tokens ?? (promptTokens + completionTokens);
-        const usage = (result.usage || Object.keys(billingMetrics).length > 0)
+        const normalized = normalizeOpenAIUsage(result.usage);
+        const usage = normalized || Object.keys(billingMetrics).length > 0
             ? {
-                promptTokens,
-                completionTokens,
-                totalTokens,
-                ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
+                ...(normalized || { promptTokens, completionTokens, totalTokens }),
+                billingMetrics: { ...(normalized?.billingMetrics || {}), ...billingMetrics },
             }
             : undefined;
-
-        if (image.base64) {
-            return {
-                buffer: Buffer.from(image.base64, "base64"),
-                mimeType: "image/png",
-                ...(usage ? { usage } : {}),
-            };
-        }
-
-        if (firstProviderImage?.url) {
-            const generatedImageResponse = await fetch(firstProviderImage.url, { signal: options?.signal });
-            if (!generatedImageResponse.ok) {
-                throw new Error(`Failed to download generated image: ${generatedImageResponse.status}`);
-            }
-            return {
-                buffer: Buffer.from(await generatedImageResponse.arrayBuffer()),
-                mimeType: generatedImageResponse.headers.get("content-type")?.split(";")[0]?.trim() || "image/png",
-                ...(usage ? { usage } : {}),
-            };
-        }
-
-        throw new Error("No image data returned");
+        const images = await imagesFromResponse(result, "image/png", options?.signal);
+        if (images.length === 0) throw new Error("No image data returned");
+        return { ...images[0], images, ...(usage ? { usage } : {}) };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[openai] Image generation failed:`, message);
@@ -482,7 +446,7 @@ export async function* openaiStreamImage(
             ...(options?.size ? { size: options.size } : {}),
             ...(options?.quality ? { quality: options.quality } : {}),
             stream: true,
-            partial_images: options?.partialImages ?? 2,
+            ...(options?.partialImages !== undefined ? { partial_images: options.partialImages } : {}),
         }),
         signal: options?.signal,
     });
