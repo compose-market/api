@@ -113,7 +113,7 @@ test("budget-cap authorization resolves its cap inside the Lua linearization poi
   assert.match(authorizationSource, /"maxAmountWei", maxAmount/);
 });
 
-test("canonical replay identity excludes request idempotency metadata", () => {
+test("canonical replay identity is scoped by request idempotency metadata when present", () => {
   const source = readFileSync(new URL("../x402/intents.ts", import.meta.url), "utf8");
   const keyStart = source.indexOf("function idempotencyValkeyKey");
   const keyEnd = source.indexOf("function stableJson", keyStart);
@@ -121,7 +121,7 @@ test("canonical replay identity excludes request idempotency metadata", () => {
   assert.match(keySource, /rootRunId: string/);
   assert.match(keySource, /executionRunId: string/);
   assert.match(keySource, /sequence: number/);
-  assert.doesNotMatch(keySource, /idempotencyKey/);
+  assert.match(keySource, /idempotencyKey\?: string/);
 
   const authorizationStart = source.indexOf("export async function authorizePaymentIntent");
   const authorizationEnd = source.indexOf("export async function settlePaymentIntent", authorizationStart);
@@ -129,7 +129,7 @@ test("canonical replay identity excludes request idempotency metadata", () => {
   assert.match(
     authorizationSource,
     /rootRunId\?\.trim\(\)[\s\S]*runId\?\.trim\(\)[\s\S]*idempotencyKey\?\.trim\(\)/,
-    "request idempotency metadata may only supply a missing root identity",
+    "request idempotency metadata must still supply a missing root identity",
   );
 });
 
@@ -891,7 +891,7 @@ test("concurrent exact checkpoints cannot over-reserve a shared key", async () =
   }
 });
 
-test("the canonical tuple overrides request idempotency metadata and rejects immutable mismatches", async () => {
+test("the request idempotency key scopes replay identity within a canonical tuple", async () => {
   const payer = wallet();
   const rootRunId = `root-${randomUUID()}`;
   const idempotencyKey = `idem-${randomUUID()}`;
@@ -931,13 +931,13 @@ test("the canonical tuple overrides request idempotency metadata and rejects imm
       assert.equal(replay.headers["x-idempotent-replay"], "true");
     }
 
-    const metadataReplay = await authorizePaymentIntent({ ...baseInput, idempotencyKey: secondIdempotencyKey });
-    assert.equal(metadataReplay.ok, true);
-    if (metadataReplay.ok) {
-      intentIds.add(metadataReplay.body.paymentIntentId);
-      assert.equal(metadataReplay.body.paymentIntentId, first.body.paymentIntentId,
-        "request idempotency metadata cannot create a second intent for one canonical tuple");
-      assert.equal(metadataReplay.headers["x-idempotent-replay"], "true");
+    const distinct = await authorizePaymentIntent({ ...baseInput, idempotencyKey: secondIdempotencyKey });
+    assert.equal(distinct.ok, true);
+    if (distinct.ok) {
+      intentIds.add(distinct.body.paymentIntentId);
+      assert.notEqual(distinct.body.paymentIntentId, first.body.paymentIntentId,
+        "a distinct request idempotency key must create its own settlement identity");
+      assert.equal(distinct.headers["x-idempotent-replay"], undefined);
     }
 
     const mismatch = await authorizePaymentIntent({
@@ -958,16 +958,21 @@ test("the canonical tuple overrides request idempotency metadata and rejects imm
     if (independent.ok) {
       intentIds.add(independent.body.paymentIntentId);
       assert.notEqual(independent.body.paymentIntentId, first.body.paymentIntentId,
-        "explicit root and execution identity must not be overridden by request metadata");
+        "distinct root and execution identity must create a separate intent");
     }
   } finally {
     for (const intentId of intentIds) {
       await valkeyDel(`payment-intent:${intentId}`);
       await valkeySRem(`key-payment-intents:${created.keyId}`, intentId);
     }
-    await valkeyDel(`payment-intent-idem:${NETWORK}:${created.keyId}:${rootRunId}:${rootRunId}:0`);
     await valkeyDel(
-      `payment-intent-idem:${NETWORK}:${created.keyId}:different-${rootRunId}:different-${rootRunId}:0`,
+      `payment-intent-idem:${NETWORK}:${created.keyId}:${rootRunId}:${rootRunId}:0:${encodeURIComponent(idempotencyKey)}`,
+    );
+    await valkeyDel(
+      `payment-intent-idem:${NETWORK}:${created.keyId}:${rootRunId}:${rootRunId}:0:${encodeURIComponent(secondIdempotencyKey)}`,
+    );
+    await valkeyDel(
+      `payment-intent-idem:${NETWORK}:${created.keyId}:different-${rootRunId}:different-${rootRunId}:0:${encodeURIComponent(idempotencyKey)}`,
     );
     await valkeyDel(`key-payment-intents:${created.keyId}`);
     await valkeySRem(`user-keys:${NETWORK}:${payer.toLowerCase()}`, created.keyId);
@@ -1697,8 +1702,9 @@ test("due intent selection is deterministic across queued and submitted states",
       now - 200, queuedLater,
       now - 100, submittedLater,
     );
-    const ids = await listCanonicalPaymentIntentIds(2);
-    assert.deepEqual(ids, [queuedDue, submittedDue],
+    const ids = await listCanonicalPaymentIntentIds(1_000);
+    const testIds = new Set([...queuedIds, ...submittedIds]);
+    assert.deepEqual(ids.filter((id) => testIds.has(id)), [queuedDue, submittedDue, queuedLater, submittedLater],
       "oldest due work must win regardless of queued/submitted state");
   } finally {
     await valkeySRem("payment-intents:queued", ...queuedIds);

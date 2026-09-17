@@ -25,6 +25,7 @@ const X402_SOURCE = readFileSync(new URL("../x402/index.ts", import.meta.url), "
 const FACILITATOR_SOURCE = readFileSync(new URL("../x402/facilitator.ts", import.meta.url), "utf8");
 const BATCH_SOURCE = readFileSync(new URL("../x402/batch.ts", import.meta.url), "utf8");
 const SETTLEMENT_SOURCE = readFileSync(new URL("../x402/settlement.ts", import.meta.url), "utf8");
+const ENVELOPE_SOURCE = readFileSync(new URL("../x402/envelope.ts", import.meta.url), "utf8");
 
 test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requirements with compose extensions", () => {
   const body = createPaymentRequired402Response({
@@ -82,6 +83,7 @@ test("prepareInferencePayment emits PAYMENT-REQUIRED header that matches the spe
   const req = {
     headers,
     method: "POST",
+    path: "/agent/test/stream",
     originalUrl: "/agent/test/stream",
     url: "/agent/test/stream",
     body: {},
@@ -174,6 +176,54 @@ test("SVM parity lives in the existing global x402 modules without scheme rewrit
 
   assert.match(X402_SOURCE, /import\("\.\/batch\.js"\)/);
   assert.doesNotMatch(X402_SOURCE, /import\("\.\/svm\.js"\)/);
+});
+
+test("raw x402 immutable-backing failures return a corrective 402 identically on EVM and SVM", () => {
+  // The corrective-402 helper exists in the prepare path.
+  assert.match(X402_SOURCE, /rejectWithCorrectivePaymentRequired = \(error: unknown\): null =>/);
+
+  // The network-agnostic channel-state calls are wrapped by the corrective catch.
+  // rememberBatchChannel dispatches to rememberSvmBatchChannel for Solana and
+  // saveRawEnvelope is network-agnostic, so this single wrap covers SVM and EVM alike.
+  const channelBlockStart = X402_SOURCE.indexOf("let depositState = resumedDeposit;");
+  const saveEnvelope = X402_SOURCE.indexOf("await saveRawEnvelope({", channelBlockStart);
+  const rememberDispatcher = X402_SOURCE.indexOf(
+    "await rememberBatchChannel(paymentPayload, verificationRequirement, verifyResult);",
+    channelBlockStart,
+  );
+  const correctiveCatch = X402_SOURCE.indexOf(
+    "return rejectWithCorrectivePaymentRequired(error);",
+    channelBlockStart,
+  );
+  assert.ok(channelBlockStart > 0);
+  assert.ok(saveEnvelope > channelBlockStart);
+  assert.ok(rememberDispatcher > channelBlockStart);
+  assert.ok(correctiveCatch > saveEnvelope);
+  assert.ok(correctiveCatch > rememberDispatcher);
+
+  // The wrapped saveRawEnvelope/voucher lane is not gated behind an EVM-only check,
+  // so Solana channels recover via the same corrective challenge as EVM ones.
+  const wrappedLane = X402_SOURCE.slice(saveEnvelope, correctiveCatch);
+  assert.doesNotMatch(wrappedLane, /isEvmNetwork/);
+
+  // The settle-path checkpoint failure (commitRawBatchCheckpoint is network-agnostic
+  // and uses svm-hash channel storage for Solana) attaches a fresh payment-required
+  // challenge so adaptError renders a true corrective 402 on both networks.
+  const checkpointCatch = X402_SOURCE.indexOf("Raw batch checkpoint failed");
+  assert.ok(checkpointCatch > 0);
+  assert.match(
+    X402_SOURCE.slice(checkpointCatch),
+    /paymentRequired,\s+paymentRequiredHeader: encodePaymentRequiredHeader\(paymentRequired\)/,
+  );
+
+  // Parity seams: the wrapped recovery path is the shared network-neutral layer, not
+  // an EVM-only one. rememberBatchChannel must dispatch Solana channels to
+  // rememberSvmBatchChannel, and the single atomic checkpoint transition must enforce
+  // identical immutable-backing checks for both evm-json and svm-hash channel storage.
+  assert.match(BATCH_SOURCE, /await rememberSvmBatchChannel\(paymentPayload, requirements\)/);
+  assert.match(ENVELOPE_SOURCE, /channelStorage: "evm-json" \| "svm-hash"/);
+  assert.match(ENVELOPE_SOURCE, /if ARGV\[1\] == "evm-json" then/);
+  assert.match(ENVELOPE_SOURCE, /elseif ARGV\[1\] == "svm-hash" then/);
 });
 
 test("SVM settlements carry a fixed public-safe explorer memo", () => {

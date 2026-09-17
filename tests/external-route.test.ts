@@ -34,8 +34,11 @@ function canonicalIntentIdempotencyKey(
   rootRunId: string,
   executionRunId = rootRunId,
   sequence = 0,
+  idempotencyKey?: string,
 ): string {
-  return `payment-intent-idem:${NETWORK}:${keyId}:${encodeURIComponent(rootRunId)}:${encodeURIComponent(executionRunId)}:${sequence}`;
+  const base = `payment-intent-idem:${NETWORK}:${keyId}:${encodeURIComponent(rootRunId)}:${encodeURIComponent(executionRunId)}:${sequence}`;
+  const explicit = idempotencyKey?.trim();
+  return explicit ? `${base}:${encodeURIComponent(explicit)}` : base;
 }
 
 function occurrenceCount(value: string, needle: string): number {
@@ -209,6 +212,8 @@ test("external Responses route accepts provider completion followed by EOF witho
       created.keyId,
       responseRunId,
       responseRunId,
+      0,
+      idempotencyKey,
     ));
     assert.ok(paymentIntentId);
     paymentIntentIds.push(paymentIntentId);
@@ -247,6 +252,8 @@ test("external Responses route accepts provider completion followed by EOF witho
       created.keyId,
       chatRunId,
       chatRunId,
+      0,
+      chatIdempotencyKey,
     ));
     assert.ok(chatPaymentIntentId);
     paymentIntentIds.push(chatPaymentIntentId);
@@ -311,6 +318,8 @@ test("external Responses route accepts provider completion followed by EOF witho
         created.keyId,
         fanoutRootRunId,
         lane.executionRunId,
+        0,
+        lane.idempotencyKey,
       ))
     )));
     assert.equal(fanoutIntentIds.every((paymentIntentId) => Boolean(paymentIntentId)), true);
@@ -354,7 +363,7 @@ test("external Responses route accepts provider completion followed by EOF witho
 
     const replayLane = fanoutLanes[0]!;
     const replayIntentId = fanoutIntentIds[0]!;
-    const replayIdempotencyKey = `${fanoutIdempotencyKey}-replay`;
+    const replayIdempotencyKey = fanoutIdempotencyKey;
     const indexedIntentsBeforeReplay = new Set(await valkeySMembers(`key-payment-intents:${created.keyId}`));
     const evidenceBeforeReplay = await listExecutionEvidence(fanoutRootRunId, replayLane.executionRunId);
     const budgetUsedBeforeReplay = keyAfterFanout.budgetUsed;
@@ -383,6 +392,8 @@ test("external Responses route accepts provider completion followed by EOF witho
       created.keyId,
       fanoutRootRunId,
       replayLane.executionRunId,
+      0,
+      replayIdempotencyKey,
     )), replayIntentId, "canonical lane replay must resolve to the original intent");
     assert.deepEqual(
       new Set(await valkeySMembers(`key-payment-intents:${created.keyId}`)),
@@ -419,6 +430,8 @@ test("external Responses route accepts provider completion followed by EOF witho
         created.keyId,
         rootRunId,
         executionRunId,
+        0,
+        idem,
       ));
       if (intent) paymentIntentIds.push(intent);
       return result;
@@ -468,6 +481,7 @@ test("external Responses route accepts provider completion followed by EOF witho
           intent.rootRunId,
           intent.executionRunId,
           Number.parseInt(intent.sequence || "0", 10),
+          intent.idempotencyKey || undefined,
         ));
       }
       await valkeyDel(`payment-intent:${paymentIntentId}`);

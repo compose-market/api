@@ -16,7 +16,11 @@ import {
   type Event,
 } from "../inference/core.js";
 import { shape } from "../inference/external.js";
-import { ResponsesStreamEncoder } from "../inference/responses.js";
+import {
+  normalizeResponsesTools,
+  normalizeResponsesToolChoice,
+  ResponsesStreamEncoder,
+} from "../inference/responses.js";
 
 async function withServer<T>(app: express.Express, run: (baseUrl: string) => Promise<T>): Promise<T> {
   const server = createServer(app);
@@ -514,3 +518,48 @@ test("Responses stream encoder preserves completed native output items", () => {
     encrypted_content: "opaque-provider-state",
   }]);
 });
+
+test("normalizeResponsesTools accepts both flat Responses format and nested OpenAI tool format", () => {
+  const flatTools = [
+    {
+      type: "function",
+      name: "models_find",
+      description: "Find models",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    },
+  ];
+  const nestedTools = [
+    {
+      type: "function",
+      function: {
+        name: "models_find",
+        description: "Find models",
+        parameters: { type: "object", properties: { query: { type: "string" } } },
+      },
+    },
+  ];
+
+  const normalizedFromFlat = normalizeResponsesTools(flatTools);
+  const normalizedFromNested = normalizeResponsesTools(nestedTools);
+
+  assert.deepEqual(normalizedFromFlat, [
+    {
+      type: "function",
+      name: "models_find",
+      description: "Find models",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+    },
+  ]);
+  assert.deepEqual(normalizedFromNested, normalizedFromFlat);
+
+  assert.deepEqual(normalizeResponsesToolChoice("required"), "required");
+  assert.deepEqual(normalizeResponsesToolChoice({ type: "function", name: "models_find" }), {
+    type: "function",
+    name: "models_find",
+  });
+  assert.deepEqual(normalizeResponsesToolChoice({ type: "function", function: { name: "models_find" } }), {
+    type: "function",
+    name: "models_find",
+  });
+});
+

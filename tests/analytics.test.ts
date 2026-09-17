@@ -284,8 +284,8 @@ test("analytics uses one plural multi-network filter contract", async () => {
   };
 
   assert.deepEqual(
-    routes.parseFilters({ networks: "eip155:5042002,solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" }).networks,
-    ["eip155:5042002", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"],
+    routes.parseFilters({ networks: "eip155:5042002,solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" }).networks,
+    ["eip155:5042002", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"],
   );
   assert.equal(routes.parseFilters({}).networks, undefined);
   assert.equal(routes.parseFilters({ settlementStatus: "submitted" }).settlementStatus, "submitted");
@@ -478,6 +478,106 @@ test("canonical projection inserts one missing analytics settlement from x402 in
   assert.equal(inserted[0]?.settlement.id, "stl_pi_pi_ling_backfill");
   assert.equal(inserted[0]?.settlement.model, "Ling-3.0-flash");
   assert.equal(inserted[0]?.settlement.family, "inclusionai");
+});
+
+test("canonical projection completes without fabricating rows for non-catalog meter subjects", async () => {
+  const store = await import("../data/analytics/inference/store.js");
+  const agentWallet = `0x${"0a".repeat(20)}`;
+  const inserted: unknown[] = [];
+  const projected = await store.projectCanonicalPaymentIntentSettlement({
+    paymentIntentId: "pi_agent_backfill",
+    status: "confirmed",
+    transactionHash: `0x${"44".repeat(32)}`,
+    confirmedAt: 1_754_044_567_890,
+  }, {
+    async query() { return []; },
+  }, {
+    paymentIntentId: "pi_agent_backfill",
+    keyId: "key_agent",
+    purpose: "session",
+    userAddress: `0x${"26".repeat(20)}`,
+    network: "eip155:5042002",
+    asset: `0x${"25".repeat(20)}`,
+    service: "agent",
+    action: "stream",
+    resource: `https://api.compose.market/agents/${agentWallet}/stream`,
+    method: "POST",
+    maxAmountWei: "130",
+    finalAmountWei: "130",
+    status: "confirmed",
+    rootRunId: "agent-turn-backfill",
+    executionRunId: "agent-turn-backfill",
+    sequence: 0,
+    meterSubject: `agent:${agentWallet}`,
+    meterLineItems: [{ key: "agent.turn", unit: "usd_per_turn", quantity: 1, unitPriceUsd: 0.00013, amountWei: "130" }],
+    providerAmountWei: "128",
+    platformFeeWei: "2",
+    txHash: `0x${"44".repeat(32)}`,
+    attemptCount: 1,
+    createdAt: 1_754_044_500_000,
+    updatedAt: 1_754_044_567_890,
+    confirmedAt: 1_754_044_567_890,
+    credentialExpiresAt: 1_754_144_500_000,
+    requestFingerprint: "fingerprint",
+  }, async () => {
+    inserted.push(true);
+  });
+  assert.equal(projected, true);
+  assert.equal(inserted.length, 0);
+});
+
+test("non-analytics payment intents complete their projection without publication", async () => {
+  const intents = await import("../x402/intents.js") as unknown as {
+    projectCanonicalPaymentIntentAnalytics(
+      intent: Record<string, unknown>,
+      dependencies: {
+        complete(input: Record<string, unknown>): Promise<boolean>;
+      },
+    ): Promise<boolean>;
+  };
+  const completions: Record<string, unknown>[] = [];
+
+  const completed = await intents.projectCanonicalPaymentIntentAnalytics({
+    paymentIntentId: "pi_memory_projection_skip",
+    keyId: "key_memory",
+    purpose: "session",
+    userAddress: `0x${"27".repeat(20)}`,
+    network: "eip155:5042002",
+    service: "memory",
+    action: "remember",
+    status: "confirmed",
+    txHash: `0x${"45".repeat(32)}`,
+    confirmedAt: 1_754_044_567_890,
+    meterSubject: "memory:remember",
+    rootRunId: "root",
+    executionRunId: "execution",
+    sequence: 0,
+    createdAt: 1_754_044_500_000,
+    credentialExpiresAt: 1_754_144_500_000,
+  }, {
+    async complete(input) {
+      completions.push(input);
+      return true;
+    },
+  });
+
+  assert.equal(completed, true);
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0]?.intentId, "pi_memory_projection_skip");
+});
+
+test("canonical projection keeps non-inference payments out of inference Analytics", async () => {
+  const source = await readFile(join(process.cwd(), "x402/intents.ts"), "utf8");
+  const start = source.indexOf("export async function projectCanonicalPaymentIntentAnalytics");
+  const end = source.indexOf("export async function reconcileCanonicalPaymentIntentProjections", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const projection = source.slice(start, end);
+
+  assert.match(source, /INFERENCE_ANALYTICS_SERVICES = new Set\(\["api", "inference"\]\)/);
+  assert.match(projection, /!dependencies\.project && !isInferenceAnalyticsPaymentIntent\(intent\)/);
+  assert.match(projection, /import\("\.\.\/data\/analytics\/inference\/store\.js"\)/);
+  assert.doesNotMatch(projection, /analytics\/agents/);
 });
 
 test("confirmed canonical Analytics projection updates, invalidates, then clears its obligation", async () => {

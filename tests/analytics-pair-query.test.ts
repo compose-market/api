@@ -15,7 +15,7 @@ import type { WalletScope } from "../data/user/types.js";
 const EVM = `0x${"11".repeat(20)}`;
 const SVM = "139ckThCRxYDDFXgfRjH4TCiaTJETbb1UMLwACvWJ1fq";
 const EVM_NETWORK = "eip155:5042002" as const;
-const SVM_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" as const;
+const SVM_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" as const;
 const FROM = "2026-07-01T00:00:00.000Z";
 const TO = "2026-08-01T00:00:00.000Z";
 

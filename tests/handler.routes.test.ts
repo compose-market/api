@@ -251,7 +251,7 @@ test("handler treats Solana dispenser status as unsupported without EVM coercion
   const { handler } = await import("../handler.js");
 
   const result = await handler(
-    createEvent("GET", "/api/dispenser/status/solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"),
+    createEvent("GET", "/api/dispenser/status/solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"),
     {},
   );
 

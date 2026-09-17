@@ -37,13 +37,11 @@ const SWIG_PROGRAM = "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB" as Address;
 const SYSTEM_PROGRAM = "11111111111111111111111111111111" as Address;
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address;
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL" as Address;
-const DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" as Address;
 const MAINNET_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" as Address;
 const WRAPPED_SOL = "So11111111111111111111111111111111111111112" as Address;
 const JUPITER_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" as Address;
 const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111" as Address;
 const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr" as Address;
-const SOLANA_DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" as const;
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" as const;
 
 test("SVM relay validation rejects transactions whose fee payer is not the facilitator", () => {
@@ -96,7 +94,7 @@ test("SVM relay accepts canonical self-funded Swig activation", async () => {
         activation.transaction,
         FACILITATOR_ADDRESS,
         activationRpc(activation.walletAddress, activation.configAddress, activation.ataAddress),
-        SOLANA_DEVNET,
+        SOLANA_MAINNET,
     );
     assert.equal(error, null);
 });
@@ -107,7 +105,7 @@ test("SVM relay rejects Swig activation that under-reimburses the facilitator", 
         activation.transaction,
         FACILITATOR_ADDRESS,
         activationRpc(activation.walletAddress, activation.configAddress, activation.ataAddress),
-        SOLANA_DEVNET,
+        SOLANA_MAINNET,
     );
     assert.equal(error, "Swig activation must reimburse exactly 1675400 lamports");
 });
@@ -118,7 +116,7 @@ test("SVM relay rejects Swig activation with an arbitrary memo", async () => {
         activation.transaction,
         FACILITATOR_ADDRESS,
         activationRpc(activation.walletAddress, activation.configAddress, activation.ataAddress),
-        SOLANA_DEVNET,
+        SOLANA_MAINNET,
     );
     assert.equal(error, `Swig activation must begin with the exact memo: ${SVM_ACTIVATION_MEMO}`);
 });
@@ -144,7 +142,7 @@ test("SVM relay rejects non-atomic Swig creation", async () => {
         transaction,
         FACILITATOR_ADDRESS,
         activationRpc(activation.walletAddress, activation.configAddress, activation.ataAddress),
-        SOLANA_DEVNET,
+        SOLANA_MAINNET,
     );
     assert.equal(
         error,
@@ -265,7 +263,7 @@ async function buildActivationInstructions(id: Uint8Array, reimbursement: bigint
     });
     const [ataAddress] = await getProgramDerivedAddress({
         programAddress: ASSOCIATED_TOKEN_PROGRAM,
-        seeds: [encoder.encode(walletAddress), encoder.encode(TOKEN_PROGRAM), encoder.encode(DEVNET_USDC)],
+        seeds: [encoder.encode(walletAddress), encoder.encode(TOKEN_PROGRAM), encoder.encode(MAINNET_USDC)],
     });
 
     const createData = new Uint8Array(112);
@@ -328,7 +326,7 @@ async function buildActivationInstructions(id: Uint8Array, reimbursement: bigint
             { address: walletAddress, role: AccountRole.WRITABLE },
             { address: ASSOCIATED_TOKEN_PROGRAM, role: AccountRole.READONLY },
             { address: ataAddress, role: AccountRole.WRITABLE },
-            { address: DEVNET_USDC, role: AccountRole.READONLY },
+            { address: MAINNET_USDC, role: AccountRole.READONLY },
             { address: SYSTEM_PROGRAM, role: AccountRole.READONLY },
             { address: TOKEN_PROGRAM, role: AccountRole.READONLY },
             { address: SYSTEM_PROGRAM, role: AccountRole.READONLY },
@@ -493,7 +491,7 @@ function activationRpc(walletAddress: Address, configAddress: Address, ataAddres
                             },
                         };
                     }
-                    if (requested === DEVNET_USDC) {
+                    if (requested === MAINNET_USDC) {
                         return {
                             value: {
                                 owner: TOKEN_PROGRAM,

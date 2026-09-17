@@ -12,9 +12,7 @@ import express from "express";
 const ORIGINAL_ENV = {
   FACILITATOR_KEY: process.env.FACILITATOR_KEY,
   MERCHANT_WALLET_ADDRESS: process.env.MERCHANT_WALLET_ADDRESS,
-  THIRDWEB_SERVER_WALLET_ADDRESS: process.env.THIRDWEB_SERVER_WALLET_ADDRESS,
-  AVALANCHE_FUJI_RPC: process.env.AVALANCHE_FUJI_RPC,
-  SOLANA_DEVNET_RPC: process.env.SOLANA_DEVNET_RPC,
+  AVALANCHE_MAINNET_RPC: process.env.AVALANCHE_MAINNET_RPC,
   SOLANA_MAINNET_RPC: process.env.SOLANA_MAINNET_RPC,
   AGENTS_URL: process.env.AGENTS_URL,
 };
@@ -92,10 +90,7 @@ async function withFullApp<T>(run: (baseUrl: string) => Promise<T>): Promise<T> 
 before(() => {
   process.env.FACILITATOR_KEY = ORIGINAL_ENV.FACILITATOR_KEY || `0x${"11".repeat(32)}`;
   process.env.MERCHANT_WALLET_ADDRESS = ORIGINAL_ENV.MERCHANT_WALLET_ADDRESS || "0x2222222222222222222222222222222222222222";
-  process.env.THIRDWEB_SERVER_WALLET_ADDRESS = ORIGINAL_ENV.THIRDWEB_SERVER_WALLET_ADDRESS || "0x3333333333333333333333333333333333333333";
-  process.env.AVALANCHE_FUJI_RPC = ORIGINAL_ENV.AVALANCHE_FUJI_RPC || "http://127.0.0.1:8545";
   process.env.AGENTS_URL = "https://agents.test";
-  delete process.env.SOLANA_DEVNET_RPC;
   delete process.env.SOLANA_MAINNET_RPC;
 });
 
@@ -103,9 +98,7 @@ after(() => {
   globalThis.fetch = NATIVE_FETCH;
   restoreEnv("FACILITATOR_KEY");
   restoreEnv("MERCHANT_WALLET_ADDRESS");
-  restoreEnv("THIRDWEB_SERVER_WALLET_ADDRESS");
-  restoreEnv("AVALANCHE_FUJI_RPC");
-  restoreEnv("SOLANA_DEVNET_RPC");
+  restoreEnv("AVALANCHE_MAINNET_RPC");
   restoreEnv("SOLANA_MAINNET_RPC");
   restoreEnv("AGENTS_URL");
 });
@@ -366,4 +359,70 @@ test("concrete model and agent stream endpoints return Bazaar-enriched 402 to un
     assert.ok(agentPaymentRequired.extensions?.bazaar);
     assert.equal(agentPaymentRequired.accepts.every((accept) => accept.scheme === "batch-settlement"), true);
   });
+});
+
+test("agent stream discovery challenge honors the client x-x402-max-amount-wei", async () => {
+  await withFullApp(async (baseUrl) => {
+    const challenged = await fetch(`${baseUrl}/agent/0x1111111111111111111111111111111111111111/stream`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-x402-max-amount-wei": "10000000",
+      },
+      body: "{}",
+    });
+    assert.equal(challenged.status, 402);
+    const header = challenged.headers.get("payment-required");
+    assert.equal(typeof header, "string");
+    const paymentRequired = decodePaymentRequiredHeader(header!);
+    validatePaymentRequired(paymentRequired);
+    assert.ok(paymentRequired.accepts.length > 0);
+    assert.equal(
+      paymentRequired.accepts.every((accept) => accept.amount === "10000000"),
+      true,
+    );
+  });
+});
+
+test("agent stream nested execution skips the direct discovery challenge", async () => {
+  const { maybeSendAgentStreamDiscoveryChallenge } = await import("../x402/discovery.js");
+
+  const buildReq = (headers: Record<string, string>) => ({
+    headers,
+    get: (name: string) => headers[name.toLowerCase()],
+    params: { walletAddress: "0x1111111111111111111111111111111111111111" },
+  }) as unknown as import("express").Request;
+
+  const buildRes = () => {
+    const sent: { status?: number } = {};
+    const res = {
+      status(code: number) { sent.status = code; return res; },
+      json() { return res; },
+      setHeader() { return res; },
+    };
+    return { res: res as unknown as import("express").Response, sent };
+  };
+
+  // A runtime-forwarded child call under a paid root run carries its own
+  // execution run id and a parent execution run id, with no Compose Key and no
+  // fresh PAYMENT-SIGNATURE. It must not be treated as a blind dial: no
+  // discovery challenge, so prepareInferencePayment can resolve the inherited
+  // x402 envelope (mirrors the models_call nested path).
+  const nested = buildReq({
+    "x-run-id": "root-run-1",
+    "x-execution-run-id": "child-exec-run-1",
+    "x-parent-run-id": "parent-exec-run-1",
+  });
+  const nestedOut = buildRes();
+  assert.equal(await maybeSendAgentStreamDiscoveryChallenge(nested, nestedOut.res), false);
+  assert.equal(nestedOut.sent.status, undefined);
+
+  // Parent execution run id alone also marks a nested execution.
+  const parentOnly = buildReq({
+    "x-run-id": "root-run-2",
+    "x-parent-run-id": "parent-exec-run-2",
+  });
+  const parentOnlyOut = buildRes();
+  assert.equal(await maybeSendAgentStreamDiscoveryChallenge(parentOnly, parentOnlyOut.res), false);
+  assert.equal(parentOnlyOut.sent.status, undefined);
 });

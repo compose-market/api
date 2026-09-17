@@ -195,8 +195,9 @@ for (const card of models) {
     const subject = `${card.provider}:${card.modelId}`;
 
     // Paid settlement requires a positive amount. Free-only products such as
-    // OpenAI moderation are catalogued but intentionally not paid-smoke inputs.
-    if (card.provider === "openai" && card.modelId === "omni-moderation-latest" && !hasPositivePrice(card.pricing)) {
+    // OpenAI moderation or Alibaba voice enrollment are catalogued but
+    // intentionally not paid-smoke inputs.
+    if (!hasPositivePrice(card.pricing)) {
         skippedFreeOnly++;
         results.push({ modelId: card.modelId, provider: card.provider, modality, units, ok: true });
         continue;

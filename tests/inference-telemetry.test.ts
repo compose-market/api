@@ -853,7 +853,7 @@ test("buildAuthoritativeBilling settles generated audio minute units", () => {
 
 test("buildRequestBilling selects an unambiguous media pricing tier from custom params", () => {
   const billing = buildRequestBilling({
-    subject: "test:dall-e-quality-tiers",
+    subject: "test:gpt-image-quality-tiers",
     modality: "image",
     pricing: {
       sections: [
@@ -862,12 +862,14 @@ test("buildRequestBilling selects an unambiguous media pricing tier from custom 
           unit: "Per image",
           unitKey: "per_image_usd",
           default: true,
+          selector: { quality: "standard" },
           entries: { cost: 0.04 },
         },
         {
           header: "Image generation",
           unit: "Per image",
           unitKey: "per_image_usd",
+          selector: { quality: "hd" },
           entries: { cost: 0.08 },
         },
       ],
@@ -893,7 +895,7 @@ test("buildRequestBilling selects an unambiguous media pricing tier from custom 
 
 test("buildRequestBilling ignores non-priced image params that share section cardinality", () => {
   const billing = buildRequestBilling({
-    subject: "test:dall-e-quality-tiers",
+    subject: "test:gpt-image-quality-tiers",
     modality: "image",
     pricing: {
       sections: [
@@ -902,12 +904,14 @@ test("buildRequestBilling ignores non-priced image params that share section car
           unit: "Per image",
           unitKey: "per_image_usd",
           default: true,
+          selector: { quality: "standard" },
           entries: { cost: 0.04 },
         },
         {
           header: "Image generation",
           unit: "Per image",
           unitKey: "per_image_usd",
+          selector: { quality: "hd" },
           entries: { cost: 0.08 },
         },
       ],
@@ -945,18 +949,21 @@ test("buildRequestBilling accepts authoritative gpt-image quality tiers without 
           unit: "Per image",
           unitKey: "per_image_usd",
           default: true,
+          selector: { quality: "low" },
           entries: { cost: 0.011 },
         },
         {
           header: "Image generation",
           unit: "Per image",
           unitKey: "per_image_usd",
+          selector: { quality: "medium" },
           entries: { cost: 0.042 },
         },
         {
           header: "Image generation",
           unit: "Per image",
           unitKey: "per_image_usd",
+          selector: { quality: "high" },
           entries: { cost: 0.167 },
         },
       ],
@@ -980,6 +987,32 @@ test("buildRequestBilling accepts authoritative gpt-image quality tiers without 
       source: "request",
     },
   ]);
+});
+
+test("buildRequestBilling rejects equally specific pricing selectors", () => {
+  assert.throws(() => buildRequestBilling({
+    subject: "test:ambiguous-quality-tiers",
+    modality: "image",
+    pricing: {
+      sections: [
+        {
+          header: "Image generation",
+          unit: "Per image",
+          unitKey: "per_image_usd",
+          selector: { quality: "high" },
+          entries: { cost: 0.1 },
+        },
+        {
+          header: "Image generation",
+          unit: "Per image",
+          unitKey: "per_image_usd",
+          selector: { quality: "high" },
+          entries: { cost: 0.2 },
+        },
+      ],
+    },
+    metrics: { generation: 1, quality: "high" },
+  }), /pricing is ambiguous for selected parameters/i);
 });
 
 test("extractAuthoritativeUsage normalizes response_metadata token_usage with reasoning tokens", () => {

@@ -144,6 +144,7 @@ function rawRequest(headers: Record<string, string>): Request {
   return {
     headers: normalized,
     method: "POST",
+    path: "/agent/test/stream",
     originalUrl: "/agent/test/stream",
     url: "/agent/test/stream",
     body: {},
@@ -167,6 +168,38 @@ function responseStub(capturedHeaders?: Record<string, string>): Response {
     },
   } as unknown as Response;
 }
+
+test("an existing EVM channel refreshes authoritative chain capacity from voucher verification", async () => {
+  const channelId = `0x${randomUUID().replaceAll("-", "").padEnd(64, "0")}`;
+  const initial = paymentPayload({ scheme: "batch-settlement", channelId, amountWei: "1000" });
+  const refreshed = structuredClone(initial);
+  (refreshed.payload as { voucher: { maxClaimableAmount: string; signature: string } }).voucher.maxClaimableAmount = "6000";
+  (refreshed.payload as { voucher: { maxClaimableAmount: string; signature: string } }).voucher.signature = `0x${"77".repeat(65)}`;
+
+  try {
+    await batchModule.rememberBatchChannel(initial, initial.accepted, {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "5000", totalClaimed: "4000", withdrawRequestedAt: 0, refundNonce: 0 },
+    });
+    const before = await batchModule.getBatchChannelStorage().get(channelId);
+
+    await batchModule.rememberBatchChannel(refreshed, refreshed.accepted, {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "10000", totalClaimed: "4999", withdrawRequestedAt: 0, refundNonce: 1 },
+    });
+    const after = await batchModule.getBatchChannelStorage().get(channelId);
+
+    assert.equal(after?.chargedCumulativeAmount, before?.chargedCumulativeAmount);
+    assert.equal(after?.balance, "10000");
+    assert.equal(after?.totalClaimed, "4999");
+    assert.equal(after?.refundNonce, 1);
+    assert.ok(after?.onchainSyncedAt);
+  } finally {
+    await batchModule.getBatchChannelStorage().updateChannel(channelId, () => undefined);
+  }
+});
 
 test("raw exact and upto payloads are never persisted as inheritable envelopes", async () => {
   for (const scheme of ["exact", "upto"] as const) {
@@ -669,6 +702,121 @@ test("an inherited raw batch lane serializes checkpoints with canonical queued m
         settledAt: undefined,
       },
     ]);
+  } finally {
+    await valkeyDel(`x402:envelope:${rootRunId}`);
+    await batchModule.getBatchChannelStorage().updateChannel(channelId, () => undefined);
+  }
+});
+
+test("sibling inherited requests under one execution settle independently with distinct idempotency keys", async () => {
+  const rootRunId = `raw-sibling-idem-${randomUUID()}`;
+  const executionRunId = `execution-${randomUUID()}`;
+  const channelId = `0x${randomUUID().replaceAll("-", "").padEnd(64, "0")}`;
+  const payload = paymentPayload({ scheme: "batch-settlement", channelId });
+
+  try {
+    await saveRawEnvelope({
+      rootRunId,
+      maxAmountWei: "1000",
+      network: NETWORK,
+      paymentPayload: payload,
+      payer: PAYER,
+    });
+    await batchModule.rememberBatchChannel(payload, payload.accepted, {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "1000", totalClaimed: "0", withdrawRequestedAt: 0, refundNonce: 0 },
+    });
+
+    const firstPrepared = await prepareInferencePayment(
+      rawRequest({
+        "x-network-id": NETWORK,
+        "x-run-id": rootRunId,
+        "x-execution-run-id": executionRunId,
+        "x-idempotency-key": `${rootRunId}:call-1`,
+      }),
+      responseStub(),
+      { useBudgetCap: true, scheme: "batch-settlement" },
+    );
+    const secondPrepared = await prepareInferencePayment(
+      rawRequest({
+        "x-network-id": NETWORK,
+        "x-run-id": rootRunId,
+        "x-execution-run-id": executionRunId,
+        "x-idempotency-key": `${rootRunId}:call-2`,
+      }),
+      responseStub(),
+      { useBudgetCap: true, scheme: "batch-settlement" },
+    );
+    assert.ok(firstPrepared);
+    assert.ok(secondPrepared);
+
+    const first = await firstPrepared.settle({ finalAmountWei: "120" });
+    const second = await secondPrepared.settle({ finalAmountWei: "45" });
+
+    assert.equal(first.success, true, first.error || "first sibling checkpoint failed");
+    assert.equal(second.success, true, second.error || "second sibling checkpoint replayed against the first");
+    assert.equal(first.paymentCumulativeAmountWei, "120");
+    assert.equal(second.paymentCumulativeAmountWei, "165");
+    assert.equal((await readRawEnvelope(rootRunId))?.usedWei, "165");
+    assert.equal((await batchModule.getBatchChannelStorage().get(channelId))?.chargedCumulativeAmount, "165");
+  } finally {
+    await valkeyDel(`x402:envelope:${rootRunId}`);
+    await batchModule.getBatchChannelStorage().updateChannel(channelId, () => undefined);
+  }
+});
+
+test("a retried inherited request keeps replay protection within its own idempotency key", async () => {
+  const rootRunId = `raw-retry-idem-${randomUUID()}`;
+  const executionRunId = `execution-${randomUUID()}`;
+  const channelId = `0x${randomUUID().replaceAll("-", "").padEnd(64, "0")}`;
+  const payload = paymentPayload({ scheme: "batch-settlement", channelId });
+
+  try {
+    await saveRawEnvelope({
+      rootRunId,
+      maxAmountWei: "1000",
+      network: NETWORK,
+      paymentPayload: payload,
+      payer: PAYER,
+    });
+    await batchModule.rememberBatchChannel(payload, payload.accepted, {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "1000", totalClaimed: "0", withdrawRequestedAt: 0, refundNonce: 0 },
+    });
+
+    const makePrepared = () => prepareInferencePayment(
+      rawRequest({
+        "x-network-id": NETWORK,
+        "x-run-id": rootRunId,
+        "x-execution-run-id": executionRunId,
+        "x-idempotency-key": `${rootRunId}:call-1`,
+      }),
+      responseStub(),
+      { useBudgetCap: true, scheme: "batch-settlement" },
+    );
+
+    const original = await makePrepared();
+    assert.ok(original);
+    const first = await original.settle({ finalAmountWei: "80" });
+    assert.equal(first.success, true, first.error || "original checkpoint failed");
+    assert.equal(first.paymentCumulativeAmountWei, "80");
+
+    const identicalRetry = await makePrepared();
+    assert.ok(identicalRetry);
+    const replay = await identicalRetry.settle({ finalAmountWei: "80" });
+    assert.equal(replay.success, true, replay.error || "identical retry must dedupe");
+    assert.equal(replay.paymentCumulativeAmountWei, "80");
+
+    const changedRetry = await makePrepared();
+    assert.ok(changedRetry);
+    const changed = await changedRetry.settle({ finalAmountWei: "95" });
+    assert.equal(changed.success, false);
+    assert.match(changed.error || "", /replayed with changed amount|immutable backing/i);
+
+    assert.equal((await readRawEnvelope(rootRunId))?.usedWei, "80");
+    assert.equal((await batchModule.getBatchChannelStorage().get(channelId))?.chargedCumulativeAmount, "80");
   } finally {
     await valkeyDel(`x402:envelope:${rootRunId}`);
     await batchModule.getBatchChannelStorage().updateChannel(channelId, () => undefined);

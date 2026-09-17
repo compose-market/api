@@ -116,6 +116,11 @@ test("registerManowarRoutes registers the explicit public workflow surface", () 
   assert.equal(routeSet.has("post /agent/:walletAddress/chat"), false);
   assert.equal(routeSet.has("post /agent/:walletAddress/stream"), true);
   assert.equal(routeSet.has("post /agent/:walletAddress/responses"), true);
+  assert.equal(routeSet.has("get /agent/:walletAddress/runs/:runId/state"), true);
+  assert.equal(routeSet.has("post /agent/:walletAddress/runs/:runId/approval"), true);
+  assert.equal(routeSet.has("post /agent/:walletAddress/runs/:runId/connector"), true);
+  assert.equal(routeSet.has("post /agent/:walletAddress/runs/:runId/stop"), true);
+  assert.equal(routeSet.has("get /agent/:walletAddress/runs/:runId/events"), true);
   assert.equal(routeSet.has("post /agent/:walletAddress/multimodal"), false);
   assert.equal(routeSet.has("get /agent/:walletAddress/knowledge"), false);
   assert.equal(routeSet.has("post /workflow/:walletAddress/chat"), false);
@@ -361,6 +366,56 @@ test("workflow price passthrough uses RUNTIME_URL without payment bypass headers
     }
     assert.equal(capturedCall.url, "https://runtime.compose.market/internal/manowar/workflow/prices");
     assert.equal(new Headers(capturedCall.init?.headers).has("payment-signature"), false);
+  } finally {
+    server.close();
+    globalThis.fetch = NATIVE_FETCH;
+    process.env.RUNTIME_URL = ORIGINAL_RUNTIME_URL;
+  }
+});
+
+test("run watch passthrough streams runtime SSE verbatim without payment signatures", async () => {
+  process.env.RUNTIME_URL = "https://runtime.compose.market/";
+  delete process.env.RUNTIME_SERVICE_URL;
+
+  const runtimeCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const sseBody = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "approval.requested", proposalId: "prop_1", state: "awaiting_approval" })}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", status: "completed" })}\n\n`));
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    runtimeCalls.push({ url: String(input), init });
+    return new Response(sseBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+
+  const app = express();
+  registerManowarRoutes(app);
+  const server = app.listen(0);
+
+  try {
+    const { port } = server.address() as AddressInfo;
+    const response = await NATIVE_FETCH(`http://127.0.0.1:${port}/agent/0xabc/runs/run-9/events?threadId=t9`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+    const capturedCall = runtimeCalls[0];
+    if (!capturedCall) {
+      throw new Error("Expected runtime passthrough to be invoked");
+    }
+    assert.equal(capturedCall.url, "https://runtime.compose.market/internal/manowar/agent/0xabc/runs/run-9/events?threadId=t9");
+    assert.equal(capturedCall.init?.method, "GET");
+    assert.equal(new Headers(capturedCall.init?.headers).has("payment-signature"), false);
+    const text = await response.text();
+    assert.ok(text.includes(": open"));
+    assert.ok(text.includes("\"type\":\"approval.requested\""));
+    assert.ok(text.includes("\"type\":\"done\""));
+    assert.ok(text.trimEnd().endsWith("data: [DONE]"));
   } finally {
     server.close();
     globalThis.fetch = NATIVE_FETCH;

@@ -34,13 +34,13 @@ test("buildUsageRecordSettlementMeter prices mixed workflow usage across models"
   assert.equal(metered.subject, "workflow:0xabc");
   assert.deepEqual(metered.meter.lineItems, [
     {
-      key: "openai:openai/gpt-5.4:input_tokens",
+      key: "openai:gpt-5.4:input_tokens",
       unit: "usd_per_1m_tokens",
       quantity: 2_000,
       unitPriceUsd: 2.5,
     },
     {
-      key: "openai:openai/gpt-5.4:output_tokens",
+      key: "openai:gpt-5.4:output_tokens",
       unit: "usd_per_1m_tokens",
       quantity: 500,
       unitPriceUsd: 15,

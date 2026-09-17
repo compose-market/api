@@ -6,7 +6,7 @@ import type { FeedbackRecord } from "../feedback/types.js";
 
 test("normalizeFeedbackInput accepts a model rating with payment and request context", () => {
   const normalized = normalizeFeedbackInput({
-    target: { type: "model", id: "openai/dall-e-3" },
+    target: { type: "model", id: "gpt-image-2" },
     category: "quality",
     rating: 4,
     message: "Image quality was good but slower than expected.",
@@ -15,7 +15,7 @@ test("normalizeFeedbackInput accepts a model rating with payment and request con
       requestId: "req_feedback_1",
       paymentIntentId: "pi_123",
       network: "eip155:5042002",
-      modelId: "openai/dall-e-3",
+      modelId: "gpt-image-2",
       provider: "openai",
       receipt: {
         network: "eip155:5042002",
@@ -30,12 +30,12 @@ test("normalizeFeedbackInput accepts a model rating with payment and request con
   });
 
   assert.equal(normalized.target.type, "model");
-  assert.equal(normalized.target.id, "openai/dall-e-3");
+  assert.equal(normalized.target.id, "gpt-image-2");
   assert.equal(normalized.category, "quality");
   assert.equal(normalized.rating, 4);
   assert.deepEqual(normalized.labels, ["image", "latency"]);
   assert.equal(normalized.context?.requestId, "req_feedback_1");
-  assert.equal(normalized.context?.modelId, "openai/dall-e-3");
+  assert.equal(normalized.context?.modelId, "gpt-image-2");
 });
 
 test("normalizeFeedbackInput rejects feedback with no rating and no message", () => {

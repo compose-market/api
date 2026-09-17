@@ -141,7 +141,7 @@ test("realtime modality is catalog-native without stealing dual-mode REST operat
     entry.modality === "realtime" && entry.operation === "realtime-transcription"
   ));
 
-  assert.deepEqual(operations("deepgram/flux"), [
+  assert.deepEqual(operations("deepgram/flux-general-en"), [
     { modality: "realtime", operation: "realtime-transcription" },
   ]);
 });
@@ -169,7 +169,7 @@ test("modality catalog exposes canonical operation groups for integrators and ag
 
 test("model capabilities expose source pricing units without flattening them", () => {
   const models = getCompiledModels().models;
-  const tokenPricedImage = models.find((model) => model.modelId === "openai/gpt-image-2");
+  const tokenPricedImage = models.find((model) => model.modelId === "gpt-image-2");
   const imagePricedImage = models.find((model) => model.modelId === "qwen-image");
   assert.ok(tokenPricedImage);
   assert.ok(imagePricedImage);
@@ -237,6 +237,7 @@ test("video modality shapes provider payloads without leaking shared params", ()
       durationSeconds: 4,
       aspectRatio: "16:9",
       resolution: "720p",
+      seed: 123,
     },
   });
 });

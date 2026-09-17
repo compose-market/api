@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { aggregateCanonicalFamily, dedupeModels, disambiguateDuplicateModelIds, normalizePublicModelId, transformHuggingFaceModel, type NormalizedModel } from "../inference/scripts/sync-models.js";
+import { aggregateCanonicalFamily, collapseDuplicateModels, dedupeModels, dotNotation, normalizePublicModelId, transformHuggingFaceModel, type NormalizedModel } from "../inference/scripts/sync-models.js";
 
 function model(parts: {
     provider?: string;
@@ -121,9 +121,8 @@ test("aggregateCanonicalFamily centralizes model family routing", () => {
         ["o1", "openai"],
         ["o3-mini", "openai"],
         ["gpt-5.6-sol", "openai"],
-        ["dall-e-3", "openai"],
-        ["gpt-audio-1.5", "openai"],
         ["gpt-image-2", "openai"],
+        ["gpt-audio-1.5", "openai"],
         ["tts-1-hd", "openai"],
         ["text-embedding-3-large", "openai"],
         ["gpt-oss-120b", "openai"],
@@ -208,13 +207,34 @@ test("normalizePublicModelId strips upstream decorations into upstreamModelId", 
         ["cloudflare", "@cf/moonshotai/kimi-k2.6", "kimi-k2.6"],
         ["deepinfra", "meta-llama/llama-3.3-70b-instruct", "llama-3.3-70b-instruct"],
         ["asicloud", "google/gemma-3-27b-it", "gemma-3-27b-it"],
+        ["alibaba", "ZHIPU/GLM-5.3", "GLM-5.3"],
+        ["alibaba", "ZHIPU/GLM-5.2", "GLM-5.2"],
     ] as const;
 
     for (const [provider, decorated, clean] of cases) {
         const normalized = normalizePublicModelId(model({ provider, modelId: decorated }));
         assert.equal(normalized.modelId, clean, decorated);
+        assert.equal(normalized.name, clean, decorated);
         assert.equal(normalized.upstreamModelId, decorated, decorated);
     }
+});
+
+test("normalizePublicModelId normalizes Fireworks p-notation to the canonical dot form", () => {
+    const cases = [
+        ["accounts/fireworks/models/glm-5p2", "glm-5.2"],
+        ["accounts/fireworks/models/kimi-k2p7-code", "kimi-k2.7-code"],
+        ["accounts/fireworks/models/qwen3p8-max", "qwen3.8-max"],
+        ["accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b", "nemotron-lightning-3.5-30b-a3b"],
+    ] as const;
+
+    for (const [decorated, clean] of cases) {
+        const normalized = normalizePublicModelId(model({ provider: "fireworks", modelId: decorated }));
+        assert.equal(normalized.modelId, clean, decorated);
+        assert.equal(normalized.upstreamModelId, decorated, decorated);
+    }
+    assert.equal(dotNotation("glm-5p2"), "glm-5.2");
+    // Active-params markers (a3b, 235b) are not version dots.
+    assert.equal(dotNotation("qwen3-235b-a22b"), "qwen3-235b-a22b");
 });
 
 test("normalizePublicModelId leaves clean and non-decorated provider IDs untouched", () => {
@@ -244,30 +264,152 @@ test("dedupeModels keeps rows that share a cleaned slug but keep distinct upstre
     assert.deepEqual(rows.map((row) => row.upstreamModelId).sort(), ["other/qwen3-32b", "qwen/qwen3-32b"]);
 });
 
-test("disambiguateDuplicateModelIds aliases duplicates by family and preserves upstreamModelId", () => {
-    const rows = disambiguateDuplicateModelIds([
-        model({ provider: "alibaba", modelId: "deepseek-v4-flash", family: "deepseek" }),
-        normalizePublicModelId(model({ provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v4-flash", family: "deepseek" })),
+test("collapseDuplicateModels merges same-model provider rows into one row with an ordered fallback chain", () => {
+    const alibaba = model({ provider: "alibaba", modelId: "deepseek-v4-flash", family: "deepseek" });
+    alibaba.capabilities = { chat_completion: true };
+    const fireworks = normalizePublicModelId(model({ provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v4-flash", family: "deepseek" }));
+    fireworks.capabilities = { responses: true };
+    const rows = collapseDuplicateModels([alibaba, fireworks]);
+
+    assert.equal(rows.length, 1);
+
+    const [collapsed] = rows;
+    assert.equal(collapsed?.modelId, "deepseek-v4-flash");
+    assert.equal(collapsed?.provider, "fireworks"); // PROVIDER_PRIORITY winner
+    assert.equal(collapsed?.upstreamModelId, "accounts/fireworks/models/deepseek-v4-flash");
+    assert.deepEqual(collapsed?.providerRoutes?.map((route) => ({
+        provider: route.provider,
+        upstreamModelId: route.upstreamModelId,
+        pricing: route.pricing,
+    })), [
+        { provider: "fireworks", upstreamModelId: "accounts/fireworks/models/deepseek-v4-flash", pricing: null },
+        { provider: "alibaba", upstreamModelId: "deepseek-v4-flash", pricing: null },
     ]);
-
-    const primary = rows.find((row) => row.provider === "alibaba");
-    const aliased = rows.find((row) => row.provider === "fireworks");
-
-    assert.equal(primary?.modelId, "deepseek-v4-flash");
-    assert.equal(primary?.upstreamModelId, undefined);
-    assert.equal(aliased?.modelId, "deepseek/deepseek-v4-flash");
-    assert.equal(aliased?.upstreamModelId, "accounts/fireworks/models/deepseek-v4-flash");
+    assert.deepEqual(collapsed?.availableFrom, ["fireworks", "alibaba"]);
+    assert.deepEqual(collapsed?.providerRoutes?.map((route) => route.capabilities), [
+        { responses: true },
+        { chat_completion: true },
+    ]);
 });
 
-test("disambiguateDuplicateModelIds keeps openai family aliases for shared gpt rows", () => {
-    const rows = disambiguateDuplicateModelIds([
+test("collapseDuplicateModels keeps the bare id for the priority winner and routes the loser", () => {
+    const rows = collapseDuplicateModels([
         model({ provider: "azure", modelId: "gpt-5.5", family: "openai" }),
         model({ provider: "openai", modelId: "gpt-5.5", family: "openai" }),
     ]);
 
-    const primary = rows.find((row) => row.provider === "azure");
-    const aliased = rows.find((row) => row.provider === "openai");
+    assert.equal(rows.length, 1);
 
-    assert.equal(primary?.modelId, "gpt-5.5");
-    assert.equal(aliased?.modelId, "openai/gpt-5.5");
+    const [collapsed] = rows;
+    assert.equal(collapsed?.modelId, "gpt-5.5");
+    assert.equal(collapsed?.provider, "azure");
+    assert.deepEqual(collapsed?.providerRoutes?.map((route) => [route.provider, route.upstreamModelId]), [
+        ["azure", "gpt-5.5"],
+        ["openai", "gpt-5.5"],
+    ]);
+});
+
+test("collapseDuplicateModels groups case and p-notation variants of the same model", () => {
+    const rows = collapseDuplicateModels([
+        model({ provider: "alibaba", modelId: "deepseek-v3.2", family: "deepseek" }),
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "deepseek-ai/DeepSeek-V3.2", family: "deepseek" })),
+        normalizePublicModelId(model({ provider: "fireworks", modelId: "accounts/fireworks/models/deepseek-v3p2", family: "deepseek" })),
+    ]);
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.provider, "fireworks");
+    assert.deepEqual(rows[0]?.providerRoutes?.map((route) => route.provider), ["fireworks", "deepinfra", "alibaba"]);
+    // Fireworks' wire id keeps the p-notation slug.
+    assert.equal(rows[0]?.providerRoutes?.[0]?.upstreamModelId, "accounts/fireworks/models/deepseek-v3p2");
+});
+
+test("collapseDuplicateModels merges same-provider rows that arrive via distinct upstream paths", () => {
+    const rows = collapseDuplicateModels([
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "qwen/qwen3-32b", family: "alibaba" })),
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "other/qwen3-32b", family: "alibaba" })),
+    ]);
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.provider, "deepinfra");
+    assert.equal(rows[0]?.providerRoutes?.length, 1);
+});
+
+test("collapseDuplicateModels fills missing winner fields from fallback providers", () => {
+    const winner = normalizePublicModelId(model({ provider: "fireworks", modelId: "accounts/fireworks/models/merge-me", family: "deepseek" }));
+    winner.pricing = null;
+    winner.description = null;
+    const fallback = model({ provider: "deepinfra", modelId: "merge-me", family: "deepseek" });
+    fallback.pricing = { unit: "per_1M_tokens_usd", input: 0.1, output: 0.2 };
+    fallback.description = "filled from deepinfra";
+
+    const rows = collapseDuplicateModels([winner, fallback]);
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.description, "filled from deepinfra");
+    assert.deepEqual(rows[0]?.pricing, { unit: "per_1M_tokens_usd", input: 0.1, output: 0.2 });
+    // Per-route pricing preserves each provider's own prices.
+    assert.deepEqual(rows[0]?.providerRoutes?.[1]?.pricing, { unit: "per_1M_tokens_usd", input: 0.1, output: 0.2 });
+});
+
+test("collapseDuplicateModels takes display name and description from the family's creator route", () => {
+    const azureHost = model({ provider: "azure", modelId: "gpt-5.6-luna", family: "openai" });
+    azureHost.name = "OpenAI gpt-5.6-luna";
+    azureHost.description = "GPT‑5.6-luna is OpenAI's most capable frontier model, built to deliver faster, more reliable results for complex professional work.";
+    const openaiCreator = model({ provider: "openai", modelId: "gpt-5.6-luna", family: "openai" });
+    openaiCreator.name = "GPT-5.6 Luna";
+    openaiCreator.description = "GPT-5.6 Luna is designed for cost-sensitive, high-volume workloads. It roughly corresponds to the nano model tier used in earlier GPT-5 families.";
+
+    const [collapsed] = collapseDuplicateModels([azureHost, openaiCreator]);
+
+    // Routing stays with the PROVIDER_PRIORITY winner (azure — its wire id
+    // is the bare model id), but display metadata comes from the creator.
+    assert.equal(collapsed?.provider, "azure");
+    assert.equal(collapsed?.upstreamModelId, undefined);
+    assert.equal(collapsed?.name, "GPT-5.6 Luna");
+    assert.equal(collapsed?.description, openaiCreator.description);
+    // The creator route keeps its own display copy for consumers that need it.
+    const creatorRoute = collapsed?.providerRoutes?.find((route) => route.provider === "openai");
+    assert.equal(creatorRoute?.name, "GPT-5.6 Luna");
+    assert.equal(creatorRoute?.description, openaiCreator.description);
+});
+
+test("collapseDuplicateModels keeps hoster display fields when no same-family creator route exists", () => {
+    const [collapsed] = collapseDuplicateModels([
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "deepseek-ai/DeepSeek-V4-Pro", family: "deepseek" })),
+    ]);
+
+    // No "deepseek" provider exists; the winner's fields stand.
+    assert.equal(collapsed?.name, "DeepSeek-V4-Pro");
+});
+
+test("collapseDuplicateModels keeps distinct dated snapshots separate", () => {
+    const rows = collapseDuplicateModels([
+        model({ provider: "alibaba", modelId: "deepseek-v4-flash", family: "deepseek" }),
+        model({ provider: "fireworks", modelId: "deepseek-v4-flash-0731", family: "deepseek" }),
+    ]);
+
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => row.modelId).sort(), ["deepseek-v4-flash", "deepseek-v4-flash-0731"]);
+});
+
+test("collapseDuplicateModels keeps genuine family collisions on one slug as separate models", () => {
+    // deepgram `flux` is a realtime speech model; ClarityAI `flux` is an
+    // image editor. Same bare slug, different models: no merge.
+    const rows = collapseDuplicateModels([
+        normalizePublicModelId(model({ provider: "cloudflare", modelId: "@cf/deepgram/flux", family: "deepgram" })),
+        normalizePublicModelId(model({ provider: "deepinfra", modelId: "ClarityAI/flux", family: "clarityai" })),
+    ]);
+
+    assert.equal(rows.length, 2);
+
+    const bare = rows.find((row) => row.modelId === "flux");
+    const aliased = rows.find((row) => row.modelId === "clarityai/flux");
+    assert.ok(bare, "priority winner keeps the bare slug");
+    assert.ok(aliased, "the other family takes the family-qualified alias");
+    assert.equal(bare?.provider, "cloudflare");
+    assert.equal(bare?.family, "deepgram");
+    assert.equal(bare?.upstreamModelId, "@cf/deepgram/flux");
+    assert.equal(aliased?.provider, "deepinfra");
+    assert.equal(aliased?.family, "clarityai");
+    assert.equal(aliased?.upstreamModelId, "ClarityAI/flux");
 });

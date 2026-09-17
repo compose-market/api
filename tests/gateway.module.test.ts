@@ -370,7 +370,7 @@ test("direct stream failures and aborts settle evidenced output before terminal 
     terminalError: { code: "upstream_error", message: "video failed" },
   });
   assert.equal(failedResult, "error");
-  assert.deepEqual(failedOrder, ["settle", "receipt", "error"]);
+  assert.deepEqual(failedOrder, ["error"]);
 
   const abortOrder: string[] = [];
   const interrupted = new Error("client disconnected");
@@ -385,7 +385,7 @@ test("direct stream failures and aborts settle evidenced output before terminal 
     emitError: () => abortOrder.push("error"),
     interruptedError: interrupted,
   }), (error: unknown) => error === interrupted);
-  assert.deepEqual(abortOrder, ["settle"], "disconnect must preserve payment without inventing terminal output");
+  assert.deepEqual(abortOrder, [], "disconnect before completion must not settle unevidenced video output");
 
   const source = await readFile(join(process.cwd(), "inference/gateway.ts"), "utf8");
   const directStart = source.indexOf('if (request.stream && args.shape === "responses" && !usesProviderStream(request))');

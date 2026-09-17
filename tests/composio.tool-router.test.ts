@@ -6,13 +6,10 @@ import {
   buildToolRouterSessionConfig,
 } from "../backpack/accounts.js";
 
-test("buildComposioUserId derives a stable per-agent Composio user id", () => {
+test("buildComposioUserId derives a stable user-scoped Composio user id", () => {
   assert.equal(
-    buildComposioUserId(
-      "0xABCD000000000000000000000000000000000123",
-      "0xDeFf000000000000000000000000000000000456",
-    ),
-    "compose:0xabcd000000000000000000000000000000000123:agent:0xdeff000000000000000000000000000000000456",
+    buildComposioUserId("0xABCD000000000000000000000000000000000123"),
+    "compose:0xabcd000000000000000000000000000000000123",
   );
 });
 

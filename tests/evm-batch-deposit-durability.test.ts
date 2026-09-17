@@ -26,7 +26,7 @@ import {
   valkeyTTL,
 } from "../x402/keys/valkey.js";
 
-const NETWORK = NETWORK_IDS.arcTestnet;
+const NETWORK = NETWORK_IDS.arc;
 const PAYER = "0x1111111111111111111111111111111111111111";
 const RECEIVER = "0x2222222222222222222222222222222222222222";
 const CHANNEL_ID = `0x${"33".repeat(32)}`;
@@ -1484,7 +1484,7 @@ test("a definitively failed EVM deposit permanently rejects inherited checkpoint
   assert.equal(broadcasts, 1, "failed immutable deposit backing must stay unusable");
 });
 
-test("the production @x402/evm 2.20 adapter maps a hashless settle result to one permanent tombstone", async () => {
+test("the production @x402/evm 2.23 adapter persists a settlement_pending hash as one permanent submitted tombstone", async () => {
   const { ensure, requireConfirmed } = coordinator();
   const requirement = createPaymentRequirement({
     amountWei: "1000",
@@ -1594,6 +1594,7 @@ test("the production @x402/evm 2.20 adapter maps a hashless settle result to one
   const readDependencies = productionDependencies(async () => {
     assert.fail("the production adapter must own the only settle attempt");
   });
+  readDependencies.reconcileDeposit = async (txHash) => ({ status: "submitted", txHash });
   let state: DepositState | null = null;
 
   try {
@@ -1608,10 +1609,12 @@ test("the production @x402/evm 2.20 adapter maps a hashless settle result to one
       "the installed facilitator scheme must execute the deposit writeContract path");
     assert.equal(installedReceiptWaitCalls, 1);
     assert.equal(waitedForHash, installedTxHash,
-      "the installed scheme must lose the exact hash only after submitting it");
+      "the installed scheme must wait for the exact hash it submitted");
     assert.equal(installedSettleResult?.success, false);
-    assert.equal(installedSettleResult?.transaction, "",
-      "@x402/evm 2.20 drops the submitted hash when receipt waiting throws");
+    assert.equal(installedSettleResult?.transaction, installedTxHash,
+      "@x402/evm 2.23 preserves the submitted hash when receipt waiting throws");
+    assert.equal(installedSettleResult?.errorReason, "settlement_pending",
+      "@x402/evm 2.23 reports receipt-wait failures as non-terminal settlement_pending results");
     assert.match(installedSettleResult?.errorMessage || "", /receipt wait failed after broadcast/u);
 
     state = await ensure({
@@ -1619,10 +1622,11 @@ test("the production @x402/evm 2.20 adapter maps a hashless settle result to one
       requirements: requirement,
     }, readDependencies);
     assert.ok(state);
-    assert.equal(state.status, "broadcast");
-    assert.equal(state.txHash, undefined);
+    assert.equal(state.status, "submitted",
+      "the adapter must persist the settlement_pending hash so later runs reconcile it on-chain");
+    assert.equal(state.txHash, installedTxHash);
     assert.equal(await valkeyTTL(state.key), -1);
-    await assert.rejects(requireConfirmed(payment, { store: readDependencies.store }), /broadcast, not confirmed/u);
+    await assert.rejects(requireConfirmed(payment, { store: readDependencies.store }), /submitted, not confirmed/u);
     assert.equal(await valkeyExists(`x402:envelope:${runId}`), false,
       "unconfirmed adapter results must not publish an inheritable envelope");
     assert.equal(await batchModule.getBatchChannelStorage().get(channelId), undefined,
@@ -1635,7 +1639,7 @@ test("the production @x402/evm 2.20 adapter maps a hashless settle result to one
       { useBudgetCap: true, scheme: "batch-settlement" },
     ), null);
     assert.equal(replayResponse.statusCode(), 402);
-    assert.equal(settleCalls, 1, "the installed-style hashless result must never be blindly rebroadcast");
+    assert.equal(settleCalls, 1, "a settlement_pending result must never be blindly rebroadcast");
     assert.equal(installedWriteContractCalls, 1, "replay must not submit a second on-chain deposit");
     assert.equal(installedReceiptWaitCalls, 1, "replay must not re-enter installed settlement");
   } finally {

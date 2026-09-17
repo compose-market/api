@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getCompiledModels, resolveModel } from "../inference/catalog/registry.js";
+import { getCompiledModels, getModelById, resolveModel, searchModels } from "../inference/catalog/registry.js";
 import { isProvider, PROVIDERS } from "../inference/types.js";
 
 test("provider registry covers every compiled catalog provider", () => {
@@ -20,6 +20,17 @@ test("resolveModel requires catalog model identity", () => {
     () => resolveModel("future-aiml-model"),
     /Model not found: future-aiml-model/,
   );
+});
+
+test("provider wire ids resolve to their serving route", () => {
+  assert.equal(getModelById("@cf/zai-org/glm-5.2")?.provider, "cloudflare");
+  assert.equal(getModelById("accounts/fireworks/models/glm-5p2")?.provider, "fireworks");
+  assert.equal(getModelById("zai-org/GLM-5.2")?.provider, "deepinfra");
+});
+
+test("provider filtering includes secondary serving routes without duplicating models", () => {
+  const result = searchModels({ provider: "openai", q: "gpt-5.5" });
+  assert.equal(result.data.filter((model) => model.modelId === "gpt-5.5").length, 1);
 });
 
 test("compiled catalog excludes deprecated OpenAI Sora models", () => {

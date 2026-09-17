@@ -208,8 +208,9 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
 
     assert.equal(duplicate(compiled), undefined);
     assert.equal(externalBody.data.some((entry) => typeof entry.id === "string" && entry.id.includes("|")), false);
+    // One bare id per model; the nested alias form is resolved, not listed.
     assert.ok(externalBody.data.find((entry) => entry.id === "gpt-5.5"));
-    assert.ok(externalBody.data.find((entry) => entry.id === "openai/gpt-5.5"));
+    assert.equal(externalBody.data.find((entry) => entry.id === "openai/gpt-5.5"), undefined);
 
     const cloudflare = "llama-3.3-70b-instruct-fp8-fast";
     const modelResponse = await fetch(`${baseUrl}/external/v1/models/${encodeURIComponent(cloudflare)}`);
@@ -378,14 +379,16 @@ test("external resolver keeps public ids and reports provider/upstream diagnosti
   });
 
   assert.equal(called, true);
+  // The qualified alias is preserved on the request so routing keeps the pin.
   assert.equal((req.body as Record<string, unknown>).model, "openai/gpt-5.5");
   assert.equal("provider" in (req.body as Record<string, unknown>), false);
-  assert.equal(res.locals.externalModelId, "openai/gpt-5.5");
+  // The public id is the canonical bare catalog id.
+  assert.equal(res.locals.externalModelId, "gpt-5.5");
   assert.equal((res.locals.externalResolvedModel as { provider?: string }).provider, "openai");
   assert.equal(res.locals.externalCompatibility, true);
   assert.equal(headers["x-upstream-provider"], "openai");
   assert.equal(headers["x-upstream-model"], "gpt-5.5");
-  assert.equal(headers["x-public-model"], "openai/gpt-5.5");
+  assert.equal(headers["x-public-model"], "gpt-5.5");
 });
 
 test("external resolver rejects unknown ids", async () => {
@@ -444,9 +447,10 @@ test("external response shaping hides Compose receipts and preserves public mode
     assert.equal(jsonResponse.status, 200);
     assert.equal(jsonResponse.headers.get("x-upstream-provider"), "openai");
     assert.equal(jsonResponse.headers.get("x-upstream-model"), "gpt-5.5");
-    assert.equal(jsonResponse.headers.get("x-public-model"), "openai/gpt-5.5");
+    assert.equal(jsonResponse.headers.get("x-public-model"), "gpt-5.5");
     const jsonBody = await jsonResponse.json() as Record<string, unknown>;
-    assert.equal(jsonBody.model, "openai/gpt-5.5");
+    // The external surface echoes the canonical bare public model id.
+    assert.equal(jsonBody.model, "gpt-5.5");
     assert.equal("receipt" in jsonBody, false);
 
     const streamResponse = await fetch(`${baseUrl}/external/stream`, {
@@ -456,9 +460,8 @@ test("external response shaping hides Compose receipts and preserves public mode
     });
     assert.equal(streamResponse.status, 200);
     const streamBody = await streamResponse.text();
-    assert.match(streamBody, /"model":"openai\/gpt-5\.5"/);
+    assert.match(streamBody, /"model":"gpt-5\.5"/);
     assert.doesNotMatch(streamBody, /event: compose\.receipt/);
-    assert.doesNotMatch(streamBody, /"model":"gpt-5\.5"/);
   });
 });
 
@@ -593,11 +596,11 @@ test("external OpenCode config is generated from the catalog", async () => {
         }
       }
       assert.ok(models["gpt-5.5"]);
-      assert.ok(models["openai/gpt-5.5"]);
+      assert.equal(models["openai/gpt-5.5"], undefined);
       assert.equal(models["kimi-k3"]?.reasoning, true);
       assert.equal(models["kimi-k3"]?.family, "moonshot");
       assert.deepEqual(models["kimi-k3"]?.limit, { context: 1048576, output: 1048576 });
-      assert.deepEqual(models["kimi-k3"]?.cost, { input: 3, output: 15 });
+      assert.deepEqual(models["kimi-k3"]?.cost, { input: 3, output: 15, cache_read: 0.3 });
       assert.deepEqual(models["kimi-k3"]?.modalities, { input: ["text", "image"], output: ["text"] });
       assert.equal(models["kimi-k3"]?.provider, undefined);
       assert.deepEqual(models["gpt-5.6-sol"]?.provider, { npm: "@ai-sdk/openai" });

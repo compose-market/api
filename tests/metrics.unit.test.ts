@@ -18,7 +18,7 @@ const transfer = parseAbiItem("event Transfer(address indexed from, address inde
 
 function transferLog(from: `0x${string}`, to: `0x${string}`, value: bigint) {
   return {
-    address: getNetwork(NETWORK_IDS.arcTestnet).asset.address,
+    address: getNetwork(NETWORK_IDS.arc).asset.address,
     topics: encodeEventTopics({
       abi: [transfer],
       eventName: "Transfer",
@@ -49,7 +49,7 @@ test("aggregatePaymentLogs dedupes by transaction and sums incoming transfer amo
 
 test("incomingAmountFromLogs counts only transfers received by the merchant wallet", () => {
   const other = "0x1111111111111111111111111111111111111111";
-  assert.equal(incomingAmountFromLogs(NETWORK_IDS.arcTestnet, [
+  assert.equal(incomingAmountFromLogs(NETWORK_IDS.arc, [
     transferLog(other, merchantWalletAddress, 1_000_000n),
     transferLog(merchantWalletAddress, merchantWalletAddress, 2_000_000n),
     transferLog(merchantWalletAddress, other, 9_000_000n),

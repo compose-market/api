@@ -33,7 +33,7 @@ test("inference gateway threads cancellation and deadlines into provider work", 
   assert.match(GATEWAY, /function createRequestAbort/);
   assert.match(GATEWAY, /function withDirectDeadline/);
   assert.match(GATEWAY, /generateEngine\(nextRequest,[\s\S]{0,180}signal: direct\?\.signal \|\| lifecycle\.signal/);
-  assert.match(GATEWAY, /streamEngine\(request,[\s\S]{0,180}signal: lifecycle\.signal/);
+  assert.match(GATEWAY, /streamEngine\(request,[\s\S]{0,180}signal: streamDeadline\?\.signal \|\| lifecycle\.signal/);
   assert.match(GATEWAY, /externalCompatibility \? null : withDirectDeadline/);
   assert.match(GATEWAY, /execute: \(signal\) => invokeDirectAdapter\(request,\s*signal\)/);
   assert.match(GATEWAY, /class UpstreamTimeoutError/);

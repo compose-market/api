@@ -87,13 +87,16 @@ test("compiled catalog reads model family from the canonical aggregator", () => 
   const byId = new Map(data.models.flatMap((model) => [
     [model.modelId, model],
     ...(model.upstreamModelId ? [[model.upstreamModelId, model] as const] : []),
+    ...(Array.isArray(model.providerRoutes)
+      ? model.providerRoutes.flatMap((route) => [[route.upstreamModelId, model] as const])
+      : []),
   ]));
 
     const cases = [
         ["qwen-max", "alibaba"],
         ["cosyvoice-v3-flash", "alibaba"],
         ["wan2.1-t2i-plus", "alibaba"],
-        ["deepseek-v3.2", "deepseek"],
+        ["DeepSeek-V3.2", "deepseek"],
         ["Cohere-rerank-v4.0-fast", "cohere"],
         ["gpt-5.4", "openai"],
         ["chat-latest", "openai"],

@@ -134,6 +134,8 @@ test("buildCorsHeaders echoes credentialed first-party origins and sends '*' for
     assert.ok(first["Access-Control-Allow-Headers"].includes("x-sdk"));
     assert.ok(first["Access-Control-Allow-Headers"].includes("x-execution-run-id"));
     assert.ok(first["Access-Control-Allow-Headers"].includes("x-parent-run-id"));
+    assert.ok(first["Access-Control-Allow-Headers"].includes("x-plan-approval"));
+    assert.ok(first["Access-Control-Allow-Headers"].includes("x-connector-decision"));
 
     const localhost = buildCorsHeaders("http://localhost:3000");
     assert.equal(localhost["Access-Control-Allow-Origin"], "http://localhost:3000");

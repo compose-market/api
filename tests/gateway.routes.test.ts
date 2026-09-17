@@ -18,7 +18,10 @@ import {
 import { resolve as resolveInferenceRequest } from "../inference/engine.js";
 import { getModelById, searchModels } from "../inference/catalog/registry.js";
 import { getModelCapabilities } from "../inference/catalog/modalities/index.js";
-import { resolveModelParams } from "../inference/params-handler.js";
+import {
+  registerFamilyModalityDefaultResolver,
+  resolveModelParams,
+} from "../inference/params-handler.js";
 
 const TEXT_MODEL_ID = "gpt-4o";
 const TEXT_MODEL_PROVIDER = "azure";
@@ -389,7 +392,7 @@ function capabilitiesFor(modelId: string) {
 }
 
 test("catalog classifiers emit operation-specific input and output shapes", () => {
-  const alibabaImageVideo = capabilitiesFor("happyhorse-1.0-i2v");
+  const alibabaImageVideo = capabilitiesFor("happyhorse-1.1-i2v");
   assert.equal(alibabaImageVideo.some((capability) => capability.operation === "text-to-video"), false);
   assert.ok(alibabaImageVideo.some((capability) =>
     capability.modality === "video"
@@ -891,6 +894,7 @@ test("normalizeResponsesRequest carries authoritative character metrics for audi
   assert.equal(request.modality, "audio");
   assert.deepEqual(request.billingMetrics, {
     request: 1,
+    speaker: "angus",
     character: Array.from("Speak this aloud.").length,
   });
 });
@@ -914,26 +918,24 @@ test("normalizeResponsesRequest follows current ElevenLabs music params without 
   });
 });
 
-test("normalizeResponsesRequest uses current generated video params without synthetic duration defaults", () => {
+test("normalizeResponsesRequest applies documented video param defaults without synthesizing others", () => {
   const textToVideo = normalizeResponsesRequest({
     model: "wan2.7-t2v",
     modalities: ["video"],
     input: [{ type: "input_text", text: "A camera move through a neon arcade." }],
   });
 
-  assert.equal(textToVideo.videoOptions?.duration, undefined);
-  assert.equal(textToVideo.videoOptions?.resolution, undefined);
-  assert.deepEqual(textToVideo.billingMetrics, {
-    request: 1,
-    ratio: "16:9",
-    prompt_extend: "true",
-    watermark: "false",
-    video: 1,
-    generation: 1,
-  });
+  // Provider-documented defaults flow into options and billing metrics.
+  assert.equal(textToVideo.videoOptions?.duration, 5);
+  assert.equal(textToVideo.videoOptions?.resolution, "1080P");
+  assert.equal(textToVideo.billingMetrics?.duration, 5);
+  assert.equal(textToVideo.billingMetrics?.second, 5);
+  assert.equal(textToVideo.billingMetrics?.resolution, "1080P");
+  assert.equal(textToVideo.billingMetrics?.video, 1);
+  assert.equal(textToVideo.billingMetrics?.generation, 1);
 
   const imageToVideo = normalizeResponsesRequest({
-    model: "wan2.7-i2v",
+    model: "wan2.1-i2v-plus",
     modalities: ["video"],
     input: [
       { type: "input_text", text: "The subject turns toward camera." },
@@ -941,19 +943,14 @@ test("normalizeResponsesRequest uses current generated video params without synt
     ],
   });
 
-  assert.equal(imageToVideo.videoOptions?.duration, undefined);
+  // The i2v source image is a request input, never a video param.
   assert.equal(imageToVideo.videoOptions?.imageUrl, undefined);
-
-  const pricedWan = normalizeResponsesRequest({
-    model: "wan2.1-i2v-plus",
-    modalities: ["video"],
-    input: [{ type: "input_text", text: "A camera move through a neon arcade." }],
-  });
-
-  assert.equal(pricedWan.videoOptions?.duration, undefined);
-  assert.equal(pricedWan.videoOptions?.resolution, undefined);
-  assert.equal(pricedWan.billingMetrics?.duration, undefined);
-  assert.equal(pricedWan.billingMetrics?.second, undefined);
+  // Documented duration default applies; resolution has no documented
+  // default for this model and must stay unset.
+  assert.equal(imageToVideo.videoOptions?.duration, 5);
+  assert.equal(imageToVideo.videoOptions?.resolution, undefined);
+  assert.equal(imageToVideo.billingMetrics?.duration, 5);
+  assert.equal(imageToVideo.billingMetrics?.second, 5);
 
   const veo = normalizeResponsesRequest({
     model: "veo-3.1-generate-preview",
@@ -977,7 +974,53 @@ test("resolveModelParams uses per-model card.params, not modality catalogs", () 
   const wan = resolveModelParams("wan2.1-i2v-plus", "video");
   assert.ok(wan);
   assert.equal(wan.provider, "alibaba");
-  assert.ok(wan.params.prompt_extend || wan.params.watermark || wan.params.shot_type);
+  assert.equal(wan.params.shot_type?.type, "string");
+  assert.equal(wan.params.prompt_extend?.type, "boolean");
+  assert.equal(wan.params.size, undefined);
+  assert.equal(wan.params.aspect_ratio, undefined);
+});
+
+test("non-realtime requests send one resolved family default set to provider and billing", () => {
+  const unregister = registerFamilyModalityDefaultResolver("alibaba", "video", () => ({
+    resolution: "1080P",
+  }));
+  try {
+    const request = normalizeResponsesRequest({
+      model: "wan2.7-t2v",
+      modalities: ["video"],
+      input: [{ type: "input_text", text: "A camera move through a neon arcade." }],
+    });
+
+    assert.equal(request.customParams?.resolution, "1080P");
+    assert.equal(request.videoOptions?.resolution, "1080P");
+    assert.equal(request.billingMetrics?.resolution, "1080P");
+  } finally {
+    unregister();
+  }
+});
+
+test("explicit schema defaults include auto and share provider/billing values", () => {
+  const request = normalizeResponsesRequest({
+    model: "gpt-image-2",
+    modalities: ["image"],
+    input: [{ type: "input_text", text: "A quiet product photograph." }],
+  });
+
+  assert.equal(request.customParams?.quality, "auto");
+  assert.equal(request.customParams?.size, "auto");
+  assert.equal(request.billingMetrics?.quality, request.customParams?.quality);
+  assert.equal(request.billingMetrics?.size, request.customParams?.size);
+});
+
+test("model parameter resolution validates model, modality, and enum values", () => {
+  assert.equal(resolveModelParams("not-a-catalog-model", "image"), null);
+  assert.equal(resolveModelParams("gpt-image-2", "video"), null);
+  assert.throws(() => normalizeResponsesRequest({
+    model: "gpt-image-2",
+    modalities: ["image"],
+    input: [{ type: "input_text", text: "A quiet product photograph." }],
+    quality: "cinematic",
+  }), /allowed options/i);
 });
 
 test("normalizeResponsesRequest coerces model param numeric strings before billing", () => {
@@ -1004,17 +1047,32 @@ test("model parameter defaults never synthesize unsafe integer minima", () => {
 
 
 test("response state routes fail explicitly when durable state is unavailable", async () => {
-  await withInferenceServer(async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/v1/responses/resp_missing/input_items`);
-    assert.equal(response.status, 503);
-    assert.deepEqual(await response.json(), {
-      error: {
-        message: "Response state is unavailable during read",
-        type: "server_error",
-        code: "response_state_unavailable",
-      },
+  const { responseStateStore } = await import("../inference/state.js");
+  const store = responseStateStore as unknown as { backend: unknown };
+  const originalBackend = store.backend;
+  store.backend = {
+    get: async () => {
+      throw new Error("simulated durable state outage");
+    },
+    set: async () => {
+      throw new Error("simulated durable state outage");
+    },
+  };
+  try {
+    await withInferenceServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/v1/responses/resp_missing/input_items`);
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), {
+        error: {
+          message: "Response state is unavailable during read",
+          type: "server_error",
+          code: "response_state_unavailable",
+        },
+      });
     });
-  });
+  } finally {
+    store.backend = originalBackend;
+  }
 });
 
 test("toChatUsageStreamEvent emits the OpenAI-compatible usage-only terminal chunk", () => {
