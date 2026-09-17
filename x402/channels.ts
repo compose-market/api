@@ -196,8 +196,8 @@ export type NativeBatchSettlementSummary = {
   chains: ChainResult[];
 };
 
-class DefinitiveClaimFailure extends Error {}
-class AmbiguousClaimFailure extends Error {}
+class DefinitiveClaimFailure extends Error { }
+class AmbiguousClaimFailure extends Error { }
 
 let scheme: BatchSettlementEvmScheme | null = null;
 let client: FacilitatorClient | null = null;
@@ -253,10 +253,14 @@ function configuredNetworks(): EvmNetworkId[] {
 
   if (configured.length > 0) return configured;
 
-  const defaults: EvmNetworkId[] = [NETWORK_IDS.arcTestnet];
+  const defaults: EvmNetworkId[] = [NETWORK_IDS.arc];
+
+  /** 
   if (process.env[getNetwork(NETWORK_IDS.botchain).rpcEnvVar]) {
     defaults.push(NETWORK_IDS.botchain);
   }
+  */
+
   return defaults;
 }
 
@@ -655,7 +659,7 @@ const COMPARE_AND_SET_OPERATION_STATE_SCRIPT = `
 export class ValkeyNativeEvmOperationStore implements NativeEvmOperationStore {
   constructor(
     private readonly keyPrefix = "x402:batch-settlement:evm:native-operation",
-  ) {}
+  ) { }
 
   private key(network: EvmNetworkId): string {
     return `${this.keyPrefix}:${network}`;

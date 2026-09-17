@@ -77,7 +77,7 @@ import {
     settlePayment,
     verifyPayment,
 } from "./x402/facilitator.js";
-import { createBotchainAccount, prepareBotchainSessionApproval, submitBotchainSessionApproval } from "./botchain.js";
+// import { createBotchainAccount, prepareBotchainSessionApproval, submitBotchainSessionApproval } from "./botchain.js"; 
 import { recordConfirmedPayment, triggerConfirmedPayment } from "./data/metrics/payments.js";
 
 // Per-agent permissions / Composio accounts / gated connectors
@@ -87,9 +87,6 @@ const loadBackpackGated = () => import("./backpack/gated.js");
 
 // Model Registry
 const loadRegistry = () => import("./inference/catalog/registry.js");
-
-// Dispenser
-const loadDispenser = () => import("./dispenser/index.js");
 
 // =============================================================================
 // Configuration
@@ -502,6 +499,7 @@ export async function handler(
             return handleFacilitatorSettle(event);
         }
 
+        /**
         if (method === "POST" && path === "/api/botchain/account/create") {
             const result = await createBotchainAccount(event.body);
             return {
@@ -528,6 +526,7 @@ export async function handler(
                 body: JSON.stringify(result.body),
             };
         }
+        */
 
         // ==========================================================================
         // Compose Keys API Routes
@@ -588,30 +587,6 @@ export async function handler(
 
         if (path.startsWith("/api/registry/")) {
             return handleRegistryRoutes(event);
-        }
-
-        // ==========================================================================
-        // Dispenser API Routes
-        // ==========================================================================
-
-        // POST /api/dispenser/claim - Claim USDC from dispenser
-        if (method === "POST" && path === "/api/dispenser/claim") {
-            return handleDispenserClaim(event);
-        }
-
-        // GET /api/dispenser/status - Get dispenser status for all configured networks
-        if (method === "GET" && path === "/api/dispenser/status") {
-            return handleDispenserStatus();
-        }
-
-        // GET /api/dispenser/status/:network - Get dispenser status for specific network
-        if (method === "GET" && path.match(/^\/api\/dispenser\/status\/[^/]+$/)) {
-            return handleDispenserStatusByNetwork(event);
-        }
-
-        // GET /api/dispenser/check/:address - Check if address has claimed
-        if (method === "GET" && path.match(/^\/api\/dispenser\/check\/0x[a-fA-F0-9]{40}$/)) {
-            return handleDispenserCheck(event);
         }
 
         // ==========================================================================
@@ -2001,115 +1976,4 @@ async function handleRegistryRoutes(event: APIGatewayProxyEventV2): Promise<APIG
     }
 
     return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Not found" }) };
-}
-
-// =============================================================================
-// Dispenser Route Handlers
-// =============================================================================
-
-async function handleDispenserClaim(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const body = event.body ? JSON.parse(event.body) : {};
-    const { address, network } = body;
-
-    if ("chainId" in body || "chain_id" in body) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "chainId is not supported; use network" }),
-        };
-    }
-
-    if (!address || !network) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "address and network are required" }),
-        };
-    }
-
-    if (typeof network !== "string" || !isNetworkId(network)) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "network must be a supported CAIP-2 network" }),
-        };
-    }
-
-    if (isEvmNetwork(network) && !address.match(/^0x[a-fA-F0-9]{40}$/)) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "Invalid address format" }),
-        };
-    }
-
-    const dispenser = await loadDispenser();
-    const result = await dispenser.claimDispenserUSDC({ address, network });
-
-    const statusCode = result.success
-        ? 200
-        : result.alreadyClaimed
-            ? 409
-            : 500;
-
-    return {
-        statusCode,
-        headers: corsHeaders,
-        body: JSON.stringify(result),
-    };
-}
-
-async function handleDispenserStatus(): Promise<APIGatewayProxyResultV2> {
-    const dispenser = await loadDispenser();
-    const statuses = await dispenser.getAllDispenserStatuses();
-
-    return {
-        statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({
-            dispensers: statuses,
-            claimAmount: 1_000_000,
-            claimAmountFormatted: "$1.00 USDC",
-            maxClaims: 1000,
-        }),
-    };
-}
-
-async function handleDispenserStatusByNetwork(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const rawNetwork = decodeURIComponent(event.rawPath.split("/api/dispenser/status/")[1] || "");
-    if (!isNetworkId(rawNetwork)) {
-        return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({ error: "network must be a supported CAIP-2 network" }),
-        };
-    }
-
-    const dispenser = await loadDispenser();
-    const result = await dispenser.checkDispenserAvailable(rawNetwork);
-
-    return {
-        statusCode: result.available ? 200 : 404,
-        headers: corsHeaders,
-        body: JSON.stringify(result),
-    };
-}
-
-async function handleDispenserCheck(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const address = event.rawPath.split("/api/dispenser/check/")[1] as `0x${string}`;
-
-    const dispenser = await loadDispenser();
-    const status = await dispenser.getGlobalClaimStatus(address);
-
-    return {
-        statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({
-            address,
-            hasClaimed: status.claimed,
-            claimedOnNetwork: status.network,
-            claimedOnNetworkName: status.networkName,
-            claimedAt: status.claimedAt,
-        }),
-    };
 }

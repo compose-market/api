@@ -625,6 +625,7 @@ async function deployJobs(image: string) {
                 "DISPENSER_CONTRACT",
                 "AVALANCHE_MAINNET_RPC",
                 "ARC_TESTNET_RPC",
+                "ARC_MAINNET_RPC",
                 "SEI_MAINNET_RPC",
                 "BOTCHAIN_MAINNET_RPC",
                 "MERCHANT_WALLET_ADDRESS",

@@ -20,7 +20,7 @@
  *    canonical Multicall3. No paymaster, no bundler, no deposit ceremony:
  *    unused prefund stays as the account's escrow and actual gas is
  *    reimbursed to the merchant beneficiary.
- */
+ 
 import { z } from "@x402/core/schemas";
 import {
     createPublicClient,
@@ -48,6 +48,7 @@ const ENTRY_POINT_V0_6 = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as const;
 /** Canonical Multicall3, already deployed on Botchain. */
 const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11" as const;
 
+/**
 const FACTORY_ABI = [
     {
         type: "function",
@@ -95,7 +96,7 @@ const ACCOUNT_EXECUTE_ABI = [
     },
 ] as const;
 
-/** ERC-4337 v0.6 EntryPoint interface used by the session relay. */
+/** ERC-4337 v0.6 EntryPoint interface used by the session relay.
 const ENTRY_POINT_ABI = [
     {
         type: "function",
@@ -233,7 +234,7 @@ const MULTICALL3_ABI = [
     },
 ] as const;
 
-/** Padded v0.6 gas caps for the session approval UserOperation. */
+/** Padded v0.6 gas caps for the session approval UserOperation.
 const SESSION_GAS = {
     callGasLimit: 500_000n,
     verificationGasLimit: 500_000n,
@@ -269,10 +270,12 @@ const SESSION_USER_OPERATION_SCHEMA = z.object({
     signature: HEX_BYTES,
 }).strict();
 
+/**
 const SESSION_PREPARE_REQUEST_SCHEMA = z.object({
     owner: EVM_ADDRESS,
     account: EVM_ADDRESS,
-    /** Session budget to approve, in asset base units (wei). */
+
+/** Session budget to approve, in asset base units (wei).
     amount: DECIMAL_STRING,
 }).strict();
 
@@ -282,7 +285,7 @@ const SESSION_SUBMIT_REQUEST_SCHEMA = z.object({
     userOperation: SESSION_USER_OPERATION_SCHEMA,
 }).strict();
 
-/** Upper bound for waiting on the creation transaction receipt. */
+/** Upper bound for waiting on the creation transaction receipt.
 const RECEIPT_TIMEOUT_MS = 45_000;
 
 export interface BotchainAccountCreateResult {
@@ -311,15 +314,15 @@ function getMerchantAccount() {
 }
 
 function clients() {
-    const chain = getViemChain(NETWORK_IDS.botchain);
-    const rpcUrl = getNetworkRpcUrl(NETWORK_IDS.botchain);
-    const account = getMerchantAccount();
-    return {
-        chain,
-        account,
-        publicClient: createPublicClient({ chain, transport: http(rpcUrl) }),
-        walletClient: createWalletClient({ account, chain, transport: http(rpcUrl) }),
-    };
+const chain = getViemChain(NETWORK_IDS.botchain);
+const rpcUrl = getNetworkRpcUrl(NETWORK_IDS.botchain);
+const account = getMerchantAccount();
+return {
+chain,
+account,
+publicClient: createPublicClient({ chain, transport: http(rpcUrl) }),
+walletClient: createWalletClient({ account, chain, transport: http(rpcUrl) }),
+};
 }
 
 /**
@@ -334,7 +337,7 @@ function clients() {
  *   transaction broadcast but not yet mined within the wait window.
  * - 400 `{ error }` — malformed body or owner/account prediction mismatch.
  * - 503 `{ error }` — chain/RPC or creation-transaction failure.
- */
+ 
 export async function createBotchainAccount(rawBody: string | undefined): Promise<BotchainAccountCreateResult> {
     let body: unknown;
     try {
@@ -352,71 +355,71 @@ export async function createBotchainAccount(rawBody: string | undefined): Promis
     const accountAddress = account.toLowerCase() as `0x${string}`;
 
     try {
-        const { chain, account: merchant, publicClient, walletClient } = clients();
+    const { chain, account: merchant, publicClient, walletClient } = clients();
 
-        const predicted = await publicClient.readContract({
-            address: THIRDWEB_ACCOUNT_FACTORY_V0_6,
-            abi: FACTORY_ABI,
-            functionName: "getAddress",
-            args: [ownerAddress, "0x"],
-        });
-        if (predicted.toLowerCase() !== accountAddress) {
-            return errorResult(
-                400,
-                "account does not match the Thirdweb account factory prediction for owner",
-            );
+    const predicted = await publicClient.readContract({
+        address: THIRDWEB_ACCOUNT_FACTORY_V0_6,
+        abi: FACTORY_ABI,
+        functionName: "getAddress",
+        args: [ownerAddress, "0x"],
+    });
+    if (predicted.toLowerCase() !== accountAddress) {
+    return errorResult(
+        400,
+        "account does not match the Thirdweb account factory prediction for owner",
+    );
+}
+
+// const deployedCode = await publicClient.getCode({ address: accountAddress });
+// if (deployedCode) {
+const isAdmin = await publicClient.readContract({
+    address: accountAddress,
+    abi: ACCOUNT_ABI,
+    functionName: "isAdmin",
+    args: [ownerAddress],
+});
+if (!isAdmin) {
+    return errorResult(503, "Account is deployed but the owner is not its admin");
+}
+return {
+    statusCode: 200,
+    body: { status: "ready", account: accountAddress },
+};
         }
 
-        const deployedCode = await publicClient.getCode({ address: accountAddress });
-        if (deployedCode) {
-            const isAdmin = await publicClient.readContract({
-                address: accountAddress,
-                abi: ACCOUNT_ABI,
-                functionName: "isAdmin",
-                args: [ownerAddress],
-            });
-            if (!isAdmin) {
-                return errorResult(503, "Account is deployed but the owner is not its admin");
-            }
-            return {
-                statusCode: 200,
-                body: { status: "ready", account: accountAddress },
-            };
-        }
+const transactionHash = await walletClient.writeContract({
+    address: THIRDWEB_ACCOUNT_FACTORY_V0_6,
+    abi: FACTORY_ABI,
+    functionName: "createAccount",
+    args: [ownerAddress, "0x"],
+    account: merchant,
+    chain,
+});
 
-        const transactionHash = await walletClient.writeContract({
-            address: THIRDWEB_ACCOUNT_FACTORY_V0_6,
-            abi: FACTORY_ABI,
-            functionName: "createAccount",
-            args: [ownerAddress, "0x"],
-            account: merchant,
-            chain,
-        });
-
-        try {
-            const receipt = await publicClient.waitForTransactionReceipt({
-                hash: transactionHash,
-                timeout: RECEIPT_TIMEOUT_MS,
-            });
-            if (receipt.status !== "success") {
-                console.error("[botchain/account/create] Creation transaction reverted:", transactionHash);
-                return errorResult(503, "Account creation transaction reverted", transactionHash);
-            }
-            return {
-                statusCode: 200,
-                body: { status: "ready", account: accountAddress, transactionHash },
-            };
-        } catch (error) {
-            console.error("[botchain/account/create] Receipt wait failed:", error);
-            return {
-                statusCode: 202,
-                body: { status: "pending", account: accountAddress, transactionHash },
-            };
-        }
-    } catch (error) {
-        console.error("[botchain/account/create] Error:", error);
-        return errorResult(503, error instanceof Error ? error.message : "Botchain account creation failed");
+try {
+    const receipt = await publicClient.waitForTransactionReceipt({
+        hash: transactionHash,
+        timeout: RECEIPT_TIMEOUT_MS,
+    });
+    if (receipt.status !== "success") {
+        console.error("[botchain/account/create] Creation transaction reverted:", transactionHash);
+        return errorResult(503, "Account creation transaction reverted", transactionHash);
     }
+    return {
+        statusCode: 200,
+        body: { status: "ready", account: accountAddress, transactionHash },
+    };
+} catch (error) {
+    console.error("[botchain/account/create] Receipt wait failed:", error);
+    return {
+        statusCode: 202,
+        body: { status: "pending", account: accountAddress, transactionHash },
+    };
+}
+    } catch (error) {
+    console.error("[botchain/account/create] Error:", error);
+    return errorResult(503, error instanceof Error ? error.message : "Botchain account creation failed");
+}
 }
 
 // =============================================================================
@@ -441,9 +444,9 @@ function sessionError(statusCode: number, error: string): BotchainSessionEndpoin
     return { statusCode, body: { error } };
 }
 
-class SessionIntentError extends Error {}
+class SessionIntentError extends Error { }
 
-/** The session allowance spender the server settles against (treasury). */
+/** The session allowance spender the server settles against (treasury).
 function sessionAllowanceSpender(): `0x${string}` {
     try {
         return resolveSessionAllowanceSpenderAddress().toLowerCase() as `0x${string}`;
@@ -461,7 +464,6 @@ function usdtAsset(): `0x${string}` {
  * `execute(USDT, 0, approve(session allowance spender, amount))`.
  * The facilitator owns the token, the spender, and the intent — the client
  * only supplies the amount.
- */
 function encodeSessionApproveCallData(amount: bigint): Hex {
     return encodeFunctionData({
         abi: ACCOUNT_EXECUTE_ABI,
@@ -478,7 +480,7 @@ function encodeSessionApproveCallData(amount: bigint): Hex {
     });
 }
 
-/** Decode the account's `execute(target, value, calldata)` wrapper. */
+/** Decode the account's `execute(target, value, calldata)` wrapper.
 function decodeAccountExecute(callData: string): { target: `0x${string}`; value: bigint; innerData: string } {
     const decoded = decodeFunctionData({ abi: ACCOUNT_EXECUTE_ABI, data: callData as Hex });
     if (decoded.functionName !== "execute" || decoded.args.length !== 3) {
@@ -488,7 +490,7 @@ function decodeAccountExecute(callData: string): { target: `0x${string}`; value:
     return { target: target.toLowerCase() as `0x${string}`, value, innerData };
 }
 
-/** Validate the executed intent inside a session UserOperation. */
+/** Validate the executed intent inside a session UserOperation.
 function requireSessionUserOperationIntent(callData: string): void {
     const executed = decodeAccountExecute(callData);
     if (executed.target !== usdtAsset()) {
@@ -507,7 +509,7 @@ function requireSessionUserOperationIntent(callData: string): void {
     }
 }
 
-/** Verify the factory prediction for `owner` matches `account` and the account is deployed. */
+/** Verify the factory prediction for `owner` matches `account` and the account is deployed.
 async function requireMatchingDeployedAccount(
     publicClient: ReturnType<typeof createPublicClient>,
     owner: `0x${string}`,
@@ -545,7 +547,7 @@ function parseSessionBody(rawBody: string | undefined): unknown {
  * Returns the v0.6 UserOperation (empty signature, no paymaster) and its
  * hash computed by the deployed EntryPoint — the admin wallet signs that
  * hash off-chain.
- */
+ 
 export async function prepareBotchainSessionApproval(
     rawBody: string | undefined,
 ): Promise<BotchainSessionEndpointResult> {
@@ -639,7 +641,7 @@ function decodeRevertReason(bytes: string | undefined): string | undefined {
  * transaction first tops up `depositTo(account)` through Multicall3 and then
  * submits `handleOps`; the unused prefund stays as the account's escrow and
  * actual gas is reimbursed to the merchant beneficiary.
- */
+
 export async function submitBotchainSessionApproval(
     rawBody: string | undefined,
 ): Promise<BotchainSessionEndpointResult> {
@@ -832,3 +834,4 @@ export async function submitBotchainSessionApproval(
         return sessionError(503, error instanceof Error ? error.message : "Botchain session submit failed");
     }
 }
+*/
