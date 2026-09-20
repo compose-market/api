@@ -9,6 +9,6 @@ inference/data/reports
 inference/scripts
 scripts
 metrics/expenses
-
+.ua
 .DS_Store
 **/.DS_Store
