@@ -2,7 +2,7 @@ import type { Application, NextFunction, Request, Response } from "express";
 
 import { build } from "./aggregate.js";
 import type { Filters, Interval, RequestStatus, SettlementStatus } from "./types.js";
-import { isNetworkId, type NetworkId } from "../../../x402/configs/chains.js";
+import { isNetworkId, validateNearAddress, type NetworkId } from "../../../x402/configs/chains.js";
 import { validateSvmAddress } from "@x402/svm";
 
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
@@ -59,7 +59,7 @@ export function parseFilters(query: Request["query"]): Filters {
 
 function handler(req: Request, res: Response, next: NextFunction): void {
   const address = value(req.get("x-session-user-address"));
-  const validAddress = EVM_ADDRESS.test(address || "") || validateSvmAddress(address || "");
+  const validAddress = EVM_ADDRESS.test(address || "") || validateSvmAddress(address || "") || validateNearAddress(address || "");
   if (!validAddress) {
     res.status(401).json({ error: "Validated wallet session required" });
     return;
