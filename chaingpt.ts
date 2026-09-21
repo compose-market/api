@@ -24,3 +24,24 @@ export const CHAINGPT_MODELS = new Set([
     "smart_contract_auditor",
     "smart_contract_generator",
 ]);
+
+export type ChainGptChatResult =
+    | { ok: true; answer: string }
+    | { ok: false; status?: number; error: string };
+
+function parseJson(text: string): unknown {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return undefined;
+    }
+}
+
+function errorMessage(value: unknown): string | undefined {
+    const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    for (const key of ["message", "error"]) {
+        const text = typeof record[key] === "string" ? (record[key] as string).trim() : "";
+        if (text) return text;
+    }
+    return undefined;
+}
