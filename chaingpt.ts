@@ -45,3 +45,57 @@ function errorMessage(value: unknown): string | undefined {
     }
     return undefined;
 }
+
+export async function callChainGptChat(input: {
+    model: string;
+    question: string;
+    timeoutMs?: number;
+}): Promise<ChainGptChatResult> {
+    const apiKey = process.env.CHAIN_GPT_SECRET_KEY?.trim();
+    if (!apiKey) {
+        return { ok: false, error: "CHAIN_GPT_SECRET_KEY is not configured on the api" };
+    }
+    if (!CHAINGPT_MODELS.has(input.model)) {
+        return { ok: false, error: `unsupported model: ${input.model}` };
+    }
+
+    const response = await fetch(CHAINGPT_CHAT_URL, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            model: input.model,
+            question: input.question,
+            chatHistory: "off",
+        }),
+        signal: AbortSignal.timeout(input.timeoutMs ?? CHAINGPT_TIMEOUT_MS),
+    });
+    const body = await response.text().catch(() => "");
+    const parsed = parseJson(body);
+
+    if (response.status < 200 || response.status >= 300) {
+        return {
+            ok: false,
+            status: response.status,
+            error: errorMessage(parsed) || body.trim().slice(0, 500) || `chaingpt request failed (${response.status})`,
+        };
+    }
+
+    if (parsed && typeof parsed === "object") {
+        const blob = parsed as { status?: boolean; message?: string; data?: { bot?: string } };
+        if (blob.status === false) {
+            return { ok: false, error: blob.message || "chaingpt request failed" };
+        }
+        const answer = typeof blob.data?.bot === "string" ? blob.data.bot.trim() : "";
+        if (answer) return { ok: true, answer };
+    } else if (typeof parsed === "string" && parsed.trim()) {
+        return { ok: true, answer: parsed.trim() };
+    } else if (body.trim()) {
+        // Observed live shape: HTTP 201 with a plain-text answer body.
+        return { ok: true, answer: body.trim() };
+    }
+
+    return { ok: false, error: "chaingpt returned an empty answer" };
+}
