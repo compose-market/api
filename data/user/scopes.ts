@@ -1,5 +1,6 @@
 import {
   getSupportedNetworks,
+  validateNearAddress,
   type NetworkId,
 } from "../../x402/configs/chains.js";
 import { resolveWalletPair } from "./store.js";
@@ -34,5 +35,9 @@ export async function resolveWalletScopes(
   networks?: readonly NetworkId[],
   resolve: PairResolver = resolveWalletPair,
 ): Promise<WalletScope[]> {
+  if (validateNearAddress(lookupAddress)) {
+    const address = lookupAddress.trim();
+    return selectedNetworks(networks).map((network) => ({ network, address }));
+  }
   return buildWalletScopes(await resolve(lookupAddress), networks);
 }
