@@ -67,22 +67,65 @@ export async function projectCanonicalPaymentIntentSettlement(
   insertCheckpoint: typeof insertSettlementCheckpoint = insertSettlementCheckpoint,
 ): Promise<boolean> {
   const projected = await projectSettlement(input, executor);
-  if (projected || !intent?.meterSubject || !intent.finalAmountWei) return projected;
+  if (projected || !intent?.finalAmountWei || !/^\d+$/.test(intent.finalAmountWei)) return projected;
+  const finalWei = BigInt(intent.finalAmountWei);
+  if (finalWei <= 0n) return true;
 
-  const separator = intent.meterSubject.indexOf(":");
-  const modelId = separator >= 0 ? intent.meterSubject.slice(separator + 1) : intent.meterSubject;
-  if (!getModelById(modelId)) return true;
-  const resolved = resolveBillingModel(modelId);
-  const card = resolved.card;
-  const capability = card ? getModelCapabilities(card)[0] : undefined;
-  const family = card?.family
-    || aggregateCanonicalFamily(card?.modelId || modelId, card?.name)
-    || resolved.provider;
-  const types = card?.type
-    ? Array.isArray(card.type) ? card.type : [card.type]
-    : [capability?.modality || "text"];
-  const operation = capability?.operation || intent.action || "inference";
-  const requestId = intent.rootRunId || intent.executionRunId || `intent:${intent.paymentIntentId}`;
+  const service = (intent.service || "settlement").trim().toLowerCase();
+  const rawSubject = intent.meterSubject?.trim() || service;
+  const separator = rawSubject.indexOf(":");
+  const candidateModelId = separator >= 0 ? rawSubject.slice(separator + 1) : rawSubject;
+  const catalogCard = intent.meterSubject ? getModelById(candidateModelId) : undefined;
+
+  let resolved: InferenceTelemetryLifecycle["resolved"] | undefined;
+  let family: string;
+  let modelName: string;
+  let types: string[];
+  let modality: InferenceTelemetryLifecycle["request"]["modality"];
+  let operation: string;
+  let requestId: string;
+
+  if (catalogCard) {
+    resolved = resolveBillingModel(candidateModelId);
+    const card = resolved.card;
+    const capability = card ? getModelCapabilities(card)[0] : undefined;
+    family = card?.family
+      || aggregateCanonicalFamily(card?.modelId || candidateModelId, card?.name)
+      || resolved.provider;
+    modelName = resolved.modelId;
+    types = card?.type
+      ? Array.isArray(card.type) ? card.type : [card.type]
+      : [capability?.modality || "text"];
+    modality = capability?.modality || "text";
+    operation = capability?.operation || intent.action || "inference";
+    requestId = intent.rootRunId || intent.executionRunId || `intent:${intent.paymentIntentId}`;
+  } else {
+    family = service;
+    modelName = rawSubject.startsWith(`${service}:`)
+      ? rawSubject.slice(service.length + 1) || service
+      : rawSubject;
+    types = [service];
+    modality = service === "banner" ? "image" : "text";
+    operation = (intent.action || service).trim();
+    requestId = `intent:${intent.paymentIntentId}`;
+  }
+
+  const effectiveLineItems = intent.meterLineItems && intent.meterLineItems.length > 0
+    ? intent.meterLineItems
+    : [{
+      key: operation,
+      unit: "request",
+      quantity: 1,
+      unitPriceUsd: Number(finalWei) / 1_000_000,
+      amountWei: finalWei.toString(),
+    }];
+  const platformWei = intent.platformFeeWei && /^\d+$/.test(intent.platformFeeWei)
+    ? BigInt(intent.platformFeeWei)
+    : 0n;
+  const providerWei = intent.providerAmountWei && /^\d+$/.test(intent.providerAmountWei)
+    ? BigInt(intent.providerAmountWei)
+    : (finalWei > platformWei ? finalWei - platformWei : 0n);
+
   const lifecycle = {
     id: requestId,
     userAddress: intent.userAddress,
@@ -90,14 +133,14 @@ export async function projectCanonicalPaymentIntentSettlement(
     startedAt: intent.createdAt,
     request: {
       mode: "responses",
-      model: resolved.modelId,
+      model: modelName,
       stream: false,
-      modality: capability?.modality || "text",
+      modality,
       operation,
       messages: [],
       responseId: requestId,
     },
-    resolved,
+    ...(resolved ? { resolved } : {}),
     settlements: [],
     metrics: {},
   } as InferenceTelemetryLifecycle;
@@ -106,13 +149,13 @@ export async function projectCanonicalPaymentIntentSettlement(
     requestId,
     network: intent.network,
     family,
-    model: resolved.modelId,
+    model: modelName,
     types,
     operation,
     status: input.status === "confirmed" ? "settled" : "failed",
     ...(input.transactionHash ? { transactionHash: input.transactionHash } : {}),
     paymentIntentId: intent.paymentIntentId,
-    pricedUnits: (intent.meterLineItems || []).map((item) => ({
+    pricedUnits: effectiveLineItems.map((item) => ({
       key: item.key,
       unit: item.unit,
       quantity: item.quantity,
@@ -121,12 +164,12 @@ export async function projectCanonicalPaymentIntentSettlement(
     })),
     usage: {
       metrics: {},
-      units: (intent.meterLineItems || []).map(({ amountWei: _, unitPriceUsd: __, ...unit }) => unit),
+      units: effectiveLineItems.map(({ amountWei: _, unitPriceUsd: __, ...unit }) => unit),
     },
     billing: {
-      inferenceAmountAtomic: intent.providerAmountWei || "0",
-      platformFeeAtomic: intent.platformFeeWei || "0",
-      finalAmountAtomic: intent.finalAmountWei,
+      inferenceAmountAtomic: providerWei.toString(),
+      platformFeeAtomic: platformWei.toString(),
+      finalAmountAtomic: finalWei.toString(),
       currency: "USDC",
       decimals: 6,
     },
