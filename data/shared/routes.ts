@@ -5,6 +5,7 @@ import {
   type EventName,
   type InvalidateEvent,
 } from "./updates.js";
+import { validateNearAddress } from "../../x402/configs/chains.js";
 import { resolveWalletPair } from "../user/store.js";
 import type { WalletPair } from "../user/types.js";
 import {
@@ -58,11 +59,15 @@ export function createEventsHandler(
         throw Object.assign(new Error("userAddress query parameter required"), { statusCode: 400 });
       }
 
-      const pair = await resolvePair(lookupAddress);
-      const channels = [
-        domainEventChannel(domain, pair.evmAddress),
-        domainEventChannel(domain, pair.svmAddress),
-      ];
+      const channels = validateNearAddress(lookupAddress)
+        ? [domainEventChannel(domain, lookupAddress)]
+        : await (async () => {
+            const pair = await resolvePair(lookupAddress);
+            return [
+              domainEventChannel(domain, pair.evmAddress),
+              domainEventChannel(domain, pair.svmAddress),
+            ];
+          })();
       let ready = false;
       const pending: InvalidateEvent[] = [];
       let closed = false;
