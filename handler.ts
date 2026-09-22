@@ -875,6 +875,9 @@ type PaymentIntentPrepareBody = {
         }>;
     };
     runId?: string;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
     idempotencyKey?: string;
 };
 
