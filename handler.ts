@@ -1682,309 +1682,49 @@ async function handlePermissionsRoutes(event: APIGatewayProxyEventV2): Promise<A
     }
 }
 
-async function handleAccountsRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const accounts = await loadBackpack();
+// ChainGPT chat relay for the connectors Worker: the Worker cannot reach
+// api.chaingpt.org (Cloudflare-zone edge rejects Worker-originated requests
+// with TLS version "none"); the api's GCP egress presents a real TLS
+// handshake. Internal-token gated; first-party
+// CHAIN_GPT_SECRET_KEY only — never user credentials.
+async function handleChaingptRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const path = event.rawPath;
     const method = event.requestContext.http.method;
 
     try {
-        if (path === "/accounts/toolkits" && method === "GET") {
-            const params = query(event);
-            const limit = Number.parseInt(params.limit || "20", 10);
-            const toolkits = await accounts.searchToolkits(params.search || "", limit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkits }) };
-        }
-
-        if (path.startsWith("/accounts/toolkits/") && path.endsWith("/actions") && method === "GET") {
-            const toolkit = decodeURIComponent(path.replace("/accounts/toolkits/", "").replace(/\/actions$/u, ""));
-            const limit = Number.parseInt(query(event).limit || "40", 10);
-            const actions = await accounts.listToolkitActions(toolkit, limit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ toolkit, actions }) };
-        }
-
-        if (path === "/accounts/connect" && method === "POST") {
-            const data = body(event);
-            if (!data.userAddress || !data.agentWallet || !data.toolkit) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and toolkit required" }) };
-            }
-            const result = await accounts.initiateConnection(data.userAddress, data.agentWallet, data.toolkit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
-        }
-
-        if (path === "/accounts" && method === "GET") {
-            const params = query(event);
-            if (!params.userAddress || !params.agentWallet) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and agentWallet required" }) };
-            }
-            const connections = await accounts.listConnections(params.userAddress, params.agentWallet, params.toolkit);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ connections }) };
-        }
-
-        if (path === "/accounts/status" && method === "GET") {
-            const params = query(event);
-            if (!params.userAddress || !params.toolkit || !params.connectedAccountId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, toolkit and connectedAccountId required" }) };
-            }
-            const status = await accounts.checkConnection({
-                userAddress: params.userAddress,
-                toolkit: params.toolkit,
-                connectedAccountId: params.connectedAccountId,
-            });
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(status) };
-        }
-
-        if (path === "/accounts/execute" && method === "POST") {
-            const data = body(event);
-            if (!data.userAddress || !data.agentWallet || !data.toolkit || !data.connectedAccountId || !data.action) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet, toolkit, connectedAccountId and action required" }) };
-            }
-            const result = await accounts.executeToolkitAction({
-                userAddress: data.userAddress,
-                agentWallet: data.agentWallet,
-                toolkit: data.toolkit,
-                connectedAccountId: data.connectedAccountId,
-                action: data.action,
-                params: data.params,
-                text: data.text,
-            });
-            return { statusCode: result.success ? 200 : 400, headers: corsHeaders, body: JSON.stringify(result) };
-        }
-
-        if (path === "/accounts" && method === "DELETE") {
-            const data = { ...query(event), ...body(event) };
-            if (!data.userAddress || !data.toolkit || !data.connectedAccountId) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, toolkit and connectedAccountId required" }) };
-            }
-            const result = await accounts.disconnectToolkit({
-                userAddress: data.userAddress,
-                toolkit: data.toolkit,
-                connectedAccountId: data.connectedAccountId,
-            });
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
-        }
-
-        return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Not found" }) };
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("[accounts] Error:", message);
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
-    }
-}
-
-interface ConnectorCardCredential {
-    varName: string;
-    description?: string;
-    obtainUrl?: string;
-}
-
-interface ConnectorCard {
-    slug: string;
-    name?: string;
-    status?: string;
-    credentials: ConnectorCardCredential[];
-    actions?: string[];
-}
-
-async function fetchConnectorCard(slug: string): Promise<ConnectorCard | null> {
-    const base = process.env.CONNECTORS_URL?.trim().replace(/\/+$/u, "");
-    if (!base) return null;
-    try {
-        const response = await fetch(`${base}/mcps/${encodeURIComponent(slug)}`, {
-            headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(8000),
-        });
-        if (!response.ok) return null;
-        const card = await response.json() as {
-            slug?: string;
-            name?: string;
-            status?: string;
-            credentials?: Array<{ varName?: string; description?: string; obtainUrl?: string }>;
-            tools?: Array<{ name?: string }>;
-        };
-        return {
-            slug: card.slug || slug,
-            name: card.name,
-            status: card.status,
-            credentials: Array.isArray(card.credentials)
-                ? card.credentials
-                    .filter((entry) => typeof entry?.varName === "string" && entry.varName.trim().length > 0)
-                    .map((entry) => ({
-                        varName: String(entry.varName).trim(),
-                        ...(entry.description ? { description: entry.description } : {}),
-                        ...(entry.obtainUrl ? { obtainUrl: entry.obtainUrl } : {}),
-                    }))
-                : [],
-            actions: Array.isArray(card.tools)
-                ? card.tools
-                    .map((tool) => tool?.name)
-                    .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
-                : undefined,
-        };
-    } catch {
-        return null;
-    }
-}
-
-async function handleGatedRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const gated = await loadBackpackGated();
-    const path = event.rawPath;
-    const method = event.requestContext.http.method;
-
-    try {
-        if (path === "/gated" && method === "GET") {
-            const params = query(event);
-            if (!params.userAddress) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress required" }) };
-            }
-            const connections = await gated.listGated(params.userAddress);
-            const grants = params.agentWallet ? await gated.listGatedGrants(params.userAddress) : [];
-            return {
-                statusCode: 200,
-                headers: corsHeaders,
-                body: JSON.stringify({
-                    connections,
-                    grants: grants.filter((grant) => !params.agentWallet || grant.agentWallet === params.agentWallet?.toLowerCase()),
-                }),
-            };
-        }
-
-        if (path === "/gated/connect" && method === "POST") {
-            const data = body(event);
-            if (!data.userAddress || !data.slug || !data.vars || typeof data.vars !== "object") {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, slug and vars required" }) };
-            }
-            const card = await fetchConnectorCard(String(data.slug));
-            if (card && card.credentials.length > 0) {
-                const provided = new Set(Object.keys(data.vars).map((name: string) => String(name).trim().toUpperCase()));
-                const missing = card.credentials.filter((credential) => !provided.has(credential.varName.toUpperCase()));
-                if (missing.length > 0) {
-                    return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "missing credential variables", missing }) };
-                }
-            }
-            const connection = await gated.connectGated({
-                userAddress: data.userAddress,
-                slug: data.slug,
-                vars: data.vars,
-            });
-            if (data.agentWallet) {
-                await gated.grantGated({ userAddress: data.userAddress, agentWallet: data.agentWallet, slug: connection.slug });
-            }
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, connection }) };
-        }
-
-        if (path === "/gated/grant" && method === "POST") {
-            const data = body(event);
-            if (!data.userAddress || !data.agentWallet || !data.slug) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and slug required" }) };
-            }
-            const grant = await gated.grantGated({ userAddress: data.userAddress, agentWallet: data.agentWallet, slug: data.slug });
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, grant }) };
-        }
-
-        if (path === "/gated/revoke" && method === "POST") {
-            const data = body(event);
-            if (!data.userAddress || !data.agentWallet || !data.slug) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and slug required" }) };
-            }
-            await gated.revokeGated({ userAddress: data.userAddress, agentWallet: data.agentWallet, slug: data.slug });
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
-        }
-
-        if (path === "/gated/disconnect" && method === "POST") {
-            const data = body(event);
-            if (!data.userAddress || !data.slug) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and slug required" }) };
-            }
-            const result = await gated.disconnectGated(data.userAddress, data.slug);
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(result) };
-        }
-
-        if (path === "/gated/resolve" && method === "POST") {
+        if (path === "/chaingpt/chat" && method === "POST") {
             const expected = process.env.BACKPACK_INTERNAL_TOKEN?.trim();
             if (!expected || getHeader(event, "x-backpack-internal-token") !== expected) {
                 return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: "unauthorized" }) };
             }
             const data = body(event);
-            if (!data.userAddress || !data.agentWallet || !data.slug) {
-                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and slug required" }) };
+            const model = typeof data.model === "string" ? data.model.trim() : "";
+            const question = typeof data.question === "string" ? data.question.trim() : "";
+            if (!model || !question) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ ok: false, error: "model and question required" }) };
             }
-            const resolved = await gated.resolveGated({
-                userAddress: data.userAddress,
-                agentWallet: data.agentWallet,
-                slug: data.slug,
-                ...(typeof data.runId === "string" && data.runId ? { runId: data.runId } : {}),
-            });
-            if (!resolved) {
-                return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: false }) };
+            if (!CHAINGPT_MODELS.has(model)) {
+                return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ ok: false, error: `unsupported model: ${model}` }) };
             }
-            return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true, vars: resolved.vars }) };
+            const result = await callChainGptChat({ model, question });
+            if (result.ok) {
+                return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true, answer: result.answer }) };
+            }
+            return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({
+                    ok: false,
+                    error: result.error,
+                    ...(result.status !== undefined ? { status: result.status } : {}),
+                }),
+            };
         }
 
         return { statusCode: 404, headers: corsHeaders, body: JSON.stringify({ error: "Not found" }) };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error("[gated] Error:", message);
-        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
-    }
-}
-
-async function handleBackpackStatus(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    try {
-        const params = query(event);
-        if (!params.userAddress || !params.agentWallet) {
-            return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and agentWallet required" }) };
-        }
-        const [accounts, gated] = await Promise.all([loadBackpack(), loadBackpackGated()]);
-        const [connections, gatedConnections, gatedGrants] = await Promise.all([
-            accounts.listConnections(params.userAddress, params.agentWallet),
-            gated.listGated(params.userAddress),
-            gated.listGatedGrants(params.userAddress),
-        ]);
-        const grantedSlugs = new Set(
-            gatedGrants
-                .filter((grant) => grant.agentWallet === params.agentWallet?.toLowerCase())
-                .map((grant) => grant.slug),
-        );
-        const connectors = await Promise.all(gatedConnections.map(async (connection) => {
-            const card = await fetchConnectorCard(connection.slug);
-            const required = card?.credentials ?? [];
-            const provided = new Set(connection.varNames.map((name) => name.toUpperCase()));
-            const missingVars = required
-                .filter((credential) => !provided.has(credential.varName.toUpperCase()))
-                .map((credential) => ({
-                    varName: credential.varName,
-                    ...(credential.description ? { description: credential.description } : {}),
-                    ...(credential.obtainUrl ? { obtainUrl: credential.obtainUrl } : {}),
-                }));
-            return {
-                slug: connection.slug,
-                name: card?.name ?? connection.slug,
-                connected: connection.status === "active" && missingVars.length === 0,
-                allowed: grantedSlugs.has(connection.slug),
-                status: connection.status,
-                missingVars,
-                ...(card?.actions ? { actions: card.actions } : {}),
-            };
-        }));
-        return {
-            statusCode: 200,
-            headers: corsHeaders,
-            body: JSON.stringify({
-                userAddress: params.userAddress.toLowerCase(),
-                agentWallet: params.agentWallet.toLowerCase(),
-                accounts: connections.map((connection) => ({
-                    slug: connection.slug,
-                    connected: connection.connected,
-                    granted: connection.granted ?? false,
-                    connectedAccountId: connection.connectedAccountId,
-                    status: connection.status,
-                })),
-                connectors,
-            }),
-        };
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("[backpack-status] Error:", message);
+        console.error("[chaingpt] Error:", message);
         return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: message }) };
     }
 }
