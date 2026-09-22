@@ -1228,9 +1228,9 @@ async function handleCreateKey(event: APIGatewayProxyEventV2): Promise<APIGatewa
             const isFundingShortfall = readiness.reason === "insufficient_balance"
                 || readiness.reason === "insufficient_allowance";
             const error = readiness.reason === "insufficient_balance"
-                ? `Insufficient USDC balance for requested ${budgetLabel}`
+                ? `Insufficient ${getNetwork(network).asset.symbol} balance for requested ${budgetLabel}`
                 : readiness.reason === "insufficient_allowance"
-                    ? `Insufficient USDC allowance for requested ${budgetLabel}`
+                    ? `Insufficient ${getNetwork(network).asset.symbol} allowance for requested ${budgetLabel}`
                     : readiness.error || "Failed to verify Compose key funding readiness";
             const hint = readiness.reason === "insufficient_balance"
                 ? `Fund the selected account with at least the selected ${budgetLabel}, then retry ${actionLabel}.`
@@ -1633,7 +1633,7 @@ function query(event: APIGatewayProxyEventV2): Record<string, string | undefined
 }
 
 async function handlePermissionsRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-    const permissions = await loadBackpackPermissions();
+    const permissions = await loadPermissions();
     const method = event.requestContext.http.method;
 
     try {
