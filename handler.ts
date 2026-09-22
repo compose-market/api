@@ -39,6 +39,7 @@ import {
 } from "./x402/keys/index.js";
 import type { SessionInactiveReason } from "./x402/keys/types.js";
 import { resolveWalletScopes } from "./data/user/scopes.js";
+import { callChainGptChat, CHAINGPT_MODELS } from "./chaingpt.js";
 
 import {
     extractKeyFromHeader,
@@ -51,10 +52,8 @@ import {
 import { recordSession } from "./data/metrics/sessions.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
-import { handlePublicRoute, registerManowarRoutes } from "./routes.js";
+import { handlePublicRoute, registerUtilityRoutes } from "./routes.js";
 import {
-    AGENTS_ENTRYPOINT,
-    AGENTS_CATALOG,
     MODELS_ENTRYPOINT,
     MODELS_CATALOG,
 } from "./x402/discovery.js";
@@ -64,9 +63,13 @@ import type { BillingMediaEvidence } from "./inference/telemetry.js";
 import {
     authorizePaymentIntent,
     abortPaymentIntent,
+    getCanonicalPaymentIntent,
     settlePaymentIntent,
 } from "./x402/intents.js";
-import { getDefaultNetwork, getNetwork, getNetworkRpcUrl, isEvmNetwork, isNetworkId, type EvmNetworkId, type NetworkId } from "./x402/configs/chains.js";
+import { encodeReceiptHeader, RECEIPT_HEADER } from "./http/request-context.js";
+import { finalizeReceipt } from "./x402/receipts.js";
+import { kickBatchSettlement } from "./x402/index.js";
+import { getDefaultNetwork, getNetwork, getNetworkRpcUrl, isEvmNetwork, isNetworkId, isServiceBlockedNetwork, validateNearAddress, type EvmNetworkId, type NetworkId } from "./x402/configs/chains.js";
 import { validateSvmAddress } from "@x402/svm";
 import {
     getFacilitatorSupported,
@@ -80,10 +83,8 @@ import {
 // import { createBotchainAccount, prepareBotchainSessionApproval, submitBotchainSessionApproval } from "./botchain.js"; 
 import { recordConfirmedPayment, triggerConfirmedPayment } from "./data/metrics/payments.js";
 
-// Per-agent permissions / Composio accounts / gated connectors
-const loadBackpack = () => import("./backpack/accounts.js");
-const loadBackpackPermissions = () => import("./backpack/permissions.js");
-const loadBackpackGated = () => import("./backpack/gated.js");
+// Per-agent permissions
+const loadPermissions = () => import("./permissions/index.js");
 
 // Model Registry
 const loadRegistry = () => import("./inference/catalog/registry.js");
