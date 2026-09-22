@@ -878,7 +878,13 @@ type PaymentIntentPrepareBody = {
     rootRunId?: string;
     executionRunId?: string;
     parentExecutionRunId?: string;
+    sequence?: number;
     idempotencyKey?: string;
+    payTo?: string;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
 };
 
 async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
