@@ -208,7 +208,7 @@ function requireUserAddressHeader(event: APIGatewayProxyEventV2): string {
     if (!userAddress) {
         throw new Error("x-session-user-address header required");
     }
-    if (!/^0x[a-fA-F0-9]{40}$/.test(userAddress) && !validateSvmAddress(userAddress)) {
+    if (!/^0x[a-fA-F0-9]{40}$/.test(userAddress) && !validateSvmAddress(userAddress) && !validateNearAddress(userAddress)) {
         throw new Error("x-session-user-address header required");
     }
     return userAddress;
@@ -341,23 +341,15 @@ function expressApiHandler(): RequestHandler {
 export function registerHandlerRoutes(app: Application): void {
     const routeHandler = expressApiHandler();
 
-    registerManowarRoutes(app);
+    registerUtilityRoutes(app);
 
     app.get("/openapi.json", routeHandler);
     app.get("/.well-known/x402", routeHandler);
     app.get(MODELS_CATALOG, routeHandler);
-    app.get(AGENTS_CATALOG, routeHandler);
     app.post(new RegExp(`^${MODELS_ENTRYPOINT.replace(/\/$/u, "")}/?$`, "u"), routeHandler);
-    app.post(new RegExp(`^${AGENTS_ENTRYPOINT.replace(/\/$/u, "")}/?$`, "u"), routeHandler);
 
     app.get("/health", routeHandler);
     app.get("/api/models", routeHandler);
-    app.get("/agents", routeHandler);
-    app.get("/agents/search", routeHandler);
-    app.get(/^\/agent\/[^/]+\/avatar$/, routeHandler);
-    app.get(/^\/agent\/[^/]+$/, routeHandler);
-    app.get("/workflows", routeHandler);
-    app.get(/^\/workflow\/0x[a-fA-F0-9]{40}$/, routeHandler);
     app.get("/api/agentverse/agents", routeHandler);
 
     app.get("/api/pricing", routeHandler);
@@ -366,6 +358,10 @@ export function registerHandlerRoutes(app: Application): void {
     app.post("/api/payments/settle", routeHandler);
     app.post("/api/payments/abort", routeHandler);
     app.post("/api/payments/meter/model", routeHandler);
+    app.get("/supported", routeHandler);
+    app.get("/chains", routeHandler);
+    app.post("/verify", routeHandler);
+    app.post("/settle", routeHandler);
     app.get("/api/x402/facilitator/supported", routeHandler);
     app.get("/api/x402/facilitator/chains", routeHandler);
     app.post("/api/x402/facilitator/verify", routeHandler);
@@ -383,21 +379,7 @@ export function registerHandlerRoutes(app: Application): void {
     app.get("/permissions", routeHandler);
     app.post("/permissions", routeHandler);
     app.delete("/permissions", routeHandler);
-    app.get("/accounts", routeHandler);
-    app.post("/accounts/connect", routeHandler);
-    app.get("/accounts/status", routeHandler);
-    app.post("/accounts/execute", routeHandler);
-    app.delete("/accounts", routeHandler);
-    app.get("/accounts/toolkits", routeHandler);
-    app.get(/^\/accounts\/toolkits\/[^/]+\/actions$/, routeHandler);
-
-    app.get("/gated", routeHandler);
-    app.post("/gated/connect", routeHandler);
-    app.post("/gated/grant", routeHandler);
-    app.post("/gated/revoke", routeHandler);
-    app.post("/gated/disconnect", routeHandler);
-    app.post("/gated/resolve", routeHandler);
-    app.get("/backpack/status", routeHandler);
+    app.post("/chaingpt/chat", routeHandler);
     app.use("/api/registry", routeHandler);
     app.post("/api/local/link-token", routeHandler);
     app.post("/api/local/link-token/redeem", routeHandler);
@@ -484,19 +466,19 @@ export async function handler(
             return handleMeterModelPayment(event);
         }
 
-        if (method === "GET" && path === "/api/x402/facilitator/supported") {
+        if (method === "GET" && (path === "/api/x402/facilitator/supported" || path === "/supported")) {
             return handleFacilitatorSupported();
         }
 
-        if (method === "GET" && path === "/api/x402/facilitator/chains") {
+        if (method === "GET" && (path === "/api/x402/facilitator/chains" || path === "/chains")) {
             return handleFacilitatorChains();
         }
 
-        if (method === "POST" && path === "/api/x402/facilitator/verify") {
+        if (method === "POST" && (path === "/api/x402/facilitator/verify" || path === "/verify")) {
             return handleFacilitatorVerify(event);
         }
 
-        if (method === "POST" && path === "/api/x402/facilitator/settle") {
+        if (method === "POST" && (path === "/api/x402/facilitator/settle" || path === "/settle")) {
             return handleFacilitatorSettle(event);
         }
 
@@ -570,16 +552,8 @@ export async function handler(
             return handlePermissionsRoutes(event);
         }
 
-        if (path === "/accounts" || path.startsWith("/accounts/")) {
-            return handleAccountsRoutes(event);
-        }
-
-        if (path === "/gated" || path.startsWith("/gated/")) {
-            return handleGatedRoutes(event);
-        }
-
-        if (path === "/backpack/status" && method === "GET") {
-            return handleBackpackStatus(event);
+        if (path === "/chaingpt" || path.startsWith("/chaingpt/")) {
+            return handleChaingptRoutes(event);
         }
 
         // ==========================================================================
