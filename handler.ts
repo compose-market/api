@@ -974,6 +974,9 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
 type PaymentIntentSettleBody = {
     paymentIntentId?: string;
     finalAmountWei?: string;
+    executeImmediately?: boolean;
+    providerAmountWei?: string;
+    platformFeeWei?: string;
     meter?: {
         subject?: string;
         lineItems?: Array<{
