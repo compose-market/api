@@ -1002,9 +1002,26 @@ type PaymentIntentSettleBody = {
 
 async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const body = event.body ? JSON.parse(event.body) as PaymentIntentSettleBody : {};
+    const explicitLineItems = Array.isArray(body.lineItems)
+        ? body.lineItems
+            .filter((item) => typeof item?.key === "string" && typeof item?.unit === "string" && typeof item?.amountWei === "string")
+            .map((item) => ({
+                key: item.key!,
+                unit: item.unit!,
+                quantity: typeof item.quantity === "number" && Number.isFinite(item.quantity) ? item.quantity : 1,
+                unitPriceUsd: typeof item.unitPriceUsd === "number" && Number.isFinite(item.unitPriceUsd) ? item.unitPriceUsd : 0,
+                amountWei: item.amountWei!,
+            }))
+        : undefined;
     const result = await settlePaymentIntent({
         paymentIntentId: body.paymentIntentId || "",
         finalAmountWei: body.finalAmountWei,
+        executeImmediately: body.executeImmediately,
+        providerAmountWei: body.providerAmountWei,
+        platformFeeWei: body.platformFeeWei,
+        meterSubject: body.meterSubject,
+        lineItems: explicitLineItems,
+        royalties: body.royalties,
         meter: body.meter?.subject && Array.isArray(body.meter.lineItems)
             ? {
                 subject: body.meter.subject,
@@ -1017,17 +1034,75 @@ async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise
             }
             : undefined,
     });
+    const responseHeaders: Record<string, string> = {
+        ...corsHeaders,
+        ...result.headers,
+    };
+    if (result.ok) {
+        const intent = await getCanonicalPaymentIntent(result.body.paymentIntentId).catch(() => null);
+        if (intent && intent.service !== "inference") {
+            const settlementStatus = result.body.status === "confirmed"
+                ? "settled"
+                : result.body.status === "submitted"
+                    ? "submitted"
+                    : "queued";
+            const receipt = await finalizeReceipt({
+                finalAmountWei: result.body.finalAmountWei,
+                network: result.body.network,
+                settledAt: result.body.confirmedAt ?? Date.now(),
+                userAddress: intent.userAddress,
+                subject: result.body.meterSubject || intent.meterSubject || intent.service,
+                ...(result.body.lineItems?.length ? { lineItems: result.body.lineItems } : {}),
+                ...(result.body.providerAmountWei ? { providerAmountWei: result.body.providerAmountWei } : {}),
+                ...(result.body.platformFeeWei ? { platformFeeWei: result.body.platformFeeWei } : {}),
+                ...(result.body.txHash ? { txHash: result.body.txHash } : {}),
+                settlementStatus,
+                paymentIntentId: intent.paymentIntentId,
+                checkpointSequence: intent.sequence,
+                rootRunId: intent.rootRunId,
+                executionRunId: intent.executionRunId,
+                ...(intent.parentExecutionRunId ? { parentExecutionRunId: intent.parentExecutionRunId } : {}),
+            }, {
+                service: intent.service,
+                action: intent.action,
+                resource: intent.resource,
+                userAddress: intent.userAddress,
+                network: intent.network,
+            }).catch((error) => {
+                console.error("[payment-intent] receipt publication failed", {
+                    paymentIntentId: intent.paymentIntentId,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                return null;
+            });
+            if (receipt) {
+                responseHeaders[RECEIPT_HEADER] = encodeReceiptHeader(receipt);
+            }
+        }
+    }
     if (result.ok && result.body.status === "confirmed") {
-        const body = result.body;
-        triggerPaymentMetric(body.network, body.txHash, "payment-intent");
+        const settledBody = result.body;
+        triggerPaymentMetric(settledBody.network, settledBody.txHash, "payment-intent");
+    } else if (result.ok && (result.body.status === "queued" || result.body.status === "submitted")) {
+        void kickBatchSettlement(
+            {
+                paymentIntentId: result.body.paymentIntentId,
+                settlementStatus: result.body.status,
+                finalAmountWei: result.body.finalAmountWei,
+                txHash: result.body.txHash,
+            },
+            "payment-intent:settle",
+        ).catch((error) => {
+            console.error("[payment-intent] background settlement kick failed", {
+                paymentIntentId: result.body.paymentIntentId,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        });
     }
 
     return {
         statusCode: result.status,
-        headers: {
-            ...corsHeaders,
-            ...result.headers,
-        },
+        headers: responseHeaders,
         body: JSON.stringify(result.body),
     };
 }
