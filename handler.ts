@@ -977,6 +977,18 @@ type PaymentIntentSettleBody = {
     executeImmediately?: boolean;
     providerAmountWei?: string;
     platformFeeWei?: string;
+    meterSubject?: string;
+    lineItems?: Array<{
+        key?: string;
+        unit?: string;
+        quantity?: number;
+        unitPriceUsd?: number;
+        amountWei?: string;
+    }>;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
     meter?: {
         subject?: string;
         lineItems?: Array<{
