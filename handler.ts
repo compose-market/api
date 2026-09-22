@@ -887,6 +887,8 @@ type PaymentIntentPrepareBody = {
     };
 };
 
+const COMPOSE_INTERNAL_SERVICES = new Set(["api", "compose", "runtime", "inference", "agent", "connector"]);
+
 async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const body = event.body ? JSON.parse(event.body) as PaymentIntentPrepareBody : {};
     const authorization = event.headers.authorization || event.headers.Authorization;
