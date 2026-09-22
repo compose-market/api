@@ -894,6 +894,29 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
     const authorization = event.headers.authorization || event.headers.Authorization;
     const network = requireNetworkHeader(event);
 
+    const isComposeInternalService = !body.service || COMPOSE_INTERNAL_SERVICES.has(body.service);
+    if (isComposeInternalService && isServiceBlockedNetwork(network)) {
+        return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+                error: `Network ${network} is not supported for this service. Use a Mainnet, or ask for Testnet access.`,
+            }),
+        };
+    }
+
+    const explicitLineItems = Array.isArray(body.lineItems)
+        ? body.lineItems
+            .filter((item) => typeof item?.key === "string" && typeof item?.unit === "string" && typeof item?.amountWei === "string")
+            .map((item) => ({
+                key: item.key!,
+                unit: item.unit!,
+                quantity: typeof item.quantity === "number" && Number.isFinite(item.quantity) ? item.quantity : 1,
+                unitPriceUsd: typeof item.unitPriceUsd === "number" && Number.isFinite(item.unitPriceUsd) ? item.unitPriceUsd : 0,
+                amountWei: item.amountWei!,
+            }))
+        : undefined;
+
     const result = await authorizePaymentIntent({
         authorization: authorization || "",
         network,
@@ -902,6 +925,11 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
         resource: body.resource || "",
         method: body.method || "",
         maxAmountWei: body.maxAmountWei,
+        useBudgetCap: body.useBudgetCap === true,
+        payTo: body.payTo,
+        royalties: body.royalties,
+        meterSubject: body.meterSubject,
+        lineItems: explicitLineItems,
         meter: body.meter?.subject && Array.isArray(body.meter.lineItems)
             ? {
                 subject: body.meter.subject,
@@ -914,21 +942,23 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
             }
             : undefined,
         runId: body.runId,
+        rootRunId: body.rootRunId,
+        executionRunId: body.executionRunId,
+        parentExecutionRunId: body.parentExecutionRunId,
+        sequence: body.sequence,
         idempotencyKey: body.idempotencyKey,
     });
 
     if (result.ok && typeof result.body.paymentIntentId === "string" && result.headers["x-session-budget-limit"]) {
-        try {
-            await recordSession({
-                keyId: result.body.paymentIntentId,
-                network,
-                createdAt: new Date(),
-            });
-        } catch (error) {
+        void recordSession({
+            keyId: result.body.paymentIntentId,
+            network,
+            createdAt: new Date(),
+        }).catch((error) => {
             console.error("[metrics] session record failed", {
                 error: error instanceof Error ? error.message : String(error),
             });
-        }
+        });
     }
 
     return {
