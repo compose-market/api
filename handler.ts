@@ -856,6 +856,15 @@ type PaymentIntentPrepareBody = {
     resource?: string;
     method?: string;
     maxAmountWei?: string;
+    useBudgetCap?: boolean;
+    meterSubject?: string;
+    lineItems?: Array<{
+        key?: string;
+        unit?: string;
+        quantity?: number;
+        unitPriceUsd?: number;
+        amountWei?: string;
+    }>;
     meter?: {
         subject?: string;
         lineItems?: Array<{
