@@ -47,3 +47,26 @@ export interface UsageRecord {
   reasoningTokens?: number;
   timestamp?: number;
 }
+
+function requireResolvedCard(resolved: ResolvedBillingModel, phase: "authorization" | "settlement"): ModelCard {
+  if (!resolved.card) {
+    throw new Error(`Model metadata is required for metered ${phase}: ${resolved.modelId}`);
+  }
+  if (!resolved.card.pricing) {
+    throw new Error(`pricing is required for metered ${phase}: ${resolved.modelId}`);
+  }
+
+  return resolved.card;
+}
+
+function requireUsageRecords(usageRecords: UsageRecord[]): UsageRecord[] {
+  if (!Array.isArray(usageRecords) || usageRecords.length === 0) {
+    throw new Error("usageRecords must contain at least one authoritative usage record");
+  }
+
+  return usageRecords;
+}
+
+function quotedLineItemIdentity(item: Pick<MeterLineItem, "key" | "unit" | "unitPriceUsd">): string {
+  return JSON.stringify([item.key, item.unit, item.unitPriceUsd]);
+}
