@@ -70,3 +70,23 @@ function requireUsageRecords(usageRecords: UsageRecord[]): UsageRecord[] {
 function quotedLineItemIdentity(item: Pick<MeterLineItem, "key" | "unit" | "unitPriceUsd">): string {
   return JSON.stringify([item.key, item.unit, item.unitPriceUsd]);
 }
+
+function positiveMetricDifference(
+  current: Record<string, number>,
+  previous: Record<string, number>,
+): Record<string, number> {
+  const metrics: Record<string, number> = {};
+  for (const [key, value] of Object.entries(current)) {
+    const prior = previous[key] || 0;
+    if (value < prior) {
+      throw new Error(`cumulative metered telemetry regressed: ${key}`);
+    }
+    if (value > prior) metrics[key] = value - prior;
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    if (value > 0 && current[key] === undefined) {
+      throw new Error(`cumulative metered telemetry regressed: ${key}`);
+    }
+  }
+  return metrics;
+}
