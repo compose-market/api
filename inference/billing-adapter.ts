@@ -27,4 +27,13 @@ export interface MeteredModelQuote extends MeteredAmountBreakdown {
   modelId: string;
   provider: ModelProvider;
   known: boolean;
+  meter: MeteredAuthorizationInput | MeteredSettlementInput;
+  telemetry?: ReturnType<typeof buildRequestBilling> | ReturnType<typeof buildAuthoritativeBilling>;
+}
+
+export interface SettlementMeterArgs {
+  resolved: ResolvedBillingModel;
+  modality: Request["modality"];
+  usage?: unknown;
+  media?: unknown;
 }
