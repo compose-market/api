@@ -37,3 +37,13 @@ export interface SettlementMeterArgs {
   usage?: unknown;
   media?: unknown;
 }
+
+export interface UsageRecord {
+  agentWallet?: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningTokens?: number;
+  timestamp?: number;
+}
