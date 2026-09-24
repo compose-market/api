@@ -144,3 +144,68 @@ export function resolveBillingModel(modelId: string): ResolvedBillingModel {
 export function meterSubject(provider: ModelProvider, modelId: string): string {
   return `${provider}:${modelId}`;
 }
+
+export function buildResolvedAuthorizationMeter(args: {
+  request: Request;
+  resolved: ResolvedBillingModel;
+}): MeteredModelQuote {
+  const card = requireResolvedCard(args.resolved, "authorization");
+  const subject = meterSubject(args.resolved.provider, args.resolved.modelId);
+
+  const billing = buildRequestBilling({
+    subject,
+    modality: args.request.modality,
+    pricing: card.pricing!,
+    metrics: args.request.billingMetrics,
+  });
+  const meter: MeteredAuthorizationInput = {
+    subject: billing.subject,
+    lineItems: billing.lineItems.map(({ source: _source, ...lineItem }) => lineItem),
+  };
+
+  return {
+    modelId: args.resolved.modelId,
+    provider: args.resolved.provider,
+    known: args.resolved.known,
+    meter,
+    telemetry: billing,
+    ...quoteMeteredAuthorization(meter),
+  };
+}
+
+export function buildResolvedAuthorizationInput(args: {
+  request: Request;
+  resolved: ResolvedBillingModel;
+}): ResolvedAuthorizationInput {
+  requireResolvedCard(args.resolved, "authorization");
+  if (args.request.modality === "realtime") {
+    return { useBudgetCap: true, scheme: "batch-settlement" };
+  }
+  return { useBudgetCap: true };
+}
+
+export function buildResolvedSettlementMeter(args: SettlementMeterArgs): MeteredModelQuote {
+  const card = requireResolvedCard(args.resolved, "settlement");
+
+  const billing = buildAuthoritativeBilling({
+    subject: meterSubject(args.resolved.provider, args.resolved.modelId),
+    modality: args.modality,
+    pricing: card.pricing!,
+    usage: args.usage,
+    media: args.media,
+  });
+
+  const meter: MeteredSettlementInput = {
+    subject: billing.subject,
+    lineItems: billing.lineItems.map(({ source: _source, ...lineItem }) => lineItem),
+  };
+
+  return {
+    modelId: args.resolved.modelId,
+    provider: args.resolved.provider,
+    known: args.resolved.known,
+    meter,
+    telemetry: billing,
+    ...quoteMeteredSettlement(meter),
+  };
+}
