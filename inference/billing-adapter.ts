@@ -90,3 +90,57 @@ function positiveMetricDifference(
   }
   return metrics;
 }
+
+export function differenceMeteredModelQuote(
+  current: MeteredModelQuote,
+  previous?: MeteredModelQuote,
+): MeteredModelQuote {
+  if (previous && (
+    current.modelId !== previous.modelId
+    || current.provider !== previous.provider
+    || current.known !== previous.known
+  )) {
+    throw new Error("cumulative metered model identity changed");
+  }
+
+  const amount = differenceMeteredAmount(current, previous);
+  const meter: MeteredSettlementInput = {
+    subject: amount.subject,
+    lineItems: amount.lineItems.map(({ amountWei: _amountWei, ...item }) => item),
+  };
+  const currentTelemetry = current.telemetry;
+  const previousTelemetry = previous?.telemetry;
+  const telemetryItems = new Map(
+    (currentTelemetry?.lineItems || []).map((item) => [quotedLineItemIdentity(item), item]),
+  );
+  const telemetry = currentTelemetry
+    ? {
+      subject: currentTelemetry.subject,
+      lineItems: amount.lineItems.map(({ amountWei: _amountWei, ...item }) => {
+        const source = telemetryItems.get(quotedLineItemIdentity(item))?.source || "provider_response";
+        return { ...item, source };
+      }),
+      metrics: positiveMetricDifference(
+        currentTelemetry.metrics,
+        previousTelemetry?.metrics || {},
+      ),
+    }
+    : undefined;
+
+  return {
+    modelId: current.modelId,
+    provider: current.provider,
+    known: current.known,
+    meter,
+    ...(telemetry ? { telemetry } : {}),
+    ...amount,
+  };
+}
+
+export function resolveBillingModel(modelId: string): ResolvedBillingModel {
+  return resolveModel(modelId);
+}
+
+export function meterSubject(provider: ModelProvider, modelId: string): string {
+  return `${provider}:${modelId}`;
+}
