@@ -209,3 +209,49 @@ export function buildResolvedSettlementMeter(args: SettlementMeterArgs): Metered
     ...quoteMeteredSettlement(meter),
   };
 }
+
+export function buildSettlementMeterFromOutput(args: {
+  request: Request;
+  output: Output;
+  resolved: ResolvedBillingModel;
+  checkpointSequence?: number;
+}): MeteredModelQuote {
+  const checkpointSequence = args.checkpointSequence ?? 0;
+  const requestMetrics = requestBillingMetricsForCheckpoint(
+    args.request.billingMetrics,
+    checkpointSequence,
+  );
+  return buildResolvedSettlementMeter({
+    resolved: args.resolved,
+    modality: args.request.modality,
+    usage: args.output.usage,
+    media: {
+      generatedUnits: args.output.media?.generatedUnits,
+      generatedSeconds: args.output.media?.duration,
+      generatedMinutes: typeof args.output.media?.duration === "number" ? args.output.media.duration / 60 : undefined,
+      requests: 1,
+      billingMetrics: {
+        ...(requestMetrics || {}),
+        ...(args.output.usage?.billingMetrics || {}),
+        ...(args.output.media?.billingMetrics || {}),
+        ...(checkpointSequence > 0 || args.request.modality === "realtime" ? {} : { request: 1 }),
+      },
+    },
+  });
+}
+
+export function requestBillingMetricsForCheckpoint(
+  metrics: Record<string, unknown> | undefined,
+  checkpointSequence: number,
+): Record<string, unknown> | undefined {
+  if (!metrics) return undefined;
+  if (checkpointSequence === 0) return { ...metrics };
+
+  const selectors: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metrics)) {
+    if (typeof value === "string" || typeof value === "boolean") {
+      selectors[key] = value;
+    }
+  }
+  return Object.keys(selectors).length > 0 ? selectors : undefined;
+}
