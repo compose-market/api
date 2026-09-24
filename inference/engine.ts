@@ -134,19 +134,25 @@ export async function stream(request: Request, options: RunOptions = {}): Promis
     context: {
       modelId: resolved.modelId,
       provider: resolved.provider,
+      wireModelId: upstreamModelId,
       card: resolved.card,
     },
-    retriesPerTarget: options.retriesPerTarget,
+    retriesPerTarget: options.retriesPerTarget ?? defaultRetries(request),
+    allowFallback: options.allowFallback,
     execute: async (target) => {
       const { streamWithTools } = await load();
-      return {
-        stream: streamWithTools(request, {
-          modelId: upstreamModelId,
-          provider: target.provider,
-          family: resolved.card?.family,
-          signal: options.signal,
-        }),
-      };
+      const generator = streamWithTools(request, {
+        modelId: target.wireModelId,
+        catalogModelId: resolved.modelId,
+        provider: target.provider,
+        family: resolved.card?.family,
+        signal: options.signal,
+      });
+      // Provider generators are lazy: without priming, the policy would
+      // accept the primary target before any provider contact and every
+      // failure would surface outside the fallback chain.
+      const first = requireStreamStart(await generator.next());
+      return { stream: primedStream(first, generator) };
     },
   });
 
