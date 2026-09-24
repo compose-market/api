@@ -23,6 +23,7 @@ import {
   isCanonicalModality,
   isCanonicalOperation,
 } from "./catalog/modalities/index.js";
+import { videoBillingMetricsFromOutput } from "./catalog/modalities/video.js";
 import {
   getFamilyCatalog,
   normalizeFamily,
@@ -58,7 +59,7 @@ import {
   type ReceiptContext,
 } from "../x402/receipts.js";
 import { recordChargeEvidence, type EvidenceKind } from "../x402/evidence.js";
-import { isNetworkId, type NetworkId } from "../x402/configs/chains.js";
+import { isNetworkId, isServiceBlockedNetwork, type NetworkId } from "../x402/configs/chains.js";
 import {
   createErrorResponse as createCoreErrorResponse,
   formatSSE as formatCoreSSE,
@@ -96,6 +97,7 @@ import {
   cancel as cancelEngine,
   closeRealtime as closeRealtimeEngine,
   generate as generateEngine,
+  resolvedForRoute,
   retrieve as retrieveEngine,
   stream as streamEngine,
 } from "./engine.js";
@@ -335,7 +337,7 @@ export interface EmbeddingRequest {
 
 export interface VideoGenerationRequest {
   model: string;
-  prompt: string;
+  prompt?: string;
   attachments?: unknown[];
   attachment?: unknown;
   duration?: number;
