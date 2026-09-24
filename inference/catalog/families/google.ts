@@ -2009,6 +2009,15 @@ const GOOGLE_GENERATION_ALIASES = new Map([
     ["top_p", "topP"],
 ]);
 
+const GOOGLE_THINKING_ALIASES = new Map([
+    ["includeThoughts", "includeThoughts"],
+    ["include_thoughts", "includeThoughts"],
+    ["thinkingBudget", "thinkingBudget"],
+    ["thinking_budget", "thinkingBudget"],
+    ["thinkingLevel", "thinkingLevel"],
+    ["thinking_level", "thinkingLevel"],
+]);
+
 function generationConfigFromGoogleOptions(opts: GoogleWireChatOptions | undefined): Record<string, unknown> | undefined {
     if (!opts) return undefined;
     const cfg: Record<string, unknown> = {};
