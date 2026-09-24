@@ -21,7 +21,10 @@ export function normalizeFamily(value: unknown): string | null {
 
 const RULES: Array<{ family: string; patterns: string[] }> = [
   { family: "deepgram", patterns: ["deepgram/flux", "nova-*", "aura-*"] },
-  { family: "alibaba", patterns: ["qwen*", "qwq*", "happyhorse", "happyhorse-*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*", "voice-enrollment"] },
+  { family: "alibaba", patterns: ["qwen*", "qwq*", "happyhorse", "happyhorse-*", "qvq*", "wan*", "cosyvoice", "paraformer", "fun-asr*", "gte*", "tongyi-*", "z-image-*", "voice-enrollment", "decision-model*"] },
+  { family: "shengshu", patterns: ["vidu*", "vidu/*", "shengshu*"] },
+  { family: "cloudflare", patterns: ["clef*"] },
+  { family: "fireworks", patterns: ["ember*"] },
   { family: "nvidia", patterns: ["nemotron-*", "nv-*", "nvidia/*"] },
   { family: "xai", patterns: ["grok-*"] },
   { family: "anthropic", patterns: ["claude-*"] },
