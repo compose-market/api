@@ -96,6 +96,9 @@ function row(model: ModelCard): Record<string, unknown> {
       provider: model.provider,
       model_id: model.modelId,
       ...(model.upstreamModelId ? { upstream_model_id: model.upstreamModelId } : {}),
+      ...(Array.isArray(model.availableFrom) && model.availableFrom.length > 0
+        ? { available_from: model.availableFrom }
+        : {}),
       ...(model.ownedBy ? { owned_by: model.ownedBy } : {}),
       ...meta(model),
     },
@@ -466,7 +469,9 @@ export function resolveExternalModel(): RequestHandler {
     }
 
     const source = body as Record<string, unknown>;
-    source.model = resolved.id;
+    // Keep qualified aliases (`openai/gpt-5.5`) intact so downstream routing
+    // preserves the provider pin; bare ids resolve to the priority winner.
+    source.model = typeof source.model === "string" && source.model.length > 0 ? source.model : resolved.id;
     res.locals.externalModelId = resolved.id;
     res.locals.externalResolvedModel = resolved.resolved;
     res.locals.externalCompatibility = true;
