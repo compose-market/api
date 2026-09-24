@@ -1499,33 +1499,26 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
     typeof body.previous_response_id === "string" ? body.previous_response_id : undefined;
   const rawCustomParams = validatedCustomParams(body.custom_params);
   const passParams = params(body);
-  const resolvedModelParams = resolveOptionalModelParamValues(model, modality, body);
-  const providedModelParams = resolveProvidedOptionalModelParamValues(model, modality, body);
+  const modelParamBody = modality === "image"
+    ? { ...body, n: undefined, size: undefined, quality: undefined }
+    : body;
+  if (modality === "image") {
+    resolveProvidedOptionalModelParamValues(model, modality, body);
+  }
+  const resolvedModelParams = resolveOptionalModelParamValues(model, modality, modelParamBody);
+  const providedModelParams = resolveProvidedOptionalModelParamValues(model, modality, modelParamBody);
   const inputParams = modality === "realtime"
     ? realtimeInputParams(getModelById(model), messages)
     : {};
-  const providedParams = modality === "realtime"
-    ? {
-      ...(resolvedModelParams?.values ?? {}),
-      ...inputParams,
-      ...derivedParams,
-      ...(passParams || {}),
-      ...(rawCustomParams || {}),
-      ...(providedModelParams?.values ?? {}),
-    }
-    : {
-      ...derivedParams,
-      ...(passParams || {}),
-      ...(rawCustomParams || {}),
-      ...(providedModelParams?.values ?? {}),
-    };
-  const billingParams = {
+  const appliedParams = {
+    ...(resolvedModelParams?.values ?? {}),
+    ...inputParams,
     ...derivedParams,
     ...(passParams || {}),
     ...(rawCustomParams || {}),
-    ...(resolvedModelParams?.values ?? {}),
+    ...(providedModelParams?.values ?? {}),
   };
-  const customParams = Object.keys(providedParams).length > 0 ? providedParams : undefined;
+  const customParams = Object.keys(appliedParams).length > 0 ? appliedParams : undefined;
   const customParamsRecord = asRecord(customParams);
   const truncation = body.truncation === "auto" || body.truncation === "disabled"
     ? body.truncation
@@ -1610,7 +1603,7 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Reques
     customParams,
     responseFormat: modality === "text" ? parseInboundResponseFormat(body.response_format) : undefined,
     billingMetrics: (modality === "image" || modality === "video" || modality === "audio")
-      ? buildRequestBillingMetrics(modality, billingParams, promptText)
+      ? buildRequestBillingMetrics(modality, appliedParams, promptText)
       : undefined,
   };
 }
@@ -1646,13 +1639,17 @@ export function toResponsesOutputItems(output: Output): ResponsesOutputItem[] {
 
   if (output.media) {
     if (output.modality === "image") {
-      const url = output.media.url || (output.media.base64 ? `data:${output.media.mimeType};base64,${output.media.base64}` : undefined);
-      return [{
-        type: "output_image",
-        role: "assistant",
-        ...(url ? { image_url: url } : {}),
-        ...(output.media.mimeType ? { mime_type: output.media.mimeType } : {}),
-      }];
+      const images = output.media.images?.length ? output.media.images : [output.media];
+      return images.map((image) => {
+        const url = image.url || (image.base64 ? `data:${image.mimeType};base64,${image.base64}` : undefined);
+        return {
+          type: "output_image",
+          role: "assistant",
+          ...(url ? { image_url: url } : {}),
+          ...(image.mimeType ? { mime_type: image.mimeType } : {}),
+          ...(image.revisedPrompt ? { revised_prompt: image.revisedPrompt } : {}),
+        };
+      });
     }
 
     if (output.modality === "audio") {
