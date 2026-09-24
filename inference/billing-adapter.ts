@@ -255,3 +255,67 @@ export function requestBillingMetricsForCheckpoint(
   }
   return Object.keys(selectors).length > 0 ? selectors : undefined;
 }
+
+export function buildUsageRecordSettlementMeter(args: {
+  subject: string;
+  usageRecords: UsageRecord[];
+}): MeteredModelQuote {
+  const usageRecords = requireUsageRecords(args.usageRecords);
+  const lineItems: MeterLineItem[] = [];
+  let resolvedModelId = "";
+  let resolvedProvider: ModelProvider = "openai";
+
+  for (const usageRecord of usageRecords) {
+    const resolved = resolveBillingModel(usageRecord.model);
+    const card = requireResolvedCard(resolved, "settlement");
+    const billing = buildAuthoritativeBilling({
+      subject: meterSubject(resolved.provider, resolved.modelId),
+      modality: "text",
+      pricing: card.pricing!,
+      usage: {
+        promptTokens: usageRecord.inputTokens,
+        completionTokens: usageRecord.outputTokens,
+        totalTokens: usageRecord.totalTokens,
+        reasoningTokens: usageRecord.reasoningTokens,
+        billingMetrics: {
+          input_text_tokens: usageRecord.inputTokens,
+          output_text_tokens: usageRecord.outputTokens,
+          ...(typeof usageRecord.reasoningTokens === "number" ? { reasoning_tokens: usageRecord.reasoningTokens } : {}),
+        },
+      },
+    });
+
+    const tokenLineItems = billing.lineItems
+      .filter((item) => /^usd_per_\d+[km]_tokens$/.test(item.unit))
+      .map(({ source: _source, ...lineItem }) => ({
+        ...lineItem,
+        key: `${resolved.provider}:${resolved.modelId}:${lineItem.key.replace(/^text_/, "")}`,
+      }));
+
+    if (tokenLineItems.length === 0) {
+      throw new Error(`workflow usage record pricing must be token-based: ${usageRecord.model}`);
+    }
+
+    lineItems.push(...tokenLineItems);
+
+    resolvedModelId = resolved.modelId;
+    resolvedProvider = resolved.provider;
+  }
+
+  if (lineItems.length === 0) {
+    throw new Error("usageRecords must contain at least one authoritative usage record");
+  }
+
+  const meter: MeteredSettlementInput = {
+    subject: args.subject,
+    lineItems,
+  };
+
+  return {
+    modelId: resolvedModelId || args.subject,
+    provider: resolvedProvider,
+    known: true,
+    meter,
+    ...quoteMeteredSettlement(meter),
+  };
+}
