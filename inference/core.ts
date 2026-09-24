@@ -144,7 +144,14 @@ export interface Call {
   providerMetadata?: Record<string, unknown>;
 }
 
-export interface Media {
+export interface MediaItem {
+  mimeType: string;
+  base64?: string;
+  url?: string;
+  revisedPrompt?: string;
+}
+
+export interface Media extends MediaItem {
   mimeType: string;
   base64?: string;
   url?: string;
@@ -155,6 +162,7 @@ export interface Media {
   status?: "queued" | "processing" | "completed" | "failed";
   progress?: number;
   billingMetrics?: Record<string, unknown>;
+  images?: MediaItem[];
 }
 
 export interface Output {
