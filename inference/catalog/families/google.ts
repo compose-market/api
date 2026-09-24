@@ -2034,10 +2034,23 @@ function generationConfigFromGoogleOptions(opts: GoogleWireChatOptions | undefin
         }
     }
     if (opts.customParams) {
+        const thinkingFields: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(opts.customParams)) {
+            if (value === undefined) continue;
+            const thinkingField = GOOGLE_THINKING_ALIASES.get(key);
+            if (thinkingField) {
+                thinkingFields[thinkingField] = value;
+                continue;
+            }
             const field = GOOGLE_GENERATION_ALIASES.get(key) || key;
             if (!GOOGLE_GENERATION_CONFIG.has(field)) continue;
-            if (value !== undefined && cfg[field] === undefined) cfg[field] = value;
+            if (cfg[field] === undefined) cfg[field] = value;
+        }
+        if (Object.keys(thinkingFields).length > 0) {
+            const existingThinking = cfg.thinkingConfig && typeof cfg.thinkingConfig === "object" && !Array.isArray(cfg.thinkingConfig)
+                ? cfg.thinkingConfig as Record<string, unknown>
+                : {};
+            cfg.thinkingConfig = { ...thinkingFields, ...existingThinking };
         }
     }
     return Object.keys(cfg).length > 0 ? cfg : undefined;
