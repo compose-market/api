@@ -95,6 +95,38 @@ export async function generate(request: Request, options: RunOptions = {}): Prom
   return { resolved, route, result: route.result };
 }
 
+/**
+ * Replay a stream's primed first event, then delegate to the provider
+ * generator. The first event is pulled inside the routing policy (see
+ * `stream`), so provider setup and first-response failures — connect
+ * errors, 5xx on the opening request — surface where the fallback chain
+ * can retry or switch providers. Failures after the first delivered event
+ * happen mid-stream, when the response is already committed to the client;
+ * those cannot switch providers.
+ */
+export async function* primedStream<Event>(
+  first: IteratorResult<Event>,
+  rest: AsyncGenerator<Event>,
+): AsyncGenerator<Event> {
+  if (!first.done) {
+    yield first.value;
+  }
+  yield* rest;
+}
+
+export function requireStreamStart(first: IteratorResult<Event>): IteratorResult<Event> {
+  if (first.done) {
+    throw Object.assign(new Error("upstream stream ended without output"), { statusCode: 502 });
+  }
+  if (first.value.type === "error") {
+    throw Object.assign(new Error(first.value.error?.message || "upstream stream failed before output"), {
+      statusCode: 502,
+      code: first.value.error?.code,
+    });
+  }
+  return first;
+}
+
 export async function stream(request: Request, options: RunOptions = {}): Promise<Run<{ stream: AsyncGenerator<Event> }>> {
   const resolved = resolve(request);
   const upstreamModelId = upstream(resolved);
