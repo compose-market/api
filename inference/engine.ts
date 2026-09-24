@@ -75,13 +75,16 @@ export async function generate(request: Request, options: RunOptions = {}): Prom
     context: {
       modelId: resolved.modelId,
       provider: resolved.provider,
+      wireModelId: upstreamModelId,
       card: resolved.card,
     },
-    retriesPerTarget: options.retriesPerTarget,
+    retriesPerTarget: options.retriesPerTarget ?? defaultRetries(request),
+    allowFallback: options.allowFallback,
     execute: async (target) => {
       const { generateWithTools } = await load();
       return generateWithTools(request, {
-        modelId: upstreamModelId,
+        modelId: target.wireModelId,
+        catalogModelId: resolved.modelId,
         provider: target.provider,
         family: resolved.card?.family,
         signal: options.signal,
