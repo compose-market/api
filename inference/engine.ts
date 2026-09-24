@@ -21,6 +21,11 @@ export interface Cancel {
 export interface RunOptions {
   signal?: AbortSignal;
   retriesPerTarget?: number;
+  allowFallback?: boolean;
+}
+
+function defaultRetries(request: Request): number {
+  return request.modality === "text" || request.modality === "embedding" ? 2 : 0;
 }
 
 function load() {
@@ -35,6 +40,32 @@ function upstream(resolved: ResolvedModel): string {
   return typeof resolved.card?.upstreamModelId === "string" && resolved.card.upstreamModelId.length > 0
     ? resolved.card.upstreamModelId
     : resolved.modelId;
+}
+
+/**
+ * Billing view of a resolved model after routing: when a fallback provider
+ * served the call, settlement must price with that provider's route pricing
+ * (and subject), not the primary's. Authorization already used the primary.
+ */
+export function resolvedForRoute(resolved: ResolvedModel, route: PolicyResult<unknown>): ResolvedModel {
+  if (!route.fallbackUsed) return resolved;
+  const final = route.final;
+  const card = resolved.card;
+  const routePricing = final.pricing ?? null;
+  return {
+    ...resolved,
+    provider: final.provider,
+    ...(card
+      ? {
+        card: {
+          ...card,
+          provider: final.provider,
+          upstreamModelId: final.wireModelId,
+          ...(routePricing ? { pricing: routePricing } : {}),
+        },
+      }
+      : {}),
+  };
 }
 
 export async function generate(request: Request, options: RunOptions = {}): Promise<Run<AdapterResult>> {
