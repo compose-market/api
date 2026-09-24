@@ -1966,6 +1966,7 @@ function googleToolConfigToWire(toolChoice: Choice | undefined): Record<string, 
 const GOOGLE_GENERATION_CONFIG = new Set([
     "audioTimestamp",
     "candidateCount",
+    "enableAffectiveDialog",
     "enableEnhancedCivicAnswers",
     "frequencyPenalty",
     "logprobs",
@@ -1989,6 +1990,7 @@ const GOOGLE_GENERATION_CONFIG = new Set([
 const GOOGLE_GENERATION_ALIASES = new Map([
     ["audio_timestamp", "audioTimestamp"],
     ["candidate_count", "candidateCount"],
+    ["enable_affective_dialog", "enableAffectiveDialog"],
     ["enable_enhanced_civic_answers", "enableEnhancedCivicAnswers"],
     ["frequency_penalty", "frequencyPenalty"],
     ["max_output_tokens", "maxOutputTokens"],
