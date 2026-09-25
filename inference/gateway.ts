@@ -1278,6 +1278,66 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function completedVideoOutput(request: Request, output: Output, status: AdapterStatus): Output {
+  if (output.modality !== "video" || !output.media) return output;
+  const measured = status.buffer
+    ? videoBillingMetricsFromOutput({ request, buffer: status.buffer, generatedUnits: output.media.generatedUnits || 1 })
+    : {};
+  const billingMetrics = {
+    ...(output.media.billingMetrics || {}),
+    ...measured,
+    ...(status.usage?.billingMetrics || {}),
+    ...(status.billingMetrics || {}),
+  };
+  return {
+    ...output,
+    media: {
+      ...output.media,
+      mimeType: status.mimeType || output.media.mimeType,
+      status: "completed",
+      progress: typeof status.progress === "number" ? status.progress : 100,
+      ...(status.url ? { url: status.url } : {}),
+      ...(status.buffer ? { base64: status.buffer.toString("base64") } : {}),
+      ...(typeof status.duration === "number" ? { duration: status.duration } : {}),
+      billingMetrics,
+    },
+    usage: status.usage || output.usage,
+  };
+}
+
+async function awaitCompletedVideo(request: Request, output: Output, signal: AbortSignal): Promise<Output> {
+  const jobId = output.modality === "video" ? output.media?.jobId : undefined;
+  if (!jobId || output.media?.status === "completed") return output;
+  const startedAt = Date.now();
+  const timeoutMs = 600_000;
+  while (!signal.aborted) {
+    const status = await retrieveVideoStatus(jobId, signal);
+    if (status.status === "completed") return completedVideoOutput(request, output, status);
+    if (status.status === "failed") {
+      throw Object.assign(new Error(status.error || `Video job ${jobId} failed`), {
+        statusCode: 502,
+        code: "upstream_error",
+      });
+    }
+    if (Date.now() - startedAt >= timeoutMs) throw new UpstreamTimeoutError(timeoutMs);
+    await wait(10_000, signal);
+  }
+  throw abortError(signal);
+}
+
+async function retrieveVideoStatus(jobId: string, signal: AbortSignal): Promise<AdapterStatus> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await retrieveDirectAdapter(jobId);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await wait(1_000, signal);
+    }
+  }
+  throw lastError;
+}
+
 async function saveResponseRecord(record: StoredResponseRecord): Promise<void> {
   await responseStateStore.save(record);
 }
