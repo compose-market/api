@@ -1,5 +1,4 @@
 import type { Modality, Usage } from "./core.js";
-import { rankOptionValue, resolveModelParams } from "./params-handler.js";
 import type { ModelPricing } from "./types.js";
 import type { MeterLineItem } from "../x402/metering.js";
 
@@ -11,6 +10,7 @@ export interface BillingPrice {
 interface BillingPriceSection extends BillingPrice {
   header?: string;
   default?: boolean;
+  selector?: Record<string, unknown>;
 }
 
 interface RawPriceValue {
