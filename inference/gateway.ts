@@ -2091,6 +2091,9 @@ export async function executeRequest(args: {
   let settlementSequence = 0;
   let cumulativeSettlementAmountWei = 0n;
   let chargedCumulativeQuote: MeteredModelQuote | undefined;
+  // Billing view of the resolved model: updated when a fallback provider
+  // serves the call so settlement prices with that provider's route.
+  let settlementResolved: ResolvedModel = paid.resolved;
   let activeSettlement: Promise<Receipt | null> | null = null;
   let activeSettlementLane: CumulativeSettlementLane | null = null;
   let activeSettlementCheckpoint: (() => boolean) | null = null;
@@ -2110,7 +2113,7 @@ export async function executeRequest(args: {
         payment: paid.payment,
         request,
         output,
-        resolved: paid.resolved,
+        resolved: settlementResolved,
         checkpointSequence,
         previousCumulativeAmountWei: cumulativeSettlementAmountWei.toString(),
         previousCumulativeQuote: chargedCumulativeQuote,
@@ -2200,7 +2203,10 @@ export async function executeRequest(args: {
       if (!externalCompatibility) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
       try {
-        const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
+        const direct = externalCompatibility ? null : withDirectDeadline(
+          lifecycle.signal,
+          request.modality === "video" ? 600_000 : undefined,
+        );
         const keepalive = setInterval(() => {
           if (!args.res.writableEnded) {
             args.res.write(": ping\n\n");
@@ -2211,10 +2217,17 @@ export async function executeRequest(args: {
           routed = await generateEngine(request, {
             signal: direct?.signal || lifecycle.signal,
             retriesPerTarget: externalCompatibility ? 0 : undefined,
+            allowFallback: !externalCompatibility,
           });
         } finally {
           clearInterval(keepalive);
           direct?.cleanup();
+        }
+        settlementResolved = resolvedForRoute(settlementResolved, routed.route);
+        baseRecord.provider = settlementResolved.provider;
+        if (telemetry) telemetry.resolved = settlementResolved;
+        if (!args.res.headersSent) {
+          applyRoutingHeaders(args.res, routed.route);
         }
         const output = routed.result.output;
         if (externalCompatibility) {
@@ -2230,12 +2243,12 @@ export async function executeRequest(args: {
         const jobId = output.media?.jobId;
         if (output.modality === "video" && jobId && output.media?.status !== "completed") {
           const startedAt = Date.now();
-          const timeoutMs = 1_800_000;
-          const pollIntervalMs = 2_000;
+          const timeoutMs = 600_000;
+          const pollIntervalMs = 10_000;
           let outputIndex = toResponsesOutputItems(output).length;
 
           while (!args.res.writableEnded && !lifecycle.aborted()) {
-            const status = await retrieveDirectAdapter(jobId);
+            const status = await retrieveVideoStatus(jobId, lifecycle.signal);
             args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, {
               type: "video-status",
               videoStatus: {
@@ -2248,16 +2261,7 @@ export async function executeRequest(args: {
             })));
 
             if (status.status === "completed") {
-              finalOutput = {
-                ...output,
-                media: {
-                  ...output.media,
-                  mimeType: output.media!.mimeType,
-                  status: "completed",
-                  ...(status.url ? { url: status.url } : {}),
-                  ...(typeof status.progress === "number" ? { progress: status.progress } : { progress: 100 }),
-                },
-              };
+              finalOutput = completedVideoOutput(request, output, status);
               for (const item of toResponsesOutputItems(finalOutput)) {
                 writeResponsesEvents(args.res, responsesEncoder, {
                   type: "output-item",
@@ -2334,6 +2338,9 @@ export async function executeRequest(args: {
           ...(terminalStreamError ? { terminalError: terminalStreamError } : {}),
           ...(lifecycle.aborted() ? { interruptedError: abortError(lifecycle.signal) } : {}),
         });
+        if (terminalOutcome === "error") {
+          await abortPaidInference(terminalStreamError?.message || "video_generation_failed");
+        }
         lifecycle.done();
         const stateError = await baseRecordSave;
         if (stateError) throw stateError;
@@ -2370,10 +2377,20 @@ export async function executeRequest(args: {
     }
 
     if (request.stream && usesProviderStream(request)) {
+      const streamDeadline = request.modality === "image" || request.modality === "video"
+        ? withDirectDeadline(lifecycle.signal, request.modality === "video" ? 600_000 : undefined)
+        : null;
       const routed = await streamEngine(request, {
-        signal: lifecycle.signal,
+        signal: streamDeadline?.signal || lifecycle.signal,
         retriesPerTarget: externalCompatibility ? 0 : undefined,
+        allowFallback: !externalCompatibility,
       });
+      settlementResolved = resolvedForRoute(settlementResolved, routed.route);
+      baseRecord.provider = settlementResolved.provider;
+      if (telemetry) telemetry.resolved = settlementResolved;
+      if (!args.res.headersSent) {
+        applyRoutingHeaders(args.res, routed.route);
+      }
 
       const responsesEncoder = args.shape === "responses"
         ? new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt)
@@ -2663,10 +2680,11 @@ export async function executeRequest(args: {
         await flushSettlement();
 
         if (pendingImageCompleteEvent) {
-          args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
           if (responsesEncoder) {
             writeDirectResponsesOutput(args.res, responsesEncoder, finalOutput);
             finalOutput = { ...finalOutput, outputItems: responsesEncoder.items() };
+          } else {
+            args.res.write(formatCoreSSE(toResponsesStreamEvent(request.responseId, modelId, pendingImageCompleteEvent)));
           }
         }
 
@@ -2747,6 +2765,7 @@ export async function executeRequest(args: {
         throw terminalError;
       } finally {
         clearInterval(providerKeepalive);
+        streamDeadline?.cleanup();
         activeSettlementCheckpoint = null;
         activeSettlementLane = null;
       }
@@ -2756,11 +2775,15 @@ export async function executeRequest(args: {
 
     let routed: Awaited<ReturnType<typeof generateEngine>>;
     const runDirect = async (nextRequest: Request) => {
-      const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
+      const direct = externalCompatibility ? null : withDirectDeadline(
+        lifecycle.signal,
+        nextRequest.modality === "video" ? 600_000 : undefined,
+      );
       try {
         return await generateEngine(nextRequest, {
           signal: direct?.signal || lifecycle.signal,
           retriesPerTarget: externalCompatibility ? 0 : undefined,
+          allowFallback: !externalCompatibility,
         });
       } finally {
         direct?.cleanup();
@@ -2787,8 +2810,11 @@ export async function executeRequest(args: {
     }
 
     applyRoutingHeaders(args.res, routed.route);
+    settlementResolved = resolvedForRoute(settlementResolved, routed.route);
+    baseRecord.provider = settlementResolved.provider;
+    if (telemetry) telemetry.resolved = settlementResolved;
 
-    const output = routed.result.output;
+    const output = await awaitCompletedVideo(request, routed.result.output, lifecycle.signal);
     markInferenceFirstOutput(telemetry);
     const jsonReceipt = await settleOutput(output);
     applyReceiptHeader(args.res, jsonReceipt);
@@ -2826,6 +2852,7 @@ export async function executeRequest(args: {
     await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
     await saveResponseRecord({
       ...baseRecord,
+      provider: settlementResolved.provider,
       status: "failed",
       error: error instanceof Error ? error.message : String(error),
     });
