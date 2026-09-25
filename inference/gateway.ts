@@ -348,6 +348,9 @@ export interface VideoGenerationRequest {
   image?: string;
   video_url?: string;
   audio_url?: string;
+  operation?: string;
+  custom_params?: Record<string, unknown>;
+  params?: Record<string, unknown>;
 }
 
 export interface ModelsListResponse {
