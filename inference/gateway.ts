@@ -464,6 +464,7 @@ function modelIndexCard(model: ModelCard): ModelCard {
     pricing: model.pricing,
     ...(model.maxOutputTokens !== undefined ? { maxOutputTokens: model.maxOutputTokens } : {}),
     ...(model.available !== undefined ? { available: model.available } : {}),
+    ...(Array.isArray(model.availableFrom) && model.availableFrom.length > 0 ? { availableFrom: model.availableFrom } : {}),
   };
 }
 
@@ -1063,8 +1064,9 @@ function requireModel(modelId: string): { provider: ModelProvider; card: ModelCa
   return { provider: card.provider, card };
 }
 
-async function invokeDirectAdapter(request: Request, signal?: AbortSignal): Promise<Output> {
-  return (await generateEngine(request, { signal })).result.output;
+async function invokeDirectAdapter(request: Request, signal?: AbortSignal): Promise<{ output: Output; route: Awaited<ReturnType<typeof generateEngine>>["route"] }> {
+  const run = await generateEngine(request, { signal });
+  return { output: run.result.output, route: run.route };
 }
 
 async function retrieveDirectAdapter(jobId: string): Promise<AdapterStatus> {
@@ -1249,8 +1251,8 @@ function signals(signals: Array<AbortSignal | undefined>): { signal: AbortSignal
   };
 }
 
-function withDirectDeadline(parent: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
-  const timeoutMs = directCallTimeoutMs();
+function withDirectDeadline(parent: AbortSignal, timeoutOverrideMs?: number): { signal: AbortSignal; cleanup: () => void } {
+  const timeoutMs = timeoutOverrideMs ?? directCallTimeoutMs();
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new UpstreamTimeoutError(timeoutMs)), timeoutMs);
   const combined = signals([parent, deadline.signal]);
