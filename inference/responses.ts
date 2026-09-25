@@ -554,8 +554,16 @@ export class ResponsesStreamEncoder {
         ...event.item,
         ...(event.item.status ? { status: "completed" } : {}),
       };
+      const {
+        image_url: _imageUrl,
+        image_b64: _imageB64,
+        audio_url: _audioUrl,
+        video_url: _videoUrl,
+        data: _data,
+        ...addedRest
+      } = event.item;
       const addedItem: ResponsesOutputItem = {
-        ...event.item,
+        ...addedRest,
         ...(event.item.status ? { status: "in_progress" } : {}),
       };
       this.outputItems.set(outputIndex, completedItem);
