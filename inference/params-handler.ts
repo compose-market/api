@@ -19,7 +19,7 @@ export interface ParamDefinition {
   type: ParamType | ParamType[];
   required: boolean;
   default?: unknown;
-  options?: (string | number)[];
+  options?: (string | number | boolean)[];
   minimum?: number;
   maximum?: number;
   description?: string;
@@ -81,8 +81,8 @@ export function registerFamilyModalityDefaultResolver(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function isAllowedOption(value: unknown): value is string | number {
-  return typeof value === "string" || typeof value === "number";
+function isAllowedOption(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
