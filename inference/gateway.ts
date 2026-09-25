@@ -3696,11 +3696,9 @@ export async function handleImageEdit(req: Req, res: Res): Promise<void> {
       onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
         const body = adaptImageResponse({
-          images: [
-            media.base64
-              ? { b64_json: media.base64 }
-              : { url: media.url },
-          ],
+          images: (media.images?.length ? media.images : [media]).map((image) => image.base64
+            ? { b64_json: image.base64 }
+            : { url: image.url }),
         });
         res.status(200).json(attachReceiptToJsonBody(body, receipt));
       },
@@ -3854,25 +3852,20 @@ export async function handleVideoGeneration(req: Req, res: Res): Promise<void> {
 
   try {
     const body = req.body as VideoGenerationRequest;
-    if (!body.prompt) {
-      res.status(400).json(createErrorResponse("prompt is required", "invalid_request_error", "missing_prompt"));
-      return;
-    }
     if (!body.model) {
       res.status(400).json(createErrorResponse("model is required", "invalid_request_error", "missing_model"));
       return;
     }
 
     const request = normalizeResponsesRequest({
+      ...body,
       model: body.model,
-      input: [{ type: "input_text", text: body.prompt }],
+      input: body.prompt ? [{ type: "input_text", text: body.prompt }] : [],
       modalities: ["video"],
       duration: body.duration,
       aspect_ratio: body.aspect_ratio,
       size: body.size,
       image_url: body.image_url || body.image,
-      attachments: body.attachments,
-      attachment: body.attachment,
     });
 
     const resolved = resolveModel(body.model);
@@ -3977,7 +3970,7 @@ export async function handleVideoStatusStream(req: Req, res: Res): Promise<void>
     500,
   ), 30_000);
   const timeoutMs = Math.min(Math.max(
-    parseInt(String(req.query.timeoutMs ?? ""), 10) || 1_800_000,
+    parseInt(String(req.query.timeoutMs ?? ""), 10) || 600_000,
     5_000,
   ), 3_600_000);
 
