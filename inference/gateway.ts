@@ -342,9 +342,12 @@ export interface VideoGenerationRequest {
   attachment?: unknown;
   duration?: number;
   aspect_ratio?: string;
+  resolution?: string;
   size?: string;
   image_url?: string;
   image?: string;
+  video_url?: string;
+  audio_url?: string;
 }
 
 export interface ModelsListResponse {
