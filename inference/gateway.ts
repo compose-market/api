@@ -1348,7 +1348,12 @@ async function getResponseRecord(id: string): Promise<StoredResponseRecord | nul
 
 function applyRoutingHeaders(
   res: Res,
-  routing: { attempts: number; fallbackUsed: boolean; primary: { modelId: string }; final: { modelId: string } },
+  routing: {
+    attempts: number;
+    fallbackUsed: boolean;
+    primary: { modelId: string };
+    final: { modelId: string };
+  },
 ): void {
   res.setHeader("x-routing-primary-model", routing.primary.modelId);
   res.setHeader("x-routing-final-model", routing.final.modelId);
@@ -1677,10 +1682,16 @@ export async function finalizeDirectStreamPayment(args: {
   terminalError?: { code: string; message: string };
   interruptedError?: Error;
 }): Promise<"done" | "error"> {
-  const receipt = await args.settle(args.output);
-  if (args.interruptedError) {
+  const completedVideo = args.output.modality !== "video" || args.output.media?.status === "completed";
+  if (args.interruptedError && !completedVideo) {
     throw args.interruptedError;
   }
+  if (args.terminalError && !completedVideo) {
+    await args.emitError(args.terminalError);
+    return "error";
+  }
+  const receipt = await args.settle(args.output);
+  if (args.interruptedError) throw args.interruptedError;
   if (receipt) {
     await args.emitReceipt(receipt);
   }
@@ -1792,9 +1803,7 @@ function receiptContextFromInferenceRequest(req: Req): ReceiptContext {
   const kind = resourceKind(req);
   return {
     service: kind === "model" ? "inference" : kind,
-    action: kind === "model"
-      ? `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`
-      : resourceAction(req, `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`),
+    action: resourceAction(req, `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`),
     resource: publicResourceUrl(req),
     userAddress: typeof userAddress === "string" ? userAddress.toLowerCase() : undefined,
   };
