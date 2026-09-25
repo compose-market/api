@@ -434,11 +434,13 @@ function buildBillingSection(
   source: Record<string, unknown>,
   header?: string,
   isDefault?: boolean,
+  selector?: Record<string, unknown>,
 ): BillingPriceSection {
   const unit = normalizeUnit(unitValue);
   return {
     ...(header ? { header } : {}),
     ...(isDefault === true ? { default: true } : {}),
+    ...(selector && Object.keys(selector).length > 0 ? { selector } : {}),
     unit,
     values: normalizeBillingValuesForUnit(unitValue, source),
   };
@@ -449,6 +451,7 @@ function buildNormalizedBillingSection(
   values: Record<string, number>,
   header?: string,
   isDefault?: boolean,
+  selector?: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     ...(header ? { header } : {}),
@@ -456,6 +459,7 @@ function buildNormalizedBillingSection(
     unitKey: unit,
     entries: values,
     ...(isDefault === true ? { default: true } : {}),
+    ...(selector && Object.keys(selector).length > 0 ? { selector } : {}),
   };
 }
 
@@ -1038,6 +1042,7 @@ function buildSectionFromCompiled(section: Record<string, unknown>): BillingPric
       effectiveEntries,
       inferredTokenHeaderFromSource(section, unit) ?? (typeof section.header === "string" ? section.header : undefined),
       section.default === true,
+      asRecord(section.selector) ?? undefined,
     );
   } catch {
     return null;
