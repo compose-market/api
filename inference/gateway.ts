@@ -2926,6 +2926,14 @@ async function handleModelResponses(req: Req, res: Res): Promise<void> {
     return;
   }
 
+  const network = getNetworkFromRequest(req);
+  if (network && isServiceBlockedNetwork(network)) {
+    res.status(400).json({
+      error: `Network ${network} is not supported for this service. Use a Mainnet, or ask for Testnet access.`,
+    });
+    return;
+  }
+
   const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
     ? req.body as Record<string, unknown>
     : {};
@@ -3135,7 +3143,7 @@ async function runDeferredInference(args: {
   request: Request;
   provider: ModelProvider;
   card: ModelCard | null;
-  execute: (signal: AbortSignal) => Promise<Output>;
+  execute: (signal: AbortSignal) => Promise<{ output: Output; route?: Awaited<ReturnType<typeof generateEngine>>["route"] }>;
   onSuccess: (result: Output, receipt: Receipt | null) => void | Promise<void>;
 }): Promise<void> {
   const resolved: ResolvedModel = {
@@ -3183,13 +3191,22 @@ async function runDeferredInference(args: {
   lifecycle.signal.addEventListener("abort", abortPaymentOnClose, { once: true });
 
   try {
-    const direct = args.res.locals.externalCompatibility === true ? null : withDirectDeadline(lifecycle.signal);
+    const direct = args.res.locals.externalCompatibility === true ? null : withDirectDeadline(
+      lifecycle.signal,
+      args.request.modality === "video" ? 600_000 : undefined,
+    );
     let result: Output;
+    let route: Awaited<ReturnType<typeof generateEngine>>["route"] | undefined;
     try {
-      result = await args.execute(direct?.signal || lifecycle.signal);
+      const executed = await args.execute(direct?.signal || lifecycle.signal);
+      result = executed.output;
+      route = executed.route;
     } finally {
       direct?.cleanup();
     }
+    result = await awaitCompletedVideo(args.request, result, lifecycle.signal);
+    const finalResolved = route ? resolvedForRoute(paid.resolved, route) : paid.resolved;
+    if (telemetry) telemetry.resolved = finalResolved;
     markInferenceFirstOutput(telemetry);
     const { receipt, settlement, quote } = await settlePaidInference({
       req: args.req,
@@ -3197,7 +3214,7 @@ async function runDeferredInference(args: {
       payment: paid.payment,
       request: args.request,
       output: result,
-      resolved: paid.resolved,
+      resolved: finalResolved,
       onPaymentBacked: () => {
         paymentTerminal = true;
       },
@@ -3616,11 +3633,9 @@ export async function handleImageGeneration(req: Req, res: Res): Promise<void> {
       onSuccess: (output, receipt) => {
         const media = getRequiredOutputMedia(output);
         const body = adaptImageResponse({
-          images: [
-            media.base64
-              ? { b64_json: media.base64 }
-              : { url: media.url },
-          ],
+          images: (media.images?.length ? media.images : [media]).map((image) => image.base64
+            ? { b64_json: image.base64 }
+            : { url: image.url }),
         });
         res.status(200).json(
           attachReceiptToJsonBody(
