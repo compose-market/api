@@ -2080,57 +2080,6 @@ function buildTokenLineItems(args: {
   return lineItems;
 }
 
-function optionTierIndex(options: Array<string | number>, value: unknown): number {
-  const rankedOptions = options.map((option, index) => ({
-    option,
-    index,
-    rank: rankOptionValue(option),
-  }));
-
-  if (rankedOptions.some((entry) => entry.rank === null)) {
-    return -1;
-  }
-
-  const ordered = [...rankedOptions]
-    .sort((left, right) => ((left.rank as number) - (right.rank as number)) || (left.index - right.index));
-  for (let index = 1; index < ordered.length; index += 1) {
-    if (ordered[index].rank === ordered[index - 1].rank) {
-      return -1;
-    }
-  }
-
-  return ordered.findIndex((entry) => String(entry.option) === String(value));
-}
-
-function optionPricingTierIndex(options: Array<string | number>, value: unknown, sectionCount: number): number {
-  const selectedRank = typeof value === "string" || typeof value === "number" ? rankOptionValue(value) : null;
-  if (selectedRank === null) {
-    return -1;
-  }
-
-  const ranked = options
-    .map((option, index) => ({ index, rank: rankOptionValue(option) }))
-    .filter((entry): entry is { index: number; rank: number } => entry.rank !== null)
-    .sort((left, right) => (left.rank - right.rank) || (left.index - right.index));
-  if (ranked.length === 0) {
-    return -1;
-  }
-
-  const uniqueRanks = [...new Set(ranked.map((entry) => entry.rank))];
-  let selectedRankIndex = uniqueRanks.findIndex((rank) => rank === selectedRank);
-  if (selectedRankIndex < 0) {
-    if (selectedRank <= uniqueRanks[0]) {
-      selectedRankIndex = 0;
-    } else if (selectedRank >= uniqueRanks[uniqueRanks.length - 1]) {
-      selectedRankIndex = uniqueRanks.length - 1;
-    } else {
-      selectedRankIndex = uniqueRanks.findIndex((rank) => rank > selectedRank);
-    }
-  }
-
-  return selectedRankIndex < 0 ? -1 : Math.min(sectionCount - 1, selectedRankIndex);
-}
-
 function resolveParamDrivenMediaSection(args: {
   subject: string;
   modality: Modality;
