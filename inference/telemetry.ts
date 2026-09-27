@@ -1743,6 +1743,11 @@ function tokenSectionCategory(section: BillingPriceSection, totalTokenSections: 
     return unitCategory;
   }
 
+  const outputModality = section.selector?.outputModality;
+  if (typeof outputModality === "string" && new RegExp(`^${TOKEN_CATEGORY_WORDS}$`).test(outputModality.toLowerCase())) {
+    return outputModality.toLowerCase();
+  }
+
   if (totalTokenSections === 1) {
     return "generic";
   }
@@ -1751,6 +1756,11 @@ function tokenSectionCategory(section: BillingPriceSection, totalTokenSections: 
   const headerMatch = header.match(/^(.+)\s+tokens?$/);
   if (headerMatch) {
     return normalizeValueKey(headerMatch[1]);
+  }
+
+  const directionalMatch = header.match(new RegExp(`\\b(?:input|output)\\s+(${TOKEN_CATEGORY_WORDS})\\b`));
+  if (directionalMatch) {
+    return directionalMatch[1];
   }
 
   return null;
