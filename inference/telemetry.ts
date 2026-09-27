@@ -1735,6 +1735,8 @@ export function pricingHasTokenSections(pricing: ModelPricing | BillingPrice | n
   return extractBillingSections(pricing).some((section) => isTokenUnit(section.unit));
 }
 
+const TOKEN_CATEGORY_WORDS = "(?:text|audio|image|video|vision)";
+
 function tokenSectionCategory(section: BillingPriceSection, totalTokenSections: number): string | null {
   const unitCategory = tokenUnitCategory(section.unit);
   if (unitCategory) {
