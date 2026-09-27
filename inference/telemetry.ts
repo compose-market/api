@@ -2081,7 +2081,6 @@ function buildTokenLineItems(args: {
 }
 
 function resolveParamDrivenMediaSection(args: {
-  subject: string;
   modality: Modality;
   sections: BillingPriceSection[];
   metrics: Record<string, unknown>;
@@ -2090,88 +2089,29 @@ function resolveParamDrivenMediaSection(args: {
     return null;
   }
 
-  // Image quality is a public request selector with a fixed ordinal ladder.
-  // Resolve it directly instead of inferring semantics from a model id.
-  const quality = args.metrics.quality;
-  const sharedTierShape = new Set(args.sections.map((section) => `${section.unit}\u0000${section.header || ""}`)).size === 1;
-  if (args.modality === "image" && sharedTierShape && (typeof quality === "string" || typeof quality === "number")) {
-    const qualityIndex = optionPricingTierIndex(["low", "medium", "high"], quality, args.sections.length);
-    if (qualityIndex >= 0) {
-      return args.sections[qualityIndex] || null;
-    }
-  }
+  const selectable = args.sections.filter((section) => section.selector && Object.keys(section.selector).length > 0);
+  if (selectable.length === 0) return null;
 
-  const modelId = args.subject.includes(":")
-    ? args.subject.slice(args.subject.indexOf(":") + 1)
-    : args.subject;
-  const params = resolveModelParams(modelId, args.modality === "video" ? "video" : "image");
-  if (!params) {
-    return null;
-  }
-  const primaryKeys = new Set(
-    args.sections
-      .map((section) => primaryValueKeyForUnit(section.unit))
-      .filter((key): key is string => Boolean(key)),
+  const matches = selectable.filter((section) =>
+    Object.entries(section.selector!).every(([key, expected]) => {
+      const actual = readSelectorMetric(args.metrics, key);
+      return actual.found && selectorValuesMatch(key, actual.value, expected);
+    }),
   );
-  const quantityKeys = new Set(["n", "num_images", "sample_count", "sampleCount"]);
-  const geometryKeys = new Set(["size", "resolution", "aspect_ratio", "width", "height"]);
-  const sizeIsQuantity = [...primaryKeys].some((key) =>
-    key === "pixel"
-    || key === "megapixel"
-    || key.endsWith("_pixel")
-    || key.endsWith("_megapixel"),
-  );
-
-  const candidates = Object.entries(params.params)
-    .flatMap(([key, definition]) => {
-      if (quantityKeys.has(key)) {
-        return [];
-      }
-      if (primaryKeys.has("generation") && geometryKeys.has(key)) {
-        return [];
-      }
-      if (sizeIsQuantity && (key === "size" || key === "resolution" || key === "aspect_ratio")) {
-        return [];
-      }
-      if (!Array.isArray(definition.options) || definition.options.length < args.sections.length) {
-        return [];
-      }
-
-      const selectedValue = args.metrics[key];
-      if (selectedValue === undefined) {
-        return [];
-      }
-
-      const selectedIndex = optionPricingTierIndex(definition.options, selectedValue, args.sections.length);
-      if (selectedIndex < 0) {
-        return [];
-      }
-
-      const defaultValue = params.defaults[key];
-      const defaultIndex = defaultValue === undefined ? -1 : optionPricingTierIndex(definition.options, defaultValue, args.sections.length);
-      return [{
-        key,
-        selectedIndex,
-        changed: defaultIndex >= 0 ? selectedIndex !== defaultIndex : false,
-      }];
-    });
-
-  if (candidates.length === 0) {
+  if (matches.length === 0) {
+    // No tier matches the call's metrics (e.g. a provider that only
+    // sells 480P/1080P tiers rendering its default tier). Fall back to
+    // the catalog default instead of failing the bill; callers without
+    // any default still fail closed below.
     return null;
   }
 
-  const selectedIndices = [...new Set(candidates.map((candidate) => candidate.selectedIndex))];
-  if (selectedIndices.length === 1) {
-    return args.sections[selectedIndices[0]] || null;
+  const specificity = Math.max(...matches.map((section) => Object.keys(section.selector!).length));
+  const mostSpecific = matches.filter((section) => Object.keys(section.selector!).length === specificity);
+  if (mostSpecific.length !== 1) {
+    throw new Error("pricing is ambiguous for selected parameters");
   }
-
-  const changed = candidates.filter((candidate) => candidate.changed);
-  const changedIndices = [...new Set(changed.map((candidate) => candidate.selectedIndex))];
-  if (changedIndices.length === 1) {
-    return args.sections[changedIndices[0]] || null;
-  }
-
-  throw new Error("pricing is ambiguous for selected parameters");
+  return mostSpecific[0];
 }
 
 function resolveMediaBillingSection(args: {
