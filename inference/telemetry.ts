@@ -1766,6 +1766,26 @@ function tokenSectionCategory(section: BillingPriceSection, totalTokenSections: 
   return null;
 }
 
+function tokenInputProfile(usage: AuthoritativeUsage): "text_only" | "multimodal" | null {
+  const metrics = usage.billingMetrics;
+  if (!metrics) {
+    return null;
+  }
+
+  const hasNonTextInput = ["input_audio_tokens", "input_image_tokens", "input_video_tokens"].some((key) => {
+    const value = metrics[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0;
+  });
+  const hasTextInputMetric = typeof metrics.input_text_tokens === "number"
+    && Number.isFinite(metrics.input_text_tokens)
+    && metrics.input_text_tokens >= 0;
+  if (!hasNonTextInput && !hasTextInputMetric) {
+    return null;
+  }
+
+  return hasNonTextInput ? "multimodal" : "text_only";
+}
+
 function hasSpecificTokenBreakdown(metrics: Record<string, unknown> | undefined): boolean {
   if (!metrics) {
     return false;
