@@ -1176,6 +1176,7 @@ export function normalizeCompiledPricing(pricing: ModelPricing | BillingPrice): 
         return splitTokenSections.map((built) => ({
           ...(built.header ? { header: built.header } : {}),
           ...(section.default === true ? { default: true } : {}),
+          ...(asRecord(section.selector) ? { selector: section.selector } : {}),
           unit: displayUnit(built.unit),
           unitKey: built.unit,
           entries: built.values,
@@ -1190,6 +1191,7 @@ export function normalizeCompiledPricing(pricing: ModelPricing | BillingPrice): 
       return [{
         ...(built.header ? { header: built.header } : {}),
         ...(section.default === true ? { default: true } : {}),
+        ...(asRecord(section.selector) ? { selector: section.selector } : {}),
         unit: typeof section.unit === "string" ? section.unit : displayUnit(built.unit),
         unitKey: built.unit,
         entries: built.values,
