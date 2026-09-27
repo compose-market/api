@@ -2114,6 +2114,48 @@ function resolveParamDrivenMediaSection(args: {
   return mostSpecific[0];
 }
 
+function readSelectorMetric(metrics: Record<string, unknown>, key: string): { found: boolean; value?: unknown } {
+  if (Object.prototype.hasOwnProperty.call(metrics, key)) {
+    return { found: true, value: metrics[key] };
+  }
+
+  const normalizedKey = normalizeValueKey(key);
+  if (normalizedKey === "resolution" || normalizedKey === "size") {
+    const alias = normalizedKey === "resolution" ? "size" : "resolution";
+    if (Object.prototype.hasOwnProperty.call(metrics, alias)) {
+      return { found: true, value: metrics[alias] };
+    }
+    const width = metrics.width;
+    const height = metrics.height;
+    if (typeof width === "number" && typeof height === "number" && width > 0 && height > 0) {
+      return { found: true, value: `${width}x${height}` };
+    }
+  }
+
+  return { found: false };
+}
+
+function normalizedResolution(value: string): { dimensions?: string; lines?: number; raw: string } {
+  const compact = value.trim().toLowerCase().replace(/\s+/g, "");
+  const dimensions = compact.match(/^(\d+)[x*×](\d+)$/);
+  if (dimensions) {
+    return {
+      dimensions: `${Number(dimensions[1])}x${Number(dimensions[2])}`,
+      lines: Math.min(Number(dimensions[1]), Number(dimensions[2])),
+      raw: compact,
+    };
+  }
+  const progressive = compact.match(/^(\d+)p$/);
+  if (progressive) return { lines: Number(progressive[1]), raw: compact };
+  const kilo = compact.match(/^(\d+)k$/);
+  if (kilo) {
+    const heights: Record<string, number> = { "2": 1440, "4": 2160, "8": 4320 };
+    const height = heights[kilo[1]];
+    if (height) return { lines: height, raw: compact };
+  }
+  return { raw: compact };
+}
+
 function resolveMediaBillingSection(args: {
   subject: string;
   modality: Modality;
