@@ -1880,6 +1880,17 @@ function resolveTokenSectionsForUsage(
   sections: BillingPriceSection[],
   usage: AuthoritativeUsage,
 ): BillingPriceSection[] {
+  const profile = tokenInputProfile(usage);
+  if (profile !== null && sections.length > 1) {
+    const profileMatched = sections.filter((section) => {
+      const required = section.selector?.inputProfile;
+      return required === undefined || required === profile;
+    });
+    if (profileMatched.length > 0) {
+      sections = profileMatched;
+    }
+  }
+
   if (sections.length <= 1) {
     return sections;
   }
