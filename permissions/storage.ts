@@ -35,3 +35,49 @@ function stopKeepAlive(): void {
         keepAliveTimer = null;
     }
 }
+
+function env(name: string): string {
+    const value = process.env[name]?.trim();
+    if (!value) {
+        throw new Error(`Backpack ValKey configuration missing: ${name}`);
+    }
+    return value;
+}
+
+async function connect(): Promise<ValkeyClientType> {
+    const uri = env("VALKEY_BACKPACK_SERVICE_URI");
+
+    // The rediss:// scheme already enables TLS in ioredis.
+    const instance = new ValkeyClient(uri, {
+        connectTimeout: 2000,
+        retryStrategy: (times: number) => Math.min(times * 50, 500),
+        maxRetriesPerRequest: 1,
+        commandTimeout: VALKEY_COMMAND_TIMEOUT_MS,
+        enableOfflineQueue: false,
+        enableAutoPipelining: true,
+        lazyConnect: true,
+        keepAlive: VALKEY_KEEP_ALIVE_MS,
+    });
+    instance.on("error", (error) => console.error("[backpack:valkey] client error", error));
+    instance.on("end", () => {
+        if (client === instance && instance.status !== "ready") {
+            client = null;
+        }
+        stopKeepAlive();
+    });
+    await instance.connect();
+    await instance.ping();
+    client = instance;
+    startKeepAlive(instance);
+    return instance;
+}
+
+export async function valkey(): Promise<ValkeyClientType> {
+    if (client?.status === "ready") return client;
+    if (!pending) {
+        pending = connect().finally(() => {
+            pending = null;
+        });
+    }
+    return pending;
+}
