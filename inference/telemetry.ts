@@ -2194,9 +2194,7 @@ function resolveMediaBillingSection(args: {
     return [args.sections[0]];
   }
 
-  // Tier-based pricing (image quality, video resolution, etc.) — when
-  // sections share a unit/header but differ by tier, params-handler
-  // ladders pick the right one.
+  // Tier selection is driven only by explicit catalog selectors.
   const paramDriven = resolveParamDrivenMediaSection(args);
   if (paramDriven) {
     return [paramDriven];
@@ -2240,9 +2238,8 @@ function resolveMediaBillingSection(args: {
  * without any matching metric is silently dropped (the call did not
  * use that dimension).
  *
- * If no section produces a usable metric, raise. Tier disambiguation
- * is the job of `params-handler.ts` + `resolveParamDrivenMediaSection`,
- * not this fallback.
+ * If no section produces a usable metric, raise. Tier disambiguation is
+ * handled by explicit pricing selectors, not this fallback.
  */
 function resolveAdditiveDefaults(
   defaults: BillingPriceSection[],
@@ -2297,7 +2294,7 @@ function quantityAliasesForPrimaryKey(primaryKey: string): string[] {
   if (primaryKey === "search") return ["search", "request"];
   if (primaryKey === "voice") return ["voice", "generation", "request"];
   if (primaryKey === "request") return ["request", "generation"];
-  if (primaryKey === "frame") return ["frame", "second", "duration"];
+  if (primaryKey === "frame") return ["frame"];
   if (primaryKey === "step") return ["step"];
   if (primaryKey === "tile") return ["tile"];
   if (primaryKey === "compute_second") return ["compute_second", "second", "duration"];
