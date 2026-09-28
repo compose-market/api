@@ -54,3 +54,15 @@ function consent(value: string): ConsentType {
     }
     return normalized;
 }
+
+function perm(userAddress: string, agentWallet: string, consentType: string): string {
+    return store.key("permission", userAddress, agentWallet, consentType);
+}
+
+function index(userAddress: string, agentWallet: string): string {
+    return store.key("permissions", userAddress, agentWallet);
+}
+
+function live(record: UserPermission): boolean {
+    return !record.expiresAt || Date.now() <= record.expiresAt;
+}
