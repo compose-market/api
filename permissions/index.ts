@@ -117,3 +117,24 @@ export async function revokePermission(
     await store.del(perm(user, agent, type));
     await store.rem(index(user, agent), type);
 }
+
+export async function listPermissions(
+    userAddress: string,
+    agentWallet: string,
+): Promise<UserPermission[]> {
+    const user = wallet(userAddress, "userAddress");
+    const agent = wallet(agentWallet, "agentWallet");
+    const types = await store.members(index(user, agent));
+    const records = await Promise.all(types.map((type) => store.json<UserPermission>(perm(user, agent, type))));
+    const out: UserPermission[] = [];
+    for (const record of records) {
+        if (!record) continue;
+        if (record.granted && live(record)) {
+            out.push(record);
+            continue;
+        }
+        await store.del(perm(user, agent, record.consentType));
+        await store.rem(index(user, agent), record.consentType);
+    }
+    return out.sort((left, right) => left.consentType.localeCompare(right.consentType));
+}
