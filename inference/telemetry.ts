@@ -2156,6 +2156,34 @@ function normalizedResolution(value: string): { dimensions?: string; lines?: num
   return { raw: compact };
 }
 
+function selectorValuesMatch(key: string, actual: unknown, expected: unknown): boolean {
+  const normalizeBoolean = (value: unknown): boolean | undefined => {
+    if (typeof value === "boolean") return value;
+    if (typeof value !== "string") return undefined;
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" ? true : normalized === "false" ? false : undefined;
+  };
+  const actualBoolean = normalizeBoolean(actual);
+  const expectedBoolean = normalizeBoolean(expected);
+  if (actualBoolean !== undefined || expectedBoolean !== undefined) {
+    return actualBoolean !== undefined && expectedBoolean !== undefined && actualBoolean === expectedBoolean;
+  }
+
+  const normalizedKey = normalizeValueKey(key);
+  if ((normalizedKey === "resolution" || normalizedKey === "size") && typeof actual === "string" && typeof expected === "string") {
+    const normalizedActual = normalizedResolution(actual);
+    const normalizedExpected = normalizedResolution(expected);
+    if (normalizedActual.dimensions && normalizedExpected.dimensions) {
+      return normalizedActual.dimensions === normalizedExpected.dimensions;
+    }
+    if (normalizedActual.lines !== undefined && normalizedExpected.lines !== undefined) {
+      return normalizedActual.lines === normalizedExpected.lines;
+    }
+    return normalizedActual.raw === normalizedExpected.raw;
+  }
+  return Object.is(actual, expected);
+}
+
 function resolveMediaBillingSection(args: {
   subject: string;
   modality: Modality;
