@@ -66,3 +66,54 @@ function index(userAddress: string, agentWallet: string): string {
 function live(record: UserPermission): boolean {
     return !record.expiresAt || Date.now() <= record.expiresAt;
 }
+
+export async function checkPermission(
+    userAddress: string,
+    agentWallet: string,
+    consentType: ConsentType | string,
+): Promise<boolean> {
+    const user = wallet(userAddress, "userAddress");
+    const agent = wallet(agentWallet, "agentWallet");
+    const type = consent(consentType);
+    const key = perm(user, agent, type);
+    const record = await store.json<UserPermission>(key);
+    if (!record?.granted) return false;
+    if (live(record)) return true;
+    await store.del(key);
+    await store.rem(index(user, agent), type);
+    return false;
+}
+
+export async function grantPermission(params: {
+    userAddress: string;
+    agentWallet: string;
+    consentType: ConsentType | string;
+    expiresAt?: number;
+}): Promise<UserPermission> {
+    const user = wallet(params.userAddress, "userAddress");
+    const agent = wallet(params.agentWallet, "agentWallet");
+    const type = consent(params.consentType);
+    const record: UserPermission = {
+        userAddress: user,
+        agentWallet: agent,
+        consentType: type,
+        granted: true,
+        grantedAt: Date.now(),
+        ...(params.expiresAt ? { expiresAt: params.expiresAt } : {}),
+    };
+    await store.put(perm(user, agent, type), record);
+    await store.add(index(user, agent), type);
+    return record;
+}
+
+export async function revokePermission(
+    userAddress: string,
+    agentWallet: string,
+    consentType: ConsentType | string,
+): Promise<void> {
+    const user = wallet(userAddress, "userAddress");
+    const agent = wallet(agentWallet, "agentWallet");
+    const type = consent(consentType);
+    await store.del(perm(user, agent, type));
+    await store.rem(index(user, agent), type);
+}
