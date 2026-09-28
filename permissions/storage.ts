@@ -81,3 +81,25 @@ export async function valkey(): Promise<ValkeyClientType> {
     }
     return pending;
 }
+
+export async function close(): Promise<void> {
+    stopKeepAlive();
+    if (client) {
+        await client.quit();
+    }
+    client = null;
+    pending = null;
+}
+
+function part(value: string): string {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+        throw new Error("ValKey key part cannot be empty");
+    }
+    return encodeURIComponent(normalized);
+}
+
+export function key(...parts: string[]): string {
+    const prefix = process.env.BACKPACK_VALKEY_PREFIX?.trim() || "backpack";
+    return [prefix, ...parts.map(part)].join(":");
+}
