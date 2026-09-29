@@ -52,26 +52,6 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
-function requireRuntimeUrl(): string {
-  const value = process.env.RUNTIME_URL;
-  if (!value) {
-    throw new Error("RUNTIME_URL is required");
-  }
-  return normalizeUrl(value);
-}
-
-function requireConnectorsUrl(): string {
-  const value = process.env.CONNECTORS_URL;
-  if (!value) {
-    throw new Error("CONNECTORS_URL is required");
-  }
-  return normalizeUrl(value);
-}
-
-function isWalletAddress(value: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(value) || validateSvmAddress(value);
-}
-
 function queryString(query: Record<string, string | undefined> | undefined): string {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query || {})) {
