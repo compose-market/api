@@ -129,3 +129,18 @@ export async function set(name: string, value: string, ttl?: number): Promise<vo
     }
     await db.set(name, value);
 }
+
+export async function once(name: string, value: string, ttl: number): Promise<boolean> {
+    const result = await (await valkey()).set(name, value, "EX", ttl, "NX");
+    return result === "OK";
+}
+
+export async function del(...names: string[]): Promise<number> {
+    if (names.length === 0) return 0;
+    return (await valkey()).del(names);
+}
+
+export async function add(name: string, ...members: string[]): Promise<number> {
+    if (members.length === 0) return 0;
+    return (await valkey()).sadd(name, ...members);
+}
