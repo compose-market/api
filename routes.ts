@@ -28,46 +28,6 @@ interface PublicRouteResult {
   isBase64Encoded?: boolean;
 }
 
-export interface AgentCard {
-  schemaVersion: string;
-  name: string;
-  description: string;
-  skills: string[];
-  x402Support: boolean;
-  image?: string;
-  avatar?: string;
-  avatarUrl?: string;
-  dnaHash: string;
-  walletAddress: string;
-  walletTimestamp?: number;
-  network: NetworkId;
-  model: string;
-  creatorFee?: number;
-  target?: string;
-  route?: AgentModelRoute;
-  framework?: "manowar" | "other";
-  licensePrice: string;
-  licenses: number;
-  cloneable: boolean;
-  knowledge?: string[];
-  endpoint?: string;
-  protocols: Array<{ name: string; version: string }>;
-  connectors?: Array<{
-    registryId: string;
-    name?: string;
-    origin?: string;
-    tools?: Array<{
-      name: string;
-      description?: string;
-      parameters?: Record<string, unknown>;
-      inputSchema?: Record<string, unknown>;
-    }>;
-  }>;
-  createdAt: string;
-  creator?: string;
-  cid?: string;
-}
-
 export interface WorkflowMetadata {
   schemaVersion: string;
   title: string;
