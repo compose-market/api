@@ -52,15 +52,6 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
-function queryString(query: Record<string, string | undefined> | undefined): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query || {})) {
-    if (value !== undefined) params.set(key, value);
-  }
-  const value = params.toString();
-  return value ? `?${value}` : "";
-}
-
 function eventHeader(event: PublicRouteEvent, name: string): string | undefined {
   const normalized = name.toLowerCase();
   for (const [key, value] of Object.entries(event.headers || {})) {
@@ -89,21 +80,6 @@ function paymentRequiredResult(
 
 function isEntrypoint(path: string, value: string): boolean {
   return path === value || path === `${value}/`;
-}
-
-function agentsRedirect(
-  event: PublicRouteEvent,
-  headers: Record<string, string>,
-): PublicRouteResult {
-  return {
-    statusCode: 307,
-    headers: {
-      ...headers,
-      Location: `${agentsUrl()}${event.rawPath}${queryString(event.queryStringParameters)}`,
-      "Cache-Control": "no-store",
-    },
-    body: "",
-  };
 }
 
 export async function handlePublicRoute(
