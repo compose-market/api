@@ -144,3 +144,21 @@ export async function add(name: string, ...members: string[]): Promise<number> {
     if (members.length === 0) return 0;
     return (await valkey()).sadd(name, ...members);
 }
+
+export async function rem(name: string, ...members: string[]): Promise<number> {
+    if (members.length === 0) return 0;
+    return (await valkey()).srem(name, ...members);
+}
+
+export async function members(name: string): Promise<string[]> {
+    return (await valkey()).smembers(name);
+}
+
+export async function push(name: string, value: string, limit: number, ttl: number): Promise<void> {
+    const db = await valkey();
+    const pipeline = db.pipeline();
+    pipeline.rpush(name, value);
+    pipeline.ltrim(name, -Math.max(1, limit), -1);
+    pipeline.expire(name, ttl);
+    await pipeline.exec();
+}
