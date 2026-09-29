@@ -148,6 +148,7 @@ export async function handlePublicRoute(
     return jsonResult(500, corsHeaders, { error: message });
   }
 }
+
 function getHeader(req: Request, name: string): string | undefined {
   const value = req.headers[name.toLowerCase()];
   if (Array.isArray(value)) {
