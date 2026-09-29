@@ -52,24 +52,6 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
-function normalizeUrl(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function agentsUrl(): string {
-  return normalizeUrl(process.env.AGENTS_URL || "https://agents.compose.market");
-}
-
-
-function gatewayUrl(): string {
-  const value = process.env.PINATA_GATEWAY_URL
-    || process.env.IPFS_PINATA_GATEWAY
-    || process.env.PINATA_GATEWAY
-    || "gateway.pinata.cloud";
-  const host = value.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  return `https://${host}`;
-}
-
 function typedWorkflow(value: unknown, cid: string): WorkflowMetadata | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const card = value as Partial<WorkflowMetadata>;
