@@ -162,3 +162,22 @@ export async function push(name: string, value: string, limit: number, ttl: numb
     pipeline.expire(name, ttl);
     await pipeline.exec();
 }
+
+export async function range(name: string, start = 0, stop = -1): Promise<string[]> {
+    return (await valkey()).lrange(name, start, stop);
+}
+
+export async function json<T>(name: string): Promise<T | null> {
+    const raw = await get(name);
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw) as T;
+    } catch {
+        await del(name);
+        return null;
+    }
+}
+
+export async function put(name: string, value: unknown, ttl?: number): Promise<void> {
+    await set(name, JSON.stringify(value), ttl);
+}
