@@ -28,56 +28,6 @@ interface PublicRouteResult {
   isBase64Encoded?: boolean;
 }
 
-export interface WorkflowMetadata {
-  schemaVersion: string;
-  title: string;
-  description: string;
-  image?: string;
-  dnaHash: string;
-  walletAddress: string;
-  walletTimestamp?: number;
-  agents: AgentCard[];
-  edges?: Array<{
-    source: number;
-    target: number;
-    label?: string;
-  }>;
-  coordinator?: {
-    hasCoordinator: boolean;
-    model: string;
-  };
-  pricing?: {
-    totalAgentPrice: string;
-  };
-  lease?: {
-    enabled: boolean;
-    durationDays: number;
-    creatorPercent: number;
-  };
-  rfa?: {
-    title: string;
-    description: string;
-    skills: string[];
-    offerAmount: string;
-  };
-  creator?: string;
-  createdAt?: string;
-  cid?: string;
-}
-
-const HOP_BY_HOP_HEADERS = new Set([
-  "connection",
-  "content-length",
-  "host",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailers",
-  "transfer-encoding",
-  "upgrade",
-]);
-
 const FRAMEWORKS = [
   {
     id: "manowar",
@@ -90,16 +40,6 @@ const FRAMEWORKS = [
     description: "Compatibility category for agents minted with another framework",
   },
 ] as const;
-
-type PaymentPreparation =
-  | {
-    mode: "x402";
-    rootRunId: string;
-    prepared: PreparedInferencePayment;
-    headers: Record<string, string>;
-    runtimeHeaders: Record<string, string>;
-    receiptContext: ReceiptContext;
-  };
 
 type ParsedSseEvent = {
   eventName: string;
