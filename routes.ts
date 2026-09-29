@@ -41,22 +41,6 @@ const FRAMEWORKS = [
   },
 ] as const;
 
-type ParsedSseEvent = {
-  eventName: string;
-  data: Record<string, unknown>;
-};
-
-function createTimingLogger(label: string, metadata: Record<string, unknown>, startedAt = Date.now()) {
-  const marks: Record<string, number> = {};
-  return (name: string, at = Date.now()) => {
-    if (marks[name] !== undefined) {
-      return;
-    }
-    marks[name] = at - startedAt;
-    console.log(`[${label}]`, JSON.stringify({ ...metadata, mark: name, elapsedMs: marks[name], marks }));
-  };
-}
-
 function jsonResult(statusCode: number, headers: Record<string, string>, body: unknown): PublicRouteResult {
   return {
     statusCode,
@@ -67,8 +51,6 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
     body: JSON.stringify(body),
   };
 }
-
-const PINATA_LIST_URL = "https://api.pinata.cloud/data/pinList";
 
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, "");
