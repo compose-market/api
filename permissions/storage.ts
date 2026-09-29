@@ -103,3 +103,29 @@ export function key(...parts: string[]): string {
     const prefix = process.env.BACKPACK_VALKEY_PREFIX?.trim() || "backpack";
     return [prefix, ...parts.map(part)].join(":");
 }
+
+export async function get(name: string): Promise<string | null> {
+    return (await valkey()).get(name);
+}
+
+export async function take(name: string): Promise<string | null> {
+    const db = await valkey();
+    const getDel = (db as unknown as { getdel?: (key: string) => Promise<string | null> }).getdel;
+    if (typeof getDel === "function") {
+        return getDel.call(db, name);
+    }
+    const value = await db.get(name);
+    if (value) {
+        await db.del(name);
+    }
+    return value;
+}
+
+export async function set(name: string, value: string, ttl?: number): Promise<void> {
+    const db = await valkey();
+    if (ttl && ttl > 0) {
+        await db.setex(name, ttl, value);
+        return;
+    }
+    await db.set(name, value);
+}
