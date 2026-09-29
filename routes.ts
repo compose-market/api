@@ -52,62 +52,6 @@ function jsonResult(statusCode: number, headers: Record<string, string>, body: u
   };
 }
 
-function typedWorkflow(value: unknown, cid: string): WorkflowMetadata | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const card = value as Partial<WorkflowMetadata>;
-  if (typeof card.walletAddress !== "string" || !isWalletAddress(card.walletAddress)) return null;
-  if (typeof card.title !== "string" || typeof card.description !== "string") return null;
-  return {
-    ...card,
-    walletAddress: card.walletAddress.toLowerCase(),
-    agents: Array.isArray(card.agents) ? card.agents : [],
-    cid,
-  } as WorkflowMetadata;
-}
-
-async function listWorkflows(): Promise<WorkflowMetadata[]> {
-  const jwt = process.env.PINATA_JWT;
-  if (!jwt) return [];
-
-  const url = new URL(PINATA_LIST_URL);
-  url.searchParams.set("status", "pinned");
-  url.searchParams.set("pageLimit", "1000");
-  url.searchParams.set("metadata[keyvalues]", JSON.stringify({
-    type: {
-      value: "workflow-metadata",
-      op: "eq",
-    },
-  }));
-
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${jwt}`, Accept: "application/json" },
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Pinata workflow listing failed (${response.status}): ${body.slice(0, 300)}`);
-  }
-  const body = await response.json().catch(() => ({})) as { rows?: Array<{ ipfs_pin_hash?: unknown }> };
-  const hashes = (body.rows || [])
-    .map((row) => typeof row.ipfs_pin_hash === "string" ? row.ipfs_pin_hash : "")
-    .filter(Boolean);
-
-  const workflows = await Promise.all(hashes.map(async (cid) => {
-    const card = await fetch(`${gatewayUrl()}/ipfs/${cid}`, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(10000),
-    }).then((item) => item.ok ? item.json() : null).catch(() => null);
-    return typedWorkflow(card, cid);
-  }));
-  return workflows.filter((item): item is WorkflowMetadata => Boolean(item));
-}
-
-async function findWorkflowByWallet(walletAddress: string): Promise<WorkflowMetadata | null> {
-  const wallet = walletAddress.toLowerCase();
-  const workflows = await listWorkflows();
-  return workflows.find((workflow) => workflow.walletAddress.toLowerCase() === wallet) || null;
-}
-
 function requireRuntimeUrl(): string {
   const value = process.env.RUNTIME_URL;
   if (!value) {
