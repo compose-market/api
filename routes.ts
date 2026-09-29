@@ -1,56 +1,17 @@
-import { randomUUID } from "node:crypto";
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
-import { validateSvmAddress } from "@x402/svm";
 
+import { isNetworkId, isServiceBlockedNetwork, type NetworkId } from "./x402/configs/chains.js";
 import {
-  buildUsageRecordSettlementMeter,
-  type UsageRecord,
-} from "./x402/metering.js";
-import {
-  extractKeyFromHeader,
-} from "./x402/keys/middleware.js";
-import { verifyKey } from "./x402/keys/index.js";
-import { isNetworkId, type NetworkId } from "./x402/configs/chains.js";
-import {
-  kickBatchSettlement,
-  prepareInferencePayment,
-  settlePreparedInferencePayment,
-  type PreparedInferencePayment,
-} from "./x402/index.js";
-import {
-  AGENTS_ENTRYPOINT,
-  AGENTS_CATALOG,
-  buildAgentsPaymentRequired,
   buildModelsPaymentRequired,
   buildOpenApiDocument,
   buildWellKnownX402,
-  fetchAgentCatalog,
   listModelCatalog,
-  maybeSendAgentStreamDiscoveryChallenge,
   MODELS_ENTRYPOINT,
   MODELS_CATALOG,
 } from "./x402/discovery.js";
 import { encodePaymentRequiredHeader } from "./x402/facilitator.js";
-import {
-  listChildEvidence,
-  listExecutionEvidence,
-  recordChargeEvidence,
-  type ChargeEvidence,
-} from "./x402/evidence.js";
-import { type Receipt, type Bill, type LineItem } from "./http/request-context.js";
-import { toReceiptStreamEvent } from "./inference/core.js";
-import { triggerConfirmedPayment } from "./data/metrics/payments.js";
-import { publicOriginFromHost, publicResourceUrl } from "./http/public-origin.js";
-import {
-  buildAgentResponsesSettlement,
-  buildAgentTextSettlement,
-  finalizeReceipt,
-  listReceipts,
-  receiptFromInferenceSettlement,
-  receiptStreamPayload,
-  type ReceiptContext,
-  type RouteSettlement,
-} from "./x402/receipts.js";
+import { publicOriginFromHost } from "./http/public-origin.js";
+import { listReceipts } from "./x402/receipts.js";
 import { searchAgents as searchAgentverseAgents } from "./agentverse.js";
 
 interface PublicRouteEvent {
@@ -65,17 +26,6 @@ interface PublicRouteResult {
   headers?: Record<string, string>;
   body: string;
   isBase64Encoded?: boolean;
-}
-
-export interface AgentModelRoute {
-  kind: "exact" | "bump" | "missing" | "invalid";
-  from: string;
-  to?: string;
-  checked: string;
-  reason?: string;
-  source?: string;
-  score?: number;
-  candidates?: string[];
 }
 
 export interface AgentCard {
