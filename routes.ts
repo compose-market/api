@@ -103,22 +103,17 @@ export async function handlePublicRoute(
       return jsonResult(200, corsHeaders, listModelCatalog(event.queryStringParameters, publicOrigin));
     }
 
-    if (method === "GET" && path === AGENTS_CATALOG) {
-      return jsonResult(200, corsHeaders, await fetchAgentCatalog(event.queryStringParameters, publicOrigin));
-    }
-
     if (method === "POST" && isEntrypoint(path, MODELS_ENTRYPOINT)) {
       if (eventSignedWithoutNetwork(event)) {
         return jsonResult(400, corsHeaders, { error: "x-network-id header is required" });
       }
-      return paymentRequiredResult(corsHeaders, await buildModelsPaymentRequired(publicOrigin));
-    }
-
-    if (method === "POST" && isEntrypoint(path, AGENTS_ENTRYPOINT)) {
-      if (eventSignedWithoutNetwork(event)) {
-        return jsonResult(400, corsHeaders, { error: "x-network-id header is required" });
+      const network = eventHeader(event, "x-network-id");
+      if (network && isNetworkId(network) && isServiceBlockedNetwork(network)) {
+        return jsonResult(400, corsHeaders, {
+          error: `Network ${network} is not supported for this service. Use a Mainnet, or ask for Testnet access.`,
+        });
       }
-      return paymentRequiredResult(corsHeaders, await buildAgentsPaymentRequired(publicOrigin));
+      return paymentRequiredResult(corsHeaders, await buildModelsPaymentRequired(publicOrigin));
     }
 
     if (method === "GET" && path === "/health") {
@@ -132,67 +127,12 @@ export async function handlePublicRoute(
       return jsonResult(200, corsHeaders, listModelCatalog(event.queryStringParameters, publicOrigin));
     }
 
-    if (method === "GET" && path === "/agents") {
-      return agentsRedirect(event, corsHeaders);
-    }
-
-    if (method === "GET" && path === "/agents/search") {
-      const q = event.queryStringParameters?.q || event.queryStringParameters?.query || "";
-      if (!q.trim()) {
-        return jsonResult(400, corsHeaders, { error: "q is required" });
-      }
-      return agentsRedirect(event, corsHeaders);
-    }
-
-    const agentAvatarMatch = path.match(/^\/agent\/([^/]+)\/avatar$/);
-    if (method === "GET" && agentAvatarMatch) {
-      const walletAddress = agentAvatarMatch[1];
-      if (!isWalletAddress(walletAddress)) {
-        return jsonResult(400, corsHeaders, { error: "Invalid wallet address format" });
-      }
-      return agentsRedirect(event, corsHeaders);
-    }
-
-    const agentMatch = path.match(/^\/agent\/([^/]+)$/);
-    if (method === "GET" && agentMatch) {
-      const walletAddress = agentMatch[1];
-      if (!isWalletAddress(walletAddress)) {
-        return jsonResult(400, corsHeaders, { error: "Invalid wallet address format" });
-      }
-      return agentsRedirect(event, corsHeaders);
-    }
-
-    if (method === "GET" && path === "/workflows") {
-      const workflows = await listWorkflows();
-      return jsonResult(200, corsHeaders, {
-        workflows,
-        total: workflows.length,
-      });
-    }
-
-    const workflowMatch = path.match(/^\/workflow\/(0x[a-fA-F0-9]{40})$/);
-    if (method === "GET" && workflowMatch) {
-      const walletAddress = workflowMatch[1];
-      if (!isWalletAddress(walletAddress)) {
-        return jsonResult(400, corsHeaders, { error: "Invalid wallet address format" });
-      }
-      const workflow = await findWorkflowByWallet(walletAddress);
-      if (!workflow) {
-        return jsonResult(404, corsHeaders, { error: "Workflow not found" });
-      }
-      return jsonResult(200, corsHeaders, workflow);
-    }
-
     if (method === "GET" && path === "/api/agentverse/agents") {
-      // Bridge to Fetch.ai's Agentverse directory. Returns Agentverse-shape
-      // agents (NOT AgentManifest); consumers wanting compose-shape
-      // should map via toAgentManifest. Filter is "compose-compatible"
-      // (active + non-empty name) per external/agentverse.ts.
       const q = event.queryStringParameters || {};
       const result = await searchAgentverseAgents({
         search: q.search ?? q.q ?? undefined,
         category: q.category ?? undefined,
-        tags: q.tags ? q.tags.split(",").map(s => s.trim()).filter(Boolean) : undefined,
+        tags: q.tags ? q.tags.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
         limit: q.limit ? Math.max(1, Math.min(100, Number.parseInt(q.limit, 10) || 30)) : undefined,
         offset: q.offset ? Math.max(0, Number.parseInt(q.offset, 10) || 0) : undefined,
         sort: q.sort as "relevancy" | "created-at" | "last-modified" | "interactions" | undefined,
