@@ -148,15 +148,6 @@ export async function handlePublicRoute(
     return jsonResult(500, corsHeaders, { error: message });
   }
 }
-
-/**
- * Build a runtime-internal URL. The runtime mounts all gateway-facing Manowar
- * routes (agent + workflow + memory + workspace + triggers) under one
- * internal prefix. The api/ gateway proxies straight through.
- */
-export function buildRuntimeManowarUrl(pathAndQuery: string): string {
-  return `${requireRuntimeUrl()}/internal/manowar${pathAndQuery}`;
-}
 function getHeader(req: Request, name: string): string | undefined {
   const value = req.headers[name.toLowerCase()];
   if (Array.isArray(value)) {
