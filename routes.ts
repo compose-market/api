@@ -157,33 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-async function callRuntime(
-  req: Request,
-  pathAndQuery = req.originalUrl,
-  extraHeaders: Record<string, string> = {},
-  signal?: AbortSignal,
-): Promise<globalThis.Response> {
-  return fetch(buildRuntimeManowarUrl(pathAndQuery), {
-    method: req.method,
-    headers: buildRuntimeHeaders(req, extraHeaders),
-    body: await buildRuntimeBody(req),
-    signal,
-  });
-}
-
-function applyRuntimeHeaders(res: ExpressResponse, response: globalThis.Response): void {
-  if (res.headersSent) {
-    return;
-  }
-  response.headers.forEach((value: string, key: string) => {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
-      res.setHeader(key, value);
-    }
-  });
-}
-
-const SSE_OPEN_PADDING = " ".repeat(2048);
-
 function writeSseOpen(res: ExpressResponse): void {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
