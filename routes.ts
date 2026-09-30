@@ -157,27 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function setRequestHeader(req: Request, name: string, value: string): void {
-  req.headers[name.toLowerCase()] = value;
-}
-
-function keyUserAddress(req: Request): string | undefined {
-  const token = extractKeyFromHeader(getHeader(req, "authorization"));
-  if (!token) {
-    const userAddress = getHeader(req, "x-session-user-address");
-    return userAddress && /^0x[a-fA-F0-9]{40}$/.test(userAddress) ? userAddress.toLowerCase() : userAddress;
-  }
-  const payload = verifyKey(token);
-  const userAddress = payload?.sub || getHeader(req, "x-session-user-address");
-  return userAddress && /^0x[a-fA-F0-9]{40}$/.test(userAddress) ? userAddress.toLowerCase() : userAddress;
-}
-
-function bodyRecord(req: Request): Record<string, unknown> | null {
-  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? req.body as Record<string, unknown>
-    : null;
-}
-
 function rootRunId(req: Request): string {
   const existing = getHeader(req, "x-run-id");
   if (existing?.trim()) {
