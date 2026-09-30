@@ -157,64 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function createRequestAbort(req: Request, res: ExpressResponse): RequestAbort {
-  const controller = new AbortController();
-  let completed = false;
-
-  const abort = (reason: string) => {
-    if (completed || controller.signal.aborted) {
-      return;
-    }
-    controller.abort(new Error(reason));
-  };
-
-  const onReqAborted = () => abort("client_request_aborted");
-  const onReqClose = () => {
-    if (req.destroyed && !req.complete) {
-      abort("client_request_closed");
-    }
-  };
-  const onResClose = () => {
-    if (!res.writableEnded && !res.writableFinished) {
-      abort("client_response_closed");
-    }
-  };
-
-  const cleanup = () => {
-    req.off("aborted", onReqAborted);
-    req.off("close", onReqClose);
-    res.off("close", onResClose);
-    res.off("finish", done);
-  };
-
-  const done = () => {
-    completed = true;
-    cleanup();
-  };
-
-  req.on("aborted", onReqAborted);
-  req.on("close", onReqClose);
-  res.on("close", onResClose);
-  res.on("finish", done);
-
-  return {
-    signal: controller.signal,
-    aborted: () => controller.signal.aborted,
-    done,
-    cleanup,
-  };
-}
-
-function abortReason(signal: AbortSignal): string {
-  const reason = signal.reason;
-  return reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "client_closed";
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error
-    && (error.name === "AbortError" || /aborted|abort|client_.*closed|client_.*aborted/i.test(error.message));
-}
-
 export function buildRuntimeSessionHeaders(input: {
   userAddress: string;
   sessionBudgetRemaining: string;
