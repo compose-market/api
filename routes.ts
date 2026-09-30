@@ -157,37 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function writeSseOpen(res: ExpressResponse): void {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("X-Accel-Buffering", "no");
-  if (typeof res.flushHeaders === "function") {
-    res.flushHeaders();
-  }
-  res.write(`: open ${SSE_OPEN_PADDING}\n\n`);
-  const flush = (res as ExpressResponse & { flush?: () => void }).flush;
-  if (typeof flush === "function") {
-    flush.call(res);
-  }
-}
-
-async function readRuntimeJson<TBody>(response: globalThis.Response): Promise<{ text: string; body: TBody | null }> {
-  const text = await response.text();
-  if (!text) {
-    return { text, body: null };
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    return { text, body: null };
-  }
-
-  return {
-    text,
-    body: JSON.parse(text) as TBody,
-  };
-}
-
 async function prepareRoutePayment(
   req: Request,
   res: ExpressResponse,
