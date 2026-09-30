@@ -157,34 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function rootRunId(req: Request): string {
-  const existing = getHeader(req, "x-run-id");
-  if (existing?.trim()) {
-    return existing.trim();
-  }
-  const body = bodyRecord(req);
-  const fromBody = typeof body?.runId === "string" && body.runId.trim()
-    ? body.runId.trim()
-    : undefined;
-  return fromBody || randomUUID();
-}
-
-function applyHeaders(res: ExpressResponse, headers: Record<string, string>): void {
-  if (res.headersSent) {
-    return;
-  }
-  for (const [key, value] of Object.entries(headers)) {
-    res.setHeader(key, value);
-  }
-}
-
-interface RequestAbort {
-  signal: AbortSignal;
-  aborted: () => boolean;
-  done: () => void;
-  cleanup: () => void;
-}
-
 function createRequestAbort(req: Request, res: ExpressResponse): RequestAbort {
   const controller = new AbortController();
   let completed = false;
