@@ -157,66 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export function buildRuntimeSessionHeaders(input: {
-  userAddress: string;
-  sessionBudgetRemaining: string;
-}): Record<string, string> {
-  return {
-    "x-session-active": "true",
-    "x-session-user-address": /^0x[a-fA-F0-9]{40}$/.test(input.userAddress)
-      ? input.userAddress.toLowerCase()
-      : input.userAddress,
-    "x-session-budget-remaining": input.sessionBudgetRemaining,
-  };
-}
-
-export function buildRuntimeHeaders(req: Request, extraHeaders: Record<string, string> = {}): Headers {
-  const headers = new Headers();
-
-  for (const [key, value] of Object.entries(req.headers)) {
-    const lower = key.toLowerCase();
-    if (HOP_BY_HOP_HEADERS.has(lower) || lower === "payment-signature" || typeof value === "undefined") {
-      continue;
-    }
-
-    if (Array.isArray(value)) {
-      headers.set(key, value.join(","));
-    } else {
-      headers.set(key, value);
-    }
-  }
-
-  for (const [key, value] of Object.entries(extraHeaders)) {
-    headers.set(key, value);
-  }
-
-  return headers;
-}
-
-async function buildRuntimeBody(req: Request): Promise<string | Blob | undefined> {
-  if (req.method === "GET" || req.method === "HEAD") {
-    return undefined;
-  }
-
-  const rawBody = (req as Request & { rawBody?: unknown }).rawBody;
-  if (Buffer.isBuffer(rawBody)) {
-    const copied = new Uint8Array(rawBody.byteLength);
-    copied.set(rawBody);
-    return new Blob([copied]);
-  }
-  if (typeof rawBody === "string") {
-    return rawBody;
-  }
-  if (typeof req.body === "string") {
-    return req.body;
-  }
-  if (req.body && typeof req.body === "object" && Object.keys(req.body).length > 0) {
-    return JSON.stringify(req.body);
-  }
-
-  return undefined;
-}
-
 async function callRuntime(
   req: Request,
   pathAndQuery = req.originalUrl,
