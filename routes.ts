@@ -157,67 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-async function prepareRoutePayment(
-  req: Request,
-  res: ExpressResponse,
-  service: string,
-  action: string,
-): Promise<PaymentPreparation | null> {
-  const resolvedRootRunId = rootRunId(req);
-  setRequestHeader(req, "x-run-id", resolvedRootRunId);
-  res.setHeader("x-run-id", resolvedRootRunId);
-
-  // Compose Key and raw x402 share the same endpoint wrapper shape here:
-  // authorize the boundary, forward the inherited run context to runtime, and
-  // settle only the terminal amount when the endpoint emits usage evidence.
-  try {
-    if (service === "agent" && action === "stream") {
-      const challenged = await maybeSendAgentStreamDiscoveryChallenge(req, res);
-      if (challenged) {
-        return null;
-      }
-    }
-
-    const prepared = await prepareInferencePayment(req, res, {
-      useBudgetCap: true,
-      scheme: service === "agent" ? "batch-settlement" : "upto",
-    });
-    if (!prepared) {
-      // 402 PAYMENT-REQUIRED (or 400/402 error) was already emitted by
-      // prepareInferencePayment.
-      return null;
-    }
-    const userAddress = keyUserAddress(req);
-
-    return {
-      mode: "x402",
-      rootRunId: resolvedRootRunId,
-      prepared,
-      headers: {},
-      runtimeHeaders: {
-        ...prepared.runtimeHeaders,
-        ...(userAddress ? { "x-session-user-address": userAddress } : {}),
-        "x-run-id": resolvedRootRunId,
-      },
-      receiptContext: {
-        service,
-        action,
-        resource: publicResourceUrl(req),
-        userAddress,
-      },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Payment preparation failed";
-    const statusCode = (error as { statusCode?: number })?.statusCode ?? 400;
-    res.status(statusCode).json({ error: message });
-    return null;
-  }
-}
-
-async function abortPreparedPayment(prepared: PaymentPreparation, reason: string): Promise<void> {
-  await prepared.prepared.abort(reason);
-}
-
 async function settlePreparedPayment(
   prepared: PaymentPreparation,
   res: ExpressResponse,
