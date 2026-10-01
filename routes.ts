@@ -157,67 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function line(key: string, amountWei: string | undefined): LineItem | null {
-  if (!amountWei || !/^\d+$/u.test(amountWei) || BigInt(amountWei) <= 0n) return null;
-  return {
-    key,
-    unit: "charge",
-    quantity: 1,
-    unitPriceUsd: usd(amountWei),
-    amountWei,
-  };
-}
-
-function bill(input: {
-  kind: Bill["kind"];
-  source?: string;
-  action?: string;
-  subject?: string;
-  name?: string;
-  amountWei: string;
-  lineItems: Array<LineItem | null>;
-}): Bill {
-  return {
-    kind: input.kind,
-    source: input.source,
-    action: input.action,
-    subject: input.subject,
-    name: input.name,
-    amountWei: input.amountWei,
-    total: total(input.amountWei),
-    duration: "0s",
-    lineItems: input.lineItems.filter((item): item is LineItem => Boolean(item)),
-  };
-}
-
-function evidenceBill(charge: ChargeEvidence): Bill {
-  const kind = charge.kind === "agent" || charge.kind === "model" || charge.kind === "tool"
-    || charge.kind === "search" || charge.kind === "memory" || charge.kind === "connector"
-    ? charge.kind
-    : "tool";
-  const source = charge.service || charge.action || kind;
-  const subject = charge.subject || charge.walletAddress || charge.name || "unknown";
-  const amountWei = charge.finalAmountWei || (
-    BigInt(charge.providerAmountWei || "0")
-    + BigInt(charge.feeWei || "0")
-    + BigInt(charge.creatorFeeWei || "0")
-  ).toString();
-  const prefix = `${kind}.${source}.${subject}`;
-  return bill({
-    kind,
-    source,
-    action: charge.action,
-    subject,
-    name: charge.name,
-    amountWei,
-    lineItems: [
-      line(`${prefix}:provider`, charge.providerAmountWei),
-      line(`${prefix}:compose_fee`, charge.feeWei),
-      line(`${prefix}:creator_fee`, charge.creatorFeeWei),
-    ],
-  });
-}
-
 function withSettlementBills(receipt: Receipt | null, settlement: RouteSettlement): Receipt | null {
   if (!receipt || !("bills" in settlement) || !settlement.bills?.length) {
     return receipt;
