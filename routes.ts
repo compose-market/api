@@ -157,59 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function terminalAgentMetadata(body: Record<string, unknown>, req: Request): {
-  rootRunId: string;
-  executionRunId: string;
-  parentExecutionRunId?: string;
-  walletAddress?: string;
-  name?: string;
-  model?: string;
-  creatorFee: number;
-} {
-  const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
-    ? body.payload as Record<string, unknown>
-    : null;
-  const payloadAgent = payload?.agent && typeof payload.agent === "object" && !Array.isArray(payload.agent)
-    ? payload.agent as Record<string, unknown>
-    : null;
-  const agent = payloadAgent
-    ?? (body.agent && typeof body.agent === "object" && !Array.isArray(body.agent)
-      ? body.agent as Record<string, unknown>
-      : {});
-  const root = stringField(body.rootRunId)
-    || stringField(body.rootId)
-    || stringField(payload?.rootRunId)
-    || getHeader(req, "x-run-id")
-    || rootRunId(req);
-  const execution = stringField(body.runId)
-    || stringField(payload?.runId)
-    || stringField(body.executionRunId)
-    || getHeader(req, "x-execution-run-id")
-    || root;
-  const parent = stringField(body.parentExecutionRunId)
-    || stringField(payload?.parentExecutionRunId)
-    || getHeader(req, "x-parent-run-id");
-  const creatorFee = numberField(agent.creatorFee)
-    ?? numberField(body.creatorFee)
-    ?? 1;
-  return {
-    rootRunId: root,
-    executionRunId: execution,
-    ...(parent ? { parentExecutionRunId: parent } : {}),
-    walletAddress: stringField(agent.walletAddress) || stringField(body.walletAddress) || stringField(req.params.walletAddress),
-    name: stringField(agent.name) || stringField(body.name),
-    model: stringField(agent.model) || stringField(body.model),
-    creatorFee: Math.max(0, Math.trunc(creatorFee)),
-  };
-}
-
-function sumWei(charges: ChargeEvidence[], pick: (charge: ChargeEvidence) => string | undefined): bigint {
-  return charges.reduce((total, charge) => {
-    const value = pick(charge);
-    return value && /^\d+$/.test(value) ? total + BigInt(value) : total;
-  }, 0n);
-}
-
 function uniqueCharges(charges: ChargeEvidence[]): ChargeEvidence[] {
   const seen = new Set<string>();
   const result: ChargeEvidence[] = [];
