@@ -157,22 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function ceilPercent(amountWei: bigint, percent: number): bigint {
-  if (amountWei <= 0n || percent <= 0) return 0n;
-  const numerator = amountWei * BigInt(Math.trunc(percent));
-  return ((numerator - 1n) / 100n) + 1n;
-}
-
-
-
-function stringField(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function numberField(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function terminalAgentMetadata(body: Record<string, unknown>, req: Request): {
   rootRunId: string;
   executionRunId: string;
