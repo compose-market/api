@@ -157,34 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function uniqueCharges(charges: ChargeEvidence[]): ChargeEvidence[] {
-  const seen = new Set<string>();
-  const result: ChargeEvidence[] = [];
-  for (const charge of charges) {
-    const id = charge.chargeId || charge.id || [
-      charge.kind,
-      charge.rootRunId,
-      charge.executionRunId,
-      charge.subject,
-      charge.finalAmountWei,
-      charge.settledAt,
-    ].join(":");
-    if (seen.has(id)) continue;
-    seen.add(id);
-    result.push(charge);
-  }
-  return result;
-}
-
-function usd(amountWei: string | undefined): number {
-  if (!amountWei || !/^\d+$/u.test(amountWei)) return 0;
-  return Number(amountWei) / 1_000_000;
-}
-
-function total(amountWei: string | undefined): string {
-  return `${usd(amountWei).toFixed(6)} USDC`;
-}
-
 function line(key: string, amountWei: string | undefined): LineItem | null {
   if (!amountWei || !/^\d+$/u.test(amountWei) || BigInt(amountWei) <= 0n) return null;
   return {
