@@ -157,61 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function withSettlementBills(receipt: Receipt | null, settlement: RouteSettlement): Receipt | null {
-  if (!receipt || !("bills" in settlement) || !settlement.bills?.length) {
-    return receipt;
-  }
-  return {
-    ...receipt,
-    bills: settlement.bills,
-  };
-}
-
-function agentBill(input: {
-  walletAddress?: string;
-  name?: string;
-  action: string;
-  subject: string;
-  amountWei: string;
-  feeWei: string;
-  creatorFeeWei: string;
-  children: Bill[];
-}): Bill {
-  return {
-    kind: "agent",
-    source: "agent",
-    action: input.action,
-    subject: input.subject,
-    name: input.name,
-    amountWei: input.amountWei,
-    agent: input.name || input.subject,
-    ...(input.walletAddress ? { agentWallet: input.walletAddress } : {}),
-    depth: 0,
-    tokens: {},
-    tools: input.children
-      .map((child) => child.action || child.source || child.kind)
-      .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index),
-    total: total(input.amountWei),
-    duration: "0s",
-    fees: {
-      total: {
-        percent: "agent",
-        amount: total((BigInt(input.feeWei) + BigInt(input.creatorFeeWei)).toString()),
-      },
-      distribution: {
-        Compose: total(input.feeWei),
-        Creator: total(input.creatorFeeWei),
-      },
-    },
-    lineItems: [
-      ...input.children.flatMap((child) => child.lineItems),
-      line(`${input.subject}:compose_fee`, input.feeWei),
-      line(`${input.subject}:creator_fee`, input.creatorFeeWei),
-    ].filter((item): item is LineItem => Boolean(item)),
-    children: input.children,
-  };
-}
-
 async function resolveAgentEndpointSettlement(
   body: Record<string, unknown>,
   req: Request,
