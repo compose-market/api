@@ -157,31 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function resolveAgentTextSettlement(
-  body: Record<string, unknown>,
-  req: Request,
-  action = "stream",
-): Promise<RouteSettlement> {
-  return resolveAgentEndpointSettlement(body, req, action);
-}
-
-function resolveAgentResponsesSettlement(body: Record<string, unknown>, req: Request): Promise<RouteSettlement> {
-  return resolveAgentEndpointSettlement(body, req, "responses");
-}
-
-function resolveWorkflowSettlement(body: Record<string, unknown>, subject: string): RouteSettlement {
-  if (!Array.isArray(body.usageRecords)) {
-    throw new Error("usageRecords are required for metered workflow settlement");
-  }
-
-  const metered = buildUsageRecordSettlementMeter({
-    subject,
-    usageRecords: body.usageRecords as UsageRecord[],
-  });
-
-  return { meter: metered.meter };
-}
-
 function workflowSettlementSubject(req: Request): string {
   const walletFromParams = typeof req.params.walletAddress === "string"
     ? req.params.walletAddress
