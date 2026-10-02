@@ -157,66 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/**
- * Unpaid byte-for-byte SSE passthrough for observation streams (run watch).
- * The runtime owns the event vocabulary; the gateway only pipes frames and
- * lifecycle. Non-OK runtime responses surface as JSON with the runtime's
- * status, mirroring passthroughJsonRoute.
- */
-function passthroughStreamRoute() {
-  return (req: Request, res: ExpressResponse, next: NextFunction) => {
-    void (async () => {
-      const lifecycle = createRequestAbort(req, res);
-      try {
-        const runtimeResponse = await callRuntime(req, req.originalUrl, {}, lifecycle.signal);
-        if (!runtimeResponse.ok) {
-          const { text } = await readRuntimeJson(runtimeResponse);
-          if (lifecycle.aborted()) {
-            return;
-          }
-          applyRuntimeHeaders(res, runtimeResponse);
-          res.status(runtimeResponse.status).send(text);
-          lifecycle.done();
-          return;
-        }
-        if (lifecycle.aborted()) {
-          return;
-        }
-        writeSseOpen(res);
-        if (!runtimeResponse.body) {
-          res.write("data: [DONE]\n\n");
-          res.end();
-          lifecycle.done();
-          return;
-        }
-        const reader = runtimeResponse.body.getReader();
-        res.on("close", () => {
-          void reader.cancel().catch(() => undefined);
-        });
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-          if (lifecycle.aborted()) {
-            void reader.cancel().catch(() => undefined);
-            return;
-          }
-          if (!res.write(value)) {
-            await new Promise<void>((resolve) => res.once("drain", resolve));
-          }
-        }
-        if (!res.writableEnded) {
-          res.end();
-        }
-        lifecycle.done();
-      } finally {
-        lifecycle.cleanup();
-      }
-    })().catch(next);
-  };
-}
-
 function zeroResourceSettlement(req: Request, kind: "memory", action: string): RouteSettlement {
   const root = getHeader(req, "x-run-id") || rootRunId(req);
   const body = bodyRecord(req);
