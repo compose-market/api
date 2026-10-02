@@ -157,14 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function command(path: string): string {
-  return path
-    .replace(/^\/api\//u, "")
-    .replace(/[:]/gu, "")
-    .replace(/[/.]+/gu, ".")
-    .replace(/^\.+|\.+$/gu, "");
-}
-
 /**
  * Unpaid byte-for-byte SSE passthrough for observation streams (run watch).
  * The runtime owns the event vocabulary; the gateway only pipes frames and
