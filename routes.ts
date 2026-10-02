@@ -157,65 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function terminal(data: Record<string, unknown>): boolean {
-  if (data.domain === "activity") {
-    // The runtime opens every stream with an `activity.run` frame in the
-    // `running` status; only the non-running frames are terminals.
-    return (data.type === "activity.run" || data.type === "activity.error") && data.status !== "running";
-  }
-  return data.type === "done" || data.type === "stopped" || data.type === "error";
-}
-
-function sseDataHasTextDelta(data: Record<string, unknown>): boolean {
-  if (data.domain === "model" && data.type === "model.text.delta" && typeof data.delta === "string") {
-    return true;
-  }
-  const choices = data.choices;
-  if (!Array.isArray(choices) || choices.length === 0) {
-    return false;
-  }
-  const first = choices[0];
-  if (!first || typeof first !== "object") {
-    return false;
-  }
-  const delta = (first as { delta?: unknown }).delta;
-  return Boolean(delta && typeof delta === "object" && typeof (delta as { content?: unknown }).content === "string");
-}
-
-function usageful(data: Record<string, unknown>): boolean {
-  const payload = data.payload && typeof data.payload === "object" && !Array.isArray(data.payload)
-    ? data.payload as Record<string, unknown>
-    : null;
-  const payloadUsage = payload?.usage && typeof payload.usage === "object" && !Array.isArray(payload.usage)
-    ? payload.usage as Record<string, unknown>
-    : null;
-  const usage = payloadUsage
-    || (data.usage && typeof data.usage === "object" && !Array.isArray(data.usage)
-      ? data.usage as Record<string, unknown>
-      : data);
-  const numericKeys = [
-    "prompt_tokens",
-    "completion_tokens",
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "total_tokens",
-    "promptTokens",
-    "completionTokens",
-    "inputTokens",
-    "outputTokens",
-    "reasoningTokens",
-    "totalTokens",
-  ];
-  if (numericKeys.some((key) => typeof usage[key] === "number" && usage[key] > 0)) {
-    return true;
-  }
-  const billingMetrics = usage.billingMetrics && typeof usage.billingMetrics === "object" && !Array.isArray(usage.billingMetrics)
-    ? usage.billingMetrics as Record<string, unknown>
-    : null;
-  return Boolean(billingMetrics && Object.values(billingMetrics).some((value) => typeof value === "number" && value > 0));
-}
-
 function metered(data: Record<string, unknown>): boolean {
   return Array.isArray(data.meters) && data.meters.length > 0;
 }
