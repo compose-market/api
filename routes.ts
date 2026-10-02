@@ -157,69 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function workflowSettlementSubject(req: Request): string {
-  const walletFromParams = typeof req.params.walletAddress === "string"
-    ? req.params.walletAddress
-    : typeof req.params.id === "string"
-      ? req.params.id
-      : undefined;
-  const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : null;
-  const payload = body && typeof body.payload === "object" ? body.payload as Record<string, unknown> : null;
-  const walletFromBody = typeof payload?.walletAddress === "string"
-    ? payload.walletAddress
-    : typeof payload?.id === "string"
-      ? payload.id
-      : undefined;
-  const walletAddress = walletFromParams || walletFromBody;
-  if (!walletAddress) {
-    throw new Error("workflow walletAddress is required for metered settlement");
-  }
-  return `workflow:${walletAddress}`;
-}
-
-function parseSseEventBlock(rawEvent: string): ParsedSseEvent | null {
-  if (!rawEvent.trim()) {
-    return null;
-  }
-
-  let eventName = "message";
-  const dataLines: string[] = [];
-
-  for (const line of rawEvent.split(/\r?\n/)) {
-    if (line.startsWith("event:")) {
-      eventName = line.slice(6).trim();
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-
-  if (dataLines.length === 0) {
-    return null;
-  }
-
-  const dataStr = dataLines.join("\n").trim();
-  // `[DONE]` is the canonical OpenAI/SSE stream terminator; not JSON. Skip it
-  // here so it passes through to the client unchanged. Without this guard,
-  // JSON.parse throws, the gateway aborts the prepared x402 payment, and on-chain
-  // settlement never lands — the symptom that looks like "agent loops forever"
-  // because the gateway holds the connection until Cloud Run timeout (5 min).
-  if (dataStr === "[DONE]") {
-    return null;
-  }
-
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(dataStr) as Record<string, unknown>;
-  } catch {
-    // Non-JSON data lines (e.g. arbitrary SSE comments routed via `data:`)
-    // never carry settlement metadata. Skip silently so the stream continues.
-    return null;
-  }
-  return { eventName, data };
-}
-
 function terminal(data: Record<string, unknown>): boolean {
   if (data.domain === "activity") {
     // The runtime opens every stream with an `activity.run` frame in the
