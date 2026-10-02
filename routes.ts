@@ -157,38 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function metered(data: Record<string, unknown>): boolean {
-  return Array.isArray(data.meters) && data.meters.length > 0;
-}
-
-function failclosed(data: Record<string, unknown>, error: unknown): boolean {
-  return Boolean(
-    error
-    && terminal(data)
-    && (data.type === "done" || metered(data) || usageful(data))
-  );
-}
-
-function passthroughJsonRoute(pathAndQuery?: (req: Request) => string) {
-  return (req: Request, res: ExpressResponse, next: NextFunction) => {
-    void (async () => {
-      const lifecycle = createRequestAbort(req, res);
-      try {
-        const runtimeResponse = await callRuntime(req, pathAndQuery ? pathAndQuery(req) : req.originalUrl, {}, lifecycle.signal);
-        const { text } = await readRuntimeJson(runtimeResponse);
-        if (lifecycle.aborted()) {
-          return;
-        }
-        applyRuntimeHeaders(res, runtimeResponse);
-        res.status(runtimeResponse.status).send(text);
-        lifecycle.done();
-      } finally {
-        lifecycle.cleanup();
-      }
-    })().catch(next);
-  };
-}
-
 function command(path: string): string {
   return path
     .replace(/^\/api\//u, "")
