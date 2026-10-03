@@ -194,6 +194,8 @@ function receiptsRoute() {
       userAddress: identity.userAddress,
       network: identity.network,
       limit: receiptLimit(req),
+      rootRunId: queryValue(req.query.rootRunId),
+      executionRunId: queryValue(req.query.executionRunId),
     }).then((result) => res.status(200).json(result)).catch(next);
   };
 }
