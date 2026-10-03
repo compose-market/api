@@ -157,65 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-const memory: ReadonlyArray<readonly [Method, string]> = [
-  ["post", "/api/memory/context/assemble"],
-  ["post", "/api/memory/turns/record"],
-  ["post", "/api/memory/remember"],
-  ["post", "/api/memory/loop"],
-  ["get", "/api/memory/loops"],
-  ["get", "/api/memory/loops/:loopId"],
-  ["get", "/api/memory/patterns"],
-  ["get", "/api/memory/patterns/:patternId"],
-  ["post", "/api/memory/patterns/:patternId/validate"],
-  ["post", "/api/memory/patterns/:patternId/promote"],
-  ["get", "/api/memory/skills"],
-  ["get", "/api/memory/skills/:skillId"],
-  ["post", "/api/memory/transcripts/index"],
-  ["get", "/api/memory/sessions/:sessionId/working"],
-  ["patch", "/api/memory/sessions/:sessionId/working"],
-  ["post", "/api/memory/sessions/:sessionId/compress"],
-  ["post", "/api/memory/archives/:archiveId/sync"],
-  ["get", "/api/memory/schedules"],
-  ["post", "/api/memory/schedules"],
-  ["delete", "/api/memory/schedules"],
-  ["post", "/api/memory/schedules/:scheduleId/pause"],
-  ["post", "/api/memory/schedules/:scheduleId/resume"],
-  ["post", "/api/memory/schedules/:scheduleId/trigger"],
-  ["post", "/api/memory/add"],
-  ["post", "/api/memory/search"],
-  ["post", "/api/memory/vector-search"],
-  ["post", "/api/memory/vector-index"],
-  ["post", "/api/memory/transcript-store"],
-  ["get", "/api/memory/transcript-get/:id"],
-  ["post", "/api/memory/rerank"],
-  ["post", "/api/memory/layers/search"],
-  ["get", "/api/memory/stats/:agentWallet"],
-  ["post", "/api/memory/items/search"],
-  ["get", "/api/memory/items/:id"],
-  ["patch", "/api/memory/items/:id"],
-  ["delete", "/api/memory/items/:id"],
-  ["post", "/api/memory/conflicts/:id/resolve"],
-  ["post", "/api/memory/jobs"],
-  ["get", "/api/memory/jobs/:jobId"],
-  ["post", "/api/memory/evals/runs"],
-  ["get", "/api/memory/:agentWallet"],
-];
-
-function mount(app: Application, routes: ReadonlyArray<readonly [Method, string]>): void {
-  for (const [method, path] of routes) {
-    app[method](path, memoryRoute(path));
-  }
-}
-
-function pathSegment(value: unknown): string | null {
-  if (typeof value !== "string" || value.trim().length === 0) return null;
-  try {
-    return encodeURIComponent(decodeURIComponent(value));
-  } catch {
-    return encodeURIComponent(value);
-  }
-}
-
 function queryValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
