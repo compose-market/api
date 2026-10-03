@@ -157,45 +157,6 @@ function getHeader(req: Request, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function zeroResourceSettlement(req: Request, kind: "memory", action: string): RouteSettlement {
-  const root = getHeader(req, "x-run-id") || rootRunId(req);
-  const body = bodyRecord(req);
-  const execution = getHeader(req, "x-execution-run-id")
-    || stringField(body?.runId)
-    || root;
-  const parent = getHeader(req, "x-parent-run-id")
-    || stringField(body?.parentExecutionRunId);
-  const subject = `${kind}:${action}`;
-  return {
-    finalAmountWei: "0",
-    providerAmountWei: "0",
-    platformFeeWei: "0",
-    meterSubject: subject,
-    evidence: {
-      kind,
-      rootRunId: root,
-      executionRunId: execution,
-      ...(parent ? { parentExecutionRunId: parent } : {}),
-      service: kind,
-      action,
-      subject,
-      providerAmountWei: "0",
-      feeWei: "0",
-    },
-  };
-}
-
-function memoryRoute(path: string) {
-  const action = command(path);
-  return payableJsonRoute({
-    service: "memory",
-    action,
-    resolveSettlement: (_body, req) => zeroResourceSettlement(req, "memory", action),
-  });
-}
-
-type Method = "get" | "post" | "patch" | "delete";
-
 const memory: ReadonlyArray<readonly [Method, string]> = [
   ["post", "/api/memory/context/assemble"],
   ["post", "/api/memory/turns/record"],
