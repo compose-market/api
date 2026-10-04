@@ -19,9 +19,31 @@ import { valkeySMembers } from "../keys/valkey.js";
 import type { BatchRunSummary, BatchSettlementResult, BatchConfig } from "./types.js";
 
 const MAX_INTENTS_PER_RUN = 100;
+const INTENT_EXECUTION_TIMEOUT_MS = 25_000;
 
 function pendingRetry(intent: Awaited<ReturnType<typeof getCanonicalPaymentIntent>>, now: number): boolean {
     return Boolean(intent?.nextAttemptAt && intent.nextAttemptAt > now);
+}
+
+async function withIntentExecutionTimeout<T>(
+    operation: Promise<T>,
+    timeoutMs: number,
+    paymentIntentId: string,
+): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => {
+                    reject(new Error(`Settlement worker timed out after ${timeoutMs}ms on intent ${paymentIntentId}`));
+                }, timeoutMs);
+                timer.unref?.();
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 export async function runBatchSettlement(
