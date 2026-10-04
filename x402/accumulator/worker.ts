@@ -190,7 +190,7 @@ export async function triggerImmediateSettlement(
     for (const intent of candidates) {
         if (pendingRetry(intent, Date.now())) continue;
         if (intent.executionClaimToken && (intent.executionClaimExpiresAt || 0) > Date.now()) continue;
-        await executeCanonicalPaymentIntent(intent.paymentIntentId, { waitForConfirmation: false });
+        await executeCanonicalPaymentIntent(intent.paymentIntentId, { waitForConfirmation: true });
         const current = await getCanonicalPaymentIntent(intent.paymentIntentId);
         if (!current) return null;
         if (current.attemptCount === intent.attemptCount && current.status === intent.status) continue;
