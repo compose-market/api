@@ -57,48 +57,94 @@ export async function runBatchSettlement(
     const maxIntents = Math.min(requestedMax, MAX_INTENTS_PER_RUN);
     const projectionLimit = Math.max(1, Math.floor(maxIntents / 4));
     const projectionIds = await listCanonicalPaymentProjectionIds(projectionLimit);
-    for (const paymentIntentId of projectionIds) {
-        await reconcileCanonicalPaymentIntentProjections(paymentIntentId).catch((error) => {
-            console.error("[settlement-worker] projection retry failed", {
-                paymentIntentId,
-                error: error instanceof Error ? error.message : String(error),
-            });
-        });
-    }
+    await Promise.allSettled(
+        projectionIds.map((paymentIntentId) =>
+            reconcileCanonicalPaymentIntentProjections(paymentIntentId).catch((error) => {
+                console.error("[settlement-worker] projection retry failed", {
+                    paymentIntentId,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }),
+        ),
+    );
+
     const remainingCapacity = Math.max(0, maxIntents - projectionIds.length);
-    const boundedScanLimit = Math.min(MAX_INTENTS_PER_RUN * 4, remainingCapacity * 4);
-    const candidateIds = await listCanonicalPaymentIntentIds(boundedScanLimit);
-    const results: BatchSettlementResult[] = [];
+    const boundedScanLimit = Math.max(250, Math.min(MAX_INTENTS_PER_RUN * 4, remainingCapacity * 4));
+    const candidateIds = remainingCapacity > 0
+        ? await listCanonicalPaymentIntentIds(boundedScanLimit)
+        : [];
+
+    type HydratedIntent = NonNullable<Awaited<ReturnType<typeof getCanonicalPaymentIntent>>>;
+    const byNetwork = new Map<NetworkId, HydratedIntent[]>();
+    let actionableCount = 0;
+
     for (const paymentIntentId of candidateIds) {
-        if (results.length >= remainingCapacity) break;
+        if (actionableCount >= remainingCapacity) break;
         const intent = await getCanonicalPaymentIntent(paymentIntentId);
-        if (!intent) {
-            await removeCanonicalPaymentIntentWorkId(paymentIntentId);
-            continue;
-        }
-        if (intent.status !== "queued" && intent.status !== "submitted") {
+        if (!intent || (intent.status !== "queued" && intent.status !== "submitted")) {
             await removeCanonicalPaymentIntentWorkId(paymentIntentId);
             continue;
         }
         if (pendingRetry(intent, startTime)) continue;
         if (intent.executionClaimToken && (intent.executionClaimExpiresAt || 0) > Date.now()) continue;
-        const execution = await executeCanonicalPaymentIntent(paymentIntentId, { waitForConfirmation: false });
-        const current = await getCanonicalPaymentIntent(paymentIntentId);
-        if (!current) continue;
-        if (current.attemptCount === intent.attemptCount && current.status === intent.status) continue;
-        const confirmed = Boolean(execution.ok && current?.status === "confirmed");
-        results.push({
-            paymentIntentId,
-            userAddress: intent.userAddress,
-            network: intent.network,
-            asset: intent.asset,
-            totalSettledWei: confirmed ? (current?.finalAmountWei || "0") : "0",
-            intentCount: 1,
-            txHash: current?.txHash || "",
-            status: current?.status || "failed",
-            ...(!confirmed && current?.lastError ? { error: current.lastError } : {}),
-        });
+        const group = byNetwork.get(intent.network);
+        if (group) {
+            group.push(intent);
+        } else {
+            byNetwork.set(intent.network, [intent]);
+        }
+        actionableCount += 1;
     }
+
+    const results: BatchSettlementResult[] = [];
+    await Promise.allSettled(
+        Array.from(byNetwork.entries()).map(async ([network, networkIntents]) => {
+            for (const intent of networkIntents) {
+                const paymentIntentId = intent.paymentIntentId;
+                try {
+                    const execution = await withIntentExecutionTimeout(
+                        executeCanonicalPaymentIntent(paymentIntentId, { waitForConfirmation: true }),
+                        INTENT_EXECUTION_TIMEOUT_MS,
+                        paymentIntentId,
+                    );
+                    const current = await getCanonicalPaymentIntent(paymentIntentId);
+                    if (!current) continue;
+                    if (current.attemptCount === intent.attemptCount && current.status === intent.status) continue;
+                    const confirmed = Boolean(execution.ok && current.status === "confirmed");
+                    results.push({
+                        paymentIntentId,
+                        userAddress: intent.userAddress,
+                        network: intent.network,
+                        asset: intent.asset,
+                        totalSettledWei: confirmed ? (current.finalAmountWei || "0") : "0",
+                        intentCount: 1,
+                        txHash: current.txHash || "",
+                        status: current.status || "failed",
+                        ...(!confirmed && current.lastError ? { error: current.lastError } : {}),
+                    });
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    console.error("[settlement-worker] network intent execution error", {
+                        network,
+                        paymentIntentId,
+                        error: message,
+                    });
+                    const current = await getCanonicalPaymentIntent(paymentIntentId).catch(() => null);
+                    results.push({
+                        paymentIntentId,
+                        userAddress: intent.userAddress,
+                        network: intent.network,
+                        asset: intent.asset,
+                        totalSettledWei: "0",
+                        intentCount: 1,
+                        txHash: current?.txHash || intent.txHash || "",
+                        status: current?.status || intent.status,
+                        error: message,
+                    });
+                }
+            }
+        }),
+    );
 
     const confirmed = results.filter((result) => result.status === "confirmed");
     const terminalFailures = results.filter((result) => result.status === "failed");
