@@ -1486,11 +1486,19 @@ export async function commitRawBatchCheckpoint(input: {
         executionRunId: input.executionRunId,
         idempotencyKey: input.idempotencyKey,
         sequence: input.sequence,
-        channelStorage: isSolanaNetwork(backing.network) ? "svm-hash" : "evm-json",
+        channelStorage: isSolanaNetwork(backing.network) || isNearNetwork(backing.network)
+            ? "svm-hash"
+            : "evm-json",
         channelKey: isSolanaNetwork(backing.network)
             ? svmBatchChannelKey(backing.channelId)
-            : evmBatchChannelKey(backing.channelId),
-        ...(isSolanaNetwork(backing.network) ? { pendingKey: SVM_BATCH_PENDING_KEY } : {}),
+            : isNearNetwork(backing.network)
+                ? nearBatchChannelKey(backing.channelId)
+                : evmBatchChannelKey(backing.channelId),
+        ...(isSolanaNetwork(backing.network)
+            ? { pendingKey: SVM_BATCH_PENDING_KEY }
+            : isNearNetwork(backing.network)
+                ? { pendingKey: NEAR_BATCH_PENDING_KEY }
+                : {}),
     });
 
     return {
