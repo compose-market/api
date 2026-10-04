@@ -2579,3 +2579,40 @@ export function queuedBatchSettlement(
 export function supportsNativeBatchSettlement(network: EvmNetworkId): boolean {
     return Boolean(getNetwork(network).asset.address);
 }
+
+// =============================================================================
+// NEAR Batch-Settlement
+// =============================================================================
+
+type NearBatchValidation = {
+    valid: true;
+    payer: string;
+    channelId: string;
+    maxClaimableAmount: string;
+    chargedCumulativeAmount: string;
+} | {
+    valid: false;
+    invalidReason: string;
+    payer?: string;
+};
+
+export type NearBatchChannel = {
+    channelId: string;
+    payer: string;
+    network: NearNetworkId;
+    asset: string;
+    payTo: string;
+    resource: string;
+    signedMaxClaimable: string;
+    chargedCumulativeAmount: string;
+    settledCumulativeAmount: string;
+    balance: string;
+    signature: string;
+    channelConfigFingerprint: string;
+    backingFingerprint: string;
+    createdAt: number;
+    lastRequestTimestamp: number;
+    lastTxHash?: string;
+};
+
+export type NearBatchSettlementAttempt = SvmBatchSettlementAttempt;
