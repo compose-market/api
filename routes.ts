@@ -203,9 +203,7 @@ function receiptsRoute() {
 // ---------------------------------------------------------------------------
 // Server-side Pinata pin proxy.
 //
-// The web client used to embed VITE_PINATA_JWT and call api.pinata.cloud
-// directly, which leaks full pin/unpin authority to every browser. These
-// routes keep the JWT server-side and forward only the three pin operations
+// Keeps PINATA_JWT server-side and forwards only the three pin operations
 // the UI needs.
 // ---------------------------------------------------------------------------
 
