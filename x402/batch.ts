@@ -11,13 +11,20 @@ import {
     verifySignature,
 } from "@solana/kit";
 import { createHash, randomUUID } from "node:crypto";
+import { KeyType, PublicKey } from "@near-js/crypto";
+import { JsonRpcProvider } from "@near-js/providers";
+import { base58 } from "@scure/base";
 
 import {
     getNetwork,
+    getNetworkRpcUrl,
     isEvmNetwork,
+    isNearNetwork,
     isNetworkId,
     isSolanaNetwork,
+    validateNearAddress,
     type EvmNetworkId,
+    type NearNetworkId,
     type NetworkId,
     type SolanaNetworkId,
 } from "./configs/chains.js";
@@ -283,6 +290,7 @@ export type SvmBatchSettlementDependencies = {
     reconcileKeyPaymentForNetwork: (
         txHash: string,
         network: NetworkId,
+        options?: { wait?: boolean; userAddress?: string; preparedTxPayload?: string },
     ) => Promise<SettlementResult>;
     markBatchReceiptsSettled: typeof markBatchReceiptsSettled;
     markBatchEvidenceSettled: typeof markBatchEvidenceSettled;
@@ -1285,7 +1293,7 @@ function canonicalJson(input: Record<string, unknown>): string {
 }
 
 function sameBinding(network: NetworkId, left: string, right: string): boolean {
-    return isSolanaNetwork(network)
+    return isSolanaNetwork(network) || isNearNetwork(network)
         ? left === right
         : left.toLowerCase() === right.toLowerCase();
 }
@@ -1383,6 +1391,10 @@ export async function rememberBatchChannel(
     if (!raw) return;
     if (isNetworkId(requirements.network) && isSolanaNetwork(requirements.network)) {
         await rememberSvmBatchChannel(paymentPayload, requirements);
+        return;
+    }
+    if (isNetworkId(requirements.network) && isNearNetwork(requirements.network)) {
+        await rememberNearBatchChannel(paymentPayload, requirements);
         return;
     }
 
