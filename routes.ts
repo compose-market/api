@@ -200,66 +200,6 @@ function receiptsRoute() {
   };
 }
 
-function mapConnectorsProxyTarget(req: Request): { path: string; method?: string; body?: unknown } | null {
-  const url = new URL(req.originalUrl, "http://compose-api.local");
-  const pathname = url.pathname;
-  const search = url.search;
-
-  if (pathname.startsWith("/api/mcps")) {
-    return { path: `/mcps${pathname.slice("/api/mcps".length)}${search}` };
-  }
-  if (pathname.startsWith("/api/onchain")) {
-    return { path: `/onchain${pathname.slice("/api/onchain".length)}${search}` };
-  }
-
-  return null;
-}
-
-function connectorsProxyRoute() {
-  return (req: Request, res: ExpressResponse, next: NextFunction) => {
-    void (async () => {
-      const lifecycle = createRequestAbort(req, res);
-      const target = mapConnectorsProxyTarget(req);
-      if (!target) {
-        res.status(404).json({ error: "Not found" });
-        return;
-      }
-      try {
-        const headers = buildRuntimeHeaders(req);
-        const method = target.method || req.method;
-        const body = target.body === undefined
-          ? (method === "GET" || method === "HEAD" ? undefined : await buildRuntimeBody(req))
-          : JSON.stringify(target.body);
-        if (target.body !== undefined) {
-          headers.set("Content-Type", "application/json");
-        }
-        // The connectors Worker Bearer-gates privileged routes when
-        // CONNECTORS_API_TOKEN is set; the browser never holds this token,
-        // so the API injects it server-side.
-        const connectorsToken = (process.env.CONNECTORS_API_TOKEN || "").trim();
-        if (connectorsToken) {
-          headers.set("Authorization", `Bearer ${connectorsToken}`);
-        }
-        const response = await fetch(`${requireConnectorsUrl()}${target.path}`, {
-          method,
-          headers,
-          body,
-          signal: lifecycle.signal,
-        });
-        const text = await response.text();
-        if (lifecycle.aborted()) {
-          return;
-        }
-        applyRuntimeHeaders(res, response);
-        res.status(response.status).send(text);
-        lifecycle.done();
-      } finally {
-        lifecycle.cleanup();
-      }
-    })().catch(next);
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Server-side Pinata pin proxy.
 //
