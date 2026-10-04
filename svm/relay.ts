@@ -129,7 +129,7 @@ async function getFacilitatorAddress(): Promise<string> {
 
 function createSvmRpc(network: SolanaNetworkId) {
     const rpcUrl = getNetworkRpcUrl(network);
-    // if (network === NETWORK_IDS.solanaDevnet) { return createSolanaRpc(solanaDevnet(rpcUrl)); }
+    if (network === NETWORK_IDS.solanaDevnet) { return createSolanaRpc(solanaDevnet(rpcUrl)); }
     if (network === NETWORK_IDS.solana) { return createSolanaRpc(solanaMainnet(rpcUrl)); }
     throw new Error(`Unsupported SVM network: ${network}`);
 }
