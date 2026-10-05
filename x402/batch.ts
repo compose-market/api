@@ -2616,3 +2616,68 @@ export type NearBatchChannel = {
 };
 
 export type NearBatchSettlementAttempt = SvmBatchSettlementAttempt;
+
+export type NearBatchSettlementWork = {
+    channel: NearBatchChannel;
+    attempt: NearBatchSettlementAttempt;
+};
+
+export type NearBatchSettlementAcquisition =
+    | { outcome: "missing" | "settled" }
+    | { outcome: "busy" | "failed" | "acquired"; work: NearBatchSettlementWork };
+
+export interface NearBatchSettlementStore {
+    listPendingChannelIds(): Promise<string[]>;
+    acquireAttempt(input: {
+        channelId: string;
+        ownerToken: string;
+        now: number;
+        ownerExpiresAt: number;
+    }): Promise<NearBatchSettlementAcquisition>;
+    persistPreparedAttempt(input: {
+        channelId: string;
+        ownerToken: string;
+        prepared: PreparedSettlementTransaction;
+        preparedAt: number;
+    }): Promise<NearBatchSettlementWork | null>;
+    markAttemptSubmitted(input: {
+        channelId: string;
+        ownerToken: string;
+        txHash: string;
+        submittedAt: number;
+        error?: string;
+    }): Promise<NearBatchSettlementWork | null>;
+    releaseAttemptClaim(input: {
+        channelId: string;
+        ownerToken: string;
+        expectedStatus: "prepared" | "submitted";
+        checkedAt: number;
+        error: string;
+    }): Promise<boolean>;
+    abandonPreparation(input: {
+        channelId: string;
+        ownerToken: string;
+        error: string;
+        abandonedAt: number;
+    }): Promise<boolean>;
+    markAttemptReconciled(input: {
+        channelId: string;
+        ownerToken: string;
+        kind: "receipts" | "evidence";
+        count: number;
+        reconciledAt: number;
+    }): Promise<NearBatchSettlementWork | null>;
+    markAttemptFailed(input: {
+        channelId: string;
+        ownerToken: string;
+        txHash: string;
+        failedAt: number;
+        error: string;
+    }): Promise<NearBatchSettlementWork | null>;
+    completeConfirmedAttempt(input: {
+        channelId: string;
+        ownerToken: string;
+        txHash: string;
+        completedAt: number;
+    }): Promise<{ completed: boolean; hasMore: boolean }>;
+}
