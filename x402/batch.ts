@@ -2721,3 +2721,7 @@ export type NearBatchSettlementDependencies = {
     now: () => number;
     createOwnerToken: () => string;
 };
+
+const NEAR_BATCH_PREFIX = "x402:batch-settlement:near";
+const NEAR_BATCH_PENDING_KEY = `${NEAR_BATCH_PREFIX}:pending`;
+const NEAR_BATCH_TTL_SECONDS = 60 * 60 * 24;
