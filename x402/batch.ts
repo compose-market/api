@@ -2681,3 +2681,43 @@ export interface NearBatchSettlementStore {
         completedAt: number;
     }): Promise<{ completed: boolean; hasMore: boolean }>;
 }
+
+export type NearBatchSettlementResult = {
+    channelId: string;
+    payer: string;
+    network: NearNetworkId;
+    settledAmountWei: string;
+    claimedAmountWei: string;
+    txHash: string;
+    reconciledReceipts: number;
+    reconciledEvidence: number;
+    error?: string;
+};
+
+export type NearBatchSettlementSummary = {
+    runId: string;
+    startedAt: number;
+    finishedAt: number;
+    channels: NearBatchSettlementResult[];
+};
+
+export type NearBatchSettlementDependencies = {
+    store: NearBatchSettlementStore;
+    prepareKeyPaymentForNetwork: (
+        payer: string,
+        amountWei: string,
+        network: NetworkId,
+    ) => Promise<SettlementPreparationResult>;
+    broadcastPreparedKeyPaymentForNetwork: (
+        prepared: PreparedSettlementTransaction,
+    ) => Promise<SettlementResult>;
+    reconcileKeyPaymentForNetwork: (
+        txHash: string,
+        network: NetworkId,
+        options?: { wait?: boolean; userAddress?: string; preparedTxPayload?: string },
+    ) => Promise<SettlementResult>;
+    markBatchReceiptsSettled: typeof markBatchReceiptsSettled;
+    markBatchEvidenceSettled: typeof markBatchEvidenceSettled;
+    now: () => number;
+    createOwnerToken: () => string;
+};
