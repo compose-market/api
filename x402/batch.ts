@@ -2753,3 +2753,62 @@ function decodeNearSignatureBytes(signature: string): Uint8Array | null {
     }
     return null;
 }
+
+export async function verifyNearDetachedSignature(input: {
+    network: NearNetworkId;
+    payer: string;
+    signature: string;
+    message: Uint8Array;
+    publicKeyHint?: string;
+}): Promise<boolean> {
+    const sigBytes = decodeNearSignatureBytes(input.signature);
+    if (!sigBytes) {
+        return false;
+    }
+
+    if (/^[0-9a-f]{64}$/.test(input.payer)) {
+        try {
+            const publicKey = new PublicKey({
+                keyType: KeyType.ED25519,
+                data: new Uint8Array(Buffer.from(input.payer, "hex")),
+            });
+            return publicKey.verify(input.message, sigBytes);
+        } catch {
+            return false;
+        }
+    }
+
+    let hintedKey: PublicKey | null = null;
+    if (input.publicKeyHint) {
+        try {
+            hintedKey = PublicKey.fromString(input.publicKeyHint);
+            if (!hintedKey.verify(input.message, sigBytes)) {
+                return false;
+            }
+        } catch {
+            return false;
+        }
+    }
+
+    try {
+        const provider = new JsonRpcProvider({ url: getNetworkRpcUrl(input.network) });
+        const keyList = await provider.viewAccessKeyList(input.payer, { finality: "final" });
+        const hintedKeyStr = hintedKey?.toString();
+        for (const entry of keyList.keys ?? []) {
+            if (hintedKeyStr && entry.public_key !== hintedKeyStr) {
+                continue;
+            }
+            try {
+                const publicKey = PublicKey.fromString(entry.public_key);
+                if (publicKey.verify(input.message, sigBytes)) {
+                    return true;
+                }
+            } catch {
+                // Continue checking remaining access keys
+            }
+        }
+        return false;
+    } catch {
+        return false;
+    }
+}
