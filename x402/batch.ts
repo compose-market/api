@@ -2858,3 +2858,27 @@ async function readNearBatchSettlementWork(channelId: string): Promise<NearBatch
 async function readNearBatchChannel(channelId: string): Promise<NearBatchChannel | null> {
     return parseNearBatchChannel(await valkeyHGetAll(nearBatchChannelKey(channelId)));
 }
+
+async function writeNearBatchChannel(channel: NearBatchChannel): Promise<void> {
+    await valkeyHSet(nearBatchChannelKey(channel.channelId), {
+        channelId: channel.channelId,
+        payer: channel.payer,
+        network: channel.network,
+        asset: channel.asset,
+        payTo: channel.payTo,
+        resource: channel.resource,
+        signedMaxClaimable: channel.signedMaxClaimable,
+        chargedCumulativeAmount: channel.chargedCumulativeAmount,
+        settledCumulativeAmount: channel.settledCumulativeAmount,
+        balance: channel.balance,
+        signature: channel.signature,
+        channelConfigFingerprint: channel.channelConfigFingerprint,
+        backingFingerprint: channel.backingFingerprint,
+        createdAt: String(channel.createdAt),
+        lastRequestTimestamp: String(channel.lastRequestTimestamp),
+        lastTxHash: channel.lastTxHash || "",
+    });
+    await valkeyExpire(nearBatchChannelKey(channel.channelId), NEAR_BATCH_TTL_SECONDS);
+    await valkeySAdd(NEAR_BATCH_PENDING_KEY, channel.channelId);
+    await valkeyExpire(NEAR_BATCH_PENDING_KEY, NEAR_BATCH_TTL_SECONDS);
+}
