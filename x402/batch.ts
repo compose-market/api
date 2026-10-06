@@ -2882,3 +2882,74 @@ async function writeNearBatchChannel(channel: NearBatchChannel): Promise<void> {
     await valkeySAdd(NEAR_BATCH_PENDING_KEY, channel.channelId);
     await valkeyExpire(NEAR_BATCH_PENDING_KEY, NEAR_BATCH_TTL_SECONDS);
 }
+
+export async function validateNearBatchPayment(
+    paymentPayload: PaymentPayload,
+    requirements: PaymentRequirements,
+    readChannel: (channelId: string) => Promise<NearBatchChannel | null> = readNearBatchChannel,
+): Promise<NearBatchValidation> {
+    const raw = getSvmBatchPayload(paymentPayload);
+    const payer = raw?.channelConfig.payer;
+    if (!raw) {
+        return { valid: false, invalidReason: "invalid_batch_settlement_payload" };
+    }
+    if (paymentPayload.accepted.scheme !== "batch-settlement" || requirements.scheme !== "batch-settlement") {
+        return { valid: false, invalidReason: "unsupported_scheme", payer };
+    }
+    if (!isNetworkId(requirements.network) || !isNearNetwork(requirements.network)) {
+        return { valid: false, invalidReason: "unsupported_network", payer };
+    }
+    if (paymentPayload.accepted.network !== requirements.network || raw.channelConfig.network !== requirements.network) {
+        return { valid: false, invalidReason: "network_mismatch", payer };
+    }
+    if (paymentPayload.accepted.asset !== requirements.asset || raw.channelConfig.token !== requirements.asset) {
+        return { valid: false, invalidReason: "asset_mismatch", payer };
+    }
+    if (paymentPayload.accepted.payTo !== requirements.payTo || raw.channelConfig.receiver !== requirements.payTo) {
+        return { valid: false, invalidReason: "pay_to_mismatch", payer };
+    }
+    if (paymentPayload.resource?.url !== raw.channelConfig.resource) {
+        return { valid: false, invalidReason: "resource_mismatch", payer };
+    }
+    if (!payer || !raw.channelConfig.salt) {
+        return { valid: false, invalidReason: "invalid_channel_config", payer };
+    }
+    if (!validateNearAddress(payer) || !validateNearAddress(requirements.asset) || !validateNearAddress(requirements.payTo)) {
+        return { valid: false, invalidReason: "invalid_near_address", payer };
+    }
+
+    const { channelId, maxClaimableAmount, signature } = svmBatchVoucherFields(raw);
+    if (!channelId || channelId !== svmBatchChannelId(raw.channelConfig)) {
+        return { valid: false, invalidReason: "channel_id_mismatch", payer };
+    }
+    if (!positiveInteger(maxClaimableAmount) || !positiveInteger(requirements.amount)) {
+        return { valid: false, invalidReason: "invalid_amount", payer };
+    }
+
+    const stored = await readChannel(channelId);
+    const charged = BigInt(stored?.chargedCumulativeAmount || "0");
+    const nextCharged = charged + BigInt(requirements.amount);
+    const balance = BigInt(raw.channelConfig.balance || stored?.balance || maxClaimableAmount);
+    if (BigInt(maxClaimableAmount) > balance || nextCharged > BigInt(maxClaimableAmount) || nextCharged > balance) {
+        return { valid: false, invalidReason: "batch_settlement_channel_budget_exhausted", payer };
+    }
+
+    const valid = await verifyNearDetachedSignature({
+        network: requirements.network,
+        payer,
+        signature,
+        message: svmBatchVoucherMessage(raw),
+        publicKeyHint: raw.channelConfig.payerAuthorizer,
+    });
+    if (!valid) {
+        return { valid: false, invalidReason: "invalid_voucher_signature", payer };
+    }
+
+    return {
+        valid: true,
+        payer,
+        channelId,
+        maxClaimableAmount,
+        chargedCumulativeAmount: charged.toString(),
+    };
+}
