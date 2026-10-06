@@ -2953,3 +2953,52 @@ export async function validateNearBatchPayment(
         chargedCumulativeAmount: charged.toString(),
     };
 }
+
+export async function rememberNearBatchChannel(
+    paymentPayload: PaymentPayload,
+    requirements: PaymentRequirements,
+): Promise<void> {
+    const raw = getSvmBatchPayload(paymentPayload);
+    if (!raw) return;
+    if (!isNetworkId(requirements.network) || !isNearNetwork(requirements.network)) {
+        throw new Error("NEAR batch-settlement requirements use an unsupported network");
+    }
+    const backing = resolveRawBatchBacking({
+        network: requirements.network,
+        maxAmountWei: paymentPayload.accepted.amount,
+        paymentPayload,
+        payer: raw.channelConfig.payer,
+    });
+
+    const { channelId, maxClaimableAmount } = svmBatchVoucherFields(raw);
+    const existing = await readNearBatchChannel(channelId);
+    if (existing && (
+        existing.network !== backing.network
+        || existing.payer !== backing.payer
+        || existing.asset !== backing.asset
+        || existing.payTo !== backing.receiver
+        || existing.resource !== backing.resource
+        || existing.channelConfigFingerprint !== backing.channelConfigFingerprint
+    )) {
+        throw new Error("NEAR batch-settlement channel immutable backing mismatch");
+    }
+    const now = Date.now();
+    await writeNearBatchChannel({
+        channelId: backing.channelId,
+        payer: backing.payer,
+        network: backing.network as NearNetworkId,
+        asset: backing.asset,
+        payTo: backing.receiver,
+        resource: backing.resource,
+        signedMaxClaimable: backing.signedMaxClaimable,
+        chargedCumulativeAmount: existing?.chargedCumulativeAmount || "0",
+        settledCumulativeAmount: existing?.settledCumulativeAmount || "0",
+        balance: raw.channelConfig.balance || existing?.balance || maxClaimableAmount,
+        signature: backing.voucherSignature,
+        channelConfigFingerprint: backing.channelConfigFingerprint,
+        backingFingerprint: backing.backingFingerprint,
+        createdAt: existing?.createdAt || now,
+        lastRequestTimestamp: now,
+        ...(existing?.lastTxHash ? { lastTxHash: existing.lastTxHash } : {}),
+    });
+}
