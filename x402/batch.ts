@@ -2725,3 +2725,31 @@ export type NearBatchSettlementDependencies = {
 const NEAR_BATCH_PREFIX = "x402:batch-settlement:near";
 const NEAR_BATCH_PENDING_KEY = `${NEAR_BATCH_PREFIX}:pending`;
 const NEAR_BATCH_TTL_SECONDS = 60 * 60 * 24;
+const NEAR_BATCH_ATTEMPT_CLAIM_MS = 60_000;
+
+function nearBatchChannelKey(channelId: string): string {
+    return `${NEAR_BATCH_PREFIX}:channel:${channelId}`;
+}
+
+function decodeNearSignatureBytes(signature: string): Uint8Array | null {
+    const trimmed = signature.trim();
+    if (!trimmed) return null;
+    const raw = trimmed.startsWith("ed25519:") ? trimmed.slice("ed25519:".length) : trimmed;
+    try {
+        const decoded = base58.decode(raw);
+        if (decoded.length === 64) {
+            return decoded;
+        }
+    } catch {
+        // Fallback to base64
+    }
+    try {
+        const decoded = Uint8Array.from(Buffer.from(raw, "base64"));
+        if (decoded.length === 64) {
+            return decoded;
+        }
+    } catch {
+        // Invalid encoding
+    }
+    return null;
+}
