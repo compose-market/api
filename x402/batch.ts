@@ -2812,3 +2812,49 @@ export async function verifyNearDetachedSignature(input: {
         return false;
     }
 }
+
+function parseNearBatchChannel(data: Record<string, string>): NearBatchChannel | null {
+    if (
+        !data.channelId
+        || !data.payer
+        || !data.network
+        || !data.asset
+        || !data.payTo
+        || !data.channelConfigFingerprint
+        || !data.backingFingerprint
+    ) {
+        return null;
+    }
+    if (!isNetworkId(data.network) || !isNearNetwork(data.network)) {
+        return null;
+    }
+    return {
+        channelId: data.channelId,
+        payer: data.payer,
+        network: data.network,
+        asset: data.asset,
+        payTo: data.payTo,
+        resource: data.resource || "",
+        signedMaxClaimable: data.signedMaxClaimable || "0",
+        chargedCumulativeAmount: data.chargedCumulativeAmount || "0",
+        settledCumulativeAmount: data.settledCumulativeAmount || "0",
+        balance: data.balance || data.signedMaxClaimable || "0",
+        signature: data.signature || "",
+        channelConfigFingerprint: data.channelConfigFingerprint,
+        backingFingerprint: data.backingFingerprint,
+        createdAt: Number.parseInt(data.createdAt || "0", 10) || Date.now(),
+        lastRequestTimestamp: Number.parseInt(data.lastRequestTimestamp || "0", 10) || Date.now(),
+        ...(data.lastTxHash ? { lastTxHash: data.lastTxHash } : {}),
+    };
+}
+
+async function readNearBatchSettlementWork(channelId: string): Promise<NearBatchSettlementWork | null> {
+    const data = await valkeyHGetAll(nearBatchChannelKey(channelId));
+    const channel = parseNearBatchChannel(data);
+    const attempt = parseSvmBatchSettlementAttempt(data);
+    return channel && attempt ? { channel, attempt } : null;
+}
+
+async function readNearBatchChannel(channelId: string): Promise<NearBatchChannel | null> {
+    return parseNearBatchChannel(await valkeyHGetAll(nearBatchChannelKey(channelId)));
+}
