@@ -3207,3 +3207,288 @@ function preparedNearBatchTransaction(work: NearBatchSettlementWork): PreparedSe
         ...(attempt.nonce ? { nonce: attempt.nonce } : {}),
     };
 }
+
+async function runInjectedNearBatchSettlement(
+    dependencies: NearBatchSettlementDependencies,
+): Promise<NearBatchSettlementSummary> {
+    const startedAt = dependencies.now();
+    const runId = `near-batch-${startedAt}`;
+    const channelIds = await dependencies.store.listPendingChannelIds();
+    const channels: NearBatchSettlementResult[] = [];
+
+    for (const channelId of channelIds) {
+        const ownerToken = dependencies.createOwnerToken();
+        const acquiredAt = dependencies.now();
+        const acquisition = await dependencies.store.acquireAttempt({
+            channelId,
+            ownerToken,
+            now: acquiredAt,
+            ownerExpiresAt: acquiredAt + NEAR_BATCH_ATTEMPT_CLAIM_MS,
+        });
+        if (acquisition.outcome !== "acquired") {
+            if (acquisition.outcome === "failed") {
+                channels.push(nearBatchResult(acquisition.work, {
+                    error: acquisition.work.attempt.error || "NEAR batch settlement failed on-chain",
+                }));
+            }
+            continue;
+        }
+
+        let work = acquisition.work;
+        if (work.attempt.status === "preparing") {
+            const preparation = await dependencies.prepareKeyPaymentForNetwork(
+                work.channel.payer,
+                work.attempt.deltaWei,
+                work.channel.network,
+            );
+            if (!preparation.success) {
+                const error = preparation.result.error || "NEAR batch settlement preparation failed";
+                await dependencies.store.abandonPreparation({
+                    channelId,
+                    ownerToken,
+                    error,
+                    abandonedAt: dependencies.now(),
+                });
+                channels.push(nearBatchResult(work, { error }));
+                continue;
+            }
+            if (
+                preparation.prepared.network !== work.channel.network
+                || !preparation.prepared.txHash
+                || !preparation.prepared.payload
+            ) {
+                const error = "Prepared NEAR batch transaction identity does not match its channel";
+                await dependencies.store.abandonPreparation({
+                    channelId,
+                    ownerToken,
+                    error,
+                    abandonedAt: dependencies.now(),
+                });
+                channels.push(nearBatchResult(work, { error }));
+                continue;
+            }
+            const persisted = await dependencies.store.persistPreparedAttempt({
+                channelId,
+                ownerToken,
+                prepared: preparation.prepared,
+                preparedAt: dependencies.now(),
+            });
+            if (!persisted) continue;
+            work = persisted;
+        }
+
+        let immediateReconciliation: SettlementResult | undefined;
+        if (work.attempt.status === "prepared") {
+            const prepared = preparedNearBatchTransaction(work);
+            if (!prepared) {
+                const error = "Prepared NEAR batch attempt is missing its exact signed transaction identity";
+                await dependencies.store.releaseAttemptClaim({
+                    channelId,
+                    ownerToken,
+                    expectedStatus: "prepared",
+                    checkedAt: dependencies.now(),
+                    error,
+                });
+                channels.push(nearBatchResult(work, { error }));
+                continue;
+            }
+
+            let broadcast: SettlementResult;
+            try {
+                broadcast = await dependencies.broadcastPreparedKeyPaymentForNetwork(prepared);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                await dependencies.store.releaseAttemptClaim({
+                    channelId,
+                    ownerToken,
+                    expectedStatus: "prepared",
+                    checkedAt: dependencies.now(),
+                    error: message,
+                });
+                channels.push(nearBatchResult(work, { txHash: prepared.txHash, error: message }));
+                continue;
+            }
+
+            const acceptedBroadcast = broadcast.txHash === prepared.txHash && (
+                broadcast.status === "submitted"
+                || broadcast.status === "confirmed"
+                || (broadcast.status === "failed" && broadcast.terminal === true)
+            );
+            if (!acceptedBroadcast) {
+                const error = broadcast.txHash && broadcast.txHash !== prepared.txHash
+                    ? `Broadcast returned transaction identity ${broadcast.txHash} for prepared identity ${prepared.txHash}`
+                    : broadcast.error || "Prepared NEAR batch transaction broadcast is not durably submitted";
+                await dependencies.store.releaseAttemptClaim({
+                    channelId,
+                    ownerToken,
+                    expectedStatus: "prepared",
+                    checkedAt: dependencies.now(),
+                    error,
+                });
+                channels.push(nearBatchResult(work, { txHash: prepared.txHash, error }));
+                continue;
+            }
+            const submitted = await dependencies.store.markAttemptSubmitted({
+                channelId,
+                ownerToken,
+                txHash: prepared.txHash,
+                submittedAt: dependencies.now(),
+                ...(broadcast.error ? { error: broadcast.error } : {}),
+            });
+            if (!submitted) continue;
+            work = submitted;
+            if (broadcast.status === "confirmed" || (broadcast.status === "failed" && broadcast.terminal === true)) {
+                immediateReconciliation = broadcast;
+            }
+        }
+
+        if (work.attempt.status !== "submitted" || !work.attempt.txHash) {
+            channels.push(nearBatchResult(work, {
+                error: work.attempt.error || "NEAR batch settlement attempt is not reconcilable",
+            }));
+            continue;
+        }
+        const submittedTxHash = work.attempt.txHash;
+
+        let reconciliation: SettlementResult;
+        if (immediateReconciliation) {
+            reconciliation = immediateReconciliation;
+        } else {
+            try {
+                reconciliation = await dependencies.reconcileKeyPaymentForNetwork(
+                    submittedTxHash,
+                    work.channel.network,
+                    {
+                        userAddress: work.channel.payer,
+                        preparedTxPayload: work.attempt.payload,
+                    },
+                );
+            } catch (error) {
+                reconciliation = {
+                    success: false,
+                    status: "submitted",
+                    txHash: submittedTxHash,
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+        }
+        if (reconciliation.txHash && reconciliation.txHash !== submittedTxHash) {
+            const error = `Reconciliation returned transaction identity ${reconciliation.txHash} for submitted identity ${submittedTxHash}`;
+            await dependencies.store.releaseAttemptClaim({
+                channelId,
+                ownerToken,
+                expectedStatus: "submitted",
+                checkedAt: dependencies.now(),
+                error,
+            });
+            channels.push(nearBatchResult(work, { error }));
+            continue;
+        }
+        if (!reconciliation.success && reconciliation.status === "failed" && reconciliation.terminal) {
+            const error = reconciliation.error || "NEAR batch settlement failed on-chain";
+            const failed = await dependencies.store.markAttemptFailed({
+                channelId,
+                ownerToken,
+                txHash: submittedTxHash,
+                failedAt: dependencies.now(),
+                error,
+            });
+            if (failed) {
+                channels.push(nearBatchResult(failed, { error }));
+            }
+            continue;
+        }
+        if (!reconciliation.success || reconciliation.status !== "confirmed") {
+            const error = reconciliation.error || "NEAR batch settlement confirmation is pending";
+            await dependencies.store.releaseAttemptClaim({
+                channelId,
+                ownerToken,
+                expectedStatus: "submitted",
+                checkedAt: dependencies.now(),
+                error,
+            });
+            channels.push(nearBatchResult(work, { error }));
+            continue;
+        }
+
+        try {
+            if (!work.attempt.receiptsReconciledAt) {
+                const count = await dependencies.markBatchReceiptsSettled({
+                    channelId,
+                    claimedAmountWei: work.attempt.claimedCumulativeAmountWei,
+                    network: work.channel.network,
+                    claimTxHash: submittedTxHash,
+                    settleTxHash: submittedTxHash,
+                });
+                const reconciled = await dependencies.store.markAttemptReconciled({
+                    channelId,
+                    ownerToken,
+                    kind: "receipts",
+                    count,
+                    reconciledAt: dependencies.now(),
+                });
+                if (!reconciled) continue;
+                work = reconciled;
+            }
+            if (!work.attempt.evidenceReconciledAt) {
+                const count = await dependencies.markBatchEvidenceSettled({
+                    channelId,
+                    claimedAmountWei: work.attempt.claimedCumulativeAmountWei,
+                    claimTxHash: submittedTxHash,
+                    settleTxHash: submittedTxHash,
+                    network: work.channel.network,
+                });
+                const reconciled = await dependencies.store.markAttemptReconciled({
+                    channelId,
+                    ownerToken,
+                    kind: "evidence",
+                    count,
+                    reconciledAt: dependencies.now(),
+                });
+                if (!reconciled) continue;
+                work = reconciled;
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await dependencies.store.releaseAttemptClaim({
+                channelId,
+                ownerToken,
+                expectedStatus: "submitted",
+                checkedAt: dependencies.now(),
+                error: message,
+            });
+            channels.push(nearBatchResult(work, { error: message }));
+            continue;
+        }
+
+        const completed = await dependencies.store.completeConfirmedAttempt({
+            channelId,
+            ownerToken,
+            txHash: submittedTxHash,
+            completedAt: dependencies.now(),
+        });
+        if (!completed.completed) {
+            const error = "Confirmed NEAR batch settlement lost its atomic completion claim";
+            await dependencies.store.releaseAttemptClaim({
+                channelId,
+                ownerToken,
+                expectedStatus: "submitted",
+                checkedAt: dependencies.now(),
+                error,
+            });
+            channels.push(nearBatchResult(work, { error }));
+            continue;
+        }
+        channels.push(nearBatchResult(work, {
+            settledAmountWei: work.attempt.deltaWei,
+            txHash: submittedTxHash,
+        }));
+    }
+
+    return {
+        runId,
+        startedAt,
+        finishedAt: dependencies.now(),
+        channels,
+    };
+}
