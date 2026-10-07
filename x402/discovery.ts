@@ -36,31 +36,12 @@ interface PaginationInput {
     offset: number;
 }
 
-interface AgentCatalogBody {
-    agents?: unknown[];
-    data?: unknown[];
-    total?: unknown;
-    count?: unknown;
-    hasMore?: unknown;
-    nextCursor?: unknown;
-    next_cursor?: unknown;
-    [key: string]: unknown;
-}
-
 function absoluteUrl(path: string, origin = SELLER_ORIGIN): string {
     return `${origin}${path}`;
 }
 
 function modelEndpoint(modelId: string, origin = SELLER_ORIGIN): string {
     return `${origin}/v1/responses/${encodeURIComponent(modelId)}`;
-}
-
-function agentEndpoint(walletAddress: string, origin = SELLER_ORIGIN): string {
-    return `${origin}/agent/${encodeURIComponent(walletAddress)}/stream`;
-}
-
-function normalizeAgentsUrl(): string {
-    return (process.env.AGENTS_URL || "https://agents.compose.market").replace(/\/+$/u, "");
 }
 
 function parsePositiveInt(value: unknown, fallback: number): number {
