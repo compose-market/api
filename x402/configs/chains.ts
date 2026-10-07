@@ -251,7 +251,8 @@ export type ExplorerItemType = "tx" | "address" | "block" | "token";
 export function getExplorerUrl(id: NetworkId, type: ExplorerItemType, value: string): string {
     const definition = getNetwork(id);
     const base = definition.explorer.replace(/\/$/, "");
-    const path = `${base}/${type}/${value}`;
+    const segment = isNearNetwork(id) && type === "tx" ? "txns" : type;
+    const path = `${base}/${segment}/${value}`;
     return definition.explorerQuery ? `${path}?${definition.explorerQuery}` : path;
 }
 
@@ -270,15 +271,18 @@ export function getDefaultNetwork(): NetworkId {
 // });
 
 const VIEM_CHAIN_MAP: Record<EvmNetworkId, ViemChain> = {
-    // [NETWORK_IDS.avalancheFuji]: avalancheFuji,
+    [NETWORK_IDS.avalancheFuji]: avalancheFuji,
     [NETWORK_IDS.avalanche]: avalanche,
-    // [NETWORK_IDS.arbitrumSepolia]: arbitrumSepolia,
+    [NETWORK_IDS.arbitrumSepolia]: arbitrumSepolia,
     [NETWORK_IDS.arbitrum]: arbitrum,
-    // [NETWORK_IDS.arcTestnet]: arcTestnet,
+    [NETWORK_IDS.arcTestnet]: arcTestnet,
     [NETWORK_IDS.arc]: arc,
-    // [NETWORK_IDS.seiTestnet]: seiTestnet,
+    [NETWORK_IDS.baseSepolia]: baseSepolia,
+    [NETWORK_IDS.base]: base,
+    [NETWORK_IDS.seiTestnet]: seiTestnet,
     [NETWORK_IDS.sei]: sei,
     // [NETWORK_IDS.botchain]: botchain,
+    [NETWORK_IDS.tempoModerato]: tempoModerato,
 };
 
 export function getViemChain(id: EvmNetworkId): ViemChain {
