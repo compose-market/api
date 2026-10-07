@@ -3179,3 +3179,31 @@ const valkeyNearBatchSettlementStore: NearBatchSettlementStore = {
         throw new Error(`NEAR batch settlement atomic completion rejected inconsistent durable state (${code})`);
     },
 };
+
+function nearBatchResult(
+    work: NearBatchSettlementWork,
+    overrides: Partial<NearBatchSettlementResult> = {},
+): NearBatchSettlementResult {
+    return {
+        channelId: work.channel.channelId,
+        payer: work.channel.payer,
+        network: work.channel.network,
+        settledAmountWei: "0",
+        claimedAmountWei: work.attempt.claimedCumulativeAmountWei,
+        txHash: work.attempt.txHash || "",
+        reconciledReceipts: work.attempt.receiptsReconciledCount || 0,
+        reconciledEvidence: work.attempt.evidenceReconciledCount || 0,
+        ...overrides,
+    };
+}
+
+function preparedNearBatchTransaction(work: NearBatchSettlementWork): PreparedSettlementTransaction | null {
+    const { attempt, channel } = work;
+    if (!attempt.txHash || !attempt.payload) return null;
+    return {
+        network: channel.network,
+        txHash: attempt.txHash,
+        payload: attempt.payload,
+        ...(attempt.nonce ? { nonce: attempt.nonce } : {}),
+    };
+}
