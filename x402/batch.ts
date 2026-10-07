@@ -3002,3 +3002,48 @@ export async function rememberNearBatchChannel(
         ...(existing?.lastTxHash ? { lastTxHash: existing.lastTxHash } : {}),
     });
 }
+
+export async function commitNearBatchCharge(
+    paymentPayload: PaymentPayload,
+    amountWei: string,
+    requirements: PaymentRequirements,
+): Promise<BatchCommit> {
+    const raw = getSvmBatchPayload(paymentPayload);
+    if (!raw) {
+        throw new Error("Payment payload is not batch-settlement");
+    }
+    const validation = await validateNearBatchPayment(paymentPayload, requirements);
+    if (!validation.valid) {
+        throw new Error(validation.invalidReason);
+    }
+
+    await rememberNearBatchChannel(paymentPayload, requirements);
+    const { channelId, maxClaimableAmount } = svmBatchVoucherFields(raw);
+    const existing = await readNearBatchChannel(channelId);
+    if (!existing) {
+        throw new Error("batch-settlement channel not found");
+    }
+    const current = BigInt(existing.chargedCumulativeAmount || "0");
+    const amount = BigInt(amountWei);
+    const next = amount === 0n ? current : current + amount;
+    const balance = BigInt(existing.balance || maxClaimableAmount);
+    if (next > BigInt(maxClaimableAmount) || next > balance) {
+        throw new Error("batch-settlement channel budget exhausted");
+    }
+    await writeNearBatchChannel({
+        ...existing,
+        signedMaxClaimable: maxClaimableAmount,
+        chargedCumulativeAmount: next.toString(),
+        lastRequestTimestamp: Date.now(),
+    });
+    return {
+        channelId,
+        cumulativeAmountWei: next.toString(),
+    };
+}
+
+function requireNearBatchStoreSuccess(code: number, operation: string): boolean {
+    if (code === 1) return true;
+    if (code === 0) return false;
+    throw new Error(`NEAR batch settlement ${operation} rejected inconsistent durable state (${code})`);
+}
