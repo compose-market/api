@@ -175,12 +175,30 @@ export function isServiceBlockedNetwork(id: NetworkId): boolean {
     return !isServiceAllowedNetwork(id);
 }
 
+export function getServiceSupportedNetworks(): NetworkDefinition[] {
+    return NETWORKS.filter((entry) => entry.enabled && isServiceAllowedNetwork(entry.id));
+}
+
 export function isEvmNetwork(id: NetworkId): id is EvmNetworkId {
     return id.startsWith("eip155:");
 }
 
 export function isSolanaNetwork(id: NetworkId): id is SolanaNetworkId {
     return id.startsWith("solana:");
+}
+
+export function isNearNetwork(id: NetworkId): id is NearNetworkId {
+    return id.startsWith("near:");
+}
+
+export function validateSolanaAddress(value: string): boolean {
+    const normalized = value.trim();
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(normalized)) return false;
+    try {
+        return base58.decode(normalized).length === 32;
+    } catch {
+        return false;
+    }
 }
 
 export function evmChainId(id: EvmNetworkId): number {
