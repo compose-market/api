@@ -3492,3 +3492,25 @@ async function runInjectedNearBatchSettlement(
         channels,
     };
 }
+
+const defaultNearBatchSettlementDependencies: NearBatchSettlementDependencies = {
+    store: valkeyNearBatchSettlementStore,
+    prepareKeyPaymentForNetwork,
+    broadcastPreparedKeyPaymentForNetwork,
+    reconcileKeyPaymentForNetwork,
+    markBatchReceiptsSettled,
+    markBatchEvidenceSettled,
+    now: Date.now,
+    createOwnerToken: randomUUID,
+};
+
+export async function runNearBatchSettlement(
+    dependencies?: NearBatchSettlementDependencies,
+): Promise<NearBatchSettlementSummary> {
+    const store = dependencies?.store || defaultNearBatchSettlementDependencies.store;
+    return runInjectedNearBatchSettlement({
+        ...defaultNearBatchSettlementDependencies,
+        ...dependencies,
+        store,
+    });
+}
