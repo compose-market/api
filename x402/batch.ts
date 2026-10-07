@@ -3047,3 +3047,135 @@ function requireNearBatchStoreSuccess(code: number, operation: string): boolean 
     if (code === 0) return false;
     throw new Error(`NEAR batch settlement ${operation} rejected inconsistent durable state (${code})`);
 }
+
+const valkeyNearBatchSettlementStore: NearBatchSettlementStore = {
+    listPendingChannelIds: () => valkeySMembers(NEAR_BATCH_PENDING_KEY),
+    async acquireAttempt(input) {
+        const code = await runSvmBatchStoreScript(
+            ACQUIRE_SVM_BATCH_ATTEMPT_SCRIPT,
+            [nearBatchChannelKey(input.channelId), NEAR_BATCH_PENDING_KEY],
+            [
+                input.ownerToken,
+                String(input.now),
+                String(input.ownerExpiresAt),
+                input.channelId,
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        );
+        if (code === 0) return { outcome: "missing" };
+        if (code === 1) return { outcome: "settled" };
+        const work = await readNearBatchSettlementWork(input.channelId);
+        if (!work) throw new Error(`NEAR batch settlement channel ${input.channelId} has unreadable attempt state`);
+        if (code === 2) return { outcome: "busy", work };
+        if (code === 3) return { outcome: "failed", work };
+        if (code === 4) return { outcome: "acquired", work };
+        throw new Error(`NEAR batch settlement acquisition rejected inconsistent durable state (${code})`);
+    },
+    async persistPreparedAttempt(input) {
+        const code = await runSvmBatchStoreScript(
+            PERSIST_PREPARED_SVM_BATCH_ATTEMPT_SCRIPT,
+            [nearBatchChannelKey(input.channelId)],
+            [
+                input.ownerToken,
+                input.prepared.network,
+                input.prepared.txHash,
+                input.prepared.payload,
+                input.prepared.nonce || "",
+                String(input.preparedAt),
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        );
+        if (!requireNearBatchStoreSuccess(code, "prepared transaction persistence")) return null;
+        return readNearBatchSettlementWork(input.channelId);
+    },
+    async markAttemptSubmitted(input) {
+        const code = await runSvmBatchStoreScript(
+            MARK_SUBMITTED_SVM_BATCH_ATTEMPT_SCRIPT,
+            [nearBatchChannelKey(input.channelId)],
+            [
+                input.ownerToken,
+                input.txHash,
+                String(input.submittedAt),
+                input.error || "",
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        );
+        if (!requireNearBatchStoreSuccess(code, "submitted transition")) return null;
+        return readNearBatchSettlementWork(input.channelId);
+    },
+    async releaseAttemptClaim(input) {
+        return requireNearBatchStoreSuccess(await runSvmBatchStoreScript(
+            RELEASE_SVM_BATCH_ATTEMPT_CLAIM_SCRIPT,
+            [nearBatchChannelKey(input.channelId), NEAR_BATCH_PENDING_KEY],
+            [
+                input.ownerToken,
+                input.expectedStatus,
+                String(input.checkedAt),
+                input.error,
+                input.channelId,
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        ), "claim release");
+    },
+    async abandonPreparation(input) {
+        return requireNearBatchStoreSuccess(await runSvmBatchStoreScript(
+            ABANDON_SVM_BATCH_PREPARATION_SCRIPT,
+            [nearBatchChannelKey(input.channelId), NEAR_BATCH_PENDING_KEY],
+            [
+                input.ownerToken,
+                input.error,
+                String(input.abandonedAt),
+                input.channelId,
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        ), "preparation abandonment");
+    },
+    async markAttemptReconciled(input) {
+        const code = await runSvmBatchStoreScript(
+            MARK_RECONCILED_SVM_BATCH_ATTEMPT_SCRIPT,
+            [nearBatchChannelKey(input.channelId)],
+            [
+                input.ownerToken,
+                input.kind,
+                String(input.count),
+                String(input.reconciledAt),
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        );
+        if (!requireNearBatchStoreSuccess(code, `${input.kind} reconciliation`)) return null;
+        return readNearBatchSettlementWork(input.channelId);
+    },
+    async markAttemptFailed(input) {
+        const code = await runSvmBatchStoreScript(
+            MARK_FAILED_SVM_BATCH_ATTEMPT_SCRIPT,
+            [nearBatchChannelKey(input.channelId), NEAR_BATCH_PENDING_KEY],
+            [
+                input.ownerToken,
+                input.txHash,
+                String(input.failedAt),
+                input.error,
+                input.channelId,
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        );
+        if (!requireNearBatchStoreSuccess(code, "failed transition")) return null;
+        return readNearBatchSettlementWork(input.channelId);
+    },
+    async completeConfirmedAttempt(input) {
+        const code = await runSvmBatchStoreScript(
+            COMPLETE_CONFIRMED_SVM_BATCH_ATTEMPT_SCRIPT,
+            [nearBatchChannelKey(input.channelId), NEAR_BATCH_PENDING_KEY],
+            [
+                input.ownerToken,
+                input.txHash,
+                String(input.completedAt),
+                input.channelId,
+                String(NEAR_BATCH_TTL_SECONDS),
+            ],
+        );
+        if (code === 1) return { completed: true, hasMore: false };
+        if (code === 2) return { completed: true, hasMore: true };
+        if (code === 0) return { completed: false, hasMore: true };
+        throw new Error(`NEAR batch settlement atomic completion rejected inconsistent durable state (${code})`);
+    },
+};
