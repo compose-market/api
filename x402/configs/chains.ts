@@ -1,17 +1,22 @@
+import { base58 } from "@scure/base";
 import { defineChain, type Chain as ViemChain } from "viem";
 import {
     arbitrum,
-    // arbitrumSepolia,
+    arbitrumSepolia,
     arc,
-    // arcTestnet,
+    arcTestnet,
+    base,
+    baseSepolia,
     avalanche,
-    // avalancheFuji,
+    avalancheFuji,
     sei,
-    // seiTestnet,
+    seiTestnet,
+    tempoModerato
 } from "viem/chains";
 
 export type EvmNetworkId = `eip155:${number}`;
 export type SolanaNetworkId = `solana:${string}`;
+export type NearNetworkId = `near:${string}`;
 export type NetworkId = EvmNetworkId | SolanaNetworkId;
 export type NetworkNamespace = "eip155" | "solana";
 export type NetworkEnvironment = "testnet" | "mainnet";
