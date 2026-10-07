@@ -17,11 +17,11 @@ import {
 export type EvmNetworkId = `eip155:${number}`;
 export type SolanaNetworkId = `solana:${string}`;
 export type NearNetworkId = `near:${string}`;
-export type NetworkId = EvmNetworkId | SolanaNetworkId;
-export type NetworkNamespace = "eip155" | "solana";
+export type NetworkId = EvmNetworkId | SolanaNetworkId | NearNetworkId;
+export type NetworkNamespace = "eip155" | "solana" | "near";
 export type NetworkEnvironment = "testnet" | "mainnet";
 export type PaymentScheme = "exact" | "upto" | "batch-settlement";
-export type AssetSymbol = "USDC" | "USDT";
+export type AssetSymbol = "USDC" | "USDT" | "OUSD";
 export type AssetTransferMethod = "transferFrom" | "permit2";
 
 export interface NetworkDefinition {
