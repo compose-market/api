@@ -201,6 +201,38 @@ export function validateSolanaAddress(value: string): boolean {
     }
 }
 
+export function validateNearAddress(value: string): boolean {
+    const normalized = value.trim();
+    if (normalized.length < 2 || normalized.length > 64) return false;
+    if (/^0s[0-9a-f]{40}$/.test(normalized)) return true;
+    if (/^0u[0123456789abcdefghjkmnpqrstvwxyz]{51}[0g]$/.test(normalized))
+        return true;
+    if (/^0x[0-9a-fA-F]{40}$/.test(normalized)) return false;
+    if (/^[0-9a-f]{64}$/.test(normalized)) return true;
+    return /^(([a-z\d]+[-_])*[a-z\d]+\.)+([a-z\d]+[-_])*[a-z\d]+$/.test(normalized);
+}
+
+export function isAddressValidForNetwork(value: string | undefined | null, network: NetworkId): boolean {
+    if (typeof value !== "string") return false;
+    const normalized = value.trim();
+    if (!normalized) return false;
+    if (isEvmNetwork(network)) {
+        return /^0x[0-9a-fA-F]{40}$/.test(normalized);
+    }
+    if (isSolanaNetwork(network)) {
+        return validateSolanaAddress(normalized);
+    }
+    if (isNearNetwork(network)) {
+        if (!validateNearAddress(normalized)) return false;
+        if (normalized.includes(".")) {
+            if (network === NETWORK_IDS.nearTestnet && normalized.endsWith(".near")) return false;
+            if (network === NETWORK_IDS.near && normalized.endsWith(".testnet")) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 export function evmChainId(id: EvmNetworkId): number {
     const value = Number.parseInt(id.slice("eip155:".length), 10);
     if (!Number.isInteger(value) || value <= 0) throw new Error(`Invalid EVM network: ${id}`);
