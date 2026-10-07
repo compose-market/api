@@ -15,25 +15,19 @@ import {
 } from "./facilitator.js";
 import {
     getDefaultUptoEnvelopeWei,
-    getNetworkFromRequest,
     getPaymentSignatureFromRequest,
-    getRawInferenceMaxAmount,
 } from "./index.js";
-import type { NetworkId } from "./configs/chains.js";
+import { isServiceAllowedNetwork, type NetworkId } from "./configs/chains.js";
 import { extractKeyFromHeader } from "./keys/middleware.js";
-import { publicResourceUrl } from "../http/public-origin.js";
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 1000;
 
 export const SELLER_ORIGIN = "https://api.compose.market";
 export const MODELS_ENTRYPOINT = "/models";
-export const AGENTS_ENTRYPOINT = "/agents";
 export const MODELS_CATALOG = "/models/list";
-export const AGENTS_CATALOG = "/agents/list";
 const SUPPORTED_NETWORKS_PATH = "/api/x402/facilitator/supported";
 const MODEL_EXECUTION_TEMPLATE = "/v1/responses/{selectedModelId}";
-const AGENT_EXECUTION_TEMPLATE = "/agent/{selectedAgentWallet}/stream";
 
 type DiscoveryScheme = "upto" | "batch-settlement";
 
