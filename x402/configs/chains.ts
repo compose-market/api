@@ -152,6 +152,29 @@ export function getSupportedNetworks(): NetworkDefinition[] {
     return NETWORKS.filter((entry) => entry.enabled);
 }
 
+export function isTestnetNetwork(id: NetworkId): boolean {
+    const value = NETWORK_BY_ID.get(id);
+    return value ? value.environment === "testnet" : false;
+}
+
+/**
+ * Returns true if the network is allowed for Compose Market internal services
+ * (inference, agents, session keys, payment intents).
+ *
+ * All mainnets are supported. For testing purposes, Base Sepolia is also supported.
+ * All other testnets are blocked from our services.
+ */
+export function isServiceAllowedNetwork(id: NetworkId): boolean {
+    const def = NETWORK_BY_ID.get(id);
+    if (!def || !def.enabled) return false;
+    // TEMP(near:testnet): temporary E2E exception alongside Base Sepolia; remove `|| id === NETWORK_IDS.nearTestnet` to enforce near:mainnet only.
+    return def.environment === "mainnet" || id === NETWORK_IDS.baseSepolia || id === NETWORK_IDS.nearTestnet;
+}
+
+export function isServiceBlockedNetwork(id: NetworkId): boolean {
+    return !isServiceAllowedNetwork(id);
+}
+
 export function isEvmNetwork(id: NetworkId): id is EvmNetworkId {
     return id.startsWith("eip155:");
 }
