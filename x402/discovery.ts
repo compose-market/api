@@ -107,13 +107,6 @@ export function getModelCatalogCount(): number {
     return getCompiledModels().models.length;
 }
 
-export async function getAgentCatalogCount(): Promise<number> {
-    const catalog = await fetchAgentCatalog({ limit: "1" });
-    if (typeof catalog.total === "number") return catalog.total;
-    if (typeof catalog.count === "number") return catalog.count;
-    return Array.isArray(catalog.agents) ? catalog.agents.length : 0;
-}
-
 function uniqueStrings(values: string[]): string[] {
     return [...new Set(values.filter(Boolean))];
 }
