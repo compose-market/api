@@ -327,7 +327,7 @@ function networkHeaderParameter(networks: string[], required: boolean): Record<s
         name: "x-network-id",
         in: "header",
         required,
-        description: `CAIP-2 network identifier. For ${MODELS_ENTRYPOINT} and ${AGENTS_ENTRYPOINT}, select one of accepts[].network from the 402 challenge. The same values are available from GET ${absoluteUrl(SUPPORTED_NETWORKS_PATH)}.`,
+        description: `CAIP-2 network identifier. For ${MODELS_ENTRYPOINT}, select one of accepts[].network from the 402 challenge. The same values are available from GET ${absoluteUrl(SUPPORTED_NETWORKS_PATH)}.`,
         schema: networks.length > 0
             ? { type: "string", enum: networks }
             : { type: "string" },
@@ -338,12 +338,10 @@ function networkHeaderParameter(networks: string[], required: boolean): Record<s
     };
 }
 
-function paymentInfo(kind: "model" | "agent"): Record<string, unknown> {
+function paymentInfo(): Record<string, unknown> {
     return {
         protocols: [{ x402: {} }],
-        price: kind === "model"
-            ? { mode: "dynamic", currency: "USD", min: "0.00000001", max: "1.00" }
-            : { mode: "dynamic", currency: "USD", min: "0.00000001", max: "5.00" },
+        price: { mode: "dynamic", currency: "USD", min: "0.00000001", max: "1.00" },
     };
 }
 
@@ -364,13 +362,10 @@ function payment402Response(description: string): Record<string, unknown> {
     };
 }
 
-function paidEntrypointOperation(kind: "model" | "agent", networks: string[]): Record<string, unknown> {
-    const countDescription = kind === "model"
-        ? `The 402 response tells callers how many payable models are currently available and points them to GET ${MODELS_CATALOG}.`
-        : `The 402 response tells callers how many payable agent streams are currently available and points them to GET ${AGENTS_CATALOG}.`;
+function paidEntrypointOperation(networks: string[]): Record<string, unknown> {
     return {
-        summary: kind === "model" ? "Discover payable model calls" : "Discover payable agent stream calls",
-        description: `${countDescription} This operation is an x402 marketplace entrypoint only; it is not the catalog and it is not the final execution URL.`,
+        summary: "Discover payable model calls",
+        description: `The 402 response tells callers how many payable models are currently available and points them to GET ${MODELS_CATALOG}. This operation is an x402 marketplace entrypoint only; it is not the catalog and it is not the final execution URL.`,
         security: [],
         parameters: [{ $ref: "#/components/parameters/NetworkIdHeaderOptional" }],
         requestBody: {
@@ -393,7 +388,7 @@ function paidEntrypointOperation(kind: "model" | "agent", networks: string[]): R
             },
             "402": payment402Response("x402 payment challenge with Bazaar input/output metadata and live instructions."),
         },
-        "x-payment-info": paymentInfo(kind),
+        "x-payment-info": paymentInfo(),
         "x-supported-networks": networks,
     };
 }
