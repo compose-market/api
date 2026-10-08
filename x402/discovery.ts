@@ -293,16 +293,6 @@ export async function buildModelsPaymentRequired(origin = SELLER_ORIGIN): Promis
     });
 }
 
-export async function buildAgentsPaymentRequired(origin = SELLER_ORIGIN): Promise<PaymentRequired> {
-    const count = await getAgentCatalogCount();
-    return buildPaymentRequired({
-        scheme: "batch-settlement",
-        resourceUrl: absoluteUrl(AGENTS_ENTRYPOINT, origin),
-        description: agentInstructions(count, origin),
-        extensions: entrypointBazaarExtension("agent", count, origin),
-    });
-}
-
 export async function buildModelEndpointPaymentRequired(modelId: string, resourceUrl?: string): Promise<PaymentRequired> {
     const count = getModelCatalogCount();
     const origin = resourceUrl ? new URL(resourceUrl).origin : SELLER_ORIGIN;
@@ -314,22 +304,6 @@ export async function buildModelEndpointPaymentRequired(modelId: string, resourc
     });
 }
 
-export async function buildAgentStreamPaymentRequired(
-    walletAddress: string,
-    resourceUrl?: string,
-    amountWei?: string,
-): Promise<PaymentRequired> {
-    const count = await getAgentCatalogCount();
-    const origin = resourceUrl ? new URL(resourceUrl).origin : SELLER_ORIGIN;
-    return buildPaymentRequired({
-        scheme: "batch-settlement",
-        resourceUrl: resourceUrl || agentEndpoint(walletAddress),
-        description: `Pay to stream agent ${walletAddress}. Use GET ${absoluteUrl(AGENTS_CATALOG, origin)} to discover agents. ${count} agents available. Set x-network-id from the selected accept entry before sending PAYMENT-SIGNATURE.`,
-        extensions: agentExecutionBazaarExtension(walletAddress, origin),
-        amountWei,
-    });
-}
-
 export function sendPaymentRequired(res: Response, paymentRequired: PaymentRequired): void {
     res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
     res.status(402).json(paymentRequired);
@@ -338,10 +312,6 @@ export function sendPaymentRequired(res: Response, paymentRequired: PaymentRequi
 function requestHasComposeKey(req: Request): boolean {
     const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
     return Boolean(extractKeyFromHeader(authorization));
-}
-
-function requestSignedWithoutNetwork(req: Request): boolean {
-    return Boolean(getPaymentSignatureFromRequest(req)) && !getNetworkFromRequest(req);
 }
 
 export function shouldDirectChallenge(req: Request): boolean {
