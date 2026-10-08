@@ -395,9 +395,9 @@ function paidEntrypointOperation(networks: string[]): Record<string, unknown> {
 
 export async function buildOpenApiDocument(origin = SELLER_ORIGIN): Promise<Record<string, unknown>> {
     const supported = await getFacilitatorSupported();
-    const allNetworks = uniqueStrings(supported.kinds.map((kind) => kind.network));
-    const uptoNetworks = uniqueStrings(supported.kinds.filter((kind) => kind.scheme === "upto").map((kind) => kind.network));
-    const batchNetworks = uniqueStrings(supported.kinds.filter((kind) => kind.scheme === "batch-settlement").map((kind) => kind.network));
+    const serviceKinds = supported.kinds.filter((kind) => isServiceAllowedNetwork(kind.network as NetworkId));
+    const allNetworks = uniqueStrings(serviceKinds.map((kind) => kind.network));
+    const uptoNetworks = uniqueStrings(serviceKinds.filter((kind) => kind.scheme === "upto").map((kind) => kind.network));
     const modelIds = modelIdsForOpenApi();
 
     return {
@@ -405,17 +405,14 @@ export async function buildOpenApiDocument(origin = SELLER_ORIGIN): Promise<Reco
         info: {
             title: "Compose Market x402 Seller API",
             version: "1.0.0",
-            description: "Two x402 marketplace entrypoints for discovering payable Compose Market model and agent calls.",
+            description: "Universal x402 facilitator and model inference seller API.",
             contact: { email: "team@compose.market" },
-            "x-guidance": `POST ${MODELS_ENTRYPOINT} and POST ${AGENTS_ENTRYPOINT} are the only advertised x402 resources. Their 402 challenges instruct callers to use GET ${MODELS_CATALOG} or GET ${AGENTS_CATALOG}, select a resource, set x-network-id from the challenge accepts, sign, and send PAYMENT-SIGNATURE to the selected execution URL.`,
+            "x-guidance": `POST ${MODELS_ENTRYPOINT} is the advertised x402 model resource on this origin. Its 402 challenge instructs callers to use GET ${MODELS_CATALOG}, select a modelId, set x-network-id from the challenge accepts, sign, and send PAYMENT-SIGNATURE to the selected execution URL.`,
         },
         servers: [{ url: origin }],
         paths: {
             [MODELS_ENTRYPOINT]: {
-                post: paidEntrypointOperation("model", uptoNetworks),
-            },
-            [AGENTS_ENTRYPOINT]: {
-                post: paidEntrypointOperation("agent", batchNetworks),
+                post: paidEntrypointOperation(uptoNetworks),
             },
             [MODELS_CATALOG]: {
                 get: {
@@ -433,28 +430,6 @@ export async function buildOpenApiDocument(origin = SELLER_ORIGIN): Promise<Reco
                             content: {
                                 "application/json": {
                                     schema: { $ref: "#/components/schemas/ModelCatalog" },
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-            [AGENTS_CATALOG]: {
-                get: {
-                    summary: "List indexed agents",
-                    description: `Free public agent catalog used after reading the ${AGENTS_ENTRYPOINT} 402 instructions.`,
-                    security: [],
-                    parameters: [
-                        { $ref: "#/components/parameters/Limit" },
-                        { $ref: "#/components/parameters/Offset" },
-                        { $ref: "#/components/parameters/Cursor" },
-                    ],
-                    responses: {
-                        "200": {
-                            description: "Live agent catalog.",
-                            content: {
-                                "application/json": {
-                                    schema: { $ref: "#/components/schemas/AgentCatalog" },
                                 },
                             },
                         },
@@ -489,7 +464,7 @@ export async function buildOpenApiDocument(origin = SELLER_ORIGIN): Promise<Reco
                     required: false,
                     schema: { type: "integer", minimum: 1, maximum: MAX_LIMIT, default: DEFAULT_LIMIT },
                 },
-                Offset: {
+            Offset: {
                     name: "offset",
                     in: "query",
                     required: false,
@@ -557,29 +532,6 @@ export async function buildOpenApiDocument(origin = SELLER_ORIGIN): Promise<Reco
                         method: { type: "string", const: "POST" },
                     },
                 },
-                AgentCatalog: {
-                    type: "object",
-                    additionalProperties: true,
-                    properties: {
-                        agents: {
-                            type: "array",
-                            items: { $ref: "#/components/schemas/AgentCatalogItem" },
-                        },
-                        total: { type: "integer" },
-                        count: { type: "integer" },
-                        nextCursor: { oneOf: [{ type: "string" }, { type: "null" }] },
-                    },
-                },
-                AgentCatalogItem: {
-                    type: "object",
-                    required: ["walletAddress"],
-                    additionalProperties: true,
-                    properties: {
-                        walletAddress: { type: "string", pattern: "^(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$" },
-                        name: { type: "string" },
-                        description: { type: "string" },
-                    },
-                },
             },
         },
     };
@@ -590,9 +542,8 @@ export async function buildWellKnownX402(origin = SELLER_ORIGIN): Promise<Record
         version: 1,
         resources: [
             absoluteUrl(MODELS_ENTRYPOINT, origin),
-            absoluteUrl(AGENTS_ENTRYPOINT, origin),
         ],
         ownershipProofs: await getOwnershipProofs(),
-        instructions: `Only ${absoluteUrl(MODELS_ENTRYPOINT, origin)} and ${absoluteUrl(AGENTS_ENTRYPOINT, origin)} are advertised x402 marketplace resources. Their 402 challenges explain the separate catalogs and final paid execution URLs.`,
+        instructions: `Only ${absoluteUrl(MODELS_ENTRYPOINT, origin)} is an advertised x402 marketplace resource on this origin. Its 402 challenge explains the separate catalog and final paid execution URLs.`,
     };
 }
