@@ -289,7 +289,7 @@ export async function buildModelsPaymentRequired(origin = SELLER_ORIGIN): Promis
         scheme: "upto",
         resourceUrl: absoluteUrl(MODELS_ENTRYPOINT, origin),
         description: modelInstructions(count, origin),
-        extensions: entrypointBazaarExtension("model", count, origin),
+        extensions: entrypointBazaarExtension(count, origin),
     });
 }
 
