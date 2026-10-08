@@ -283,10 +283,6 @@ function modelInstructions(count: number, origin: string): string {
     return `Choose one of ${count} currently payable models from GET ${absoluteUrl(MODELS_CATALOG, origin)}. Select an accept entry from this 402 challenge, set x-network-id to its CAIP-2 accepts[].network value, sign the x402 payment, then send PAYMENT-SIGNATURE with the actual paid request. After choosing a modelId from the catalog, invoke POST ${absoluteUrl(MODEL_EXECUTION_TEMPLATE, origin)}.`;
 }
 
-function agentInstructions(count: number, origin: string): string {
-    return `Choose one of ${count} currently payable agent streams from GET ${absoluteUrl(AGENTS_CATALOG, origin)}. Select an accept entry from this 402 challenge, set x-network-id to its CAIP-2 accepts[].network value, sign the x402 payment, then send PAYMENT-SIGNATURE with the actual paid request. After choosing an agent wallet from the catalog, invoke POST ${absoluteUrl(AGENT_EXECUTION_TEMPLATE, origin)}.`;
-}
-
 export async function buildModelsPaymentRequired(origin = SELLER_ORIGIN): Promise<PaymentRequired> {
     const count = getModelCatalogCount();
     return buildPaymentRequired({
