@@ -244,58 +244,6 @@ function modelExecutionBazaarExtension(modelId: string, origin = SELLER_ORIGIN):
     });
 }
 
-function agentExecutionBazaarExtension(walletAddress: string, origin = SELLER_ORIGIN): Record<string, unknown> {
-    return declareHttpDiscoveryExtension({
-        method: "POST",
-        bodyType: "json",
-        input: { input: "Hello", stream: true },
-        inputSchema: {
-            type: "object",
-            properties: {
-                input: {
-                    description: "Instruction or task for the selected agent stream.",
-                    oneOf: [
-                        { type: "string" },
-                        { type: "array", items: { type: "object", additionalProperties: true } },
-                        { type: "object", additionalProperties: true },
-                    ],
-                },
-                messages: {
-                    type: "array",
-                    items: { type: "object", additionalProperties: true },
-                },
-            },
-            additionalProperties: true,
-        },
-        pathParams: { walletAddress },
-        pathParamsSchema: {
-            properties: {
-                walletAddress: {
-                    type: "string",
-                    description: `Agent wallet selected from GET ${absoluteUrl(AGENTS_CATALOG, origin)}.`,
-                },
-            },
-            required: ["walletAddress"],
-        },
-        output: {
-            example: {
-                event: "done",
-                data: {
-                    type: "done",
-                    text: "Agent stream completed.",
-                },
-            },
-            schema: {
-                type: "object",
-                properties: {
-                    event: { type: "string" },
-                    data: { type: "object", additionalProperties: true },
-                },
-            },
-        },
-    });
-}
-
 function parsePaymentRequiredV2(value: unknown): PaymentRequired {
     const parsed = validatePaymentRequired(value);
     if (parsed.x402Version !== 2 || !("resource" in parsed)) {
