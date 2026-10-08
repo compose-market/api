@@ -173,6 +173,12 @@ export function resolveRawBatchBacking(input: {
   )) {
     throw new Error("SVM batch-settlement backing requires canonical network and resource bindings");
   }
+  if (input.network.startsWith("near:") && (
+    raw.channelConfig.network !== input.network
+    || raw.channelConfig.resource !== resource
+  )) {
+    throw new Error("NEAR batch-settlement backing requires canonical network and resource bindings");
+  }
 
   const paymentPayloadJson = canonicalJson(paymentPayload);
   return {
