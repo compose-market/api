@@ -318,49 +318,6 @@ export function shouldDirectChallenge(req: Request): boolean {
     return !requestHasComposeKey(req) && !getPaymentSignatureFromRequest(req);
 }
 
-function headerValue(req: Request, name: string): string | undefined {
-    const value = req.get?.(name) ?? req.headers[name];
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-// A nested execution (runtime-forwarded child call under a paid root run) carries
-// its own execution run id or a parent execution run id and settles continuously
-// against the root run's pinned x402 envelope. It has no Compose Key and no fresh
-// PAYMENT-SIGNATURE, so it must not be treated as a blind dial that needs a
-// discovery challenge; prepareInferencePayment resolves the inherited envelope
-// (and fails closed with a corrective 402 if none exists). Mirrors the
-// isNestedExecution condition in prepareRawInferenceX402Payment.
-function requestIsNestedExecution(req: Request): boolean {
-    const runId = headerValue(req, "x-run-id");
-    if (!runId) return false;
-    const explicitExecutionRunId = headerValue(req, "x-execution-run-id");
-    const parentExecutionRunId = headerValue(req, "x-parent-run-id");
-    const executionRunId = explicitExecutionRunId ?? runId;
-    return executionRunId !== runId || Boolean(parentExecutionRunId);
-}
-
-export async function maybeSendAgentStreamDiscoveryChallenge(
-    req: Request,
-    res: Response,
-): Promise<boolean> {
-    if (requestSignedWithoutNetwork(req)) {
-        res.status(400).json({ error: "x-network-id header is required" });
-        return true;
-    }
-    if (requestIsNestedExecution(req)) {
-        return false;
-    }
-    if (!shouldDirectChallenge(req)) {
-        return false;
-    }
-    const wallet = typeof req.params.walletAddress === "string" ? req.params.walletAddress : "";
-    sendPaymentRequired(
-        res,
-        await buildAgentStreamPaymentRequired(wallet, publicResourceUrl(req), getRawInferenceMaxAmount(req) ?? undefined),
-    );
-    return true;
-}
-
 function modelIdsForOpenApi(): string[] {
     return getCompiledModels().models.map((model) => model.modelId);
 }
