@@ -149,19 +149,16 @@ function entrypointInputSchema(count: number, origin: string): Record<string, un
     };
 }
 
-function entrypointOutput(kind: "model" | "agent", count: number, origin: string): Record<string, unknown> {
-    const catalogPath = kind === "model" ? MODELS_CATALOG : AGENTS_CATALOG;
-    const executionTemplate = kind === "model" ? MODEL_EXECUTION_TEMPLATE : AGENT_EXECUTION_TEMPLATE;
-    const noun = kind === "model" ? "models" : "agent streams";
+function entrypointOutput(count: number, origin: string): Record<string, unknown> {
     return {
         type: "json",
         example: {
-            resource: kind === "model" ? "models" : "agents",
+            resource: "models",
             payableCount: count,
-            catalog: `GET ${absoluteUrl(catalogPath, origin)}`,
+            catalog: `GET ${absoluteUrl(MODELS_CATALOG, origin)}`,
             supportedNetworks: `Use accepts[].network from the 402 challenge or GET ${absoluteUrl(SUPPORTED_NETWORKS_PATH, origin)}.`,
             headers: ["x-network-id", "PAYMENT-SIGNATURE"],
-            next: `Choose one of the ${noun}, then call POST ${absoluteUrl(executionTemplate, origin)}.`,
+            next: `Choose one of the models, then call POST ${absoluteUrl(MODEL_EXECUTION_TEMPLATE, origin)}.`,
         },
         schema: {
             type: "object",
@@ -177,13 +174,13 @@ function entrypointOutput(kind: "model" | "agent", count: number, origin: string
     };
 }
 
-function entrypointBazaarExtension(kind: "model" | "agent", count: number, origin: string): Record<string, unknown> {
+function entrypointBazaarExtension(count: number, origin: string): Record<string, unknown> {
     return declareHttpDiscoveryExtension({
         method: "POST",
         bodyType: "json",
         input: {},
-        inputSchema: entrypointInputSchema(kind, count, origin),
-        output: entrypointOutput(kind, count, origin),
+        inputSchema: entrypointInputSchema(count, origin),
+        output: entrypointOutput(count, origin),
     });
 }
 
