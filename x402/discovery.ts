@@ -115,7 +115,7 @@ async function paymentAcceptsForScheme(scheme: DiscoveryScheme, amountWei?: stri
     const supported = await getFacilitatorSupported();
     const networks = uniqueStrings(
         supported.kinds
-            .filter((kind) => kind.scheme === scheme)
+            .filter((kind) => kind.scheme === scheme && isServiceAllowedNetwork(kind.network as NetworkId))
             .map((kind) => kind.network),
     );
     const amount = amountWei && /^\d+$/u.test(amountWei) && BigInt(amountWei) > 0n
@@ -129,24 +129,21 @@ async function paymentAcceptsForScheme(scheme: DiscoveryScheme, amountWei?: stri
 }
 
 export async function getOwnershipProofs(): Promise<string[]> {
-    const [modelAccepts, agentAccepts] = await Promise.all([
+    const [modelAccepts, batchAccepts] = await Promise.all([
         paymentAcceptsForScheme("upto"),
         paymentAcceptsForScheme("batch-settlement"),
     ]);
-    return uniqueStrings([...modelAccepts, ...agentAccepts].map((accept) => accept.payTo));
+    return uniqueStrings([...modelAccepts, ...batchAccepts].map((accept) => accept.payTo));
 }
 
 function declareHttpDiscoveryExtension(config: Record<string, unknown>): Record<string, unknown> {
     return declareDiscoveryExtension(config as never);
 }
 
-function entrypointInputSchema(kind: "model" | "agent", count: number, origin: string): Record<string, unknown> {
-    const catalogPath = kind === "model" ? MODELS_CATALOG : AGENTS_CATALOG;
-    const executionTemplate = kind === "model" ? MODEL_EXECUTION_TEMPLATE : AGENT_EXECUTION_TEMPLATE;
-    const noun = kind === "model" ? "model" : "agent stream";
+function entrypointInputSchema(count: number, origin: string): Record<string, unknown> {
     return {
         type: "object",
-        description: `No request body is required. This endpoint returns an x402 challenge with instructions for choosing one of ${count} payable ${noun}s from GET ${absoluteUrl(catalogPath, origin)} and then calling POST ${absoluteUrl(executionTemplate, origin)}.`,
+        description: `No request body is required. This endpoint returns an x402 challenge with instructions for choosing one of ${count} payable models from GET ${absoluteUrl(MODELS_CATALOG, origin)} and then calling POST ${absoluteUrl(MODEL_EXECUTION_TEMPLATE, origin)}.`,
         properties: {},
         additionalProperties: true,
     };
