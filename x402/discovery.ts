@@ -253,7 +253,7 @@ function parsePaymentRequiredV2(value: unknown): PaymentRequired {
 }
 
 async function buildPaymentRequired(params: {
-    scheme: DiscoveryScheme;
+    scheme: "upto";
     resourceUrl: string;
     description: string;
     extensions: Record<string, unknown>;
@@ -268,7 +268,7 @@ async function buildPaymentRequired(params: {
             description: params.description,
             mimeType: "application/json",
             serviceName: "Compose Market",
-            tags: params.scheme === "upto" ? ["models", "ai", "x402"] : ["agents", "ai", "x402"],
+            tags: ["models", "ai", "x402"],
             iconUrl: `https://compose.market/favicon.png`,
         },
         accepts,
