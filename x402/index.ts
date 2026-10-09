@@ -96,11 +96,14 @@ function intEnv(name: string, fallback: number): number {
 }
 
 function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        timer.unref?.();
+    });
 }
 
 async function runSettlementCycleStep<T>(
-    label: "native" | "svm" | "intents",
+    label: "native" | "svm" | "near" | "intents",
     reason: string,
     fn: () => Promise<T>,
 ): Promise<{ succeeded: true; value: T } | { succeeded: false; value: null }> {
@@ -169,6 +172,7 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
                     skipped: true,
                     native: null,
                     svm: null,
+                    near: null,
                     intents: null,
                 };
             }
@@ -186,29 +190,33 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
             heartbeat.unref?.();
 
             console.log("[batch-settlement] cycle started", { reason });
-            const [{ runNativeBatchSettlement }, { runSvmBatchSettlement }, { runBatchSettlement }] = await Promise.all([
+            const [{ runNativeBatchSettlement }, { runSvmBatchSettlement, runNearBatchSettlement }, { runBatchSettlement }] = await Promise.all([
                 import("./channels.js"),
                 import("./batch.js"),
                 import("./accumulator/index.js"),
             ]);
-            const [nativeStepResult, svmStepResult, intentsStepResult] = await Promise.allSettled([
+            const [nativeStepResult, svmStepResult, nearStepResult, intentsStepResult] = await Promise.allSettled([
                 runSettlementCycleStep("native", reason, runNativeBatchSettlement),
                 runSettlementCycleStep("svm", reason, runSvmBatchSettlement),
+                runSettlementCycleStep("near", reason, runNearBatchSettlement),
                 runSettlementCycleStep("intents", reason, runBatchSettlement),
             ]);
             const nativeStep = settlementCycleStepValue(nativeStepResult);
             const svmStep = settlementCycleStepValue(svmStepResult);
+            const nearStep = settlementCycleStepValue(nearStepResult);
             const intentsStep = settlementCycleStepValue(intentsStepResult);
             const native = nativeStep.succeeded ? nativeStep.value : null;
             const svm = svmStep.succeeded ? svmStep.value : null;
+            const near = nearStep.succeeded ? nearStep.value : null;
             const intents = intentsStep.succeeded ? intentsStep.value : null;
             console.log("[batch-settlement] cycle completed", {
                 reason,
                 nativeRunId: native?.runId,
                 svmRunId: svm?.runId,
+                nearRunId: near?.runId,
                 intentRunId: intents?.runId,
             });
-            return { reason, native, svm, intents };
+            return { reason, native, svm, near, intents };
         } finally {
             if (locked) {
                 if (heartbeat) {
