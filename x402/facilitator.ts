@@ -28,6 +28,9 @@ import { BatchSettlementEvmScheme as BatchSettlementEvmFacilitator } from "@x402
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import { ExactSvmScheme as ExactSvmFacilitator } from "@x402/svm/exact/facilitator";
+import { createFacilitatorNearSigner } from "@x402/near";
+import { ExactNearScheme as ExactNearFacilitator } from "@x402/near/exact/facilitator";
+import { type KeyPairString } from "@near-js/crypto";
 import {
     createKeyPairSignerFromBytes,
     address as solanaAddress,
@@ -46,6 +49,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import {
     type EvmNetworkId,
+    type NearNetworkId,
     type NetworkId,
     NETWORK_IDS,
     getNetwork,
@@ -53,20 +57,32 @@ import {
     getSupportedNetworks,
     getViemChain,
     isEvmNetwork,
+    isNearNetwork,
     isSolanaNetwork,
+    validateNearAddress,
     type SolanaNetworkId,
 } from "./configs/chains.js";
 import {
+    commitNearBatchCharge,
     commitSvmBatchCharge,
     createBatchPaymentExtra,
     isBatchSettlementScheme,
+    validateNearBatchPayment,
     validateSvmBatchPayment,
+    verifyNearDetachedSignature,
 } from "./batch.js";
-import { settleKeyPaymentForNetwork, type SettlementResult } from "./settlement.js";
+import {
+    settleKeyPaymentForNetwork,
+    type KeyPaymentSettlementOptions,
+    type SettlementResult,
+} from "./settlement.js";
 import {
     valkeyExists,
     valkeySetNXEX,
 } from "./keys/valkey.js";
+
+export const METERING_EXTENSION_KEY = "metering";
+export const PAYMENT_INTENT_EXTENSION_KEY = "payment-intent";
 
 export const COMPOSE_METERING_EXTENSION_KEY = "compose-metering-v1";
 export const COMPOSE_PAYMENT_INTENT_EXTENSION_KEY = "compose-payment-intent-v1";
