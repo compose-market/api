@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "crypto";
 
-import { extractKeyFromHeader, getKeyBudgetInfo, validateKey } from "./keys/middleware.js";
-import { getKeyRecord, getKeyReservedBudget } from "./keys/storage.js";
-import type { KeyPurpose } from "./keys/types.js";
+import { extractKeyFromHeader, validateKey } from "./keys/middleware.js";
+import { getKeyRecord } from "./keys/storage.js";
+import type { KeyPurpose, KeyValidationResult } from "./keys/types.js";
 import {
     quoteMeteredAuthorization,
     quoteMeteredSettlement,
@@ -20,11 +20,13 @@ import {
     valkeyCommitReservedBudget,
     valkeyGet,
     valkeyHGetAll,
+    valkeyHSet,
     valkeyMarkClaimedPaymentIntentSubmitted,
     valkeyPersistPreparedPaymentIntent,
     valkeyReleaseReservedBudget,
     valkeyReleaseFencedLease,
     valkeyRenewFencedLease,
+    valkeyResetClaimedPaymentIntentPreparation,
     valkeyRetainClaimedPaymentIntent,
     valkeyReserveAndQueuePaymentIntent,
     valkeySRandMembers,
@@ -33,12 +35,19 @@ import {
     valkeyZRangeLiveWorkByScore,
     valkeyZRem,
 } from "./keys/valkey.js";
-import { getNetwork, isEvmNetwork } from "./configs/chains.js";
+import {
+    getNetwork,
+    isAddressValidForNetwork,
+    isEvmNetwork,
+    isNearNetwork,
+    isNetworkId,
+    isSolanaNetwork,
+    type NetworkId,
+} from "./configs/chains.js";
 import {
     createPaymentRequired,
     encodePaymentRequiredHeader,
 } from "./facilitator.js";
-import { isNetworkId, type NetworkId } from "./configs/chains.js";
 import { publishInvalidationBestEffort } from "../data/shared/updates.js";
 
 const INTENT_PREFIX = "payment-intent:";
@@ -57,6 +66,18 @@ const EXECUTION_CLAIM_TTL_MS = 60_000;
 const SIGNER_LEASE_TTL_MS = 15_000;
 const SIGNER_LEASE_RENEW_MS = 5_000;
 const SIGNER_LEASE_ATTEMPTS = 80;
+const DEFAULT_SUBMITTED_BLOCKHASH_EXPIRY_MS = 5 * 60_000;
+
+function submittedBlockhashExpiryMs(): number {
+    const raw = process.env.SUBMITTED_BLOCKHASH_EXPIRY_MS?.trim();
+    if (raw && /^\d+$/.test(raw)) {
+        const parsed = Number.parseInt(raw, 10);
+        if (Number.isSafeInteger(parsed) && parsed > 0) {
+            return parsed;
+        }
+    }
+    return DEFAULT_SUBMITTED_BLOCKHASH_EXPIRY_MS;
+}
 
 export type PaymentIntentStatus =
     | "authorized"
@@ -68,6 +89,7 @@ export type PaymentIntentStatus =
 
 export interface AuthorizePaymentIntentInput {
     authorization: string;
+    validatedKey?: KeyValidationResult;
     network: NetworkId;
     service: string;
     action: string;
