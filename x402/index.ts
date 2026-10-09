@@ -14,7 +14,7 @@ import {
     merchantWalletAddress,
     serverWalletAddress,
 } from "./wallets.js";
-import { getDefaultNetwork, isEvmNetwork, isNetworkId, type NetworkId } from "./configs/chains.js";
+import { getDefaultNetwork, isEvmNetwork, isNetworkId, isServiceBlockedNetwork, type NetworkId } from "./configs/chains.js";
 import {
     createPaymentRequired,
     createPaymentRequirement,
@@ -30,7 +30,7 @@ import {
 import {
     extractKeyFromHeader,
     validateKey,
-    getActiveSessionStatus,
+    verifyActiveSessionKey,
 } from "./keys/index.js";
 
 import {
@@ -58,6 +58,7 @@ import {
 import {
     abortPaymentIntent,
     authorizePaymentIntent,
+    executeCanonicalPaymentIntent,
     settlePaymentIntent,
 } from "./intents.js";
 import {
@@ -75,6 +76,7 @@ type SettlementCycleResult = {
     skipped?: boolean;
     native: Awaited<ReturnType<typeof import("./channels.js").runNativeBatchSettlement>> | null;
     svm: Awaited<ReturnType<typeof import("./batch.js").runSvmBatchSettlement>> | null;
+    near?: Awaited<ReturnType<typeof import("./batch.js").runNearBatchSettlement>> | null;
     intents: Awaited<ReturnType<typeof import("./accumulator/index.js").runBatchSettlement>> | null;
 };
 
@@ -82,6 +84,7 @@ const SETTLEMENT_RUN_LOCK_KEY = "x402:settlement:run-lock";
 const SETTLEMENT_KICK_LOCK_KEY = "x402:settlement:kick-lock";
 
 let activeSettlementCycle: Promise<SettlementCycleResult> | null = null;
+const activeTargetedIntentKicks = new Map<string, Promise<void>>();
 
 function positiveAmount(value: string | undefined): boolean {
     return Boolean(value && /^\d+$/u.test(value) && BigInt(value) > 0n);
