@@ -281,6 +281,16 @@ export async function kickBatchSettlement(
 ): Promise<void> {
     if (!shouldKickSettlement(settlement)) return;
 
+    const targetIntentId = (
+        settlement?.paymentIntentId?.trim()
+        && (settlement.settlementStatus === "queued" || settlement.settlementStatus === "submitted")
+    )
+        ? settlement.paymentIntentId.trim()
+        : undefined;
+    if (targetIntentId) {
+        void dispatchTargetedIntentSettlement(targetIntentId, reason);
+    }
+
     try {
         const run = async (attemptReason: string): Promise<void> => {
             const attempts = intEnv("SETTLEMENT_KICK_RETRY_ATTEMPTS", 6);
@@ -847,6 +857,12 @@ async function prepareRawInferenceX402Payment(
         res.status(400).json({ error: "x-network-id header is required" });
         return null;
     }
+    if (isServiceBlockedNetwork(requiredNetwork)) {
+        res.status(400).json({
+            error: `Network ${requiredNetwork} is not supported for this service. Use a Mainnet, or ask for Testnet access.`,
+        });
+        return null;
+    }
     const resourceUrl = publicResourceUrl(req);
     const requestBody = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
     const modalities = Array.isArray(requestBody.modalities) ? requestBody.modalities : [];
@@ -969,6 +985,13 @@ async function prepareRawInferenceX402Payment(
         );
         res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
         res.status(402).json(paymentRequired);
+        return null;
+    }
+
+    if (isServiceBlockedNetwork(paymentNetwork)) {
+        res.status(400).json({
+            error: `Network ${paymentNetwork} is not supported for this service. Use a Mainnet, or ask for Testnet access.`,
+        });
         return null;
     }
 
@@ -1279,6 +1302,12 @@ export async function prepareInferencePayment(
         res.status(400).json({ error: "x-network-id header is required" });
         return null;
     }
+    if (isServiceBlockedNetwork(network)) {
+        res.status(400).json({
+            error: `Network ${network} is not supported for this service. Use a Mainnet, or ask for Testnet access.`,
+        });
+        return null;
+    }
     if (validation.record.network !== network) {
         setSessionInvalidHeader(res, "invalid_key");
         res.status(409).json({ error: "Compose key network does not match request network" });
@@ -1286,14 +1315,12 @@ export async function prepareInferencePayment(
     }
 
     const userAddress = validation.payload.sub;
-    const keyId = validation.payload.keyId;
     const purpose = validation.record.purpose;
 
     if (purpose === "session") {
-        const sessionStatus = await getActiveSessionStatus(userAddress, network);
-        const session = sessionStatus.session;
-        if (!session || session.keyId !== keyId) {
-            setSessionInvalidHeader(res, session ? "invalid_key" : sessionStatus.reason);
+        const sessionCheck = await verifyActiveSessionKey(validation.record, network);
+        if (!sessionCheck.active) {
+            setSessionInvalidHeader(res, sessionCheck.reason);
             res.status(401).json({ error: "The key session is inactive or expired." });
             return null;
         }
@@ -1317,8 +1344,9 @@ export async function prepareInferencePayment(
 
     const authorizationResult = await authorizePaymentIntent({
         authorization,
+        validatedKey: validation,
         network,
-        service: "api",
+        service: "inference",
         action: "inference",
         resource: publicResourceUrl(req),
         method: req.method || "POST",
@@ -1415,7 +1443,7 @@ export async function prepareInferencePayment(
                 const authorizationResult = await authorizePaymentIntent({
                     authorization,
                     network,
-                    service: "api",
+                    service: "inference",
                     action: "inference",
                     resource: publicResourceUrl(req),
                     method: req.method || "POST",
