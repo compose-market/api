@@ -83,9 +83,8 @@ import {
 
 export const METERING_EXTENSION_KEY = "metering";
 export const PAYMENT_INTENT_EXTENSION_KEY = "payment-intent";
-
-export const COMPOSE_METERING_EXTENSION_KEY = "compose-metering-v1";
-export const COMPOSE_PAYMENT_INTENT_EXTENSION_KEY = "compose-payment-intent-v1";
+export const COMPOSE_METERING_EXTENSION_KEY = METERING_EXTENSION_KEY;
+export const COMPOSE_PAYMENT_INTENT_EXTENSION_KEY = PAYMENT_INTENT_EXTENSION_KEY;
 
 const FACILITATOR_VERIFY_REQUEST_SCHEMA = z.object({
     x402Version: z.literal(2),
@@ -96,8 +95,8 @@ const FACILITATOR_VERIFY_REQUEST_SCHEMA = z.object({
 const FACILITATOR_SETTLE_REQUEST_SCHEMA = FACILITATOR_VERIFY_REQUEST_SCHEMA;
 
 const facilitatorExtensions: FacilitatorExtension[] = [
-    { key: COMPOSE_METERING_EXTENSION_KEY },
-    { key: COMPOSE_PAYMENT_INTENT_EXTENSION_KEY },
+    { key: METERING_EXTENSION_KEY },
+    { key: PAYMENT_INTENT_EXTENSION_KEY },
 ];
 
 const signerCache = new Map<EvmNetworkId, ReturnType<typeof toFacilitatorEvmSigner>>();
