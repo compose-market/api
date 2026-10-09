@@ -239,6 +239,35 @@ export async function runBatchSettlementCycle(reason = "manual"): Promise<Settle
     return activeSettlementCycle;
 }
 
+function dispatchTargetedIntentSettlement(paymentIntentId: string, reason: string): Promise<void> {
+    const existing = activeTargetedIntentKicks.get(paymentIntentId);
+    if (existing) return existing;
+
+    const execution = (async () => {
+        try {
+            await executeCanonicalPaymentIntent(paymentIntentId, { waitForConfirmation: true });
+        } catch (error) {
+            console.error("[batch-settlement] targeted intent settlement kick failed", {
+                paymentIntentId,
+                reason,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            activeTargetedIntentKicks.delete(paymentIntentId);
+        }
+    })();
+
+    activeTargetedIntentKicks.set(paymentIntentId, execution);
+    return execution;
+}
+
+export async function awaitTargetedIntentSettlement(paymentIntentId: string): Promise<void> {
+    const pending = activeTargetedIntentKicks.get(paymentIntentId);
+    if (pending) {
+        await pending;
+    }
+}
+
 export async function kickBatchSettlement(
     settlement: {
         finalAmountWei?: string;
