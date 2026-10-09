@@ -296,6 +296,7 @@ type SvmSettlement = (
     userAddress: string,
     amountWei: string,
     network: NetworkId,
+    options?: KeyPaymentSettlementOptions,
 ) => Promise<SettlementResult>;
 
 const svmUtf8Encoder = getUtf8Encoder();
@@ -580,6 +581,14 @@ class UptoSvmFacilitator implements SchemeNetworkFacilitator {
             payer,
             requirements.amount,
             requirements.network as NetworkId,
+            {
+                payTo: requirements.payTo,
+                royalties: requirements.extra?.royalties as { creator?: string; treasury?: string } | undefined,
+                providerAmountWei: typeof requirements.extra?.providerAmountWei === "string" ? requirements.extra.providerAmountWei : undefined,
+                platformFeeWei: typeof requirements.extra?.platformFeeWei === "string" ? requirements.extra.platformFeeWei : undefined,
+                memo: typeof requirements.extra?.memo === "string" ? requirements.extra.memo : undefined,
+                service: typeof requirements.extra?.service === "string" ? requirements.extra.service : undefined,
+            },
         );
         if (!result.success || !result.txHash) {
             return settleFailure(
@@ -678,10 +687,14 @@ async function registerSvmSchemes(facilitator: x402Facilitator, networks: Networ
     if (svmNetworks.length === 0) return;
     const privateKey = requireEnv("SVM_FACILITATOR_KEY");
     const keypair = await createKeyPairSignerFromBytes(base58.decode(privateKey));
-    const signer = toFacilitatorSvmSigner(keypair, {
-        // [NETWORK_IDS.solanaDevnet]: createSolanaRpc(devnet(getNetworkRpcUrl(NETWORK_IDS.solanaDevnet))),
-        [NETWORK_IDS.solana]: createSolanaRpc(mainnet(getNetworkRpcUrl(NETWORK_IDS.solana))),
-    });
+    const rpcs: Record<string, ReturnType<typeof createSolanaRpc>> = {};
+    if (svmNetworks.includes(NETWORK_IDS.solanaDevnet)) {
+        rpcs[NETWORK_IDS.solanaDevnet] = createSolanaRpc(devnet(getNetworkRpcUrl(NETWORK_IDS.solanaDevnet)));
+    }
+    if (svmNetworks.includes(NETWORK_IDS.solana)) {
+        rpcs[NETWORK_IDS.solana] = createSolanaRpc(mainnet(getNetworkRpcUrl(NETWORK_IDS.solana)));
+    }
+    const signer = toFacilitatorSvmSigner(keypair, rpcs as never);
     const feePayer = requireEnv("SVM_TREASURY_SERVER_WALLET_PUBLIC");
     if (!signer.getAddresses().map(String).includes(feePayer)) {
         throw new Error("SVM_TREASURY_SERVER_WALLET_PUBLIC must match SVM_FACILITATOR_KEY signer address");
