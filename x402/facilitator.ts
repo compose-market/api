@@ -718,6 +718,63 @@ type NearAuthorization = {
     publicKey?: string;
 };
 
+function parseNearAuthorization(payload: PaymentPayload): {
+    authorization: NearAuthorization;
+    signature: string;
+} | { error: string } {
+    const raw = record(payload.payload);
+    const authorizationRaw = raw ? record(raw.authorization) : null;
+    const signature = raw ? stringField(raw, "signature") : null;
+    if (!authorizationRaw || !signature) {
+        return { error: "invalid_near_upto_payload" };
+    }
+
+    const scheme = stringField(authorizationRaw, "scheme");
+    const network = stringField(authorizationRaw, "network");
+    const asset = stringField(authorizationRaw, "asset");
+    const payTo = stringField(authorizationRaw, "payTo");
+    const resource = stringField(authorizationRaw, "resource");
+    const payer = stringField(authorizationRaw, "payer");
+    const maxAmount = stringField(authorizationRaw, "maxAmount");
+    const nonce = stringField(authorizationRaw, "nonce");
+    const publicKey = stringField(authorizationRaw, "publicKey") ?? stringField(raw!, "publicKey") ?? undefined;
+    const deadlineValue = authorizationRaw.deadline;
+    const deadline = typeof deadlineValue === "string" || typeof deadlineValue === "number"
+        ? deadlineValue
+        : null;
+
+    if (
+        scheme !== "upto"
+        || !network
+        || !isNearNetwork(network as NetworkId)
+        || !asset
+        || !payTo
+        || !resource
+        || !payer
+        || !maxAmount
+        || !nonce
+        || deadline === null
+    ) {
+        return { error: "invalid_near_upto_authorization" };
+    }
+
+    return {
+        authorization: {
+            scheme,
+            network: network as NearNetworkId,
+            asset,
+            payTo,
+            resource,
+            payer,
+            maxAmount,
+            nonce,
+            deadline,
+            ...(publicKey ? { publicKey } : {}),
+        },
+        signature,
+    };
+}
+
 async function createFacilitator(): Promise<x402Facilitator> {
     const networks = getConfiguredFacilitatorNetworks();
     if (networks.length === 0) {
