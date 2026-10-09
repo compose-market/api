@@ -801,6 +801,160 @@ function nearNonceKey(authorization: NearAuthorization): string {
     ].join(":");
 }
 
+export class UptoNearFacilitator implements SchemeNetworkFacilitator {
+    readonly caipFamily = "near:*";
+    readonly scheme = "upto";
+
+    constructor(
+        private readonly feePayer: string,
+        private readonly settleKeyPayment: SvmSettlement = settleKeyPaymentForNetwork,
+        private readonly nonceStore: SvmNonceStore = valkeySvmNonceStore,
+    ) { }
+
+    getExtra(network: string): Record<string, unknown> | undefined {
+        assertCaip2Network(network);
+        return { feePayer: this.feePayer };
+    }
+
+    getSigners(network: string): string[] {
+        assertCaip2Network(network);
+        return [this.feePayer];
+    }
+
+    async verify(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<VerifyResponse> {
+        const parsed = parseNearAuthorization(payload);
+        if ("error" in parsed) {
+            return { isValid: false, invalidReason: parsed.error, payer: "" };
+        }
+        const { authorization, signature } = parsed;
+        const payer = authorization.payer;
+
+        if (payload.accepted.scheme !== "upto" || requirements.scheme !== "upto") {
+            return { isValid: false, invalidReason: "unsupported_scheme", payer };
+        }
+        if (payload.accepted.network !== requirements.network || authorization.network !== requirements.network) {
+            return { isValid: false, invalidReason: "network_mismatch", payer };
+        }
+        if (!isNearNetwork(requirements.network as NetworkId)) {
+            return { isValid: false, invalidReason: "unsupported_network", payer };
+        }
+        if (payload.accepted.asset !== requirements.asset || authorization.asset !== requirements.asset) {
+            return { isValid: false, invalidReason: "asset_mismatch", payer };
+        }
+        if (payload.accepted.payTo !== requirements.payTo || authorization.payTo !== requirements.payTo) {
+            return { isValid: false, invalidReason: "pay_to_mismatch", payer };
+        }
+        if (payload.resource?.url !== authorization.resource) {
+            return { isValid: false, invalidReason: "resource_mismatch", payer };
+        }
+        if (
+            !positiveInteger(requirements.amount)
+            || !positiveInteger(payload.accepted.amount)
+            || !positiveInteger(authorization.maxAmount)
+        ) {
+            return { isValid: false, invalidReason: "invalid_amount", payer };
+        }
+        if (BigInt(requirements.amount) > BigInt(authorization.maxAmount)) {
+            return { isValid: false, invalidReason: "amount_exceeds_authorization", payer };
+        }
+        if (BigInt(requirements.amount) > BigInt(payload.accepted.amount)) {
+            return { isValid: false, invalidReason: "amount_exceeds_accepted", payer };
+        }
+        const deadline = BigInt(String(authorization.deadline));
+        if (deadline < BigInt(Math.floor(Date.now() / 1000))) {
+            return { isValid: false, invalidReason: "authorization_expired", payer };
+        }
+        if (!validateNearAddress(payer) || !validateNearAddress(requirements.asset) || !validateNearAddress(requirements.payTo)) {
+            return { isValid: false, invalidReason: "invalid_near_address", payer };
+        }
+        if (await this.nonceStore.has(nearNonceKey(authorization))) {
+            return { isValid: false, invalidReason: "duplicate_authorization", payer };
+        }
+
+        const valid = await verifyNearDetachedSignature({
+            network: authorization.network,
+            payer,
+            signature,
+            message: nearAuthorizationMessage(authorization),
+            publicKeyHint: authorization.publicKey,
+        });
+        if (!valid) {
+            return { isValid: false, invalidReason: "invalid_signature", payer };
+        }
+
+        return {
+            isValid: true,
+            payer,
+            extra: {
+                nonce: authorization.nonce,
+                maxAmount: authorization.maxAmount,
+            },
+        };
+    }
+
+    async settle(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<SettleResponse> {
+        const verification = await this.verify(payload, requirements);
+        const payer = verification.payer || "";
+        if (!verification.isValid) {
+            return settleFailure(
+                requirements.network as NetworkId,
+                payer,
+                verification.invalidReason || "verification_failed",
+                verification.invalidMessage,
+            );
+        }
+
+        const parsed = parseNearAuthorization(payload);
+        if ("error" in parsed) {
+            return settleFailure(requirements.network as NetworkId, payer, parsed.error);
+        }
+        const ttlSeconds = Math.max(
+            1,
+            Number(BigInt(String(parsed.authorization.deadline)) - BigInt(Math.floor(Date.now() / 1000))),
+        );
+        const consumed = await this.nonceStore.consume(nearNonceKey(parsed.authorization), ttlSeconds);
+        if (!consumed) {
+            return settleFailure(requirements.network as NetworkId, payer, "duplicate_authorization");
+        }
+
+        const result = await this.settleKeyPayment(
+            payer,
+            requirements.amount,
+            requirements.network as NetworkId,
+            {
+                payTo: requirements.payTo,
+                royalties: requirements.extra?.royalties as { creator?: string; treasury?: string } | undefined,
+                providerAmountWei: typeof requirements.extra?.providerAmountWei === "string" ? requirements.extra.providerAmountWei : undefined,
+                platformFeeWei: typeof requirements.extra?.platformFeeWei === "string" ? requirements.extra.platformFeeWei : undefined,
+                memo: typeof requirements.extra?.memo === "string" ? requirements.extra.memo : undefined,
+                service: typeof requirements.extra?.service === "string" ? requirements.extra.service : undefined,
+            },
+        );
+        if (!result.success || !result.txHash) {
+            return settleFailure(
+                requirements.network as NetworkId,
+                payer,
+                "transaction_failed",
+                result.error || "NEAR settlement failed",
+            );
+        }
+
+        return {
+            success: true,
+            transaction: result.txHash,
+            network: requirements.network,
+            amount: requirements.amount,
+            payer,
+        };
+    }
+}
+
 async function createFacilitator(): Promise<x402Facilitator> {
     const networks = getConfiguredFacilitatorNetworks();
     if (networks.length === 0) {
