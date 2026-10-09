@@ -107,6 +107,10 @@ export interface AuthorizePaymentIntentInput {
     parentExecutionRunId?: string;
     sequence?: number;
     payTo?: string;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
 }
 
 export interface SettlePaymentIntentInput {
@@ -114,9 +118,14 @@ export interface SettlePaymentIntentInput {
     finalAmountWei?: string;
     providerAmountWei?: string;
     platformFeeWei?: string;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
     meterSubject?: string;
     lineItems?: MeteredQuotedLineItem[];
     meter?: MeteredSettlementInput;
+    executeImmediately?: boolean;
 }
 
 export interface AbortPaymentIntentInput {
