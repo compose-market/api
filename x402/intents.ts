@@ -97,6 +97,8 @@ export interface AuthorizePaymentIntentInput {
     method: string;
     maxAmountWei?: string;
     meter?: MeteredAuthorizationInput;
+    meterSubject?: string;
+    lineItems?: MeteredQuotedLineItem[];
     useBudgetCap?: boolean;
     runId?: string;
     idempotencyKey?: string;
@@ -104,6 +106,7 @@ export interface AuthorizePaymentIntentInput {
     executionRunId?: string;
     parentExecutionRunId?: string;
     sequence?: number;
+    payTo?: string;
 }
 
 export interface SettlePaymentIntentInput {
