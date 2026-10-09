@@ -1091,6 +1091,7 @@ async function createFacilitator(): Promise<x402Facilitator> {
         facilitator.register(network, createBatchSchemeForChain(network));
     }
     await registerSvmSchemes(facilitator, networks);
+    await registerNearSchemes(facilitator, networks);
 
     return facilitator;
 }
@@ -1141,12 +1142,7 @@ export function createPaymentRequirement(input: {
     maxTimeoutSeconds?: number;
 }): PaymentRequirements {
     const scheme = input.scheme === "upto" || input.scheme === "batch-settlement" ? input.scheme : "exact";
-    const extra: Record<string, unknown> = {
-        compose: {
-            metering: "authoritative_usage",
-            intents: "supported",
-        },
-    };
+    const extra: Record<string, unknown> = {};
 
     if (scheme === "upto" && isEvmNetwork(input.network)) {
         extra.assetTransferMethod = "permit2";
@@ -1164,11 +1160,24 @@ export function createPaymentRequirement(input: {
     if (isSolanaNetwork(input.network)) {
         extra.feePayer = requireEnv("SVM_TREASURY_SERVER_WALLET_PUBLIC");
     }
+    if (isNearNetwork(input.network)) {
+        extra.feePayer = input.network === NETWORK_IDS.nearTestnet
+            ? (process.env.NEAR_TESTNET_FACILITATOR_ACCOUNT?.trim()
+                || process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC?.trim()
+                || process.env.NEAR_FACILITATOR_ACCOUNT?.trim()
+                || requireEnv("NEAR_TREASURY_SERVER_WALLET_PUBLIC"))
+            : (process.env.NEAR_FACILITATOR_ACCOUNT?.trim()
+                || requireEnv("NEAR_TREASURY_SERVER_WALLET_PUBLIC"));
+    }
 
     const definition = getNetwork(input.network);
     const payTo = input.payTo ?? (isSolanaNetwork(input.network)
         ? requireEnv("SVM_MERCHANT_WALLET_ADDRESS")
-        : requireEnv("MERCHANT_WALLET_ADDRESS"));
+        : isNearNetwork(input.network)
+            ? (input.network === NETWORK_IDS.nearTestnet
+                ? (process.env.NEAR_TESTNET_MERCHANT_WALLET_ADDRESS?.trim() || requireEnv("NEAR_MERCHANT_WALLET_ADDRESS"))
+                : requireEnv("NEAR_MERCHANT_WALLET_ADDRESS"))
+            : requireEnv("MERCHANT_WALLET_ADDRESS"));
 
     return parseV2PaymentRequirements({
         scheme,
