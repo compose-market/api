@@ -705,6 +705,19 @@ async function registerSvmSchemes(facilitator: x402Facilitator, networks: Networ
     facilitator.register(svmNetworks, new BatchSettlementSvmFacilitator(feePayer));
 }
 
+type NearAuthorization = {
+    scheme: "upto";
+    network: NearNetworkId;
+    asset: string;
+    payTo: string;
+    resource: string;
+    payer: string;
+    maxAmount: string;
+    nonce: string;
+    deadline: string | number;
+    publicKey?: string;
+};
+
 async function createFacilitator(): Promise<x402Facilitator> {
     const networks = getConfiguredFacilitatorNetworks();
     if (networks.length === 0) {
