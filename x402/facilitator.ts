@@ -775,6 +775,32 @@ function parseNearAuthorization(payload: PaymentPayload): {
     };
 }
 
+function nearAuthorizationMessage(authorization: NearAuthorization): Uint8Array {
+    return utf8Bytes(canonicalJson({
+        asset: authorization.asset,
+        deadline: String(authorization.deadline),
+        maxAmount: authorization.maxAmount,
+        network: authorization.network,
+        nonce: authorization.nonce,
+        payTo: authorization.payTo,
+        payer: authorization.payer,
+        resource: authorization.resource,
+        scheme: authorization.scheme,
+    }));
+}
+
+function nearNonceKey(authorization: NearAuthorization): string {
+    return [
+        "x402",
+        "near",
+        "upto",
+        "nonce",
+        authorization.network,
+        authorization.payer,
+        authorization.nonce,
+    ].join(":");
+}
+
 async function createFacilitator(): Promise<x402Facilitator> {
     const networks = getConfiguredFacilitatorNetworks();
     if (networks.length === 0) {
