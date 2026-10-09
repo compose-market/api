@@ -1029,6 +1029,51 @@ export class BatchSettlementNearFacilitator implements SchemeNetworkFacilitator 
     }
 }
 
+async function registerNearSchemes(facilitator: x402Facilitator, networks: NetworkId[]): Promise<void> {
+    const nearNetworks = networks.filter(isNearNetwork);
+    if (nearNetworks.length === 0) return;
+    const rawKey = requireEnv("NEAR_FACILITATOR_KEY");
+    const secretKey = (rawKey.includes(":") ? rawKey : `ed25519:${rawKey}`) as KeyPairString;
+    const feePayer = process.env.NEAR_FACILITATOR_ACCOUNT?.trim() || requireEnv("NEAR_TREASURY_SERVER_WALLET_PUBLIC");
+    const testnetFeePayer = process.env.NEAR_TESTNET_FACILITATOR_ACCOUNT?.trim()
+        || process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC?.trim()
+        || feePayer;
+    const rpcUrls: Record<string, string> = {};
+    if (nearNetworks.includes(NETWORK_IDS.nearTestnet)) {
+        rpcUrls[NETWORK_IDS.nearTestnet] = getNetworkRpcUrl(NETWORK_IDS.nearTestnet);
+    }
+    if (nearNetworks.includes(NETWORK_IDS.near)) {
+        rpcUrls[NETWORK_IDS.near] = getNetworkRpcUrl(NETWORK_IDS.near);
+    }
+    const relayers = testnetFeePayer !== feePayer
+        ? [
+            { accountId: feePayer, secretKey },
+            { accountId: testnetFeePayer, secretKey },
+        ]
+        : [{ accountId: feePayer, secretKey }];
+    const signer = createFacilitatorNearSigner({
+        relayers,
+        rpcUrls,
+    });
+    const exact = new ExactNearFacilitator(signer);
+    facilitator.register(nearNetworks, exact);
+    if (testnetFeePayer !== feePayer) {
+        const mainnetNets = nearNetworks.filter((n) => n !== NETWORK_IDS.nearTestnet);
+        const testnetNets = nearNetworks.filter((n) => n === NETWORK_IDS.nearTestnet);
+        if (mainnetNets.length > 0) {
+            facilitator.register(mainnetNets, new UptoNearFacilitator(feePayer));
+            facilitator.register(mainnetNets, new BatchSettlementNearFacilitator(feePayer));
+        }
+        if (testnetNets.length > 0) {
+            facilitator.register(testnetNets, new UptoNearFacilitator(testnetFeePayer));
+            facilitator.register(testnetNets, new BatchSettlementNearFacilitator(testnetFeePayer));
+        }
+    } else {
+        facilitator.register(nearNetworks, new UptoNearFacilitator(feePayer));
+        facilitator.register(nearNetworks, new BatchSettlementNearFacilitator(feePayer));
+    }
+}
+
 async function createFacilitator(): Promise<x402Facilitator> {
     const networks = getConfiguredFacilitatorNetworks();
     if (networks.length === 0) {
