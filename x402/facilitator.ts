@@ -955,6 +955,80 @@ export class UptoNearFacilitator implements SchemeNetworkFacilitator {
     }
 }
 
+export class BatchSettlementNearFacilitator implements SchemeNetworkFacilitator {
+    readonly caipFamily = "near:*";
+    readonly scheme = "batch-settlement";
+
+    constructor(
+        private readonly feePayer: string,
+        private readonly commitBatch: typeof commitNearBatchCharge = commitNearBatchCharge,
+        private readonly validateBatch: typeof validateNearBatchPayment = validateNearBatchPayment,
+    ) { }
+
+    getExtra(network: string): Record<string, unknown> | undefined {
+        assertCaip2Network(network);
+        return { feePayer: this.feePayer };
+    }
+
+    getSigners(network: string): string[] {
+        assertCaip2Network(network);
+        return [this.feePayer];
+    }
+
+    async verify(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<VerifyResponse> {
+        const validation = await this.validateBatch(payload, requirements);
+        if (!validation.valid) {
+            return {
+                isValid: false,
+                invalidReason: validation.invalidReason,
+                payer: validation.payer || "",
+            };
+        }
+        return {
+            isValid: true,
+            payer: validation.payer,
+            extra: {
+                channelId: validation.channelId,
+                maxClaimableAmount: validation.maxClaimableAmount,
+                chargedCumulativeAmount: validation.chargedCumulativeAmount,
+            },
+        };
+    }
+
+    async settle(
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+    ): Promise<SettleResponse> {
+        const verification = await this.verify(payload, requirements);
+        const payer = verification.payer || "";
+        if (!verification.isValid) {
+            return settleFailure(
+                requirements.network as NetworkId,
+                payer,
+                verification.invalidReason || "verification_failed",
+                verification.invalidMessage,
+            );
+        }
+
+        const batch = await this.commitBatch(payload, requirements.amount, requirements);
+        return {
+            success: true,
+            transaction: "",
+            network: requirements.network,
+            amount: requirements.amount,
+            payer,
+            extra: {
+                settlementStatus: "queued",
+                channelId: batch.channelId,
+                cumulativeAmountWei: batch.cumulativeAmountWei,
+            },
+        };
+    }
+}
+
 async function createFacilitator(): Promise<x402Facilitator> {
     const networks = getConfiguredFacilitatorNetworks();
     if (networks.length === 0) {
