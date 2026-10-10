@@ -336,15 +336,19 @@ export function deriveTestSettlementPreparation(input: {
     amountWei: string;
     intentIdentity: string;
     evmNonce?: bigint;
+    nearNonce?: bigint;
+    nearDelegateNonce?: bigint;
     forcedTxHash?: string;
 }): import("./settlement.js").PreparedSettlementTransaction {
-    const nonce = input.evmNonce?.toString();
+    const nonce = (input.evmNonce ?? input.nearNonce)?.toString();
+    const delegateNonce = input.nearDelegateNonce?.toString();
     const payload = `test-signed:${stableJson({
         network: input.network,
         userAddress: input.userAddress,
         amountWei: input.amountWei,
         intentIdentity: input.intentIdentity,
         nonce: nonce || null,
+        ...(delegateNonce === undefined ? {} : { delegateNonce }),
     })}`;
     const forcedTxHash = input.forcedTxHash?.trim();
     if (forcedTxHash && !/^0x[0-9a-fA-F]{64}$/.test(forcedTxHash)) {
@@ -357,6 +361,7 @@ export function deriveTestSettlementPreparation(input: {
         txHash,
         payload,
         ...(nonce === undefined ? {} : { nonce }),
+        ...(delegateNonce === undefined ? {} : { delegateNonce }),
     };
 }
 
@@ -370,7 +375,18 @@ async function prepareKeyPaymentOnChain(
     userAddress: string,
     amountWei: string,
     network: NetworkId,
-    options: { evmNonce?: bigint; intentIdentity: string },
+    options: {
+        evmNonce?: bigint;
+        nearNonce?: bigint;
+        nearDelegateNonce?: bigint;
+        intentIdentity: string;
+        payTo?: string;
+        royalties?: { creator?: string; treasury?: string };
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+        memo?: string;
+        service?: string;
+    },
 ): Promise<import("./settlement.js").SettlementPreparationResult> {
     if (testSettlementSeamEnabled()) {
         return {
@@ -381,13 +397,25 @@ async function prepareKeyPaymentOnChain(
                 amountWei,
                 intentIdentity: options.intentIdentity,
                 evmNonce: options.evmNonce,
+                nearNonce: options.nearNonce,
+                nearDelegateNonce: options.nearDelegateNonce,
                 forcedTxHash: process.env.COMPOSE_TEST_SETTLEMENT_TX_HASH,
             }),
         };
     }
 
     const { prepareKeyPaymentForNetwork } = await import("./settlement.js");
-    return prepareKeyPaymentForNetwork(userAddress, amountWei, network, { evmNonce: options.evmNonce });
+    return prepareKeyPaymentForNetwork(userAddress, amountWei, network, {
+        evmNonce: options.evmNonce,
+        nearNonce: options.nearNonce,
+        nearDelegateNonce: options.nearDelegateNonce,
+        payTo: options.payTo,
+        royalties: options.royalties,
+        providerAmountWei: options.providerAmountWei,
+        platformFeeWei: options.platformFeeWei,
+        memo: options.memo,
+        service: options.service,
+    });
 }
 
 async function broadcastPreparedKeyPaymentOnChain(
@@ -398,6 +426,14 @@ async function broadcastPreparedKeyPaymentOnChain(
         if (status === "throw") throw new Error("test ambiguous broadcast exception");
         if (status === "queued") {
             return { success: false, status: "queued" as const, error: "test transient pre-broadcast failure" };
+        }
+        if (status === "reset_queued") {
+            return {
+                success: false,
+                status: "queued" as const,
+                resetPreparation: true,
+                error: "test stale blockhash or nonce reset",
+            };
         }
         if (status === "submitted") {
             return { success: false, status: "submitted" as const, txHash: prepared.txHash, error: "test pending receipt" };
