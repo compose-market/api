@@ -180,7 +180,10 @@ export interface PaymentIntentRecord {
     preparedTxHash?: string;
     preparedTxPayload?: string;
     preparedTxNonce?: string;
+    preparedSecondaryTxHash?: string;
+    preparedSecondaryPayload?: string;
     preparedAt?: number;
+    payTo?: string;
 }
 
 export interface PaymentIntentSuccess<TBody> {
