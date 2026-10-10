@@ -184,6 +184,10 @@ export interface PaymentIntentRecord {
     preparedSecondaryPayload?: string;
     preparedAt?: number;
     payTo?: string;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
 }
 
 export interface PaymentIntentSuccess<TBody> {
