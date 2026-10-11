@@ -1010,18 +1010,18 @@ function formatPaymentBudgetHeaders(input: {
 }
 
 async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>> {
-    const budgetInfo = await getKeyBudgetInfo(keyId);
-    const reserved = await getKeyReservedBudget(keyId);
+    const record = await getKeyRecord(keyId);
 
-    if (!budgetInfo) {
+    if (!record) {
         return {};
     }
 
-    const budgetRemaining = Math.max(0, budgetInfo.budgetLimit - budgetInfo.budgetUsed - reserved);
+    const reserved = record.budgetReserved || 0;
+    const budgetRemaining = Math.max(0, record.budgetLimit - record.budgetUsed - reserved);
 
     return {
-        "x-key-budget-limit": String(budgetInfo.budgetLimit),
-        "x-key-budget-used": String(budgetInfo.budgetUsed),
+        "x-key-budget-limit": String(record.budgetLimit),
+        "x-key-budget-used": String(record.budgetUsed),
         "x-key-budget-reserved": String(reserved),
         "x-key-budget-remaining": String(budgetRemaining),
     };
