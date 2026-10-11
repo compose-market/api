@@ -870,10 +870,8 @@ export interface CanonicalInferenceProjectionDependencies {
     now?: () => number;
 }
 
-const INFERENCE_ANALYTICS_SERVICES = new Set(["api", "inference"]);
-
-function isInferenceAnalyticsPaymentIntent(intent: PaymentIntentRecord): boolean {
-    return INFERENCE_ANALYTICS_SERVICES.has(intent.service);
+function hasPositiveFinalAmount(intent: PaymentIntentRecord): boolean {
+    return Boolean(intent.finalAmountWei && /^\d+$/.test(intent.finalAmountWei) && BigInt(intent.finalAmountWei) > 0n);
 }
 
 export async function projectCanonicalPaymentIntentAnalytics(
