@@ -987,6 +987,28 @@ export async function reconcileCanonicalPaymentIntentProjections(
     return projectCanonicalPaymentIntentAnalytics(intent, analyticsDependencies);
 }
 
+function formatPaymentBudgetHeaders(input: {
+    purpose: KeyPurpose;
+    budgetLimit: number;
+    budgetUsed: number;
+    budgetReserved: number;
+}): Record<string, string> {
+    const budgetRemaining = Math.max(0, input.budgetLimit - input.budgetUsed - input.budgetReserved);
+    const headers: Record<string, string> = {
+        "x-key-budget-limit": String(input.budgetLimit),
+        "x-key-budget-used": String(input.budgetUsed),
+        "x-key-budget-reserved": String(input.budgetReserved),
+        "x-key-budget-remaining": String(budgetRemaining),
+    };
+    if (input.purpose === "session") {
+        headers["x-session-budget-limit"] = headers["x-key-budget-limit"] || "0";
+        headers["x-session-budget-used"] = headers["x-key-budget-used"] || "0";
+        headers["x-session-budget-locked"] = headers["x-key-budget-reserved"] || "0";
+        headers["x-session-budget-remaining"] = headers["x-key-budget-remaining"] || "0";
+    }
+    return headers;
+}
+
 async function buildBudgetHeaders(keyId: string): Promise<Record<string, string>> {
     const budgetInfo = await getKeyBudgetInfo(keyId);
     const reserved = await getKeyReservedBudget(keyId);
