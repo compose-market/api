@@ -656,6 +656,50 @@ function resolveSettlementAmount(input: SettlePaymentIntentInput): {
     };
 }
 
+function sanitizePaymentIntentRecipients(input: {
+    network: NetworkId;
+    payTo?: string;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
+}): {
+    payTo?: string;
+    royalties?: {
+        creator?: string;
+        treasury?: string;
+    };
+    creatorStripped: boolean;
+} {
+    const explicitPayTo = input.payTo?.trim() || undefined;
+    if (explicitPayTo && !isAddressValidForNetwork(explicitPayTo, input.network)) {
+        throw new Error(`payTo address is not valid for network ${input.network}`);
+    }
+    if (!input.royalties) {
+        return { payTo: explicitPayTo, royalties: undefined, creatorStripped: false };
+    }
+    const explicitTreasury = input.royalties.treasury?.trim() || undefined;
+    if (explicitTreasury && !isAddressValidForNetwork(explicitTreasury, input.network)) {
+        throw new Error(`royalties.treasury address is not valid for network ${input.network}`);
+    }
+    const rawCreator = input.royalties.creator?.trim() || undefined;
+    const validCreator = rawCreator && isAddressValidForNetwork(rawCreator, input.network)
+        ? rawCreator
+        : undefined;
+    const creatorStripped = Boolean(rawCreator && !validCreator);
+    const sanitizedRoyalties = (validCreator || explicitTreasury)
+        ? {
+            ...(validCreator ? { creator: validCreator } : {}),
+            ...(explicitTreasury ? { treasury: explicitTreasury } : {}),
+        }
+        : undefined;
+    return {
+        payTo: explicitPayTo,
+        royalties: sanitizedRoyalties,
+        creatorStripped,
+    };
+}
+
 function validateAuthorizeInput(input: AuthorizePaymentIntentInput): void {
     if (!input.authorization) {
         throw new Error("authorization is required");
