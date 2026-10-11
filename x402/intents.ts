@@ -1070,7 +1070,7 @@ export async function authorizePaymentIntent(
             return failure(401, "Compose key authorization is required");
         }
 
-        const validation = await validateKey(token, 0);
+        const validation = input.validatedKey ?? await validateKey(token, 0);
         if (!validation.valid || !validation.payload || !validation.record) {
             return failure(401, validation.error || "Invalid Compose key");
         }
@@ -1081,11 +1081,21 @@ export async function authorizePaymentIntent(
             return failure(409, "Compose key network does not match request network");
         }
 
+        validateAuthorizeInput({
+            ...input,
+            network,
+        });
+        const sanitizedAuthorizeRecipients = sanitizePaymentIntentRecipients({
+            network,
+            payTo: input.payTo,
+            royalties: input.royalties,
+        });
         const normalizedInput = {
             ...input,
             network,
+            payTo: sanitizedAuthorizeRecipients.payTo,
+            royalties: sanitizedAuthorizeRecipients.royalties,
         };
-        validateAuthorizeInput(normalizedInput);
         const authorizationAmount = resolveAuthorizationAmount(normalizedInput);
         const purpose = validation.record.purpose;
         const rootRunId = normalizedInput.rootRunId?.trim()
@@ -1106,15 +1116,14 @@ export async function authorizePaymentIntent(
             sequence,
             idempotencyKey: explicitIdempotencyKey,
         });
-        const record = await getKeyRecord(validation.payload.keyId);
-        if (!record) throw new Error("Compose key record not found");
+        const record = validation.record;
         const now = Date.now();
         if (record.revokedAt) return failure(401, "Compose key has been revoked");
         if (record.expiresAt <= now) return failure(401, "Compose key has expired");
 
         const reserved = authorizationAmount.useBudgetCap
             ? 0n
-            : BigInt(await getKeyReservedBudget(record.keyId));
+            : BigInt(record.budgetReserved || 0);
         const available = BigInt(record.budgetLimit) - BigInt(record.budgetUsed) - reserved;
         const maxAmountWei = authorizationAmount.useBudgetCap
             ? "1"
@@ -1122,11 +1131,11 @@ export async function authorizePaymentIntent(
         if (!authorizationAmount.useBudgetCap
             && (available <= 0n || BigInt(maxAmountWei) <= 0n || BigInt(maxAmountWei) > available)) {
             return failure(402, "Compose key budget exhausted", {
-                headers: await buildPaymentBudgetHeaders({
-                    keyId: record.keyId,
+                headers: formatPaymentBudgetHeaders({
                     purpose,
-                    userAddress: record.userAddress,
-                    network,
+                    budgetLimit: record.budgetLimit,
+                    budgetUsed: record.budgetUsed,
+                    budgetReserved: record.budgetReserved || 0,
                 }),
             });
         }
@@ -1177,6 +1186,8 @@ export async function authorizePaymentIntent(
                 attemptCount: "0",
                 credentialExpiresAt: String(record.expiresAt),
                 ...meteringValkeyFields(authorizationAmount.metering),
+                payTo: toOptionalString(normalizedInput.payTo || ""),
+                ...(normalizedInput.royalties ? { royalties: JSON.stringify(normalizedInput.royalties) } : {}),
                 createdAt: String(now),
                 updatedAt: String(now),
             },
@@ -1188,16 +1199,43 @@ export async function authorizePaymentIntent(
         if (authorization.outcome === "expired") return failure(401, "Compose key has expired");
         if (authorization.outcome === "exhausted") {
             return failure(402, "Compose key budget exhausted", {
-                headers: await buildPaymentBudgetHeaders({
-                    keyId: record.keyId,
-                    purpose,
-                    userAddress: record.userAddress,
-                    network,
-                }),
+                headers: authorization.snapshot
+                    ? formatPaymentBudgetHeaders({
+                        purpose,
+                        budgetLimit: authorization.snapshot.budgetLimit,
+                        budgetUsed: authorization.snapshot.budgetUsed,
+                        budgetReserved: authorization.snapshot.budgetReserved,
+                    })
+                    : await buildPaymentBudgetHeaders({
+                        keyId: record.keyId,
+                        purpose,
+                        userAddress: record.userAddress,
+                        network,
+                    }),
             });
         }
         if (authorization.outcome === "inconsistent") {
             return failure(500, "Payment authorization replay state is inconsistent");
+        }
+
+        if (authorization.outcome === "created" && authorization.snapshot) {
+            const headers = formatPaymentBudgetHeaders({
+                purpose,
+                budgetLimit: authorization.snapshot.budgetLimit,
+                budgetUsed: authorization.snapshot.budgetUsed,
+                budgetReserved: authorization.snapshot.budgetReserved,
+            });
+            headers["x-payment-intent-id"] = authorization.paymentIntentId;
+            return {
+                ok: true,
+                status: 200,
+                body: {
+                    paymentIntentId: authorization.paymentIntentId,
+                    maxAmountWei: authorization.snapshot.maxAmountWei,
+                    status: "authorized",
+                },
+                headers,
+            };
         }
 
         const intent = authorization.outcome === "replayed"
