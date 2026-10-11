@@ -829,7 +829,11 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         preparedTxHash: data.preparedTxHash || undefined,
         preparedTxPayload: data.preparedTxPayload || undefined,
         preparedTxNonce: data.preparedTxNonce || undefined,
+        preparedSecondaryTxHash: data.preparedSecondaryTxHash || undefined,
+        preparedSecondaryPayload: data.preparedSecondaryPayload || undefined,
         preparedAt: data.preparedAt ? parseInt(data.preparedAt, 10) : undefined,
+        payTo: data.payTo || undefined,
+        royalties: data.royalties ? JSON.parse(data.royalties) : undefined,
     };
 }
 
