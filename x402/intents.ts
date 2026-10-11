@@ -453,7 +453,12 @@ async function broadcastPreparedKeyPaymentOnChain(
     return broadcastPreparedKeyPaymentForNetwork(prepared);
 }
 
-async function reconcileKeyPaymentOnChain(txHash: string, network: NetworkId, wait = false) {
+async function reconcileKeyPaymentOnChain(
+    txHash: string,
+    network: NetworkId,
+    wait = false,
+    context: { userAddress?: string; preparedTxPayload?: string } = {},
+) {
     if (testSettlementSeamEnabled()) {
         const status = process.env.COMPOSE_TEST_SETTLEMENT_RECONCILE_STATUS
             || process.env.COMPOSE_TEST_SETTLEMENT_STATUS
@@ -461,11 +466,24 @@ async function reconcileKeyPaymentOnChain(txHash: string, network: NetworkId, wa
         if (status === "failed") {
             return { success: false, status: "failed" as const, terminal: true, txHash, error: "test reverted receipt" };
         }
+        if (status === "not_observed") {
+            return {
+                success: false,
+                status: "submitted" as const,
+                notObserved: true,
+                txHash,
+                error: "test transaction not observed",
+            };
+        }
         if (status === "confirmed") return { success: true, status: "confirmed" as const, txHash };
         return { success: false, status: "submitted" as const, txHash, error: "test pending receipt" };
     }
     const { reconcileKeyPaymentForNetwork } = await import("./settlement.js");
-    return reconcileKeyPaymentForNetwork(txHash, network, { wait });
+    return reconcileKeyPaymentForNetwork(txHash, network, {
+        wait,
+        userAddress: context.userAddress,
+        preparedTxPayload: context.preparedTxPayload,
+    });
 }
 
 function failure(
@@ -579,14 +597,26 @@ function resolveAuthorizationAmount(input: AuthorizePaymentIntentInput): {
         };
     }
 
+    const explicitMetering = input.meterSubject || input.lineItems?.length
+        ? {
+            subject: input.meterSubject || "",
+            lineItems: input.lineItems || [],
+            providerAmountWei: "",
+            platformFeeWei: "",
+            finalAmountWei: input.maxAmountWei || "1",
+        }
+        : undefined;
+
     if (hasBudgetCap) {
         return {
             useBudgetCap: true,
+            ...(explicitMetering ? { metering: explicitMetering } : {}),
         };
     }
 
     return {
         maxAmountWei: input.maxAmountWei!,
+        ...(explicitMetering ? { metering: explicitMetering } : {}),
     };
 }
 
