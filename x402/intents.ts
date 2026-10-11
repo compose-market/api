@@ -906,7 +906,7 @@ export async function projectCanonicalPaymentIntentAnalytics(
         intentId: intent.paymentIntentId,
         terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, (dependencies.now ?? Date.now)()),
     });
-    if (!dependencies.project && !isInferenceAnalyticsPaymentIntent(intent)) {
+    if (!dependencies.project && !hasPositiveFinalAmount(intent)) {
         await completeProjection();
         return true;
     }
@@ -953,6 +953,24 @@ export async function reconcileCanonicalPaymentIntentProjections(
             markIntentEvidenceSettled({ paymentIntentId, txHash: intent.txHash, network: intent.network }),
             markIntentReceiptsSettled({ paymentIntentId, txHash: intent.txHash }),
         ]);
+        if (
+            isEvmNetwork(intent.network)
+            && process.env.NODE_ENV !== "test"
+            && Boolean(process.env.METRICS_DATABASE_URL?.trim())
+        ) {
+            const confirmedNetwork = intent.network;
+            const confirmedTxHashes = [intent.txHash, intent.preparedSecondaryTxHash].filter(
+                (candidate): candidate is string => Boolean(candidate),
+            );
+            void import("../data/metrics/payments.js")
+                .then(({ recordConfirmedPayment }) => Promise.allSettled(
+                    confirmedTxHashes.map((txHash) => recordConfirmedPayment({
+                        network: confirmedNetwork,
+                        txHash,
+                    })),
+                ))
+                .catch(() => undefined);
+        }
     } else if (intent.status === "failed") {
         const [{ markIntentEvidenceFailed }, { markIntentReceiptsFailed }] = await Promise.all([
             import("./evidence.js"),
