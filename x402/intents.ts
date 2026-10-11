@@ -1277,6 +1277,10 @@ export async function settlePaymentIntent(
                 return failure(404, "Payment intent not found");
             }
 
+            if (intent.status === "released" || intent.status === "failed") {
+                return failure(409, `Payment intent cannot be finalized from status ${intent.status}`);
+            }
+
             if (intent.status !== "authorized" && intent.settlementFingerprint !== settlementFingerprint) {
                 return failure(409, "Checkpoint replay does not match the original settlement request");
             }
@@ -1321,6 +1325,32 @@ export async function settlePaymentIntent(
                 return failure(409, "finalAmountWei cannot exceed the authorized amount");
             }
             const updatedAt = Date.now();
+            const sanitizedSettleRecipients = sanitizePaymentIntentRecipients({
+                network: intent.network,
+                payTo: intent.payTo,
+                royalties: input.royalties || intent.royalties,
+            });
+            const effectiveRoyalties = sanitizedSettleRecipients.royalties;
+            const rawProviderAmountWei = settlementResolved.explicit?.providerAmountWei || input.providerAmountWei || intent.providerAmountWei || "";
+            const rawPlatformFeeWei = settlementResolved.explicit?.platformFeeWei || input.platformFeeWei || intent.platformFeeWei || "";
+            const providerAmountWei = sanitizedSettleRecipients.creatorStripped ? "" : rawProviderAmountWei;
+            const platformFeeWei = sanitizedSettleRecipients.creatorStripped ? finalAmountStr : rawPlatformFeeWei;
+            const effectiveMetering = settlementResolved.metering
+                ? (sanitizedSettleRecipients.creatorStripped
+                    ? {
+                        ...settlementResolved.metering,
+                        providerAmountWei: "",
+                        platformFeeWei: finalAmountStr,
+                    }
+                    : settlementResolved.metering)
+                : {
+                    subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
+                    lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
+                    providerAmountWei,
+                    platformFeeWei,
+                    finalAmountWei: finalAmountStr,
+                };
+
             const reservation = await valkeyReserveAndQueuePaymentIntent({
                 budgetKey: keyRecordKey(intent.keyId),
                 intentKey: paymentIntentKey(intent.paymentIntentId),
@@ -1337,13 +1367,8 @@ export async function settlePaymentIntent(
                     updatedAt: String(updatedAt),
                     finalAmountWei: finalAmountStr,
                     settlementFingerprint,
-                    ...meteringValkeyFields(settlementResolved.metering ?? {
-                        subject: settlementResolved.explicit?.meterSubject || intent.meterSubject || "",
-                        lineItems: settlementResolved.explicit?.lineItems || intent.meterLineItems || [],
-                        providerAmountWei: settlementResolved.explicit?.providerAmountWei || intent.providerAmountWei || "",
-                        platformFeeWei: settlementResolved.explicit?.platformFeeWei || intent.platformFeeWei || "",
-                        finalAmountWei: finalAmountStr,
-                    }),
+                    ...meteringValkeyFields(effectiveMetering),
+                    royalties: effectiveRoyalties ? JSON.stringify(effectiveRoyalties) : "",
                 },
             });
             if (reservation === "exhausted") {
@@ -1359,7 +1384,10 @@ export async function settlePaymentIntent(
             }
             const queuedIntent = await readPaymentIntent(intent.paymentIntentId);
             if (!queuedIntent) throw new Error("Queued payment intent disappeared");
-            return { intent: queuedIntent, execute: intent.purpose === "api" } as const;
+            const shouldExecute = input.executeImmediately !== undefined
+                ? input.executeImmediately
+                : intent.purpose === "api";
+            return { intent: queuedIntent, execute: shouldExecute } as const;
         });
 
         if (!("intent" in prepared)) return prepared;
