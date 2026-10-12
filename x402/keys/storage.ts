@@ -17,6 +17,8 @@ import {
     valkeyExists,
     valkeyExpire,
     valkeyGet,
+    valkeySet,
+    valkeyCompareAndDelete,
     valkeySRem,
     valkeyTTL,
     getValkeyClient,
@@ -40,6 +42,7 @@ import type {
 
 const KEY_PREFIX = "key:";
 const USER_KEYS_PREFIX = "user-keys:";
+const USER_ACTIVE_SESSION_PREFIX = "user-active-session:";
 const REVOKED_PREFIX = "key:revoked:";
 const PAYMENT_INTENT_PREFIX = "payment-intent:";
 const KEY_PAYMENT_INTENTS_PREFIX = "key-payment-intents:";
@@ -79,6 +82,10 @@ function normalizeAddress(userAddress: string, network: NetworkId): string {
 
 function userKeysKey(userAddress: string, network: NetworkId): string {
     return `${USER_KEYS_PREFIX}${network}:${normalizeAddress(userAddress, network)}`;
+}
+
+function userActiveSessionKey(userAddress: string, network: NetworkId): string {
+    return `${USER_ACTIVE_SESSION_PREFIX}${network}:${normalizeAddress(userAddress, network)}`;
 }
 
 function revokedKey(keyId: string): string {
