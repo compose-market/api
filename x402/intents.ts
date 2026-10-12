@@ -1515,6 +1515,8 @@ async function prepareCanonicalPaymentIntent(
                 txHash: intent.preparedTxHash,
                 payload: intent.preparedTxPayload,
                 ...(intent.preparedTxNonce ? { nonce: intent.preparedTxNonce } : {}),
+                ...(intent.preparedSecondaryPayload ? { secondaryPayload: intent.preparedSecondaryPayload } : {}),
+                ...(intent.preparedSecondaryTxHash ? { secondaryTxHash: intent.preparedSecondaryTxHash } : {}),
             },
         };
     }
@@ -1525,6 +1527,8 @@ async function prepareCanonicalPaymentIntent(
             leaseValue?: string;
             nonceKey?: string;
             nextNonce?: string;
+            secondaryNonceKey?: string;
+            nextSecondaryNonce?: string;
         } = {},
     ): Promise<PreparationOutcome> => {
         const preparedAt = Date.now();
@@ -1539,6 +1543,15 @@ async function prepareCanonicalPaymentIntent(
         });
         if (persisted !== "persisted" && persisted !== "replayed") {
             throw new Error(`Prepared transaction persistence rejected: ${persisted}`);
+        }
+        if (prepared.secondaryPayload) {
+            await valkeyHSet(
+                paymentIntentKey(intent.paymentIntentId),
+                {
+                    preparedSecondaryPayload: prepared.secondaryPayload,
+                    preparedSecondaryTxHash: prepared.secondaryTxHash || "",
+                },
+            );
         }
         return { prepared };
     };
@@ -1562,14 +1575,133 @@ async function prepareCanonicalPaymentIntent(
                 intent.userAddress,
                 intent.finalAmountWei!,
                 evmNetwork,
-                { evmNonce: allocatedNonce, intentIdentity: intent.paymentIntentId },
+                {
+                    evmNonce: allocatedNonce,
+                    intentIdentity: intent.paymentIntentId,
+                    payTo: intent.payTo,
+                    royalties: intent.royalties,
+                    providerAmountWei: intent.providerAmountWei,
+                    platformFeeWei: intent.platformFeeWei,
+                    service: intent.service,
+                },
             );
             if (!preparation.success) return { settlement: preparation.result };
+            const nextNonce = preparation.prepared.secondaryPayload
+                ? (allocatedNonce + 2n).toString()
+                : (allocatedNonce + 1n).toString();
             return persist(preparation.prepared, {
                 leaseKey: lease.leaseKey,
                 leaseValue: lease.leaseValue,
                 nonceKey,
-                nextNonce: (allocatedNonce + 1n).toString(),
+                nextNonce,
+            });
+        });
+    }
+
+    if (isNearNetwork(intent.network)) {
+        const nearNetwork = intent.network;
+        const settlementModule = await import("./settlement.js");
+        let nearSignerKey: string;
+        let nearFeePayer: string;
+        try {
+            nearSignerKey = testSettlementSeamEnabled()
+                ? "test-near-signer"
+                : await settlementModule.getNearSettlementSignerIdentity();
+            nearFeePayer = testSettlementSeamEnabled()
+                ? "test-near-relayer"
+                : settlementModule.getNearSettlementFeePayer(nearNetwork);
+        } catch (error) {
+            return {
+                settlement: settlementModule.classifySettlementError(error, {
+                    network: nearNetwork,
+                    phase: "prepare",
+                }),
+            };
+        }
+        const relayerScope = `${nearFeePayer}:${nearSignerKey}`;
+        return withFencedSignerLease(nearNetwork, relayerScope, async (lease) => {
+            const relayerNonceKey = signerStateKey("nonce", nearNetwork, relayerScope);
+            const storedRelayerNonce = await valkeyGet(relayerNonceKey);
+            let onChainRelayerNextNonce = 1n;
+            if (!testSettlementSeamEnabled()) {
+                try {
+                    onChainRelayerNextNonce = await settlementModule.getNearSettlementAccessKeyNonce(
+                        nearFeePayer,
+                        nearNetwork,
+                        "relayer",
+                    );
+                } catch (error) {
+                    return {
+                        settlement: settlementModule.classifySettlementError(error, {
+                            network: nearNetwork,
+                            phase: "prepare",
+                        }),
+                    };
+                }
+            }
+            const allocatedRelayerNonce = storedRelayerNonce && BigInt(storedRelayerNonce) > onChainRelayerNextNonce
+                ? BigInt(storedRelayerNonce)
+                : onChainRelayerNextNonce;
+
+            const delegatedRelay = intent.userAddress !== nearFeePayer;
+            let delegateNonceKey: string | undefined;
+            let allocatedDelegateNonce: bigint | undefined;
+            if (delegatedRelay) {
+                delegateNonceKey = signerStateKey("nonce", nearNetwork, `${intent.userAddress}:${nearSignerKey}`);
+                const storedDelegateNonce = await valkeyGet(delegateNonceKey);
+                let onChainDelegateNextNonce = 1n;
+                if (!testSettlementSeamEnabled()) {
+                    try {
+                        onChainDelegateNextNonce = await settlementModule.getNearSettlementAccessKeyNonce(
+                            intent.userAddress,
+                            nearNetwork,
+                            "payer",
+                        );
+                    } catch (error) {
+                        return {
+                            settlement: settlementModule.classifySettlementError(error, {
+                                network: nearNetwork,
+                                phase: "prepare",
+                            }),
+                        };
+                    }
+                }
+                allocatedDelegateNonce = storedDelegateNonce && BigInt(storedDelegateNonce) > onChainDelegateNextNonce
+                    ? BigInt(storedDelegateNonce)
+                    : onChainDelegateNextNonce;
+            }
+
+            const preparation = await prepareKeyPaymentOnChain(
+                intent.userAddress,
+                intent.finalAmountWei!,
+                nearNetwork,
+                {
+                    nearNonce: allocatedRelayerNonce,
+                    nearDelegateNonce: allocatedDelegateNonce,
+                    intentIdentity: intent.paymentIntentId,
+                    payTo: intent.payTo,
+                    royalties: intent.royalties,
+                    providerAmountWei: intent.providerAmountWei,
+                    platformFeeWei: intent.platformFeeWei,
+                    service: intent.service,
+                },
+            );
+            if (!preparation.success) return { settlement: preparation.result };
+            const settledRelayerNonce = preparation.prepared.nonce && /^\d+$/.test(preparation.prepared.nonce)
+                ? BigInt(preparation.prepared.nonce)
+                : allocatedRelayerNonce;
+            const nextRelayerNonce = (settledRelayerNonce + 1n).toString();
+            return persist(preparation.prepared, {
+                leaseKey: lease.leaseKey,
+                leaseValue: lease.leaseValue,
+                nonceKey: relayerNonceKey,
+                nextNonce: nextRelayerNonce,
+                ...(delegatedRelay && delegateNonceKey && allocatedDelegateNonce !== undefined
+                    ? {
+                        secondaryNonceKey: delegateNonceKey,
+                        nextSecondaryNonce: (allocatedDelegateNonce + 1n).toString(),
+                    }
+                    : {}),
             });
         });
     }
@@ -1578,7 +1710,14 @@ async function prepareCanonicalPaymentIntent(
         intent.userAddress,
         intent.finalAmountWei!,
         intent.network,
-        { intentIdentity: intent.paymentIntentId },
+        {
+            intentIdentity: intent.paymentIntentId,
+            payTo: intent.payTo,
+            royalties: intent.royalties,
+            providerAmountWei: intent.providerAmountWei,
+            platformFeeWei: intent.platformFeeWei,
+            service: intent.service,
+        },
     );
     if (!preparation.success) return { settlement: preparation.result };
     return persist(preparation.prepared);
