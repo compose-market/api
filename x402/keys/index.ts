@@ -31,6 +31,7 @@ export {
     revokeKey,
     getKeyBudgetRemaining,
     getActiveSessionStatus,
+    verifyActiveSessionKey,
 } from "./storage.js";
 
 // Middleware
