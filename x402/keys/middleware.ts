@@ -70,13 +70,15 @@ export async function validateKey(
         return { valid: false, error: "Invalid or expired token" };
     }
 
-    // Step 2: Check revocation
-    if (await isKeyRevoked(payload.keyId)) {
+    // Step 2 & 3: Check revocation and get current record in parallel
+    const [revoked, record] = await Promise.all([
+        isKeyRevoked(payload.keyId),
+        getKeyRecord(payload.keyId),
+    ]);
+    if (revoked || record?.revokedAt) {
         return { valid: false, error: "Key has been revoked" };
     }
 
-    // Step 3: Get current record (for up-to-date budget)
-    const record = await getKeyRecord(payload.keyId);
     if (!record) {
         return { valid: false, error: "Key not found" };
     }
