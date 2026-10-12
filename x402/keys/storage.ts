@@ -692,3 +692,46 @@ export async function getActiveSessionStatus(
 
     return selectActiveSessionStatus(candidates, network);
 }
+
+/**
+ * Fast O(1) verification that an already-loaded session key record is the active
+ * session for its owner on the requested network, falling back to full index scan
+ * only on cache miss or mismatch.
+ */
+export async function verifyActiveSessionKey(
+    record: KeyRecord,
+    network: NetworkId,
+): Promise<{ active: boolean; reason: SessionInactiveReason | "invalid_key" }> {
+    if (record.network !== network) {
+        return { active: false, reason: "network_mismatch" };
+    }
+    if (record.revokedAt) {
+        return { active: false, reason: "revoked" };
+    }
+    const now = Date.now();
+    if (record.expiresAt <= now) {
+        return { active: false, reason: "expired" };
+    }
+    const remaining = getBudgetRemaining(record);
+    if (remaining <= 0 && (record.budgetReserved || 0) <= 0) {
+        return { active: false, reason: "budget_exhausted" };
+    }
+
+    const activeKey = userActiveSessionKey(record.userAddress, network);
+    const activeKeyId = await valkeyGet(activeKey);
+    if (activeKeyId === record.keyId) {
+        return { active: true, reason: "none" };
+    }
+
+    const status = await getActiveSessionStatus(record.userAddress, network);
+    if (status.session?.keyId === record.keyId) {
+        const ttlSeconds = Math.max(1, Math.ceil((record.expiresAt - now) / 1000));
+        await valkeySet(activeKey, record.keyId, ttlSeconds);
+        return { active: true, reason: "none" };
+    }
+
+    return {
+        active: false,
+        reason: status.session ? "invalid_key" : status.reason,
+    };
+}
