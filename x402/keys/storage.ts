@@ -338,10 +338,16 @@ export async function createKey(
     }
 
     // Add to user's key set
-    await valkeySAdd(userKeysKey(normalizedAddress, request.network), keyId);
-    const indexTtlSeconds = await valkeyTTL(userKeysKey(normalizedAddress, request.network));
+    const userKeyIndex = userKeysKey(normalizedAddress, request.network);
+    await Promise.all([
+        valkeySAdd(userKeyIndex, keyId),
+        ...(request.purpose === "session" && ttlSeconds > 0
+            ? [valkeySet(userActiveSessionKey(normalizedAddress, request.network), keyId, ttlSeconds)]
+            : []),
+    ]);
+    const indexTtlSeconds = await valkeyTTL(userKeyIndex);
     if (ttlSeconds > 0 && (indexTtlSeconds < 0 || indexTtlSeconds < ttlSeconds)) {
-        await valkeyExpire(userKeysKey(normalizedAddress, request.network), ttlSeconds);
+        await valkeyExpire(userKeyIndex, ttlSeconds);
     }
 
     await publishInvalidationBestEffort("keys", normalizedAddress, "created");
@@ -621,6 +627,9 @@ return 1`,
 
     const revoked = Number(result) === 1;
     if (revoked) {
+        if (record.purpose === "session") {
+            await valkeyCompareAndDelete(userActiveSessionKey(normalizedAddress, record.network), keyId);
+        }
         await publishInvalidationBestEffort("keys", normalizedAddress, "revoked");
     }
     return revoked;
