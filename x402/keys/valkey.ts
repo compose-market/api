@@ -427,6 +427,13 @@ return 1`,
     return Number(result) === 1;
 }
 
+export interface PaymentIntentAuthorizationSnapshot {
+    maxAmountWei: string;
+    budgetLimit: number;
+    budgetUsed: number;
+    budgetReserved: number;
+}
+
 export type PaymentIntentAuthorizationResult =
     | { outcome: "created"; paymentIntentId: string }
     | { outcome: "replayed"; paymentIntentId: string }
