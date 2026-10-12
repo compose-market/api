@@ -1733,6 +1733,45 @@ function isDefinitiveSettlement(result: import("./settlement.js").SettlementResu
         || (result.status === "failed" && result.terminal === true && Boolean(result.txHash));
 }
 
+async function resolveNearResetNonceSync(
+    intent: PaymentIntentRecord,
+    settlement: import("./settlement.js").SettlementResult,
+): Promise<{ nonceKey?: string; minNextNonce?: string }> {
+    if (!isNearNetwork(intent.network) || (!settlement.syncNextNonce && !settlement.syncNextDelegateNonce)) {
+        return {};
+    }
+    const settlementModule = await import("./settlement.js");
+    const nearKey = testSettlementSeamEnabled()
+        ? "test-near-signer"
+        : await settlementModule.getNearSettlementSignerIdentity().catch(() => "");
+    if (!nearKey) return {};
+    if (settlement.syncNextDelegateNonce) {
+        return {
+            nonceKey: signerStateKey("nonce", intent.network, `${intent.userAddress}:${nearKey}`),
+            minNextNonce: settlement.syncNextDelegateNonce,
+        };
+    }
+    if (settlement.syncNextNonce) {
+        let nearFeePayer = "";
+        if (testSettlementSeamEnabled()) {
+            nearFeePayer = "test-near-relayer";
+        } else {
+            try {
+                nearFeePayer = settlementModule.getNearSettlementFeePayer(intent.network);
+            } catch {
+                nearFeePayer = "";
+            }
+        }
+        if (nearFeePayer) {
+            return {
+                nonceKey: signerStateKey("nonce", intent.network, `${nearFeePayer}:${nearKey}`),
+                minNextNonce: settlement.syncNextNonce,
+            };
+        }
+    }
+    return {};
+}
+
 export interface ExecuteCanonicalPaymentIntentOptions {
     waitForConfirmation?: boolean;
 }
