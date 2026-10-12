@@ -1804,7 +1804,7 @@ export async function executeCanonicalPaymentIntent(
 
         const attemptCount = claim.attemptCount;
         const finalAmountWei = intent.finalAmountWei;
-        let settlement: import("./settlement.js").SettlementResult;
+        let settlement!: import("./settlement.js").SettlementResult;
         if (intent.status === "submitted") {
             if (!intent.txHash) throw new Error("Submitted payment intent is missing its transaction identity");
             if (!intent.preparedTxHash || !intent.preparedTxPayload) {
@@ -1813,8 +1813,47 @@ export async function executeCanonicalPaymentIntent(
             if (intent.preparedTxHash !== intent.txHash) {
                 throw new Error("Submitted payment intent transaction identity does not match its durable preparation");
             }
-            settlement = await reconcileKeyPaymentOnChain(intent.txHash, intent.network);
-        } else {
+            settlement = await reconcileKeyPaymentOnChain(intent.txHash, intent.network, false, {
+                userAddress: intent.userAddress,
+                preparedTxPayload: intent.preparedTxPayload,
+            });
+            const blockhashBoundNetwork = isNearNetwork(intent.network) || isSolanaNetwork(intent.network);
+            const submittedAgeMs = intent.submittedAt !== undefined ? (Date.now() - intent.submittedAt) : 0;
+            const expiredUnobservedBlockhash = (
+                blockhashBoundNetwork
+                && settlement.notObserved === true
+                && intent.submittedAt !== undefined
+                && submittedAgeMs >= submittedBlockhashExpiryMs()
+            );
+            if (settlement.resetPreparation === true || expiredUnobservedBlockhash) {
+                const nearSync = await resolveNearResetNonceSync(intent, settlement);
+                const resetAt = Date.now();
+                const resetReason = settlement.error
+                    || "Expired unobserved blockhash-bound transaction reset for re-preparation";
+                const resetOutcome = await valkeyResetClaimedPaymentIntentPreparation({
+                    intentKey: paymentIntentKey(intent.paymentIntentId),
+                    queuedKey: QUEUED_INTENTS_KEY,
+                    submittedKey: SUBMITTED_INTENTS_KEY,
+                    dueKey: DUE_INTENTS_KEY,
+                    intentId: intent.paymentIntentId,
+                    claimToken,
+                    expectedTxHash: intent.txHash,
+                    keepClaim: true,
+                    dueAt: resetAt,
+                    updatedAt: resetAt,
+                    errorMessage: resetReason,
+                    nonceKey: nearSync.nonceKey,
+                    minNextNonce: nearSync.minNextNonce,
+                });
+                if (resetOutcome === "updated") {
+                    const reloaded = await readPaymentIntent(intent.paymentIntentId);
+                    if (!reloaded) throw new Error("Reset payment intent disappeared");
+                    intent = reloaded;
+                }
+            }
+        }
+
+        if (intent.status !== "submitted") {
             const recoveringPreparedIdentity = Boolean(intent.preparedTxHash && intent.preparedTxPayload);
             const preparation = await prepareCanonicalPaymentIntent(intent, claimToken);
             if ("settlement" in preparation) {
@@ -1826,8 +1865,12 @@ export async function executeCanonicalPaymentIntent(
                     preparedTxPayload: preparation.prepared.payload,
                     preparedTxNonce: preparation.prepared.nonce,
                 };
+                const reconcileContext = {
+                    userAddress: intent.userAddress,
+                    preparedTxPayload: preparation.prepared.payload,
+                };
                 const reconciledBeforeBroadcast = recoveringPreparedIdentity
-                    ? await reconcileKeyPaymentOnChain(preparation.prepared.txHash, intent.network)
+                    ? await reconcileKeyPaymentOnChain(preparation.prepared.txHash, intent.network, false, reconcileContext)
                     : null;
                 if (reconciledBeforeBroadcast && isDefinitiveSettlement(reconciledBeforeBroadcast)) {
                     settlement = reconciledBeforeBroadcast;
@@ -1838,6 +1881,8 @@ export async function executeCanonicalPaymentIntent(
                         const reconciledAfterError = await reconcileKeyPaymentOnChain(
                             preparation.prepared.txHash,
                             intent.network,
+                            false,
+                            reconcileContext,
                         );
                         if (!isDefinitiveSettlement(reconciledAfterError)) throw error;
                         settlement = reconciledAfterError;
@@ -1846,9 +1891,34 @@ export async function executeCanonicalPaymentIntent(
                         const reconciledAfterBroadcast = await reconcileKeyPaymentOnChain(
                             preparation.prepared.txHash,
                             intent.network,
+                            false,
+                            reconcileContext,
                         );
                         if (isDefinitiveSettlement(reconciledAfterBroadcast)) {
                             settlement = reconciledAfterBroadcast;
+                        } else if (settlement.resetPreparation === true) {
+                            const nearSync = await resolveNearResetNonceSync(intent, settlement);
+                            const resetAt = Date.now();
+                            const nextDueAt = resetAt + 1_000;
+                            const resetReason = settlement.error || "Stale prepared transaction reset";
+                            await valkeyResetClaimedPaymentIntentPreparation({
+                                intentKey: paymentIntentKey(intent.paymentIntentId),
+                                queuedKey: QUEUED_INTENTS_KEY,
+                                submittedKey: SUBMITTED_INTENTS_KEY,
+                                dueKey: DUE_INTENTS_KEY,
+                                intentId: intent.paymentIntentId,
+                                claimToken,
+                                expectedTxHash: preparation.prepared.txHash,
+                                keepClaim: false,
+                                dueAt: nextDueAt,
+                                updatedAt: resetAt,
+                                errorMessage: resetReason,
+                                nonceKey: nearSync.nonceKey,
+                                minNextNonce: nearSync.minNextNonce,
+                            });
+                            const resetPending = await readPaymentIntent(intent.paymentIntentId);
+                            if (!resetPending) throw new Error("Reset queued payment intent disappeared");
+                            return paymentIntentSuccess(resetPending);
                         }
                     }
                 }
@@ -1885,7 +1955,10 @@ export async function executeCanonicalPaymentIntent(
                 if (options.waitForConfirmation !== false
                     && settlement.status === "submitted"
                     && !(process.env.NODE_ENV === "test" && process.env.COMPOSE_TEST_SETTLEMENT_STATUS === "submitted")) {
-                    settlement = await reconcileKeyPaymentOnChain(settlement.txHash, intent.network, true);
+                    settlement = await reconcileKeyPaymentOnChain(settlement.txHash, intent.network, true, {
+                        userAddress: intent.userAddress,
+                        preparedTxPayload: intent.preparedTxPayload,
+                    });
                 }
             }
         }
