@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { normalizeResponsesRequest, type ReceiptStreamPayload, type Modality } from "../inference/core.js";
-import { isCanonicalModality } from "../inference/catalog/modalities/index.js";
+import type { ReceiptStreamPayload } from "../inference/core.js";
 import {
   encodeReceiptHeader,
   RECEIPT_HEADER,
@@ -16,39 +15,6 @@ import {
   valkeyHGetAll,
   valkeySMembers,
 } from "./keys/valkey.js";
-import {
-  buildResolvedSettlementMeter,
-  meterSubject,
-  resolveBillingModel,
-  type MeteredSettlementInput,
-  type MeterLineItem,
-} from "./metering.js";
-
-export type RouteSettlement =
-  | { meter: MeteredSettlementInput }
-  | {
-    meter?: undefined;
-    finalAmountWei: string;
-    providerAmountWei?: string;
-    platformFeeWei?: string;
-    meterSubject?: string;
-    lineItems?: LineItem[];
-    bills?: Bill[];
-    evidence?: {
-      kind: "agent" | "model" | "tool" | "search" | "memory" | "connector";
-      rootRunId: string;
-      executionRunId: string;
-      parentExecutionRunId?: string;
-      walletAddress?: string;
-      name?: string;
-      service?: string;
-      action?: string;
-      subject?: string;
-      providerAmountWei: string;
-      feeWei: string;
-      creatorFeeWei?: string;
-    };
-  };
 
 export interface ReceiptContext {
   service?: string;
@@ -70,17 +36,6 @@ export interface ReceiptListResult {
   receipts: Receipt[];
 }
 
-export interface MeterRecord {
-  kind?: "model";
-  source?: string;
-  model?: string;
-  name?: string;
-  modality?: string;
-  usage?: Record<string, unknown>;
-  media?: Record<string, unknown>;
-  responseId?: string;
-}
-
 type HeaderSink = {
   headersSent?: boolean;
   setHeader: (name: string, value: string) => unknown;
@@ -90,12 +45,6 @@ const RECEIPT_TTL_SECONDS = 60 * 60 * 24 * 180;
 const RECEIPT_KEY_PREFIX = "x402:receipt";
 const BATCH_RECONCILIATION_KEY_PREFIX = "x402:batch-reconciliation";
 const BATCH_RECONCILIATION_TTL_SECONDS = RECEIPT_TTL_SECONDS;
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
 
 function receiptKey(receiptId: string): string {
   return `${RECEIPT_KEY_PREFIX}:${receiptId}`;
