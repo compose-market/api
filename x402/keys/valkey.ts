@@ -984,6 +984,101 @@ return 1`,
     return "invalid_state";
 }
 
+/**
+ * Atomically clear stale/expired transaction preparation (e.g. expired NEAR/SVM
+ * blockhash that was never observed on-chain, or ingress InvalidNonce/Expired
+ * rejection before inclusion) so the obligation can be re-prepared cleanly.
+ */
+export async function valkeyResetClaimedPaymentIntentPreparation(input: {
+    intentKey: string;
+    queuedKey: string;
+    submittedKey: string;
+    dueKey: string;
+    intentId: string;
+    claimToken: string;
+    expectedTxHash?: string;
+    keepClaim?: boolean;
+    dueAt: number;
+    updatedAt: number;
+    errorMessage: string;
+    nonceKey?: string;
+    minNextNonce?: string;
+}): Promise<ClaimedPaymentIntentUpdateResult> {
+    const valkey = await getValkeyClient();
+    const keys = [input.intentKey, input.queuedKey, input.submittedKey, input.dueKey];
+    if (input.nonceKey && input.minNextNonce) {
+        keys.push(input.nonceKey);
+    }
+    const result = await valkey.eval(
+        `local function normalize(value)
+    local normalized = string.gsub(value or "0", "^0+", "")
+    return normalized == "" and "0" or normalized
+end
+local function greaterThan(left, right)
+    left = normalize(left)
+    right = normalize(right)
+    if string.len(left) ~= string.len(right) then return string.len(left) > string.len(right) end
+    return left > right
+end
+local status = redis.call("HGET", KEYS[1], "status") or ""
+if status == "confirmed" or status == "failed" or status == "released" then return 2 end
+if (redis.call("HGET", KEYS[1], "executionClaimToken") or "") ~= ARGV[2] then return -1 end
+if status ~= "queued" and status ~= "submitted" then return -2 end
+local expectedHash = ARGV[3]
+if expectedHash ~= "" then
+    local existingHash = redis.call("HGET", KEYS[1], "txHash") or ""
+    local preparedHash = redis.call("HGET", KEYS[1], "preparedTxHash") or ""
+    if existingHash ~= "" and existingHash ~= expectedHash then return -2 end
+    if preparedHash ~= "" and preparedHash ~= expectedHash then return -2 end
+end
+redis.call("HDEL", KEYS[1],
+    "txHash",
+    "submittedAt",
+    "preparedTxHash",
+    "preparedTxPayload",
+    "preparedTxNonce",
+    "preparedSecondaryTxHash",
+    "preparedSecondaryPayload",
+    "preparedAt")
+redis.call("HSET", KEYS[1],
+    "status", "queued",
+    "updatedAt", ARGV[6],
+    "lastError", ARGV[7],
+    "error", ARGV[7])
+redis.call("SADD", KEYS[2], ARGV[1])
+redis.call("SREM", KEYS[3], ARGV[1])
+if ARGV[4] == "1" then
+    redis.call("HDEL", KEYS[1], "nextAttemptAt")
+else
+    redis.call("HSET", KEYS[1], "nextAttemptAt", ARGV[5])
+    redis.call("HDEL", KEYS[1], "executionClaimToken", "executionClaimedAt", "executionClaimExpiresAt")
+    redis.call("ZADD", KEYS[4], ARGV[5], ARGV[1])
+end
+if #KEYS >= 5 and ARGV[8] ~= "" then
+    local currentNonce = redis.call("GET", KEYS[5]) or "0"
+    if greaterThan(ARGV[8], currentNonce) then
+        redis.call("SET", KEYS[5], normalize(ARGV[8]))
+    end
+end
+return 1`,
+        keys.length,
+        ...keys,
+        input.intentId,
+        input.claimToken,
+        input.expectedTxHash || "",
+        input.keepClaim ? "1" : "0",
+        String(input.dueAt),
+        String(input.updatedAt),
+        input.errorMessage,
+        input.minNextNonce || "",
+    );
+    const code = Number(result);
+    if (code === 1) return "updated";
+    if (code === 2) return "already_finalized";
+    if (code === -1) return "stale_claim";
+    return "invalid_state";
+}
+
 /** Retain a payable obligation for retry and release its current execution claim. */
 export async function valkeyRetainClaimedPaymentIntent(input: {
     intentKey: string;
