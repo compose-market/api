@@ -936,13 +936,6 @@ function addWei(a: string | undefined, b: string | undefined): string {
   return ((a ? BigInt(a) : 0n) + (b ? BigInt(b) : 0n)).toString();
 }
 
-function scope(prefix: string, lineItems: MeterLineItem[]): MeterLineItem[] {
-  return lineItems.map((item) => ({
-    ...item,
-    key: `${prefix}:${item.key}`,
-  }));
-}
-
 function parseNestedBill(item: LineItem): {
   kind: Bill["kind"];
   source?: string;
