@@ -34,24 +34,6 @@ export interface MeteredAmountBreakdown {
   finalAmountWei: string;
 }
 
-export interface MeteredModelQuote extends MeteredAmountBreakdown {
-  modelId: string;
-  provider: ModelProvider;
-  known: boolean;
-  meter: MeteredAuthorizationInput | MeteredSettlementInput;
-  telemetry?: ReturnType<typeof buildAuthoritativeBilling>;
-}
-
-export interface UsageRecord {
-  agentWallet: string;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  reasoningTokens?: number;
-  timestamp: number;
-}
-
 function ceilDiv(numerator: bigint, denominator: bigint): bigint {
   if (denominator <= 0n) {
     throw new Error("denominator must be greater than zero");
@@ -155,17 +137,6 @@ function quoteMeteredAmount(subject: string, lineItems: MeterLineItem[]): Metere
     platformFeeWei: platformFeeWei.toString(),
     finalAmountWei: finalAmountWei.toString(),
   };
-}
-
-function requireResolvedCard(resolved: ResolvedBillingModel, phase: "authorization" | "settlement"): ModelCard {
-  if (!resolved.card) {
-    throw new Error(`Model metadata is required for metered ${phase}: ${resolved.modelId}`);
-  }
-  if (!resolved.card.pricing) {
-    throw new Error(`pricing is required for metered ${phase}: ${resolved.modelId}`);
-  }
-
-  return resolved.card;
 }
 
 function requireUsageRecords(usageRecords: UsageRecord[]): UsageRecord[] {
