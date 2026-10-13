@@ -434,11 +434,14 @@ export interface PaymentIntentAuthorizationSnapshot {
     budgetReserved: number;
 }
 
-export type PaymentIntentAuthorizationResult =
+export type PaymentIntentAuthorizationResult = (
     | { outcome: "created"; paymentIntentId: string }
     | { outcome: "replayed"; paymentIntentId: string }
     | { outcome: "fingerprint_mismatch"; paymentIntentId: string }
-    | { outcome: "revoked" | "expired" | "exhausted" | "inconsistent" };
+    | { outcome: "revoked" | "expired" | "exhausted" | "inconsistent" }
+) & {
+    readonly snapshot?: PaymentIntentAuthorizationSnapshot;
+};
 
 /**
  * Atomically publish an authorization intent, its credential index entry, and
@@ -536,7 +539,7 @@ if useBudgetCap then
     if not maxAmount then return {-4, ""} end
 end
 if maxAmount == "0" or greaterThan(add(committedAmount, maxAmount), budgetLimit) then
-    return {0, ""}
+    return {0, "", "", budgetLimit, budgetUsed, budgetReserved}
 end
 local pairCount = tonumber(ARGV[8])
 local offset = 9
@@ -555,7 +558,7 @@ else
     if indexTtl >= 0 and indexTtl < tonumber(ARGV[6]) then redis.call("EXPIRE", KEYS[3], ARGV[6]) end
 end
 redis.call("SET", KEYS[4], ARGV[2], "EX", ARGV[6])
-return {1, ARGV[2]}`,
+return {1, ARGV[2], maxAmount, budgetLimit, budgetUsed, budgetReserved}`,
         4,
         input.budgetKey,
         input.intentKey,
@@ -573,12 +576,27 @@ return {1, ARGV[2]}`,
     ) as Array<number | string>;
     const code = Number(result[0]);
     const paymentIntentId = String(result[1] || "");
-    if (code === 1) return { outcome: "created", paymentIntentId };
+    const attachSnapshot = <T extends PaymentIntentAuthorizationResult>(target: T): T => {
+        if (result.length >= 6) {
+            const snapshot: PaymentIntentAuthorizationSnapshot = {
+                maxAmountWei: String(result[2] || "0"),
+                budgetLimit: Number.parseInt(String(result[3] || "0"), 10) || 0,
+                budgetUsed: Number.parseInt(String(result[4] || "0"), 10) || 0,
+                budgetReserved: Number.parseInt(String(result[5] || "0"), 10) || 0,
+            };
+            Object.defineProperty(target, "snapshot", {
+                value: snapshot,
+                enumerable: false,
+            });
+        }
+        return target;
+    };
+    if (code === 1) return attachSnapshot({ outcome: "created", paymentIntentId });
     if (code === 2) return { outcome: "replayed", paymentIntentId };
     if (code === -3) return { outcome: "fingerprint_mismatch", paymentIntentId };
     if (code === -1) return { outcome: "revoked" };
     if (code === -2) return { outcome: "expired" };
-    if (code === 0) return { outcome: "exhausted" };
+    if (code === 0) return attachSnapshot({ outcome: "exhausted" });
     return { outcome: "inconsistent" };
 }
 
@@ -831,6 +849,8 @@ export async function valkeyPersistPreparedPaymentIntent(input: {
     leaseValue?: string;
     nonceKey?: string;
     nextNonce?: string;
+    secondaryNonceKey?: string;
+    nextSecondaryNonce?: string;
     preparedTxHash: string;
     preparedTxPayload: string;
     preparedTxNonce?: string;
@@ -839,11 +859,25 @@ export async function valkeyPersistPreparedPaymentIntent(input: {
     const valkey = await getValkeyClient();
     const leaseKey = input.leaseKey || "";
     const nonceKey = input.nonceKey || "";
+    const secondaryNonceKey = input.secondaryNonceKey && input.secondaryNonceKey !== nonceKey
+        ? input.secondaryNonceKey
+        : "";
     const keys = [input.intentKey];
-    if (leaseKey) keys.push(leaseKey);
-    if (nonceKey) keys.push(nonceKey);
-    const leaseIndex = leaseKey ? 2 : 0;
-    const nonceIndex = nonceKey ? (leaseKey ? 3 : 2) : 0;
+    let leaseIndex = 0;
+    let nonceIndex = 0;
+    let secondaryNonceIndex = 0;
+    if (leaseKey) {
+        keys.push(leaseKey);
+        leaseIndex = keys.length;
+    }
+    if (nonceKey) {
+        keys.push(nonceKey);
+        nonceIndex = keys.length;
+    }
+    if (secondaryNonceKey) {
+        keys.push(secondaryNonceKey);
+        secondaryNonceIndex = keys.length;
+    }
     const result = await valkey.eval(
         `local status = redis.call("HGET", KEYS[1], "status") or ""
 if status ~= "queued" then return -3 end
@@ -864,6 +898,8 @@ redis.call("HSET", KEYS[1],
     "updatedAt", ARGV[6])
 local nonceIndex = tonumber(ARGV[8])
 if nonceIndex > 0 then redis.call("SET", KEYS[nonceIndex], ARGV[9]) end
+local secondaryNonceIndex = tonumber(ARGV[10])
+if secondaryNonceIndex > 0 then redis.call("SET", KEYS[secondaryNonceIndex], ARGV[11]) end
 return 1`,
         keys.length,
         ...keys,
@@ -876,6 +912,8 @@ return 1`,
         String(leaseIndex),
         String(nonceIndex),
         input.nextNonce || "",
+        String(secondaryNonceIndex),
+        input.nextSecondaryNonce || "",
     );
     const code = Number(result);
     if (code === 1) return "persisted";
