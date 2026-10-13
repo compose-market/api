@@ -139,14 +139,6 @@ function quoteMeteredAmount(subject: string, lineItems: MeterLineItem[]): Metere
   };
 }
 
-function requireUsageRecords(usageRecords: UsageRecord[]): UsageRecord[] {
-  if (!Array.isArray(usageRecords) || usageRecords.length === 0) {
-    throw new Error("usageRecords must contain at least one authoritative usage record");
-  }
-
-  return usageRecords;
-}
-
 export function quoteMeteredAuthorization(input: MeteredAuthorizationInput): MeteredAmountBreakdown {
   return quoteMeteredAmount(input.subject, input.lineItems);
 }
