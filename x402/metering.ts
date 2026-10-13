@@ -1,15 +1,3 @@
-import type {
-  Modality,
-  Output,
-  Request,
-} from "../inference/core.js";
-import { resolveModel } from "../inference/catalog/registry.js";
-import {
-  buildAuthoritativeBilling,
-  buildRequestBilling,
-} from "../inference/telemetry.js";
-import type { ModelCard, ModelProvider } from "../inference/types.js";
-
 const MICRO_SCALE = 1_000_000n;
 const PLATFORM_FEE_BASIS_POINTS = 100n; // 1%
 
