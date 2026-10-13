@@ -1358,6 +1358,20 @@ const LIST_RECEIPTS_LUA = `
   return encoded
 `;
 
+function receiptSortKey(receipt: Receipt): number {
+  if (typeof receipt.settledAt === "number" && Number.isFinite(receipt.settledAt) && receipt.settledAt > 0) {
+    return receipt.settledAt;
+  }
+  if (
+    receipt.settlementStatus === "queued"
+    || receipt.settlementStatus === "submitted"
+    || receipt.settlementStatus === "claimed"
+  ) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return 0;
+}
+
 export async function listReceipts(input: {
   userAddress: string;
   network: NetworkId;
