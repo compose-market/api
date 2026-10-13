@@ -1475,43 +1475,6 @@ export async function markIntentReceiptsFailed(input: {
   return updated;
 }
 
-function meters(body: Record<string, unknown>): MeterRecord[] {
-  const values = Array.isArray(body.meters) ? body.meters : [];
-  return values
-    .map((value): MeterRecord | null => {
-      const item = record(value);
-      if (!item || item.kind !== "model" || typeof item.model !== "string" || !item.model.trim()) {
-        return null;
-      }
-      return {
-        kind: "model",
-        source: typeof item.source === "string" && item.source.trim() ? item.source.trim() : "models_call",
-        model: item.model.trim(),
-        name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : undefined,
-        modality: typeof item.modality === "string" && item.modality.trim() ? item.modality.trim() : undefined,
-        usage: record(item.usage) ?? undefined,
-        media: record(item.media) ?? undefined,
-        responseId: typeof item.responseId === "string" && item.responseId.trim() ? item.responseId.trim() : undefined,
-      };
-    })
-    .filter((value): value is MeterRecord => Boolean(value));
-}
-
-function modality(value: string | undefined): Modality {
-  if (isCanonicalModality(value)) {
-    return value as Modality;
-  }
-  throw new Error("meter modality is required for nested model settlement");
-}
-
-function meterMedia(meter: MeterRecord): Record<string, unknown> | undefined {
-  if (meter.media) {
-    return meter.media;
-  }
-  const billingMetrics = record(meter.usage?.billingMetrics);
-  return billingMetrics ? { billingMetrics, requests: 1 } : undefined;
-}
-
 function combinedMeter(
   base: MeteredSettlementInput,
   body: Record<string, unknown>,
