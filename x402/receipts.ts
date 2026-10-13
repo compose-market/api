@@ -1475,35 +1475,6 @@ export async function markIntentReceiptsFailed(input: {
   return updated;
 }
 
-function combinedMeter(
-  base: MeteredSettlementInput,
-  body: Record<string, unknown>,
-): MeteredSettlementInput {
-  const records = meters(body);
-  if (records.length === 0) {
-    return base;
-  }
-
-  const lineItems: MeterLineItem[] = [...base.lineItems];
-  for (const item of records) {
-    const resolved = resolveBillingModel(item.model!);
-    const subject = meterSubject(resolved.provider, resolved.modelId);
-    const metered = buildResolvedSettlementMeter({
-      resolved,
-      modality: modality(item.modality),
-      usage: item.usage,
-      media: meterMedia(item),
-    });
-
-    lineItems.push(...scope(`model.${item.source || "models_call"}.${subject}`, metered.meter.lineItems));
-  }
-
-  return {
-    subject: base.subject,
-    lineItems,
-  };
-}
-
 export function receiptFromInferenceSettlement(
   settlement: InferenceSettlementReceipt | null,
   network?: NetworkId,
@@ -1661,34 +1632,4 @@ export function receiptStreamPayload(receipt: Receipt): ReceiptStreamPayload {
     settledAt: receipt.settledAt,
     cumulative: receipt.cumulative,
   };
-}
-
-export function buildAgentTextSettlement(body: Record<string, unknown>): { meter: MeteredSettlementInput } {
-  if (typeof body.model !== "string") {
-    throw new Error("model is required for metered settlement");
-  }
-
-  const metered = buildResolvedSettlementMeter({
-    resolved: resolveBillingModel(body.model),
-    modality: "text",
-    usage: body,
-  });
-
-  return { meter: combinedMeter(metered.meter, body) };
-}
-
-export function buildAgentResponsesSettlement(body: Record<string, unknown>): { meter: MeteredSettlementInput } {
-  if (typeof body.model !== "string") {
-    throw new Error("model is required for metered settlement");
-  }
-
-  const unified = normalizeResponsesRequest(body);
-  const metered = buildResolvedSettlementMeter({
-    resolved: resolveBillingModel(body.model),
-    modality: unified.modality,
-    usage: body,
-    media: body,
-  });
-
-  return { meter: combinedMeter(metered.meter, body) };
 }
