@@ -17,10 +17,6 @@ export interface MeteredAuthorizationInput {
 
 type Scheme = "exact" | "upto" | "batch-settlement";
 
-export type ResolvedAuthorizationInput =
-  | { meter: MeteredAuthorizationInput }
-  | { useBudgetCap: true; scheme?: Scheme };
-
 export interface MeteredSettlementInput {
   subject: string;
   lineItems: MeterLineItem[];
@@ -36,20 +32,6 @@ export interface MeteredAmountBreakdown {
   providerAmountWei: string;
   platformFeeWei: string;
   finalAmountWei: string;
-}
-
-export interface ResolvedBillingModel {
-  modelId: string;
-  provider: ModelProvider;
-  known: boolean;
-  card: ModelCard | null;
-}
-
-export interface SettlementMeterArgs {
-  resolved: ResolvedBillingModel;
-  modality: Modality;
-  usage?: unknown;
-  media?: unknown;
 }
 
 export interface MeteredModelQuote extends MeteredAmountBreakdown {
