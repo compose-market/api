@@ -1376,6 +1376,8 @@ export async function listReceipts(input: {
   userAddress: string;
   network: NetworkId;
   limit?: number;
+  rootRunId?: string;
+  executionRunId?: string;
 }): Promise<ReceiptListResult> {
   const userAddress = input.userAddress;
   const cumulative = await cumulativeFor(userAddress, input.network);
@@ -1388,9 +1390,16 @@ export async function listReceipts(input: {
     input.network,
     `${RECEIPT_KEY_PREFIX}:`,
   ) as string[];
+  const rootFilter = input.rootRunId?.trim();
+  const execFilter = input.executionRunId?.trim();
   const receipts = encoded
     .map((raw) => JSON.parse(String(raw)) as Receipt)
-    .sort((a, b) => (b.settledAt || 0) - (a.settledAt || 0))
+    .filter((receipt) => {
+      if (rootFilter && receipt.rootRunId !== rootFilter) return false;
+      if (execFilter && receipt.executionRunId !== execFilter) return false;
+      return true;
+    })
+    .sort((a, b) => receiptSortKey(b) - receiptSortKey(a))
     .slice(0, input.limit ?? 50);
 
   return {
