@@ -280,6 +280,62 @@ async function resolveNearFacilitatorPublicKey(provider: JsonRpcProvider, expect
     return firstKey;
 }
 
+async function readNearUsdcBalanceWei(
+    userAddress: string,
+    network: NearNetworkId,
+): Promise<bigint> {
+    const provider = createNearProvider(network);
+    const definition = getNetwork(network);
+    const result = await provider.callFunction<string>(
+        definition.asset.address,
+        "ft_balance_of",
+        { account_id: userAddress },
+        { finality: "final" },
+    );
+    if (result === undefined || result === null) return 0n;
+    if (typeof result !== "string" || !/^\d+$/.test(result)) {
+        throw new Error(`Invalid ft_balance_of response from ${definition.asset.address}: ${String(result)}`);
+    }
+    return BigInt(result);
+}
+
+async function readNearDelegateAllowanceWei(
+    userAddress: string,
+    network: NearNetworkId,
+): Promise<bigint> {
+    const expectedSpender = resolveNearFacilitatorWallet(network)
+        ?? resolveNearTreasuryWallet(network)
+        ?? (process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC ?? nearTreasuryWalletAddress)?.trim();
+    if (!expectedSpender) {
+        throw new Error("NEAR Treasury Wallet can't be read.");
+    }
+    const provider = createNearProvider(network);
+    const definition = getNetwork(network);
+    const publicKey = await resolveNearFacilitatorPublicKey(provider, expectedSpender);
+    try {
+        const accessKey = await provider.viewAccessKey(userAddress, publicKey, { finality: "final" });
+        if (accessKey.permission === "FullAccess") {
+            return UNBOUNDED_SESSION_ALLOWANCE_WEI;
+        }
+        if (typeof accessKey.permission === "object" && accessKey.permission !== null && "FunctionCall" in accessKey.permission) {
+            const fnPermission = accessKey.permission.FunctionCall;
+            if (fnPermission.receiver_id !== definition.asset.address) {
+                return 0n;
+            }
+            if (fnPermission.method_names.length > 0 && !fnPermission.method_names.includes("ft_transfer")) {
+                return 0n;
+            }
+            return UNBOUNDED_SESSION_ALLOWANCE_WEI;
+        }
+        return 0n;
+    } catch (error) {
+        if (isNearAccessKeyMissing(error)) {
+            return 0n;
+        }
+        throw error;
+    }
+}
+
 export async function readSessionAllowanceWei(
     userAddress: string,
     network: NetworkId,
