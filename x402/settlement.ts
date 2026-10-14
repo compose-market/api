@@ -23,10 +23,11 @@ import {
     addSignersToInstruction as addSolanaSignersToInstruction,
     address as solanaAddress,
     appendTransactionMessageInstruction as appendSolanaTransactionMessageInstruction,
+    appendTransactionMessageInstructions as appendSolanaTransactionMessageInstructions,
     createKeyPairSignerFromBytes as createSolanaKeyPairSignerFromBytes,
     createSolanaRpc as createSolanaKitRpc,
     createTransactionMessage as createSolanaTransactionMessage,
-    // devnet as solanaDevnet,
+    devnet as solanaDevnet,
     getAddressEncoder as getSolanaAddressEncoder,
     getBase64EncodedWireTransaction as getSolanaBase64EncodedWireTransaction,
     getSignatureFromTransaction as getSolanaSignatureFromTransaction,
@@ -41,18 +42,34 @@ import {
     type Signature as SolanaSignature,
 } from "@solana/kit";
 import { base58 } from "@scure/base";
+import { type KeyPairString } from "@near-js/crypto";
+import { KeyPairSigner } from "@near-js/signers";
+import {
+    actionCreators as nearActionCreators,
+    buildDelegateAction as buildNearDelegateAction,
+    createTransaction as createNearTransaction,
+    SCHEMA as NEAR_SCHEMA,
+} from "@near-js/transactions";
+import { baseDecode as nearBaseDecode } from "@near-js/utils";
+import { deserialize as borshDeserialize, serialize as borshSerialize } from "borsh";
 import {
     merchantWalletAddress,
+    resolveNearFacilitatorWallet,
+    resolveNearMerchantWallet,
+    resolveNearTreasuryWallet,
     treasuryWalletAddress,
 } from "./wallets.js";
 import {
     getNetwork,
     getNetworkRpcUrl,
     getViemChain,
+    isAddressValidForNetwork,
     isEvmNetwork,
+    isNearNetwork,
     isSolanaNetwork,
     NETWORK_IDS,
     type EvmNetworkId,
+    type NearNetworkId,
     type NetworkId,
     type SolanaNetworkId,
 } from "./configs/chains.js";
@@ -67,6 +84,9 @@ export interface SettlementResult {
     txHash?: string;
     error?: string;
     terminal?: boolean;
+    notObserved?: boolean;
+    resetPreparation?: boolean;
+    syncNextNonce?: string;
 }
 
 export interface PreparedSettlementTransaction {
