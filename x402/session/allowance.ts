@@ -250,6 +250,36 @@ async function readSvmDelegateAllowanceWei(
     return data.readBigUInt64LE(121);
 }
 
+function createNearProvider(network: NearNetworkId): JsonRpcProvider {
+    const rpcUrl = getNetworkRpcUrl(network);
+    return new JsonRpcProvider({ url: rpcUrl });
+}
+
+function isNearAccessKeyMissing(error: unknown): boolean {
+    const text = error instanceof Error ? `${error.name}:${error.message}` : String(error);
+    return /UNKNOWN_ACCESS_KEY|access key .* (not found|does not exist|doesn't exist)/i.test(text);
+}
+
+async function resolveNearFacilitatorPublicKey(provider: JsonRpcProvider, expectedSpender: string): Promise<string> {
+    const facilitatorKey = process.env.NEAR_FACILITATOR_KEY?.trim();
+    if (facilitatorKey) {
+        const normalizedKey = (facilitatorKey.includes(":") ? facilitatorKey : `ed25519:${facilitatorKey}`) as KeyPairString;
+        return KeyPair.fromString(normalizedKey).getPublicKey().toString();
+    }
+    if (expectedSpender.startsWith("ed25519:")) {
+        return expectedSpender;
+    }
+    if (/^[0-9a-f]{64}$/.test(expectedSpender)) {
+        return `ed25519:${base58.encode(Buffer.from(expectedSpender, "hex"))}`;
+    }
+    const keyList = await provider.viewAccessKeyList(expectedSpender, { finality: "final" });
+    const firstKey = keyList.keys?.[0]?.public_key;
+    if (!firstKey) {
+        throw new Error(`No access keys found for NEAR treasury account ${expectedSpender}`);
+    }
+    return firstKey;
+}
+
 export async function readSessionAllowanceWei(
     userAddress: string,
     network: NetworkId,
