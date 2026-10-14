@@ -345,6 +345,9 @@ export async function readSessionAllowanceWei(
         return override;
     }
 
+    if (isNearNetwork(network)) {
+        return readNearDelegateAllowanceWei(userAddress, network);
+    }
     if (!isEvmNetwork(network)) {
         return readSvmDelegateAllowanceWei(userAddress, network as SolanaNetworkId);
     }
@@ -380,6 +383,9 @@ export async function readSessionUsdcBalanceWei(
     const override = readSessionBalanceOverrideWei();
     if (override !== null) {
         return override;
+    }
+    if (isNearNetwork(network)) {
+        return readNearUsdcBalanceWei(userAddress, network);
     }
     if (!isEvmNetwork(network)) {
         return readSvmUsdcBalanceWei(userAddress, network as SolanaNetworkId);
@@ -428,13 +434,23 @@ export async function getSessionFundingReadiness(input: {
             ? dependencies.resolveSpender(input.network)
             : isSolanaNetwork(input.network)
                 ? (() => {
-                    const configured = svmTreasuryWalletAddress?.trim();
+                    const configured = (process.env.SVM_TREASURY_SERVER_WALLET_PUBLIC ?? svmTreasuryWalletAddress)?.trim();
                     if (!configured) {
                         throw new Error("SVM_TREASURY_SERVER_WALLET_PUBLIC environment variable required for Session allowance readiness");
                     }
                     return configured;
                 })()
-                : resolveSessionAllowanceSpenderAddress();
+                : isNearNetwork(input.network)
+                    ? (() => {
+                        const configured = resolveNearFacilitatorWallet(input.network)
+                            ?? resolveNearTreasuryWallet(input.network)
+                            ?? (process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC ?? nearTreasuryWalletAddress)?.trim();
+                        if (!configured) {
+                            throw new Error("NEAR_TREASURY_SERVER_WALLET_PUBLIC environment variable required for Session allowance readiness");
+                        }
+                        return configured;
+                    })()
+                    : resolveSessionAllowanceSpenderAddress();
     } catch (error) {
         return {
             ready: false,
@@ -482,7 +498,7 @@ export async function getSessionFundingReadiness(input: {
             balanceWei: balanceWei.toString(),
             allowanceWei: allowanceWei.toString(),
             spender,
-            error: "Insufficient USDC balance for requested session budget",
+            error: `Insufficient ${getNetwork(input.network).asset.symbol} balance for requested session budget`,
             hint: "Fund the tied wallet/smart account with at least the selected session budget, then retry session creation.",
         };
     }
@@ -496,7 +512,7 @@ export async function getSessionFundingReadiness(input: {
             balanceWei: balanceWei.toString(),
             allowanceWei: allowanceWei.toString(),
             spender,
-            error: "Insufficient USDC allowance for requested session budget",
+            error: `Insufficient ${getNetwork(input.network).asset.symbol} allowance for requested session budget`,
             hint: `Approve at least the selected session budget to ${spender}, then retry session creation.`,
         };
     }
