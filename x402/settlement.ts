@@ -87,6 +87,7 @@ export interface SettlementResult {
     notObserved?: boolean;
     resetPreparation?: boolean;
     syncNextNonce?: string;
+    syncNextDelegateNonce?: string;
 }
 
 export interface PreparedSettlementTransaction {
@@ -94,6 +95,8 @@ export interface PreparedSettlementTransaction {
     txHash: string;
     payload: string;
     nonce?: string;
+    delegateNonce?: string;
+    secondaryPayload?: string;
 }
 
 export type SettlementPreparationResult =
