@@ -1,10 +1,13 @@
 import { createPublicClient, http } from "viem";
+import { KeyPair, type KeyPairString } from "@near-js/crypto";
+import { JsonRpcProvider } from "@near-js/providers";
+import { base58 } from "@scure/base";
 
 import {
     Address as SolanaAddress,
     address as solanaAddress,
     createSolanaRpc,
-    // devnet as solanaDevnet,
+    devnet as solanaDevnet,
     getAddressEncoder as getSolanaAddressEncoder,
     getProgramDerivedAddress as getSolanaProgramDerivedAddress,
     mainnet as solanaMainnet,
@@ -16,13 +19,18 @@ import {
     getNetworkRpcUrl,
     getViemChain,
     isEvmNetwork,
+    isNearNetwork,
     isSolanaNetwork,
     type EvmNetworkId,
+    type NearNetworkId,
     type NetworkId,
     type SolanaNetworkId,
     NETWORK_IDS,
 } from "../configs/chains.js";
 import {
+    nearTreasuryWalletAddress,
+    resolveNearFacilitatorWallet,
+    resolveNearTreasuryWallet,
     svmTreasuryWalletAddress,
 } from "../wallets.js";
 
@@ -144,7 +152,7 @@ const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
 function createSvmRpc(network: SolanaNetworkId) {
     const rpcUrl = getNetworkRpcUrl(network);
-    //if (network === NETWORK_IDS.solanaDevnet) { return createSolanaRpc(solanaDevnet(rpcUrl)); }
+    if (network === NETWORK_IDS.solanaDevnet) { return createSolanaRpc(solanaDevnet(rpcUrl)); }
     if (network === NETWORK_IDS.solana) { return createSolanaRpc(solanaMainnet(rpcUrl)); }
     throw new Error(`Unsupported SVM network: ${network}`);
 }
