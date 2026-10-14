@@ -97,6 +97,7 @@ export interface PreparedSettlementTransaction {
     nonce?: string;
     delegateNonce?: string;
     secondaryPayload?: string;
+    secondaryTxHash?: string;
 }
 
 export type SettlementPreparationResult =
