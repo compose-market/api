@@ -139,6 +139,9 @@ const SVM_CONFIRM_DELAY_MS = 1_000;
 const NEAR_FT_TRANSFER_GAS = 30_000_000_000_000n;
 const NEAR_STORAGE_DEPOSIT_GAS = 30_000_000_000_000n;
 const NEAR_STORAGE_DEPOSIT_YOCTO = 1_250_000_000_000_000_000_000n;
+const NEAR_ONE_YOCTO = 1n;
+const NEAR_DELEGATE_ACTION_TTL_BLOCKS = 300n;
+const EVM_RPC_TIMEOUT_MS = 15_000;
 
 // =============================================================================
 // Account & Client Helpers
