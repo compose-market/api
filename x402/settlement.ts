@@ -1023,11 +1023,14 @@ async function prepareNearKeyPayment(
  * Execute USDC transfer from user's smart account.
  * 
  * Uses Compose session permissions to execute a USDC transfer to the merchant
- * wallet.
+ * wallet or split between creator and treasury.
  * 
  * @param userAddress - User's smart wallet address (source)
  * @param amountWei - Amount in USDC wei (6 decimals) - can be number or string
  * @param network - Network ID (match user's session chain)
+ * @param nonce - Optional EVM nonce
+ * @param payTo - Optional destination recipient
+ * @param options - Optional royalties and fee breakdown
  * @returns Settlement result with tx hash or error
  */
 async function prepareEvmKeyPayment(
@@ -1035,15 +1038,34 @@ async function prepareEvmKeyPayment(
     amountWei: number | string,
     network: EvmNetworkId,
     nonce?: bigint,
+    payTo?: string,
+    options?: {
+        royalties?: { creator?: string; treasury?: string };
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+    },
 ): Promise<PreparedSettlementTransaction> {
+    if (!isAddressValidForNetwork(userAddress, network)) {
+        throw new Error(`Invalid payer address for ${network}: ${userAddress}`);
+    }
     const amount = typeof amountWei === "string" ? BigInt(amountWei) : BigInt(amountWei);
+    const sanitized = sanitizeSettlementRecipients(network, payTo, options?.royalties);
+    const creatorAddress = sanitized.creator;
+    const treasuryAddress = (
+        (sanitized.treasury as `0x${string}` | undefined)
+        ?? (sanitized.payTo as `0x${string}` | undefined)
+        ?? merchantWalletAddress
+    );
+    if (!isAddressValidForNetwork(treasuryAddress, network)) {
+        throw new Error(`Invalid settlement treasury address for ${network}: ${treasuryAddress}`);
+    }
 
-    console.log(`[settlement] Initiating on-chain settlement:`);
-    console.log(`[settlement]   From: ${userAddress}`);
-    console.log(`[settlement]   To: ${merchantWalletAddress}`);
-    console.log(`[settlement]   Amount: ${amount.toString()} wei ($${(Number(amount) / 1_000_000).toFixed(6)})`);
-    console.log(`[settlement]   Network: ${network}`);
-    console.log(`[settlement]   Session Key: ${treasuryWalletAddress}`);
+    const hasSplit = Boolean(
+        options?.providerAmountWei &&
+        creatorAddress &&
+        treasuryAddress &&
+        creatorAddress.toLowerCase() !== treasuryAddress.toLowerCase()
+    );
 
     const treasuryAccount = getTreasuryAccount();
     const chain = getViemChain(network);
@@ -1052,15 +1074,101 @@ async function prepareEvmKeyPayment(
 
     const publicClient = createPublicClient({
         chain,
-        transport: http(rpcUrl),
+        transport: http(rpcUrl, { timeout: EVM_RPC_TIMEOUT_MS }),
     });
 
     const walletClient = createWalletClient({
         account: treasuryAccount,
         chain,
-        transport: http(rpcUrl),
+        transport: http(rpcUrl, { timeout: EVM_RPC_TIMEOUT_MS }),
     });
 
+    if (hasSplit && creatorAddress && treasuryAddress && options?.providerAmountWei) {
+        const creatorAmount = BigInt(options.providerAmountWei);
+        const treasuryAmount = BigInt(options?.platformFeeWei ?? (amount - creatorAmount).toString());
+
+        console.log(`[settlement] Initiating EVM split on-chain settlement:`);
+        console.log(`[settlement]   From: ${userAddress}`);
+        console.log(`[settlement]   Provider/Recipient: ${creatorAddress} -> ${creatorAmount.toString()} wei`);
+        console.log(`[settlement]   Platform/Fee: ${treasuryAddress} -> ${treasuryAmount.toString()} wei`);
+        console.log(`[settlement]   Network: ${network}`);
+
+        if (creatorAmount > 0n && treasuryAmount > 0n) {
+            const startNonce = nonce !== undefined ? Number(nonce) : await publicClient.getTransactionCount({
+                address: treasuryAccount.address,
+                blockTag: "pending",
+            });
+
+            // Primary Tx: Creator share
+            await publicClient.simulateContract({
+                address: usdcAddress,
+                abi: ERC20_TRANSFER_FROM_ABI,
+                functionName: "transferFrom",
+                args: [userAddress as `0x${string}`, creatorAddress as `0x${string}`, creatorAmount],
+                account: treasuryAccount,
+            });
+            const data1 = encodeFunctionData({
+                abi: ERC20_TRANSFER_FROM_ABI,
+                functionName: "transferFrom",
+                args: [userAddress as `0x${string}`, creatorAddress as `0x${string}`, creatorAmount],
+            });
+            const prepared1 = await walletClient.prepareTransactionRequest({
+                account: treasuryAccount,
+                to: usdcAddress,
+                data: data1,
+                value: 0n,
+                nonce: startNonce,
+            });
+            const payload1 = await walletClient.signTransaction(prepared1);
+
+            // Secondary Tx: Treasury share
+            await publicClient.simulateContract({
+                address: usdcAddress,
+                abi: ERC20_TRANSFER_FROM_ABI,
+                functionName: "transferFrom",
+                args: [userAddress as `0x${string}`, treasuryAddress as `0x${string}`, treasuryAmount],
+                account: treasuryAccount,
+            });
+            const data2 = encodeFunctionData({
+                abi: ERC20_TRANSFER_FROM_ABI,
+                functionName: "transferFrom",
+                args: [userAddress as `0x${string}`, treasuryAddress as `0x${string}`, treasuryAmount],
+            });
+            const prepared2 = await walletClient.prepareTransactionRequest({
+                account: treasuryAccount,
+                to: usdcAddress,
+                data: data2,
+                value: 0n,
+                nonce: startNonce + 1,
+            });
+            const payload2 = await walletClient.signTransaction(prepared2);
+
+            return {
+                network,
+                txHash: keccak256(payload1),
+                payload: payload1,
+                nonce: String(prepared1.nonce),
+                secondaryPayload: payload2,
+                secondaryTxHash: keccak256(payload2),
+            };
+        }
+    }
+
+    // Single recipient fallback (no split, cross-chain creator stripped, creator === treasury, or 100% single share)
+    const targetRecipient = (
+        creatorAddress
+            && options?.providerAmountWei
+            && (options?.platformFeeWei === "0" || BigInt(options.providerAmountWei) >= amount)
+            ? (creatorAddress as `0x${string}`)
+            : treasuryAddress
+    );
+
+    console.log(`[settlement] Initiating on-chain settlement:`);
+    console.log(`[settlement]   From: ${userAddress}`);
+    console.log(`[settlement]   To: ${targetRecipient}`);
+    console.log(`[settlement]   Amount: ${amount.toString()} wei ($${(Number(amount) / 1_000_000).toFixed(6)})`);
+    console.log(`[settlement]   Network: ${network}`);
+    console.log(`[settlement]   Session Key: ${treasuryWalletAddress}`);
     console.log(`[settlement]   Treasury: ${treasuryAccount.address}`);
 
     await publicClient.simulateContract({
@@ -1069,7 +1177,7 @@ async function prepareEvmKeyPayment(
         functionName: "transferFrom",
         args: [
             userAddress as `0x${string}`,
-            merchantWalletAddress,
+            targetRecipient,
             amount,
         ],
         account: treasuryAccount,
@@ -1079,7 +1187,7 @@ async function prepareEvmKeyPayment(
         functionName: "transferFrom",
         args: [
             userAddress as `0x${string}`,
-            merchantWalletAddress,
+            targetRecipient,
             amount,
         ],
     });
