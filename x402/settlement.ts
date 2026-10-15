@@ -331,7 +331,7 @@ function encodeTransferCheckedInstructionData(amount: bigint, decimals: number):
 
 function createSvmRpc(network: SolanaNetworkId) {
     const rpcUrl = getNetworkRpcUrl(network);
-    // if (network === NETWORK_IDS.solanaDevnet) { return createSolanaKitRpc(solanaDevnet(rpcUrl)); }
+    if (network === NETWORK_IDS.solanaDevnet) { return createSolanaKitRpc(solanaDevnet(rpcUrl)); }
     if (network === NETWORK_IDS.solana) { return createSolanaKitRpc(solanaMainnet(rpcUrl)); }
     throw new Error(`Unsupported SVM settlement network: ${network}`);
 }
