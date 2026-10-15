@@ -1260,17 +1260,35 @@ export async function prepareKeyPaymentForNetwork(
 export async function broadcastPreparedKeyPaymentForNetwork(
     prepared: PreparedSettlementTransaction,
 ): Promise<SettlementResult> {
+    if (process.env.NODE_ENV !== "test" && prepared.payload.startsWith("test-signed:")) {
+        return {
+            success: false,
+            status: "failed",
+            terminal: true,
+            error: "Synthetic test settlement payload cannot execute outside test mode",
+        };
+    }
     try {
         if (isEvmNetwork(prepared.network)) {
             const publicClient = createPublicClient({
                 chain: getViemChain(prepared.network),
-                transport: http(getNetworkRpcUrl(prepared.network)),
+                transport: http(getNetworkRpcUrl(prepared.network), { timeout: EVM_RPC_TIMEOUT_MS }),
             });
             const returnedHash = await publicClient.sendRawTransaction({
                 serializedTransaction: prepared.payload as Hex,
             });
             if (returnedHash.toLowerCase() !== prepared.txHash.toLowerCase()) {
                 throw new Error(`RPC returned transaction hash ${returnedHash} for prepared identity ${prepared.txHash}`);
+            }
+            if (prepared.secondaryPayload) {
+                try {
+                    await publicClient.sendRawTransaction({
+                        serializedTransaction: prepared.secondaryPayload as Hex,
+                    });
+                    console.log(`[settlement] Broadcasted secondary split transaction: ${prepared.secondaryTxHash}`);
+                } catch (secErr) {
+                    console.warn("[settlement] Secondary split transaction broadcast:", secErr);
+                }
             }
             return { success: false, status: "submitted", txHash: prepared.txHash };
         }
@@ -1284,6 +1302,96 @@ export async function broadcastPreparedKeyPaymentForNetwork(
                 throw new Error(`RPC returned transaction hash ${returnedHash} for prepared identity ${prepared.txHash}`);
             }
             return { success: false, status: "submitted", txHash: prepared.txHash };
+        }
+        if (isNearNetwork(prepared.network)) {
+            const signerId = extractNearSenderFromPayload(prepared.payload);
+            if (signerId) {
+                nearSenderByTxHash.set(prepared.txHash, signerId);
+            }
+            const envelope = await nearJsonRpc<NearFinalExecutionOutcome>(
+                prepared.network,
+                "send_tx",
+                {
+                    signed_tx_base64: prepared.payload,
+                    wait_until: "EXECUTED_OPTIMISTIC",
+                },
+                NEAR_RPC_TIMEOUT_MS,
+            );
+            if (envelope.error) {
+                const causeName = envelope.error.cause?.name ?? "";
+                const errorJson = JSON.stringify(envelope.error);
+                if (causeName === "TIMEOUT_ERROR") {
+                    return {
+                        success: false,
+                        status: "submitted",
+                        txHash: prepared.txHash,
+                        error: `NEAR send_tx awaiting execution: ${errorJson}`,
+                    };
+                }
+                if (causeName === "INVALID_TRANSACTION" || /InvalidTransaction|InvalidTxError/i.test(errorJson)) {
+                    if (/InvalidNonce/i.test(errorJson)) {
+                        const alreadyExecuted = await reconcileKeyPaymentForNetwork(
+                            prepared.txHash,
+                            prepared.network,
+                            { wait: false, userAddress: signerId, preparedTxPayload: prepared.payload },
+                        );
+                        if (alreadyExecuted.status === "confirmed" || (alreadyExecuted.status === "failed" && alreadyExecuted.terminal)) {
+                            return alreadyExecuted;
+                        }
+                        const akNonceMatch = /"ak_nonce"\s*:\s*(\d+)/.exec(errorJson);
+                        const syncNextNonce = akNonceMatch ? (BigInt(akNonceMatch[1]) + 1n).toString() : undefined;
+                        return {
+                            success: false,
+                            status: "queued",
+                            resetPreparation: true,
+                            ...(syncNextNonce ? { syncNextNonce } : {}),
+                            error: `NEAR InvalidNonce: ${errorJson}`,
+                        };
+                    }
+                    if (/"Expired"\b|Expired/i.test(errorJson)) {
+                        return {
+                            success: false,
+                            status: "queued",
+                            resetPreparation: true,
+                            error: `NEAR transaction blockhash expired: ${errorJson}`,
+                        };
+                    }
+                    if (/NotEnoughBalance|LackBalanceForState/i.test(errorJson)) {
+                        const configuredFeePayer = resolveNearFacilitatorWallet(prepared.network)?.trim();
+                        const signerMatch = /"signer_id"\s*:\s*"([^"]+)"/.exec(errorJson);
+                        const balanceShortageSigner = signerMatch?.[1]?.trim();
+                        if (configuredFeePayer && (!balanceShortageSigner || balanceShortageSigner === configuredFeePayer)) {
+                            return {
+                                success: false,
+                                status: "queued",
+                                error: `NEAR relayer gas shortage (${configuredFeePayer}): ${errorJson}`,
+                            };
+                        }
+                    }
+                    if (/InvalidAccessKeyError|AccessKeyDoesNotExist|DepositWithFunctionCall|MethodNameMismatch|ReceiverMismatch|AllowanceDoesNotCoverBalance|RequiresFullAccess|SignerDoesNotExist|NotEnoughBalance|LackBalanceForState|ActionsValidation|TransactionSizeExceeded|CostOverflow/i.test(errorJson)) {
+                        return {
+                            success: false,
+                            status: "failed",
+                            terminal: true,
+                            error: `NEAR invalid transaction: ${errorJson}`,
+                        };
+                    }
+                }
+                return {
+                    success: false,
+                    status: "queued",
+                    error: `NEAR send_tx RPC error: ${errorJson}`,
+                };
+            }
+            if (!envelope.result) {
+                return {
+                    success: false,
+                    status: "submitted",
+                    txHash: prepared.txHash,
+                    error: "NEAR send_tx returned empty result",
+                };
+            }
+            return evaluateNearExecutionOutcome(envelope.result, prepared.txHash);
         }
         return { success: false, status: "submitted", txHash: prepared.txHash, error: `Unsupported settlement network: ${prepared.network}` };
     } catch (error) {
