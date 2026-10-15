@@ -380,6 +380,45 @@ async function readSvmTokenProgramAddress(
     throw new Error(`SVM token mint not found: ${mint}`);
 }
 
+async function inspectSvmSignature(
+    rpc: ReturnType<typeof createSvmRpc>,
+    signature: SolanaSignature,
+): Promise<SettlementResult> {
+    const status = await rpc.getSignatureStatuses([signature], { searchTransactionHistory: true }).send();
+    const current = status.value[0];
+    if (!current) {
+        return {
+            success: false,
+            status: "submitted",
+            notObserved: true,
+            txHash: signature,
+            error: "SVM transaction not observed",
+        };
+    }
+    if (current.err) {
+        return {
+            success: false,
+            status: "failed",
+            terminal: true,
+            txHash: signature,
+            error: `SVM transaction failed: ${JSON.stringify(current.err)}`,
+        };
+    }
+    if (current.confirmationStatus === "confirmed" || current.confirmationStatus === "finalized") {
+        return {
+            success: true,
+            status: "confirmed",
+            txHash: signature,
+        };
+    }
+    return {
+        success: false,
+        status: "submitted",
+        txHash: signature,
+        error: `SVM transaction confirmation status: ${current.confirmationStatus ?? "processed"}`,
+    };
+}
+
 async function confirmSvmSignature(
     rpc: ReturnType<typeof createSvmRpc>,
     signature: SolanaSignature,
