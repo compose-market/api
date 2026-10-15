@@ -780,6 +780,241 @@ export async function getNearSettlementAccessKeyNonce(
     return BigInt(envelope.result.nonce) + 1n;
 }
 
+async function prepareNearKeyPayment(
+    userAddress: string,
+    amountWei: number | string,
+    network: NearNetworkId,
+    payTo?: string,
+    options?: {
+        nearNonce?: bigint;
+        nearDelegateNonce?: bigint;
+        royalties?: { creator?: string; treasury?: string };
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+        memo?: string;
+        service?: string;
+    },
+): Promise<PreparedSettlementTransaction> {
+    if (!isAddressValidForNetwork(userAddress, network)) {
+        throw new Error(`Invalid payer address for ${network}: ${userAddress}`);
+    }
+    const amount = typeof amountWei === "string" ? BigInt(amountWei) : BigInt(amountWei);
+    const definition = getNetwork(network);
+    const sanitized = sanitizeSettlementRecipients(network, payTo, options?.royalties);
+    const creatorAddress = sanitized.creator;
+    const treasuryAddress = (
+        sanitized.treasury
+        || sanitized.payTo
+        || resolveNearMerchantWallet(network)
+        || process.env.NEAR_MERCHANT_WALLET_ADDRESS?.trim()
+    );
+    if (!treasuryAddress || !isAddressValidForNetwork(treasuryAddress, network)) {
+        throw new Error("NEAR_MERCHANT_WALLET_ADDRESS environment variable required");
+    }
+
+    const settlementMemo = normalizeSettlementMemo(options?.memo ?? options?.service);
+    const feePayer = getNearSettlementFeePayer(network);
+    const delegatedRelay = userAddress !== feePayer;
+    const signer = getNearSettlementSigner();
+    const publicKey = await signer.getPublicKey();
+    const [relayerNonce, delegateNonce, blockEnvelope, payerBalanceRaw] = await Promise.all([
+        options?.nearNonce !== undefined
+            ? Promise.resolve(options.nearNonce)
+            : getNearSettlementAccessKeyNonce(feePayer, network, "relayer"),
+        delegatedRelay
+            ? (options?.nearDelegateNonce !== undefined
+                ? Promise.resolve(options.nearDelegateNonce)
+                : getNearSettlementAccessKeyNonce(userAddress, network, "payer"))
+            : Promise.resolve(0n),
+        nearJsonRpc<{ header?: { hash?: string; height?: number | string } }>(network, "block", { finality: "final" }),
+        callNearViewFunction<string>(
+            network,
+            definition.asset.address,
+            "ft_balance_of",
+            { account_id: userAddress },
+        ),
+    ]);
+
+    if (
+        blockEnvelope.error
+        || !blockEnvelope.result?.header?.hash
+        || (delegatedRelay && blockEnvelope.result.header.height === undefined)
+    ) {
+        throw new Error(`NEAR block lookup failed: ${JSON.stringify(blockEnvelope.error ?? "missing block header")}`);
+    }
+    if (BigInt(payerBalanceRaw) < amount) {
+        throw new Error("Insufficient USDC balance");
+    }
+
+    const blockHashBytes = nearBaseDecode(blockEnvelope.result.header.hash);
+    let activeRelayerNonce = relayerNonce;
+
+    const actions: ReturnType<typeof nearActionCreators.functionCall>[] = [];
+    const isSelfCreator = Boolean(creatorAddress && creatorAddress.toLowerCase() === userAddress.toLowerCase());
+    const hasSplitCandidate = Boolean(
+        options?.providerAmountWei
+        && creatorAddress
+        && !isSelfCreator
+        && creatorAddress.toLowerCase() !== treasuryAddress.toLowerCase()
+        && BigInt(options.providerAmountWei) > 0n,
+    );
+
+    let splitApplied = false;
+    if (hasSplitCandidate && creatorAddress && options?.providerAmountWei) {
+        const creatorAmount = BigInt(options.providerAmountWei);
+        const treasuryAmount = BigInt(options?.platformFeeWei ?? (amount - creatorAmount).toString());
+        let creatorStorage = await callNearViewFunction<Record<string, string> | null>(
+            network,
+            definition.asset.address,
+            "storage_balance_of",
+            { account_id: creatorAddress },
+        ).catch(() => null);
+
+        if (creatorStorage === null || creatorStorage === undefined) {
+            const storageTx = createNearTransaction(
+                feePayer,
+                publicKey,
+                definition.asset.address,
+                activeRelayerNonce,
+                [
+                    nearActionCreators.functionCall(
+                        "storage_deposit",
+                        { account_id: creatorAddress, registration_only: true },
+                        NEAR_STORAGE_DEPOSIT_GAS,
+                        NEAR_STORAGE_DEPOSIT_YOCTO,
+                    ),
+                ],
+                blockHashBytes,
+            );
+            const [, signedStorageTx] = await signer.signTransaction(storageTx);
+            const storagePayload = Buffer.from(
+                borshSerialize(NEAR_SCHEMA.SignedTransaction, signedStorageTx),
+            ).toString("base64");
+            const storageRes = await nearJsonRpc<NearFinalExecutionOutcome>(
+                network,
+                "send_tx",
+                {
+                    signed_tx_base64: storagePayload,
+                    wait_until: "EXECUTED_OPTIMISTIC",
+                },
+                NEAR_RPC_TIMEOUT_MS,
+            ).catch(() => null);
+            if (storageRes && !storageRes.error && storageRes.result) {
+                activeRelayerNonce += 1n;
+                const evaluated = evaluateNearExecutionOutcome(storageRes.result, "storage");
+                if (evaluated.success) {
+                    creatorStorage = { total: NEAR_STORAGE_DEPOSIT_YOCTO.toString() };
+                }
+            }
+        }
+
+        if (creatorStorage !== null && creatorStorage !== undefined) {
+            console.log(`[settlement] Initiating NEAR split on-chain settlement (relayer: ${feePayer}, memo: ${settlementMemo}):`);
+            console.log(`[settlement]   From: ${userAddress}`);
+            console.log(`[settlement]   Provider/Recipient: ${creatorAddress} -> ${creatorAmount.toString()} wei`);
+            console.log(`[settlement]   Platform/Fee: ${treasuryAddress} -> ${treasuryAmount.toString()} wei`);
+            console.log(`[settlement]   Network: ${network}`);
+
+            actions.push(nearActionCreators.functionCall(
+                "ft_transfer",
+                {
+                    receiver_id: creatorAddress,
+                    amount: creatorAmount.toString(),
+                    memo: settlementMemo,
+                },
+                NEAR_FT_TRANSFER_GAS,
+                NEAR_ONE_YOCTO,
+            ));
+            if (treasuryAmount > 0n) {
+                actions.push(nearActionCreators.functionCall(
+                    "ft_transfer",
+                    {
+                        receiver_id: treasuryAddress,
+                        amount: treasuryAmount.toString(),
+                        memo: settlementMemo,
+                    },
+                    NEAR_FT_TRANSFER_GAS,
+                    NEAR_ONE_YOCTO,
+                ));
+            }
+            splitApplied = true;
+        }
+    }
+
+    if (!splitApplied) {
+        const effectiveAmount = isSelfCreator && options?.platformFeeWei && BigInt(options.platformFeeWei) > 0n
+            ? BigInt(options.platformFeeWei)
+            : amount;
+        console.log(`[settlement] Initiating NEAR on-chain settlement (relayer: ${feePayer}, memo: ${settlementMemo}):`);
+        console.log(`[settlement]   From: ${userAddress}`);
+        console.log(`[settlement]   To: ${treasuryAddress}`);
+        console.log(`[settlement]   Amount: ${effectiveAmount.toString()} wei ($${(Number(effectiveAmount) / 1_000_000).toFixed(6)})`);
+        console.log(`[settlement]   Network: ${network}`);
+
+        actions.push(nearActionCreators.functionCall(
+            "ft_transfer",
+            {
+                receiver_id: treasuryAddress,
+                amount: effectiveAmount.toString(),
+                memo: settlementMemo,
+            },
+            NEAR_FT_TRANSFER_GAS,
+            NEAR_ONE_YOCTO,
+        ));
+    }
+
+    if (!delegatedRelay) {
+        const directTransaction = createNearTransaction(
+            feePayer,
+            publicKey,
+            definition.asset.address,
+            activeRelayerNonce,
+            actions,
+            blockHashBytes,
+        );
+        const [txHashBytes, signedTransaction] = await signer.signTransaction(directTransaction);
+        const txHash = base58.encode(txHashBytes);
+        const payload = Buffer.from(borshSerialize(NEAR_SCHEMA.SignedTransaction, signedTransaction)).toString("base64");
+        nearSenderByTxHash.set(txHash, feePayer);
+        return {
+            network,
+            txHash,
+            payload,
+            nonce: String(activeRelayerNonce),
+        };
+    }
+
+    const maxBlockHeight = BigInt(blockEnvelope.result.header.height!) + NEAR_DELEGATE_ACTION_TTL_BLOCKS;
+    const delegateAction = buildNearDelegateAction({
+        actions,
+        maxBlockHeight,
+        nonce: delegateNonce,
+        publicKey,
+        receiverId: definition.asset.address,
+        senderId: userAddress,
+    });
+    const [, signedDelegate] = await signer.signDelegateAction(delegateAction);
+    const outerTransaction = createNearTransaction(
+        feePayer,
+        publicKey,
+        userAddress,
+        activeRelayerNonce,
+        [nearActionCreators.signedDelegate(signedDelegate)],
+        blockHashBytes,
+    );
+    const [txHashBytes, signedTransaction] = await signer.signTransaction(outerTransaction);
+    const txHash = base58.encode(txHashBytes);
+    const payload = Buffer.from(borshSerialize(NEAR_SCHEMA.SignedTransaction, signedTransaction)).toString("base64");
+    nearSenderByTxHash.set(txHash, feePayer);
+    return {
+        network,
+        txHash,
+        payload,
+        nonce: String(activeRelayerNonce),
+        delegateNonce: String(delegateNonce),
+    };
+}
+
 // =============================================================================
 // On-Chain Settlement (Compose Keys - uses transferFrom)
 // =============================================================================
