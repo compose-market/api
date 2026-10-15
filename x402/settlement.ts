@@ -217,28 +217,101 @@ function sanitizeSettlementRecipients(
 }
 
 /**
- * Only definitive payer-USDC balance/allowance failures detected while
- * simulating transferFrom are terminal. Signer native-gas shortages, RPC
- * failures, timeouts, and every ambiguous post-signing failure remain payable
- * obligations. Confirmed reverts are handled by receipt reconciliation.
+ * Definitive payer balance/allowance/delegate/access-key/address failures are
+ * terminal so reserved session budget unlocks instead of retrying forever.
+ * Signer native-gas shortages, RPC blips, timeouts, and ambiguous network
+ * errors remain retryable obligations.
  */
 export function classifySettlementError(
     error: unknown,
     context: SettlementErrorContext,
 ): SettlementResult {
     const message = settlementErrorMessage(error);
-    const payerBalanceFailure = /ERC20InsufficientBalance|transfer amount exceeds balance|insufficient (?:token|USDC) balance/i.test(message);
-    const payerAllowanceFailure = /ERC20InsufficientAllowance|insufficient allowance|transfer amount exceeds allowance/i.test(message);
-    if (isEvmNetwork(context.network)
-        && context.phase === "prepare"
-        && (payerBalanceFailure || payerAllowanceFailure)) {
+    if (/Invalid (?:settlement|payer) .*address|InvalidAddressError|Solana error #8078012|Synthetic test settlement payload/i.test(message)) {
         return {
             success: false,
             status: "failed",
             terminal: true,
-            error: payerBalanceFailure ? "Insufficient USDC balance" : "Session expired or insufficient allowance",
+            error: message,
         };
     }
+
+    if (isEvmNetwork(context.network)) {
+        const payerBalanceFailure = /ERC20InsufficientBalance|transfer amount exceeds balance|insufficient (?:token|USDC) balance|exceeds balance/i.test(message);
+        const payerAllowanceFailure = /ERC20InsufficientAllowance|insufficient allowance|transfer amount exceeds allowance|exceeds allowance/i.test(message);
+        if (context.phase === "prepare" && (payerBalanceFailure || payerAllowanceFailure)) {
+            return {
+                success: false,
+                status: "failed",
+                terminal: true,
+                error: payerBalanceFailure ? "Insufficient USDC balance" : "Session expired or insufficient allowance",
+            };
+        }
+        if (context.phase === "broadcast") {
+            if (/already known|TransactionAlreadyImported|known transaction/i.test(message) && context.txHash) {
+                return {
+                    success: false,
+                    status: "submitted",
+                    txHash: context.txHash,
+                    error: message,
+                };
+            }
+            if (/nonce too low|NonceTooLow|nonce has already been used/i.test(message)) {
+                return {
+                    success: false,
+                    status: "queued",
+                    resetPreparation: true,
+                    error: message,
+                };
+            }
+        }
+    }
+
+    if (isSolanaNetwork(context.network)) {
+        const feePayerGasShortage = /Attempt to debit an account but found no record of a prior credit|InsufficientFundsForFee|InsufficientFundsForRent/i.test(message);
+        const svmPayerTokenFailure = !feePayerGasShortage && (
+            /Payer USDC token account not found|invalid account data for instruction|AccountNotInitialized|could not find account|insufficient (?:token|USDC) balance|insufficient delegated|owner does not match|custom program error: 0x1\b|custom program error: 0x4\b|Error: insufficient funds/i.test(message)
+        );
+        if ((context.phase === "prepare" || context.phase === "broadcast") && svmPayerTokenFailure) {
+            return {
+                success: false,
+                status: "failed",
+                terminal: true,
+                error: message,
+            };
+        }
+        if (context.phase === "broadcast" && /Blockhash not found|BlockhashNotFound/i.test(message)) {
+            return {
+                success: false,
+                status: "queued",
+                resetPreparation: true,
+                error: message,
+            };
+        }
+        if (context.phase === "reconcile" && /not observed|not found/i.test(message)) {
+            return {
+                success: false,
+                status: "submitted",
+                notObserved: true,
+                ...(context.txHash ? { txHash: context.txHash } : {}),
+                error: message,
+            };
+        }
+    }
+
+    if (isNearNetwork(context.network)) {
+        const nearRelayerError = /^NEAR relayer /i.test(message);
+        const nearPayerTerminal = !nearRelayerError && /Insufficient USDC|doesn't have enough balance|AccessKeyDoesNotExist|access key .* does not exist|AccountDoesNotExist|account .* does not exist|InvalidAccessKeyError|SignerDoesNotExist|NotEnoughBalance|LackBalanceForState|is not registered/i.test(message);
+        if (context.phase === "prepare" && nearPayerTerminal) {
+            return {
+                success: false,
+                status: "failed",
+                terminal: true,
+                error: message,
+            };
+        }
+    }
+
     const submitted = context.phase === "reconcile" && Boolean(context.txHash);
     return {
         success: false,
