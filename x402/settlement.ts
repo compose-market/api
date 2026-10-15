@@ -745,6 +745,41 @@ export function getNearSettlementFeePayer(network: NearNetworkId): string {
     return feePayer;
 }
 
+/** Read the next valid on-chain access-key nonce (`ak_nonce + 1`) for a NEAR payer or relayer account. */
+export async function getNearSettlementAccessKeyNonce(
+    accountId: string,
+    network: NearNetworkId,
+    role: "payer" | "relayer" = "payer",
+): Promise<bigint> {
+    if (!isAddressValidForNetwork(accountId, network)) {
+        if (role === "relayer") {
+            throw new Error(`NEAR relayer configuration invalid for ${network}: ${accountId}`);
+        }
+        throw new Error(`Invalid payer address for ${network}: ${accountId}`);
+    }
+    const publicKey = await getNearSettlementSignerIdentity();
+    const envelope = await nearJsonRpc<{ nonce?: number | string; error?: string }>(
+        network,
+        "query",
+        {
+            request_type: "view_access_key",
+            finality: "optimistic",
+            account_id: accountId,
+            public_key: publicKey,
+        },
+    );
+    if (envelope.error) {
+        throw new Error(`NEAR view_access_key failed for ${accountId}: ${JSON.stringify(envelope.error)}`);
+    }
+    if (!envelope.result || envelope.result.error || envelope.result.nonce === undefined) {
+        if (role === "relayer") {
+            throw new Error(`NEAR relayer key unavailable for ${accountId}: ${envelope.result?.error ?? "missing nonce"}`);
+        }
+        throw new Error(`NEAR access key does not exist for ${accountId}: ${envelope.result?.error ?? "missing nonce"}`);
+    }
+    return BigInt(envelope.result.nonce) + 1n;
+}
+
 // =============================================================================
 // On-Chain Settlement (Compose Keys - uses transferFrom)
 // =============================================================================
