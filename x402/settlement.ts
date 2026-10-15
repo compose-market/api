@@ -146,6 +146,11 @@ const NEAR_RPC_TIMEOUT_MS = 15_000;
 const NEAR_RECONCILE_TIMEOUT_MS = 8_000;
 const nearSenderByTxHash = new Map<string, string>();
 
+export function normalizeSettlementMemo(raw?: string): string {
+    const cleaned = (raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]/gu, "");
+    return cleaned || DEFAULT_SETTLEMENT_MEMO;
+}
+
 // =============================================================================
 // Account & Client Helpers
 // =============================================================================
@@ -181,6 +186,34 @@ function settlementErrorMessage(error: unknown): string {
             .join(" | ");
     }
     return String(error);
+}
+
+function sanitizeSettlementRecipients(
+    network: NetworkId,
+    payTo?: string,
+    royalties?: { creator?: string; treasury?: string },
+): {
+    payTo?: string;
+    treasury?: string;
+    creator?: string;
+} {
+    const explicitPayTo = payTo?.trim() || undefined;
+    if (explicitPayTo && !isAddressValidForNetwork(explicitPayTo, network)) {
+        throw new Error(`Invalid settlement payTo address for ${network}: ${explicitPayTo}`);
+    }
+    const explicitTreasury = royalties?.treasury?.trim() || undefined;
+    if (explicitTreasury && !isAddressValidForNetwork(explicitTreasury, network)) {
+        throw new Error(`Invalid settlement treasury address for ${network}: ${explicitTreasury}`);
+    }
+    const rawCreator = royalties?.creator?.trim() || undefined;
+    const creator = rawCreator && isAddressValidForNetwork(rawCreator, network)
+        ? rawCreator
+        : undefined;
+    return {
+        payTo: explicitPayTo,
+        treasury: explicitTreasury,
+        creator,
+    };
 }
 
 /**
