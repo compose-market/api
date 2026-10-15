@@ -571,6 +571,34 @@ async function prepareSvmKeyPayment(
     };
 }
 
+interface NearRpcErrorObject {
+    name?: string;
+    code?: number;
+    message?: string;
+    data?: unknown;
+    cause?: {
+        name?: string;
+        info?: Record<string, unknown>;
+    };
+}
+
+interface NearRpcEnvelope<T> {
+    jsonrpc: string;
+    id: string;
+    result?: T;
+    error?: NearRpcErrorObject;
+}
+
+interface NearFinalExecutionOutcome {
+    final_execution_status?: string;
+    status?: unknown;
+    receipts_outcome?: Array<{
+        outcome?: {
+            status?: unknown;
+        };
+    }>;
+}
+
 // =============================================================================
 // On-Chain Settlement (Compose Keys - uses transferFrom)
 // =============================================================================
