@@ -1403,6 +1403,15 @@ export async function broadcastPreparedKeyPaymentForNetwork(
     }
 }
 
+export interface KeyPaymentSettlementOptions {
+    payTo?: string;
+    royalties?: { creator?: string; treasury?: string };
+    providerAmountWei?: string;
+    platformFeeWei?: string;
+    memo?: string;
+    service?: string;
+}
+
 export async function submitKeyPaymentForNetwork(
     userAddress: string,
     amountWei: number | string,
