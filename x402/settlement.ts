@@ -663,6 +663,65 @@ function extractNearSenderFromPayload(payload?: string): string | undefined {
     }
 }
 
+function evaluateNearFailureStatus(
+    failure: unknown,
+    txHash: string,
+    label: "transaction" | "receipt",
+): SettlementResult {
+    const failureJson = JSON.stringify(failure);
+    if (/DelegateActionExpired|DelegateActionInvalidNonce/i.test(failureJson)) {
+        const akNonceMatch = /"ak_nonce"\s*:\s*(\d+)/.exec(failureJson);
+        const syncNextDelegateNonce = akNonceMatch ? (BigInt(akNonceMatch[1]) + 1n).toString() : undefined;
+        return {
+            success: false,
+            status: "queued",
+            resetPreparation: true,
+            ...(syncNextDelegateNonce ? { syncNextDelegateNonce } : {}),
+            error: `NEAR delegate action stale (${label}): ${failureJson}`,
+        };
+    }
+    return {
+        success: false,
+        status: "failed",
+        terminal: true,
+        txHash,
+        error: `NEAR ${label} failed: ${failureJson}`,
+    };
+}
+
+function evaluateNearExecutionOutcome(
+    outcome: NearFinalExecutionOutcome,
+    txHash: string,
+): SettlementResult {
+    const hasFailure = (status: unknown): status is { Failure: unknown } =>
+        typeof status === "object" && status !== null && "Failure" in status && Boolean((status as { Failure?: unknown }).Failure);
+
+    if (hasFailure(outcome.status)) {
+        return evaluateNearFailureStatus(outcome.status.Failure, txHash, "transaction");
+    }
+
+    for (const receipt of outcome.receipts_outcome ?? []) {
+        if (hasFailure(receipt.outcome?.status)) {
+            return evaluateNearFailureStatus(receipt.outcome.status.Failure, txHash, "receipt");
+        }
+    }
+
+    const topLevelComplete = typeof outcome.status === "object"
+        && outcome.status !== null
+        && ("SuccessValue" in outcome.status || "SuccessReceiptId" in outcome.status);
+    const receiptsComplete = (outcome.receipts_outcome ?? []).every((receipt) => {
+        const receiptStatus = receipt.outcome?.status;
+        return typeof receiptStatus === "object"
+            && receiptStatus !== null
+            && ("SuccessValue" in receiptStatus || "SuccessReceiptId" in receiptStatus);
+    });
+
+    if (topLevelComplete && receiptsComplete) {
+        return { success: true, status: "confirmed", txHash };
+    }
+    return { success: false, status: "submitted", txHash };
+}
+
 // =============================================================================
 // On-Chain Settlement (Compose Keys - uses transferFrom)
 // =============================================================================
