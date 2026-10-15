@@ -1211,7 +1211,7 @@ export async function getEvmSettlementPendingNonce(network: EvmNetworkId): Promi
     const account = getTreasuryAccount();
     const publicClient = createPublicClient({
         chain: getViemChain(network),
-        transport: http(getNetworkRpcUrl(network)),
+        transport: http(getNetworkRpcUrl(network), { timeout: EVM_RPC_TIMEOUT_MS }),
     });
     return BigInt(await publicClient.getTransactionCount({
         address: account.address,
@@ -1223,17 +1223,30 @@ export async function prepareKeyPaymentForNetwork(
     userAddress: string,
     amountWei: number | string,
     network: NetworkId,
-    options: { evmNonce?: bigint } = {},
+    options: {
+        evmNonce?: bigint;
+        nearNonce?: bigint;
+        nearDelegateNonce?: bigint;
+        payTo?: string;
+        royalties?: { creator?: string; treasury?: string };
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+        memo?: string;
+        service?: string;
+    } = {},
 ): Promise<SettlementPreparationResult> {
     try {
         if (isEvmNetwork(network)) {
             return {
                 success: true,
-                prepared: await prepareEvmKeyPayment(userAddress, amountWei, network, options.evmNonce),
+                prepared: await prepareEvmKeyPayment(userAddress, amountWei, network, options.evmNonce, options.payTo, options),
             };
         }
         if (isSolanaNetwork(network)) {
-            return { success: true, prepared: await prepareSvmKeyPayment(userAddress, amountWei, network) };
+            return { success: true, prepared: await prepareSvmKeyPayment(userAddress, amountWei, network, options.payTo, options) };
+        }
+        if (isNearNetwork(network)) {
+            return { success: true, prepared: await prepareNearKeyPayment(userAddress, amountWei, network, options.payTo, options) };
         }
         return {
             success: false,
