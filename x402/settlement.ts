@@ -1416,8 +1416,9 @@ export async function submitKeyPaymentForNetwork(
     userAddress: string,
     amountWei: number | string,
     network: NetworkId,
+    options: KeyPaymentSettlementOptions = {},
 ): Promise<SettlementResult> {
-    const preparation = await prepareKeyPaymentForNetwork(userAddress, amountWei, network);
+    const preparation = await prepareKeyPaymentForNetwork(userAddress, amountWei, network, options);
     if (!preparation.success) return preparation.result;
     return broadcastPreparedKeyPaymentForNetwork(preparation.prepared);
 }
@@ -1426,18 +1427,20 @@ export async function settleKeyPayment(
     userAddress: string,
     amountWei: number | string,
     network: EvmNetworkId,
+    options: KeyPaymentSettlementOptions = {},
 ): Promise<SettlementResult> {
-    return settleKeyPaymentForNetwork(userAddress, amountWei, network);
+    return settleKeyPaymentForNetwork(userAddress, amountWei, network, options);
 }
 
 export async function settleKeyPaymentForNetwork(
     userAddress: string,
     amountWei: number | string,
     network: NetworkId,
+    options: KeyPaymentSettlementOptions = {},
 ): Promise<SettlementResult> {
-    const submitted = await submitKeyPaymentForNetwork(userAddress, amountWei, network);
-    if (submitted.status !== "submitted" || !submitted.txHash) return submitted;
-    return reconcileKeyPaymentForNetwork(submitted.txHash, network, { wait: true });
+    const submitted = await submitKeyPaymentForNetwork(userAddress, amountWei, network, options);
+    if (submitted.status === "confirmed" || submitted.status !== "submitted" || !submitted.txHash) return submitted;
+    return reconcileKeyPaymentForNetwork(submitted.txHash, network, { wait: true, userAddress });
 }
 
 export async function reconcileKeyPaymentForNetwork(
