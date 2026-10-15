@@ -441,55 +441,128 @@ async function prepareSvmKeyPayment(
     userAddress: string,
     amountWei: number | string,
     network: SolanaNetworkId,
+    payTo?: string,
+    options?: {
+        royalties?: { creator?: string; treasury?: string };
+        providerAmountWei?: string;
+        platformFeeWei?: string;
+        memo?: string;
+        service?: string;
+    },
 ): Promise<PreparedSettlementTransaction> {
+    if (!isAddressValidForNetwork(userAddress, network)) {
+        throw new Error(`Invalid payer address for ${network}: ${userAddress}`);
+    }
     const amount = typeof amountWei === "string" ? BigInt(amountWei) : BigInt(amountWei);
     const definition = getNetwork(network);
-    const merchant = process.env.SVM_MERCHANT_WALLET_ADDRESS?.trim();
-    if (!merchant) {
-        throw new Error("SVM_MERCHANT_WALLET_ADDRESS environment variable required");
-    }
+    const sanitized = sanitizeSettlementRecipients(network, payTo, options?.royalties);
 
-    console.log(`[settlement] Initiating SVM on-chain settlement:`);
-    console.log(`[settlement]   From: ${userAddress}`);
-    console.log(`[settlement]   To: ${merchant}`);
-    console.log(`[settlement]   Amount: ${amount.toString()} wei ($${(Number(amount) / 1_000_000).toFixed(6)})`);
-    console.log(`[settlement]   Network: ${network}`);
+    const creatorAddress = sanitized.creator;
+    const treasuryAddress = (sanitized.treasury || sanitized.payTo || process.env.SVM_MERCHANT_WALLET_ADDRESS?.trim())?.trim();
+
+    const hasSplit = Boolean(
+        options?.providerAmountWei &&
+        creatorAddress &&
+        treasuryAddress &&
+        creatorAddress !== treasuryAddress
+    );
 
     const rpc = createSvmRpc(network);
     const signer = await getSvmSettlementSigner();
     const mint = solanaAddress(definition.asset.address);
     const owner = solanaAddress(userAddress);
-    const merchantOwner = solanaAddress(merchant);
     const tokenProgram = await readSvmTokenProgramAddress(rpc, mint);
-    const [sourceAta, destinationAta] = await Promise.all([
-        findAssociatedTokenAddress({ owner, mint, tokenProgram }),
-        findAssociatedTokenAddress({ owner: merchantOwner, mint, tokenProgram }),
-    ]);
+    const sourceAta = await findAssociatedTokenAddress({ owner, mint, tokenProgram });
+    const settlementMemo = normalizeSettlementMemo(options?.memo ?? options?.service);
 
-    const transferInstruction = addSolanaSignersToInstruction([signer], {
-        programAddress: tokenProgram,
-        accounts: [
-            { address: sourceAta, role: SolanaAccountRole.WRITABLE },
-            { address: mint, role: SolanaAccountRole.READONLY },
-            { address: destinationAta, role: SolanaAccountRole.WRITABLE },
-            { address: signer.address, role: SolanaAccountRole.READONLY_SIGNER },
-        ],
-        data: encodeTransferCheckedInstructionData(amount, definition.asset.decimals),
-    } satisfies SolanaInstruction);
     const memoInstruction = {
         programAddress: SVM_MEMO_PROGRAM_ADDRESS,
         accounts: [],
-        data: new TextEncoder().encode(SVM_SETTLEMENT_MEMO),
+        data: new TextEncoder().encode(settlementMemo),
     } satisfies SolanaInstruction;
+
+    const instructions: SolanaInstruction[] = [];
+
+    if (hasSplit && creatorAddress && treasuryAddress && options?.providerAmountWei) {
+        const creatorAmount = BigInt(options.providerAmountWei);
+        const treasuryAmount = BigInt(options?.platformFeeWei ?? (amount - creatorAmount).toString());
+
+        console.log(`[settlement] Initiating SVM split on-chain settlement:`);
+        console.log(`[settlement]   From: ${userAddress}`);
+        console.log(`[settlement]   Provider/Recipient: ${creatorAddress} -> ${creatorAmount.toString()} wei`);
+        console.log(`[settlement]   Platform/Fee: ${treasuryAddress} -> ${treasuryAmount.toString()} wei`);
+        console.log(`[settlement]   Network: ${network}`);
+
+        if (creatorAmount > 0n) {
+            const creatorOwner = solanaAddress(creatorAddress);
+            const creatorAta = await findAssociatedTokenAddress({ owner: creatorOwner, mint, tokenProgram });
+            instructions.push(addSolanaSignersToInstruction([signer], {
+                programAddress: tokenProgram,
+                accounts: [
+                    { address: sourceAta, role: SolanaAccountRole.WRITABLE },
+                    { address: mint, role: SolanaAccountRole.READONLY },
+                    { address: creatorAta, role: SolanaAccountRole.WRITABLE },
+                    { address: signer.address, role: SolanaAccountRole.READONLY_SIGNER },
+                ],
+                data: encodeTransferCheckedInstructionData(creatorAmount, definition.asset.decimals),
+            } satisfies SolanaInstruction));
+        }
+
+        if (treasuryAmount > 0n) {
+            const treasuryOwner = solanaAddress(treasuryAddress);
+            const treasuryAta = await findAssociatedTokenAddress({ owner: treasuryOwner, mint, tokenProgram });
+            instructions.push(addSolanaSignersToInstruction([signer], {
+                programAddress: tokenProgram,
+                accounts: [
+                    { address: sourceAta, role: SolanaAccountRole.WRITABLE },
+                    { address: mint, role: SolanaAccountRole.READONLY },
+                    { address: treasuryAta, role: SolanaAccountRole.WRITABLE },
+                    { address: signer.address, role: SolanaAccountRole.READONLY_SIGNER },
+                ],
+                data: encodeTransferCheckedInstructionData(treasuryAmount, definition.asset.decimals),
+            } satisfies SolanaInstruction));
+        }
+    } else {
+        const merchant = (
+            creatorAddress
+                && options?.providerAmountWei
+                && (options?.platformFeeWei === "0" || BigInt(options.providerAmountWei) >= amount)
+                ? creatorAddress
+                : treasuryAddress
+        );
+        if (!merchant || !isAddressValidForNetwork(merchant, network)) {
+            throw new Error("SVM_MERCHANT_WALLET_ADDRESS environment variable required");
+        }
+
+        console.log(`[settlement] Initiating SVM on-chain settlement:`);
+        console.log(`[settlement]   From: ${userAddress}`);
+        console.log(`[settlement]   To: ${merchant}`);
+        console.log(`[settlement]   Amount: ${amount.toString()} wei ($${(Number(amount) / 1_000_000).toFixed(6)})`);
+        console.log(`[settlement]   Network: ${network}`);
+
+        const merchantOwner = solanaAddress(merchant);
+        const destinationAta = await findAssociatedTokenAddress({ owner: merchantOwner, mint, tokenProgram });
+        instructions.push(addSolanaSignersToInstruction([signer], {
+            programAddress: tokenProgram,
+            accounts: [
+                { address: sourceAta, role: SolanaAccountRole.WRITABLE },
+                { address: mint, role: SolanaAccountRole.READONLY },
+                { address: destinationAta, role: SolanaAccountRole.WRITABLE },
+                { address: signer.address, role: SolanaAccountRole.READONLY_SIGNER },
+            ],
+            data: encodeTransferCheckedInstructionData(amount, definition.asset.decimals),
+        } satisfies SolanaInstruction));
+    }
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
     const transactionMessage = solanaPipe(
         createSolanaTransactionMessage({ version: 0 }),
         (message) => setSolanaTransactionMessageFeePayerSigner(signer, message),
         (message) => setSolanaTransactionMessageLifetimeUsingBlockhash(latestBlockhash, message),
+        (message) => appendSolanaTransactionMessageInstructions(instructions, message),
         (message) => appendSolanaTransactionMessageInstruction(memoInstruction, message),
-        (message) => appendSolanaTransactionMessageInstruction(transferInstruction, message),
     );
+
     const signedTransaction = await signSolanaTransactionMessageWithSigners(transactionMessage);
     return {
         network,
