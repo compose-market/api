@@ -722,6 +722,29 @@ function evaluateNearExecutionOutcome(
     return { success: false, status: "submitted", txHash };
 }
 
+function getNearSettlementSigner(): KeyPairSigner {
+    const privateKey = process.env.NEAR_FACILITATOR_KEY?.trim();
+    if (!privateKey) {
+        throw new Error("NEAR_FACILITATOR_KEY environment variable required");
+    }
+    const normalized = (privateKey.includes(":") ? privateKey : `ed25519:${privateKey}`) as KeyPairString;
+    return KeyPairSigner.fromSecretKey(normalized);
+}
+
+/** Public key string of the NEAR facilitator signer used to scope per-account access-key nonces. */
+export async function getNearSettlementSignerIdentity(): Promise<string> {
+    return (await getNearSettlementSigner().getPublicKey()).toString();
+}
+
+/** Canonical Facilitator relayer account that sponsors NEAR settlement gas via NEP-366 SignedDelegate. */
+export function getNearSettlementFeePayer(network: NearNetworkId): string {
+    const feePayer = resolveNearFacilitatorWallet(network)?.trim();
+    if (!feePayer || !isAddressValidForNetwork(feePayer, network)) {
+        throw new Error("NEAR_TREASURY_SERVER_WALLET_PUBLIC environment variable required");
+    }
+    return feePayer;
+}
+
 // =============================================================================
 // On-Chain Settlement (Compose Keys - uses transferFrom)
 // =============================================================================
