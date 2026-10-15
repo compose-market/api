@@ -599,6 +599,70 @@ interface NearFinalExecutionOutcome {
     }>;
 }
 
+async function nearJsonRpc<T>(
+    network: NearNetworkId,
+    method: string,
+    params: unknown,
+    timeoutMs = NEAR_RPC_TIMEOUT_MS,
+): Promise<NearRpcEnvelope<T>> {
+    const response = await fetch(getNetworkRpcUrl(network), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "compose-settlement",
+            method,
+            params,
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+        throw new Error(`NEAR RPC HTTP ${response.status} on ${method}`);
+    }
+    return await response.json() as NearRpcEnvelope<T>;
+}
+
+async function callNearViewFunction<T>(
+    network: NearNetworkId,
+    contractId: string,
+    methodName: string,
+    args: Record<string, unknown>,
+): Promise<T> {
+    const envelope = await nearJsonRpc<{ result?: number[]; error?: string }>(
+        network,
+        "query",
+        {
+            request_type: "call_function",
+            finality: "optimistic",
+            account_id: contractId,
+            method_name: methodName,
+            args_base64: Buffer.from(JSON.stringify(args)).toString("base64"),
+        },
+    );
+    if (envelope.error) {
+        throw new Error(`NEAR call_function ${methodName} failed: ${JSON.stringify(envelope.error)}`);
+    }
+    if (!envelope.result || envelope.result.error || !Array.isArray(envelope.result.result)) {
+        throw new Error(`NEAR call_function ${methodName} error: ${envelope.result?.error ?? "empty result"}`);
+    }
+    const decoded = Buffer.from(envelope.result.result).toString("utf8");
+    return JSON.parse(decoded) as T;
+}
+
+function extractNearSenderFromPayload(payload?: string): string | undefined {
+    if (!payload) return undefined;
+    try {
+        const decoded = borshDeserialize(
+            NEAR_SCHEMA.SignedTransaction,
+            Buffer.from(payload, "base64"),
+        ) as { transaction?: { signerId?: string } };
+        const signerId = decoded?.transaction?.signerId?.trim();
+        return signerId || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 // =============================================================================
 // On-Chain Settlement (Compose Keys - uses transferFrom)
 // =============================================================================
