@@ -1446,19 +1446,19 @@ export async function settleKeyPaymentForNetwork(
 export async function reconcileKeyPaymentForNetwork(
     txHash: string,
     network: NetworkId,
-    options: { wait?: boolean } = {},
+    options: { wait?: boolean; userAddress?: string; preparedTxPayload?: string } = {},
 ): Promise<SettlementResult> {
     if (isEvmNetwork(network)) {
         try {
             const publicClient = createPublicClient({
                 chain: getViemChain(network),
-                transport: http(getNetworkRpcUrl(network)),
+                transport: http(getNetworkRpcUrl(network), { timeout: EVM_RPC_TIMEOUT_MS }),
             });
             const receipt = options.wait
                 ? await publicClient.waitForTransactionReceipt({
                     hash: txHash as Hex,
                     confirmations: 1,
-                    timeout: 60_000,
+                    timeout: 20_000,
                 })
                 : await publicClient.getTransactionReceipt({ hash: txHash as Hex });
             if (receipt.status !== "success") {
@@ -1478,6 +1478,9 @@ export async function reconcileKeyPaymentForNetwork(
     if (isSolanaNetwork(network)) {
         try {
             const rpc = createSvmRpc(network);
+            if (!options.wait) {
+                return await inspectSvmSignature(rpc, txHash as SolanaSignature);
+            }
             await confirmSvmSignature(rpc, txHash as SolanaSignature);
             return { success: true, status: "confirmed", txHash };
         } catch (error) {
@@ -1485,6 +1488,59 @@ export async function reconcileKeyPaymentForNetwork(
             if (message.includes("transaction failed")) {
                 return { success: false, status: "failed", terminal: true, txHash, error: message };
             }
+            return classifySettlementError(error, { network, phase: "reconcile", txHash });
+        }
+    }
+    if (isNearNetwork(network)) {
+        try {
+            const validUserAddress = options.userAddress?.trim() && isAddressValidForNetwork(options.userAddress.trim(), network)
+                ? options.userAddress.trim()
+                : undefined;
+            const senderAccountId = extractNearSenderFromPayload(options.preparedTxPayload)
+                ?? nearSenderByTxHash.get(txHash)
+                ?? validUserAddress
+                ?? resolveNearFacilitatorWallet(network)
+                ?? process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC?.trim()
+                ?? "system";
+            const envelope = await nearJsonRpc<NearFinalExecutionOutcome>(
+                network,
+                "tx",
+                {
+                    tx_hash: txHash,
+                    sender_account_id: senderAccountId,
+                    wait_until: options.wait ? "EXECUTED_OPTIMISTIC" : "NONE",
+                },
+                options.wait ? NEAR_RPC_TIMEOUT_MS : NEAR_RECONCILE_TIMEOUT_MS,
+            );
+            if (envelope.error) {
+                const causeName = envelope.error.cause?.name ?? "";
+                const errorJson = JSON.stringify(envelope.error);
+                if (causeName === "UNKNOWN_TRANSACTION" || /UNKNOWN_TRANSACTION|does not exist/i.test(errorJson)) {
+                    return {
+                        success: false,
+                        status: "submitted",
+                        notObserved: true,
+                        txHash,
+                        error: `NEAR transaction not observed (${senderAccountId}): ${errorJson}`,
+                    };
+                }
+                return {
+                    success: false,
+                    status: "submitted",
+                    txHash,
+                    error: `NEAR tx status RPC error: ${errorJson}`,
+                };
+            }
+            if (!envelope.result) {
+                return {
+                    success: false,
+                    status: "submitted",
+                    txHash,
+                    error: "NEAR tx status returned empty result",
+                };
+            }
+            return evaluateNearExecutionOutcome(envelope.result, txHash);
+        } catch (error) {
             return classifySettlementError(error, { network, phase: "reconcile", txHash });
         }
     }
