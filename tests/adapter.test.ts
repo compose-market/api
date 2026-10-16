@@ -1968,7 +1968,7 @@ test("Alibaba Qwen TTS uses native multimodal speech synthesis", async () => {
   const audio = Buffer.from("qwen-tts-audio");
   globalThis.fetch = (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation") {
+    if (url.endsWith("/services/aigc/multimodal-generation/generation")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: {
