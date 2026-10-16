@@ -17,6 +17,25 @@ export function resolveNearMerchantWallet(network: NearNetworkId): string | unde
     return (process.env.NEAR_MERCHANT_WALLET_ADDRESS ?? nearMerchantWalletAddress)?.trim() || undefined;
 }
 
+export function resolveNearTreasuryWallet(network: NearNetworkId): string | undefined {
+    if (network === NETWORK_IDS.nearTestnet) {
+        const testnet = process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC?.trim();
+        if (testnet) return testnet;
+    }
+    return (process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC ?? nearTreasuryWalletAddress)?.trim() || undefined;
+}
+
+export function resolveNearFacilitatorWallet(network: NearNetworkId): string | undefined {
+    if (network === NETWORK_IDS.nearTestnet) {
+        const testnet = process.env.NEAR_TESTNET_FACILITATOR_ACCOUNT?.trim();
+        if (testnet) return testnet;
+    } else {
+        const mainnet = process.env.NEAR_FACILITATOR_ACCOUNT?.trim();
+        if (mainnet) return mainnet;
+    }
+    return resolveNearTreasuryWallet(network);
+}
+
 export const paymentNetwork = getDefaultNetwork();
 export const paymentAsset = getNetwork(paymentNetwork).asset;
 
