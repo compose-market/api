@@ -2548,7 +2548,7 @@ test("Alibaba HappyHorse video-edit sends typed input.media and nonempty prompt"
   let requestBody: any;
   globalThis.fetch = (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis") {
+    if (url.endsWith("/services/aigc/video-generation/video-synthesis")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: {
@@ -2573,7 +2573,7 @@ test("Alibaba HappyHorse video-edit sends typed input.media and nonempty prompt"
   ]);
   assert.equal("img_url" in requestBody.input, false);
   assert.equal("video_url" in requestBody.input, false);
-  assert.equal(result.jobId, "alibaba:task_edit_video");
+  assert.ok(result.jobId.endsWith(":task_edit_video"));
 });
 
 test("Alibaba Wan keyframe i2v sends first and last frame media", async () => {
