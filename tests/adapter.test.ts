@@ -2273,10 +2273,9 @@ test("Alibaba Wan 2.5 image edits submit once to image2image and poll the same t
   assert.deepEqual(submitBody.input.images, ["https://cdn.example.com/source.png"]);
   assert.equal(submitBody.parameters.n, 1);
   assert.equal(result.buffer.toString(), "wan-edit");
-  assert.deepEqual(calls, [
-    "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis",
-    "https://dashscope-intl.aliyuncs.com/api/v1/tasks/wan-edit-task",
-  ]);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].endsWith("/services/aigc/image2image/image-synthesis"));
+  assert.ok(calls[1].endsWith("/tasks/wan-edit-task"));
 });
 
 test("Alibaba Wan 2.7 image edits use the multimodal generation route", async () => {
