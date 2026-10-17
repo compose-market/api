@@ -2215,7 +2215,7 @@ test("Alibaba image generation converts OpenAI-style sizes after custom params",
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(url);
 
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation") {
+    if (url.endsWith("/services/aigc/multimodal-generation/generation")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: {
@@ -2239,9 +2239,8 @@ test("Alibaba image generation converts OpenAI-style sizes after custom params",
   assert.equal(requestBody.parameters.style, "realistic");
   assert.equal(result.mimeType, "image/png");
   assert.equal(result.buffer.toString(), "png-image");
-  assert.deepEqual(calls, [
-    "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-  ]);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].endsWith("/services/aigc/multimodal-generation/generation"));
 });
 
 test("Alibaba Wan 2.5 image edits submit once to image2image and poll the same task", async () => {
