@@ -2057,7 +2057,7 @@ test("Alibaba Qwen voice design generates a provider-valid preferred name", asyn
   const audio = Buffer.from("voice-design-preview");
   globalThis.fetch = (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/tts/customization") {
+    if (url.endsWith("/services/audio/tts/customization")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: {
