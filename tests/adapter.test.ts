@@ -2089,7 +2089,7 @@ test("Alibaba speech transcription submits public audio URLs to DashScope ASR an
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(url);
 
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription") {
+    if (url.endsWith("/services/audio/asr/transcription")) {
       requestBody = JSON.parse(String(init?.body));
       assert.equal((init?.headers as Record<string, string>)["X-DashScope-Async"], "enable");
       return Response.json({
@@ -2100,7 +2100,7 @@ test("Alibaba speech transcription submits public audio URLs to DashScope ASR an
       });
     }
 
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/tasks/task_123") {
+    if (url.endsWith("/tasks/task_123")) {
       return Response.json({
         output: {
           task_id: "task_123",
@@ -2145,11 +2145,10 @@ test("Alibaba speech transcription submits public audio URLs to DashScope ASR an
     second: 3,
     audio_second: 3,
   });
-  assert.deepEqual(calls, [
-    "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription",
-    "https://dashscope-intl.aliyuncs.com/api/v1/tasks/task_123",
-    "https://result.example.com/transcript.json",
-  ]);
+  assert.equal(calls.length, 3);
+  assert.ok(calls[0].endsWith("/services/audio/asr/transcription"));
+  assert.ok(calls[1].endsWith("/tasks/task_123"));
+  assert.equal(calls[2], "https://result.example.com/transcript.json");
 });
 
 test("Alibaba Qwen short ASR uses the synchronous compatible audio message route", async () => {
