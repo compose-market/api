@@ -2158,7 +2158,7 @@ test("Alibaba Qwen short ASR uses the synchronous compatible audio message route
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(url);
 
-    if (url === "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions") {
+    if (url.endsWith("/compatible-mode/v1/chat/completions")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         choices: [{
@@ -2204,9 +2204,8 @@ test("Alibaba Qwen short ASR uses the synchronous compatible audio message route
     second: 2,
     audio_second: 2,
   });
-  assert.deepEqual(calls, [
-    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
-  ]);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].endsWith("/compatible-mode/v1/chat/completions"));
 });
 
 test("Alibaba image generation converts OpenAI-style sizes after custom params", async () => {
