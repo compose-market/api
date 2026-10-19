@@ -2651,7 +2651,7 @@ test.skip("Alibaba Wan VACE sends reference object markers as parameters", async
   let requestBody: any;
   globalThis.fetch = (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis") {
+    if (url.endsWith("/services/aigc/video-generation/video-synthesis")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: {
