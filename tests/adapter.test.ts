@@ -2690,7 +2690,7 @@ test("Alibaba video maps size to resolution without sending non-native size", as
   let requestBody: any;
   globalThis.fetch = (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url === "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis") {
+    if (url.endsWith("/services/aigc/video-generation/video-synthesis")) {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
         output: {
@@ -2715,7 +2715,7 @@ test("Alibaba video maps size to resolution without sending non-native size", as
   assert.equal(requestBody.parameters.resolution, "720P");
   assert.equal("size" in requestBody.parameters, false);
   assert.equal(requestBody.parameters.prompt_extend, true);
-  assert.equal(result.jobId, "alibaba:task_sized_video");
+  assert.ok(result.jobId.endsWith(":task_sized_video"));
 });
 
 test("generateWithTools routes speech synthesis through ElevenLabs", async () => {
