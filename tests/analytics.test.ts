@@ -624,6 +624,20 @@ test("zero-amount or un-billed payment intents complete their projection without
   assert.equal(completions[0]?.intentId, "pi_memory_projection_skip");
 });
 
+test("canonical projection projects all positive-amount intents universally without service allowlists", async () => {
+  const source = await readFile(join(process.cwd(), "x402/intents.ts"), "utf8");
+  const start = source.indexOf("export async function projectCanonicalPaymentIntentAnalytics");
+  const end = source.indexOf("export async function reconcileCanonicalPaymentIntentProjections", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const projection = source.slice(start, end);
+
+  assert.doesNotMatch(source, /INFERENCE_ANALYTICS_SERVICES/);
+  assert.match(projection, /!dependencies\.project && !hasPositiveFinalAmount\(intent\)/);
+  assert.match(projection, /import\("\.\.\/data\/analytics\/inference\/store\.js"\)/);
+  assert.doesNotMatch(projection, /analytics\/agents/);
+});
+
 test("confirmed canonical Analytics projection updates, invalidates, then clears its obligation", async () => {
   const intents = await import("../x402/intents.js") as unknown as {
     projectCanonicalPaymentIntentAnalytics(
