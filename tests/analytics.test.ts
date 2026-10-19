@@ -480,10 +480,10 @@ test("canonical projection inserts one missing analytics settlement from x402 in
   assert.equal(inserted[0]?.settlement.family, "inclusionai");
 });
 
-test("canonical projection completes without fabricating rows for non-catalog meter subjects", async () => {
+test("canonical projection projects universal non-catalog metered intents (agent, connector, vibe, banner, workflow) into existing analytics schema", async () => {
   const store = await import("../data/analytics/inference/store.js");
   const agentWallet = `0x${"0a".repeat(20)}`;
-  const inserted: unknown[] = [];
+  const inserted: Array<{ lifecycle: Record<string, unknown>; settlement: Record<string, unknown> }> = [];
   const projected = await store.projectCanonicalPaymentIntentSettlement({
     paymentIntentId: "pi_agent_backfill",
     status: "confirmed",
@@ -509,7 +509,7 @@ test("canonical projection completes without fabricating rows for non-catalog me
     executionRunId: "agent-turn-backfill",
     sequence: 0,
     meterSubject: `agent:${agentWallet}`,
-    meterLineItems: [{ key: "agent.turn", unit: "usd_per_turn", quantity: 1, unitPriceUsd: 0.00013, amountWei: "130" }],
+    meterLineItems: [{ key: "turn", unit: "request", quantity: 1, unitPriceUsd: 0.00013, amountWei: "130" }],
     providerAmountWei: "128",
     platformFeeWei: "2",
     txHash: `0x${"44".repeat(32)}`,
@@ -519,65 +519,69 @@ test("canonical projection completes without fabricating rows for non-catalog me
     confirmedAt: 1_754_044_567_890,
     credentialExpiresAt: 1_754_144_500_000,
     requestFingerprint: "fingerprint",
-  }, async () => {
-    inserted.push(true);
+  }, async (lifecycle, settlement) => {
+    inserted.push({
+      lifecycle: lifecycle as unknown as Record<string, unknown>,
+      settlement: settlement as unknown as Record<string, unknown>,
+    });
   });
   assert.equal(projected, true);
-  assert.equal(inserted.length, 0);
-});
-
-test("non-analytics payment intents complete their projection without publication", async () => {
-  const intents = await import("../x402/intents.js") as unknown as {
-    projectCanonicalPaymentIntentAnalytics(
-      intent: Record<string, unknown>,
-      dependencies: {
-        complete(input: Record<string, unknown>): Promise<boolean>;
-      },
-    ): Promise<boolean>;
-  };
-  const completions: Record<string, unknown>[] = [];
-
-  const completed = await intents.projectCanonicalPaymentIntentAnalytics({
-    paymentIntentId: "pi_memory_projection_skip",
-    keyId: "key_memory",
-    purpose: "session",
-    userAddress: `0x${"27".repeat(20)}`,
-    network: "eip155:5042002",
-    service: "memory",
-    action: "remember",
-    status: "confirmed",
-    txHash: `0x${"45".repeat(32)}`,
-    confirmedAt: 1_754_044_567_890,
-    meterSubject: "memory:remember",
-    rootRunId: "root",
-    executionRunId: "execution",
-    sequence: 0,
-    createdAt: 1_754_044_500_000,
-    credentialExpiresAt: 1_754_144_500_000,
-  }, {
-    async complete(input) {
-      completions.push(input);
-      return true;
-    },
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0]?.settlement.family, "agent");
+  assert.equal(inserted[0]?.settlement.model, agentWallet);
+  assert.deepEqual(inserted[0]?.settlement.types, ["agent"]);
+  assert.equal(inserted[0]?.settlement.operation, "stream");
+  assert.deepEqual(inserted[0]?.settlement.billing, {
+    inferenceAmountAtomic: "128",
+    platformFeeAtomic: "2",
+    finalAmountAtomic: "130",
+    currency: "USDC",
+    decimals: 6,
   });
 
-  assert.equal(completed, true);
-  assert.equal(completions.length, 1);
-  assert.equal(completions[0]?.intentId, "pi_memory_projection_skip");
-});
-
-test("canonical projection keeps non-inference payments out of inference Analytics", async () => {
-  const source = await readFile(join(process.cwd(), "x402/intents.ts"), "utf8");
-  const start = source.indexOf("export async function projectCanonicalPaymentIntentAnalytics");
-  const end = source.indexOf("export async function reconcileCanonicalPaymentIntentProjections", start);
-  assert.notEqual(start, -1);
-  assert.notEqual(end, -1);
-  const projection = source.slice(start, end);
-
-  assert.match(source, /INFERENCE_ANALYTICS_SERVICES = new Set\(\["api", "inference"\]\)/);
-  assert.match(projection, /!dependencies\.project && !isInferenceAnalyticsPaymentIntent\(intent\)/);
-  assert.match(projection, /import\("\.\.\/data\/analytics\/inference\/store\.js"\)/);
-  assert.doesNotMatch(projection, /analytics\/agents/);
+  const connectorInserted: Array<{ settlement: Record<string, unknown> }> = [];
+  await store.projectCanonicalPaymentIntentSettlement({
+    paymentIntentId: "pi_connector_notion",
+    status: "confirmed",
+    transactionHash: "NearTxHash123",
+    confirmedAt: 1_754_044_567_890,
+  }, {
+    async query() { return []; },
+  }, {
+    paymentIntentId: "pi_connector_notion",
+    keyId: "key_conn",
+    purpose: "session",
+    userAddress: "0ugdgan4z3s63ndg69mrjs6xqs6xp145z0efgbm7rsxmr5a8q9k1pg",
+    network: "near:testnet",
+    asset: "usdc.tidepool-sandbox.testnet",
+    service: "connector",
+    action: "createpage",
+    resource: "https://runtime.compose.market/connectors/accounts/execute",
+    method: "POST",
+    maxAmountWei: "5000",
+    finalAmountWei: "5000",
+    status: "confirmed",
+    rootRunId: "run_1",
+    executionRunId: "run_1",
+    sequence: 0,
+    meterSubject: "account:notion",
+    meterLineItems: [{ key: "action", unit: "action", quantity: 1, unitPriceUsd: 0.005, amountWei: "5000" }],
+    providerAmountWei: "5000",
+    platformFeeWei: "0",
+    txHash: "NearTxHash123",
+    attemptCount: 1,
+    createdAt: 1_754_044_500_000,
+    updatedAt: 1_754_044_567_890,
+    confirmedAt: 1_754_044_567_890,
+    credentialExpiresAt: 1_754_144_500_000,
+    requestFingerprint: "fingerprint",
+  }, async (_lifecycle, settlement) => {
+    connectorInserted.push({ settlement: settlement as unknown as Record<string, unknown> });
+  });
+  assert.equal(connectorInserted.length, 1);
+  assert.equal(connectorInserted[0]?.settlement.family, "connector");
+  assert.equal(connectorInserted[0]?.settlement.model, "account:notion");
+  assert.deepEqual(connectorInserted[0]?.settlement.types, ["connector"]);
 });
 
 test("confirmed canonical Analytics projection updates, invalidates, then clears its obligation", async () => {
