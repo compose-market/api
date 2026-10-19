@@ -584,6 +584,46 @@ test("canonical projection projects universal non-catalog metered intents (agent
   assert.deepEqual(connectorInserted[0]?.settlement.types, ["connector"]);
 });
 
+test("zero-amount or un-billed payment intents complete their projection without publication", async () => {
+  const intents = await import("../x402/intents.js") as unknown as {
+    projectCanonicalPaymentIntentAnalytics(
+      intent: Record<string, unknown>,
+      dependencies: {
+        complete(input: Record<string, unknown>): Promise<boolean>;
+      },
+    ): Promise<boolean>;
+  };
+  const completions: Record<string, unknown>[] = [];
+
+  const completed = await intents.projectCanonicalPaymentIntentAnalytics({
+    paymentIntentId: "pi_memory_projection_skip",
+    keyId: "key_memory",
+    purpose: "session",
+    userAddress: `0x${"27".repeat(20)}`,
+    network: "eip155:5042002",
+    service: "memory",
+    action: "remember",
+    status: "confirmed",
+    txHash: `0x${"45".repeat(32)}`,
+    confirmedAt: 1_754_044_567_890,
+    meterSubject: "memory:remember",
+    rootRunId: "root",
+    executionRunId: "execution",
+    sequence: 0,
+    createdAt: 1_754_044_500_000,
+    credentialExpiresAt: 1_754_144_500_000,
+  }, {
+    async complete(input) {
+      completions.push(input);
+      return true;
+    },
+  });
+
+  assert.equal(completed, true);
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0]?.intentId, "pi_memory_projection_skip");
+});
+
 test("confirmed canonical Analytics projection updates, invalidates, then clears its obligation", async () => {
   const intents = await import("../x402/intents.js") as unknown as {
     projectCanonicalPaymentIntentAnalytics(
