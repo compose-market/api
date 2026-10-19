@@ -284,14 +284,14 @@ test("analytics uses one plural multi-network filter contract", async () => {
   };
 
   assert.deepEqual(
-    routes.parseFilters({ networks: "eip155:5042002,solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" }).networks,
-    ["eip155:5042002", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"],
+    routes.parseFilters({ networks: "eip155:84532,solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp" }).networks,
+    ["eip155:84532", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"],
   );
   assert.equal(routes.parseFilters({}).networks, undefined);
   assert.equal(routes.parseFilters({ settlementStatus: "submitted" }).settlementStatus, "submitted");
   assert.equal(routes.parseFilters({ settlementStatus: "claimed" }).settlementStatus, "claimed");
-  assert.throws(() => routes.parseFilters({ network: "eip155:5042002" }), /Invalid network filter/);
-  assert.throws(() => routes.parseFilters({ networks: "eip155:5042002,invalid" }), /Invalid networks/);
+  assert.throws(() => routes.parseFilters({ network: "eip155:84532" }), /Invalid network filter/);
+  assert.throws(() => routes.parseFilters({ networks: "eip155:84532,invalid" }), /Invalid networks/);
 
   const db = await readFile(join(process.cwd(), "data/analytics/inference/db.ts"), "utf8");
   assert.match(db, /unnest\(\$1::text\[\], \$2::text\[\]\)/);
