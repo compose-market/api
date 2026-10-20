@@ -1835,3 +1835,113 @@ test("settling a released intent returns a status-specific 409 instead of a fals
     await closeValkey();
   }
 });
+
+test("cross-chain creator royalties are stripped universally while invalid payTo or treasury addresses fail 400", async () => {
+  const payer = wallet();
+  const rootRunId = `root-${randomUUID()}`;
+  const validTreasury = wallet();
+  const solanaCreator = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+  const created = await createKey(payer, {
+    budgetLimit: BUDGET_WEI,
+    expiresAt: Date.now() + 10 * 60_000,
+    purpose: "session",
+    network: NETWORK,
+    name: "cross-chain-royalties-sanitization",
+  });
+  let paymentIntentId: string | undefined;
+
+  try {
+    const badPayTo = await authorizePaymentIntent({
+      authorization: `Bearer ${created.token}`,
+      network: NETWORK,
+      service: "external",
+      action: "invoke",
+      resource: "https://example.org/resource",
+      method: "POST",
+      maxAmountWei: String(CHECKPOINT_WEI),
+      payTo: solanaCreator,
+      rootRunId: `${rootRunId}-bad-payto`,
+      executionRunId: `${rootRunId}-bad-payto`,
+      sequence: 0,
+    });
+    assert.equal(badPayTo.ok, false);
+    if (!badPayTo.ok) assert.equal(badPayTo.status, 400);
+
+    const badTreasury = await authorizePaymentIntent({
+      authorization: `Bearer ${created.token}`,
+      network: NETWORK,
+      service: "external",
+      action: "invoke",
+      resource: "https://example.org/resource",
+      method: "POST",
+      maxAmountWei: String(CHECKPOINT_WEI),
+      royalties: {
+        creator: solanaCreator,
+        treasury: solanaCreator,
+      },
+      rootRunId: `${rootRunId}-bad-treasury`,
+      executionRunId: `${rootRunId}-bad-treasury`,
+      sequence: 0,
+    });
+    assert.equal(badTreasury.ok, false);
+    if (!badTreasury.ok) assert.equal(badTreasury.status, 400);
+
+    const authorized = await authorizePaymentIntent({
+      authorization: `Bearer ${created.token}`,
+      network: NETWORK,
+      service: "external",
+      action: "invoke",
+      resource: "https://example.org/resource",
+      method: "POST",
+      maxAmountWei: String(CHECKPOINT_WEI),
+      royalties: {
+        creator: solanaCreator,
+        treasury: validTreasury,
+      },
+      rootRunId,
+      executionRunId: rootRunId,
+      sequence: 0,
+    });
+    assert.equal(authorized.ok, true);
+    if (!authorized.ok) return;
+    paymentIntentId = authorized.body.paymentIntentId;
+
+    const authorizedRecord = await valkeyHGetAll(`payment-intent:${paymentIntentId}`);
+    assert.deepEqual(JSON.parse(authorizedRecord.royalties), { treasury: validTreasury });
+
+    const settled = await settlePaymentIntent({
+      paymentIntentId,
+      finalAmountWei: "10000",
+      providerAmountWei: "8000",
+      platformFeeWei: "2000",
+      royalties: {
+        creator: solanaCreator,
+        treasury: validTreasury,
+      },
+    });
+    assert.equal(settled.ok, true);
+    if (!settled.ok) return;
+    assert.equal(settled.body.status, "queued");
+    assert.equal(settled.body.providerAmountWei, undefined);
+    assert.equal(settled.body.platformFeeWei, "10000");
+
+    const queuedRecord = await valkeyHGetAll(`payment-intent:${paymentIntentId}`);
+    assert.deepEqual(JSON.parse(queuedRecord.royalties), { treasury: validTreasury });
+    assert.equal(queuedRecord.providerAmountWei, "");
+    assert.equal(queuedRecord.platformFeeWei, "10000");
+  } finally {
+    if (paymentIntentId) {
+      await valkeyDel(`payment-intent:${paymentIntentId}`);
+      await valkeySRem("payment-intents:queued", paymentIntentId);
+      await valkeySRem("payment-intents:submitted", paymentIntentId);
+      await valkeyZRem("payment-intents:due", paymentIntentId);
+      await valkeySRem(`key-payment-intents:${created.keyId}`, paymentIntentId);
+    }
+    await valkeyDel(`payment-intent-idem:${NETWORK}:${created.keyId}:${rootRunId}:${rootRunId}:0`);
+    await valkeyDel(`key-payment-intents:${created.keyId}`);
+    await valkeySRem(`user-keys:${NETWORK}:${payer.toLowerCase()}`, created.keyId);
+    await valkeyDel(`key:${created.keyId}`);
+    await valkeyDel(`key:revoked:${created.keyId}`);
+    await closeValkey();
+  }
+});
