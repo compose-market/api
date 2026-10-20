@@ -2219,3 +2219,13 @@ test("kickBatchSettlement executes targeted paymentIntentId immediately even whe
     await closeValkey();
   }
 });
+
+test.after(async () => {
+  try {
+    await valkeyDel(`test:payment-signer-lease:${NETWORK}:test-signer`);
+    await valkeyDel(`test:payment-signer-fence:${NETWORK}:test-signer`);
+    await valkeyDel(`test:payment-signer-nonce:${NETWORK}:test-signer`);
+  } finally {
+    await closeValkey();
+  }
+});
