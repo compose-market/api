@@ -1773,3 +1773,65 @@ test("targeted immediate settlement cannot be hidden by unrelated global work", 
     await closeValkey();
   }
 });
+
+test("settling a released intent returns a status-specific 409 instead of a false checkpoint replay error", async () => {
+  const payer = wallet();
+  const rootRunId = `root-${randomUUID()}`;
+  const created = await createKey(payer, {
+    budgetLimit: BUDGET_WEI,
+    expiresAt: Date.now() + 10 * 60_000,
+    purpose: "session",
+    network: NETWORK,
+    name: "released-intent-409",
+  });
+  let paymentIntentId: string | undefined;
+
+  try {
+    const authorized = await authorizePaymentIntent({
+      authorization: `Bearer ${created.token}`,
+      network: NETWORK,
+      service: "runtime",
+      action: "agent.execute",
+      resource: "https://runtime.compose.market/agent/test/stream",
+      method: "POST",
+      maxAmountWei: String(CHECKPOINT_WEI),
+      rootRunId,
+      executionRunId: rootRunId,
+      sequence: 0,
+    });
+    assert.equal(authorized.ok, true);
+    if (!authorized.ok) return;
+    paymentIntentId = authorized.body.paymentIntentId;
+
+    const aborted = await abortPaymentIntent({
+      paymentIntentId,
+      reason: "Compose key revoked",
+    });
+    assert.equal(aborted.ok, true);
+
+    const lateSettle = await settlePaymentIntent({
+      paymentIntentId,
+      finalAmountWei: String(CHECKPOINT_WEI),
+    });
+    assert.equal(lateSettle.ok, false);
+    if (!lateSettle.ok) {
+      assert.equal(lateSettle.status, 409);
+      assert.match(String(lateSettle.body.error || ""), /cannot be finalized from status released/);
+      assert.doesNotMatch(String(lateSettle.body.error || ""), /Checkpoint replay/);
+    }
+  } finally {
+    if (paymentIntentId) {
+      await valkeyDel(`payment-intent:${paymentIntentId}`);
+      await valkeySRem("payment-intents:queued", paymentIntentId);
+      await valkeySRem("payment-intents:submitted", paymentIntentId);
+      await valkeyZRem("payment-intents:due", paymentIntentId);
+      await valkeySRem(`key-payment-intents:${created.keyId}`, paymentIntentId);
+    }
+    await valkeyDel(`payment-intent-idem:${NETWORK}:${created.keyId}:${rootRunId}:${rootRunId}:0`);
+    await valkeyDel(`key-payment-intents:${created.keyId}`);
+    await valkeySRem(`user-keys:${NETWORK}:${payer.toLowerCase()}`, created.keyId);
+    await valkeyDel(`key:${created.keyId}`);
+    await valkeyDel(`key:revoked:${created.keyId}`);
+    await closeValkey();
+  }
+});
