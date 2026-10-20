@@ -1348,7 +1348,7 @@ test("settlement error classification keeps signer gas and ambiguous RPC failure
   assert.notEqual(ambiguousBroadcast.terminal, true);
 });
 
-test("the settlement worker serializes execution under a hard claim cap", () => {
+test("the settlement worker isolates networks concurrently under a hard claim cap", () => {
   const source = readFileSync(new URL("../x402/accumulator/worker.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /Promise\.all\(candidateIds\.map/,
     "worker must not hydrate an unbounded queue eagerly");
@@ -1358,10 +1358,12 @@ test("the settlement worker serializes execution under a hard claim cap", () => 
     "caller configuration must be clamped to a hard maximum");
   assert.match(source, /listCanonicalPaymentIntentIds\(boundedScanLimit\)/,
     "the worker must bound candidate selection before hydrating or inspecting intents");
+  assert.match(source, /Promise\.allSettled\(\s*Array\.from\(byNetwork\.entries\(\)\)/,
+    "worker must execute distinct networks concurrently to prevent cross-chain head-of-line blocking");
   assert.equal(
-    source.match(/executeCanonicalPaymentIntent\([^,\n]+, \{ waitForConfirmation: false \}\)/g)?.length,
+    source.match(/executeCanonicalPaymentIntent\([^,\n]+, \{ waitForConfirmation: true \}\)/g)?.length,
     2,
-    "scheduled and immediate worker execution must yield after fresh broadcast",
+    "scheduled and immediate worker execution must confirm in a single pass",
   );
 });
 
