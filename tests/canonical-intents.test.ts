@@ -1945,3 +1945,83 @@ test("cross-chain creator royalties are stripped universally while invalid payTo
     await closeValkey();
   }
 });
+
+test("concurrent NEAR key-settlement checkpoints allocate distinct monotonic nonces under a fenced per-account lease", async () => {
+  const nearNetwork = "near:testnet" as const;
+  const nearPayer = `user-${randomUUID().replace(/-/g, "").slice(0, 12)}.testnet`;
+  const rootRunId = `root-${randomUUID()}`;
+  const created = await createKey(nearPayer, {
+    budgetLimit: BUDGET_WEI,
+    expiresAt: Date.now() + 10 * 60_000,
+    purpose: "api",
+    network: nearNetwork,
+    name: "near-concurrent-fenced-nonces",
+  });
+  const intentIds: string[] = [];
+  const leaseSuffix = `${nearPayer}:test-near-signer`.toLowerCase();
+
+  try {
+    const authorizations = await Promise.all(
+      Array.from({ length: 5 }, (_, sequence) =>
+        authorizePaymentIntent({
+          authorization: `Bearer ${created.token}`,
+          network: nearNetwork,
+          service: "api",
+          action: "inference",
+          resource: "https://api.compose.market/v1/responses",
+          method: "POST",
+          useBudgetCap: true,
+          rootRunId,
+          executionRunId: `near-sibling-${sequence}`,
+          sequence: 0,
+        }),
+      ),
+    );
+    assert.equal(authorizations.every((item) => item.ok), true);
+    intentIds.push(...authorizations.flatMap((item) => (item.ok ? [item.body.paymentIntentId] : [])));
+
+    const settlements = await Promise.all(
+      intentIds.map((paymentIntentId) =>
+        settlePaymentIntent({
+          paymentIntentId,
+          finalAmountWei: String(CHECKPOINT_WEI),
+        }),
+      ),
+    );
+    assert.equal(settlements.every((item) => item.ok && item.body.status === "confirmed"), true);
+
+    const records = await Promise.all(intentIds.map((id) => valkeyHGetAll(`payment-intent:${id}`)));
+    const nonces = records.map((record) => record.preparedTxNonce).filter(Boolean);
+    const txHashes = records.map((record) => record.txHash).filter(Boolean);
+    assert.equal(nonces.length, 5);
+    assert.equal(new Set(nonces).size, 5, "concurrent NEAR intents must never sign colliding nonces");
+    assert.equal(new Set(txHashes).size, 5, "concurrent NEAR intents must produce distinct txHashes");
+    const relayerCursor = await valkeyGet(`test:payment-signer-nonce:${nearNetwork}:test-near-relayer:test-near-signer`);
+    const delegateCursor = await valkeyGet(`test:payment-signer-nonce:${nearNetwork}:${leaseSuffix}`);
+    assert.equal(relayerCursor, "6", "relayer access-key nonce cursor must advance once per prepared NEAR intent");
+    assert.equal(delegateCursor, "6", "payer DelegateAction nonce cursor must advance atomically alongside relayer nonce");
+  } finally {
+    const relayerSuffix = "test-near-relayer:test-near-signer";
+    for (let sequence = 0; sequence < 5; sequence += 1) {
+      await valkeyDel(`payment-intent-idem:${nearNetwork}:${created.keyId}:${rootRunId}:near-sibling-${sequence}:0`);
+    }
+    for (const intentId of intentIds) {
+      await valkeyDel(`payment-intent:${intentId}`);
+      await valkeySRem("payment-intents:queued", intentId);
+      await valkeySRem("payment-intents:submitted", intentId);
+      await valkeyZRem("payment-intents:due", intentId);
+      await valkeySRem("payment-intents:projections", intentId);
+    }
+    await valkeyDel(`test:payment-signer-lease:${nearNetwork}:${relayerSuffix}`);
+    await valkeyDel(`test:payment-signer-fence:${nearNetwork}:${relayerSuffix}`);
+    await valkeyDel(`test:payment-signer-nonce:${nearNetwork}:${relayerSuffix}`);
+    await valkeyDel(`test:payment-signer-lease:${nearNetwork}:${leaseSuffix}`);
+    await valkeyDel(`test:payment-signer-fence:${nearNetwork}:${leaseSuffix}`);
+    await valkeyDel(`test:payment-signer-nonce:${nearNetwork}:${leaseSuffix}`);
+    await valkeyDel(`key-payment-intents:${created.keyId}`);
+    await valkeySRem(`user-keys:${nearNetwork}:${nearPayer}`, created.keyId);
+    await valkeyDel(`key:${created.keyId}`);
+    await valkeyDel(`key:revoked:${created.keyId}`);
+    await closeValkey();
+  }
+});
