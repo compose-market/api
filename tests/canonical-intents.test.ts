@@ -2131,3 +2131,91 @@ test("expired unobserved blockhash-bound submitted intents reset preparation and
     await closeValkey();
   }
 });
+
+test("kickBatchSettlement executes targeted paymentIntentId immediately even when global run-lock is held", async () => {
+  const { kickBatchSettlement, awaitTargetedIntentSettlement } = await import("../x402/index.js");
+  const { valkeySetNXEX, valkeyCompareAndDelete } = await import("../x402/keys/valkey.js");
+  const payer = wallet();
+  const rootRunId = `root-${randomUUID()}`;
+  const created = await createKey(payer, {
+    budgetLimit: BUDGET_WEI,
+    expiresAt: Date.now() + 10 * 60_000,
+    purpose: "session",
+    network: NETWORK,
+    name: "targeted-kick-while-locked",
+  });
+  let paymentIntentId: string | undefined;
+  const fakeLockOwner = `test-lock-${randomUUID()}`;
+  const previousKickAttempts = process.env.SETTLEMENT_KICK_RETRY_ATTEMPTS;
+  const previousKickDelay = process.env.SETTLEMENT_KICK_RETRY_MS;
+  let acquiredGlobalLock = false;
+
+  try {
+    process.env.SETTLEMENT_KICK_RETRY_ATTEMPTS = "1";
+    process.env.SETTLEMENT_KICK_RETRY_MS = "10";
+    acquiredGlobalLock = await valkeySetNXEX("x402:settlement:run-lock", fakeLockOwner, 30);
+
+    const authorized = await authorizePaymentIntent({
+      authorization: `Bearer ${created.token}`,
+      network: NETWORK,
+      service: "api",
+      action: "inference",
+      resource: "https://api.compose.market/v1/responses",
+      method: "POST",
+      useBudgetCap: true,
+      rootRunId,
+      executionRunId: rootRunId,
+      sequence: 0,
+    });
+    assert.equal(authorized.ok, true);
+    if (!authorized.ok) return;
+    paymentIntentId = authorized.body.paymentIntentId;
+
+    const queued = await settlePaymentIntent({
+      paymentIntentId,
+      finalAmountWei: String(CHECKPOINT_WEI),
+    });
+    assert.equal(queued.ok, true);
+    if (queued.ok) assert.equal(queued.body.status, "queued");
+
+    await kickBatchSettlement(
+      {
+        paymentIntentId,
+        settlementStatus: "queued",
+        finalAmountWei: String(CHECKPOINT_WEI),
+      },
+      "test:targeted-kick",
+    );
+    await awaitTargetedIntentSettlement(paymentIntentId);
+
+    const confirmed = await valkeyHGetAll(`payment-intent:${paymentIntentId}`);
+    const keyState = await valkeyHGetAll(`key:${created.keyId}`);
+    assert.equal(confirmed.status, "confirmed");
+    assert.match(confirmed.txHash || "", /^0x[0-9a-f]{64}$/);
+    assert.equal(keyState.budgetReserved, "0");
+    assert.equal(keyState.budgetUsed, String(CHECKPOINT_WEI));
+  } finally {
+    if (acquiredGlobalLock) {
+      await valkeyCompareAndDelete("x402:settlement:run-lock", fakeLockOwner).catch(() => false);
+    }
+    await valkeyDel("x402:settlement:kick-lock").catch(() => undefined);
+    if (previousKickAttempts === undefined) delete process.env.SETTLEMENT_KICK_RETRY_ATTEMPTS;
+    else process.env.SETTLEMENT_KICK_RETRY_ATTEMPTS = previousKickAttempts;
+    if (previousKickDelay === undefined) delete process.env.SETTLEMENT_KICK_RETRY_MS;
+    else process.env.SETTLEMENT_KICK_RETRY_MS = previousKickDelay;
+    if (paymentIntentId) {
+      await valkeyDel(`payment-intent:${paymentIntentId}`);
+      await valkeySRem("payment-intents:queued", paymentIntentId);
+      await valkeySRem("payment-intents:submitted", paymentIntentId);
+      await valkeyZRem("payment-intents:due", paymentIntentId);
+      await valkeySRem("payment-intents:projections", paymentIntentId);
+      await valkeySRem(`key-payment-intents:${created.keyId}`, paymentIntentId);
+    }
+    await valkeyDel(`payment-intent-idem:${NETWORK}:${created.keyId}:${rootRunId}:${rootRunId}:0`);
+    await valkeyDel(`key-payment-intents:${created.keyId}`);
+    await valkeySRem(`user-keys:${NETWORK}:${payer.toLowerCase()}`, created.keyId);
+    await valkeyDel(`key:${created.keyId}`);
+    await valkeyDel(`key:revoked:${created.keyId}`);
+    await closeValkey();
+  }
+});
