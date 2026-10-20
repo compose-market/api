@@ -2025,3 +2025,109 @@ test("concurrent NEAR key-settlement checkpoints allocate distinct monotonic non
     await closeValkey();
   }
 });
+
+test("expired unobserved blockhash-bound submitted intents reset preparation and confirm with a fresh nonce", async () => {
+  const nearNetwork = "near:testnet" as const;
+  const nearPayer = `expired-${randomUUID().replace(/-/g, "").slice(0, 10)}.testnet`;
+  const rootRunId = `root-${randomUUID()}`;
+  const created = await createKey(nearPayer, {
+    budgetLimit: BUDGET_WEI,
+    expiresAt: Date.now() + 10 * 60_000,
+    purpose: "session",
+    network: nearNetwork,
+    name: "near-expired-blockhash-recovery",
+  });
+  let paymentIntentId: string | undefined;
+  const leaseSuffix = `${nearPayer}:test-near-signer`.toLowerCase();
+  const relayerSuffix = "test-near-relayer:test-near-signer";
+  const previousStatus = process.env.COMPOSE_TEST_SETTLEMENT_STATUS;
+  const previousReconcileStatus = process.env.COMPOSE_TEST_SETTLEMENT_RECONCILE_STATUS;
+  const previousExpiry = process.env.SUBMITTED_BLOCKHASH_EXPIRY_MS;
+
+  try {
+    const authorized = await authorizePaymentIntent({
+      authorization: `Bearer ${created.token}`,
+      network: nearNetwork,
+      service: "api",
+      action: "inference",
+      resource: "https://api.compose.market/v1/responses",
+      method: "POST",
+      useBudgetCap: true,
+      rootRunId,
+      executionRunId: rootRunId,
+      sequence: 0,
+    });
+    assert.equal(authorized.ok, true);
+    if (!authorized.ok) return;
+    paymentIntentId = authorized.body.paymentIntentId;
+
+    await settlePaymentIntent({
+      paymentIntentId,
+      finalAmountWei: String(CHECKPOINT_WEI),
+    });
+
+    process.env.COMPOSE_TEST_SETTLEMENT_STATUS = "submitted";
+    const firstAttempt = await executeCanonicalPaymentIntent(paymentIntentId);
+    assert.equal(firstAttempt.ok, true);
+    if (firstAttempt.ok) assert.equal(firstAttempt.body.status, "submitted");
+
+    const staleState = await valkeyHGetAll(`payment-intent:${paymentIntentId}`);
+    const staleTxHash = staleState.txHash;
+    const staleNonce = staleState.preparedTxNonce;
+    assert.ok(staleTxHash);
+    assert.equal(staleNonce, "1");
+
+    // Simulate expired blockhash window while RPC reports UNKNOWN_TRANSACTION (not_observed)
+    process.env.SUBMITTED_BLOCKHASH_EXPIRY_MS = "50";
+    await valkeyHSet(`payment-intent:${paymentIntentId}`, {
+      submittedAt: String(Date.now() - 1_000),
+      nextAttemptAt: "0",
+    });
+    process.env.COMPOSE_TEST_SETTLEMENT_RECONCILE_STATUS = "not_observed";
+    process.env.COMPOSE_TEST_SETTLEMENT_STATUS = "confirmed";
+
+    const recovered = await executeCanonicalPaymentIntent(paymentIntentId, { waitForConfirmation: true });
+    assert.equal(recovered.ok, true);
+    if (recovered.ok) assert.equal(recovered.body.status, "confirmed");
+
+    const finalState = await valkeyHGetAll(`payment-intent:${paymentIntentId}`);
+    const keyState = await valkeyHGetAll(`key:${created.keyId}`);
+    assert.equal(finalState.status, "confirmed");
+    assert.notEqual(finalState.txHash, staleTxHash, "re-prepared transaction must get a fresh blockhash/txHash");
+    assert.equal(finalState.preparedTxNonce, "2", "re-prepared NEAR transaction must advance to the next nonce");
+    assert.equal(
+      await valkeyGet(`test:payment-signer-nonce:${nearNetwork}:${leaseSuffix}`),
+      "3",
+      "re-prepared NEAR DelegateAction nonce cursor must also advance",
+    );
+    assert.equal(keyState.budgetReserved, "0");
+    assert.equal(keyState.budgetUsed, String(CHECKPOINT_WEI));
+  } finally {
+    if (previousStatus === undefined) delete process.env.COMPOSE_TEST_SETTLEMENT_STATUS;
+    else process.env.COMPOSE_TEST_SETTLEMENT_STATUS = previousStatus;
+    if (previousReconcileStatus === undefined) delete process.env.COMPOSE_TEST_SETTLEMENT_RECONCILE_STATUS;
+    else process.env.COMPOSE_TEST_SETTLEMENT_RECONCILE_STATUS = previousReconcileStatus;
+    if (previousExpiry === undefined) delete process.env.SUBMITTED_BLOCKHASH_EXPIRY_MS;
+    else process.env.SUBMITTED_BLOCKHASH_EXPIRY_MS = previousExpiry;
+    if (paymentIntentId) {
+      await valkeyDel(`payment-intent:${paymentIntentId}`);
+      await valkeySRem("payment-intents:queued", paymentIntentId);
+      await valkeySRem("payment-intents:submitted", paymentIntentId);
+      await valkeyZRem("payment-intents:due", paymentIntentId);
+      await valkeySRem("payment-intents:projections", paymentIntentId);
+      await valkeySRem(`key-payment-intents:${created.keyId}`, paymentIntentId);
+    }
+    await valkeyDel(`test:payment-signer-lease:${nearNetwork}:${relayerSuffix}`);
+    await valkeyDel(`test:payment-signer-fence:${nearNetwork}:${relayerSuffix}`);
+    await valkeyDel(`test:payment-signer-nonce:${nearNetwork}:${relayerSuffix}`);
+    await valkeyDel(`test:payment-signer-lease:${nearNetwork}:${leaseSuffix}`);
+    await valkeyDel(`test:payment-signer-fence:${nearNetwork}:${leaseSuffix}`);
+    await valkeyDel(`test:payment-signer-nonce:${nearNetwork}:${leaseSuffix}`);
+    await valkeyDel(`payment-intent-idem:${nearNetwork}:${created.keyId}:${rootRunId}:${rootRunId}:0`);
+    await valkeyDel(`key-payment-intents:${created.keyId}`);
+    await valkeySRem(`user-keys:${nearNetwork}:${nearPayer}`, created.keyId);
+    await valkeyDel(`key:${created.keyId}`);
+    await valkeyDel(`key:revoked:${created.keyId}`);
+    await closeValkey();
+  }
+});
