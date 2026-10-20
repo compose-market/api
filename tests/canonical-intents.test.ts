@@ -33,7 +33,7 @@ import {
   valkeyZRem,
 } from "../x402/keys/valkey.js";
 
-const NETWORK = "eip155:5042002" as const;
+const NETWORK = "eip155:84532" as const;
 const BUDGET_WEI = 1_000_000;
 const CHECKPOINT_WEI = 25_000;
 
