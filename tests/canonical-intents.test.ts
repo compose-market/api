@@ -1653,7 +1653,7 @@ test("confirmed projection work remains durable until receipt, evidence, and Ana
         analyticsProjections.push(input);
         return true;
       },
-      async publish() {},
+      async publish() { },
     }), true);
     assert.equal(analyticsProjections.length, 1);
     assert.equal(analyticsProjections[0]?.paymentIntentId, paymentIntentId);
