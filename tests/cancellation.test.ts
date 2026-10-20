@@ -10,23 +10,8 @@ const GATEWAY = readFileSync(resolve(DIR, "../inference/gateway.ts"), "utf8");
 const ENGINE = readFileSync(resolve(DIR, "../inference/engine.ts"), "utf8");
 const ADAPTER = readFileSync(resolve(DIR, "../inference/catalog/adapter.ts"), "utf8");
 
-test("api runtime proxy passes client abort signals upstream", () => {
-  assert.match(ROUTES, /function createRequestAbort/);
-  assert.match(ROUTES, /req\.on\(["']aborted["']/);
-  assert.match(ROUTES, /res\.on\(["']close["']/);
-  assert.match(ROUTES, /async function callRuntime[\s\S]*signal\?: AbortSignal[\s\S]*signal,/);
-  assert.match(ROUTES, /fetch\(`\$\{requireConnectorsUrl\(\)\}\$\{target\.path\}`[\s\S]*signal: lifecycle\.signal/);
-});
-
-test("payable stream route aborts unsettled runtime streams on client close", () => {
-  const payableStart = ROUTES.indexOf("function payableStreamRoute");
-  const payable = ROUTES.slice(payableStart);
-
-  assert.match(payable, /callRuntime\([\s\S]*lifecycle\.signal/);
-  assert.match(payable, /lifecycle\.signal\.addEventListener\(["']abort["'],\s*cancelReader/);
-  assert.match(payable, /await abortPreparedPayment\(prepared,\s*abortReason\(lifecycle\.signal\)\)/);
-  assert.match(payable, /if \(settlement && !settlementDone\)/);
-  assert.match(payable, /if \(!settlementDone\)[\s\S]*await abortPreparedPayment/);
+test("api routes do not proxy runtime streams", () => {
+  assert.doesNotMatch(ROUTES, /callRuntime|payableStreamRoute|RUNTIME_URL/);
 });
 
 test("inference gateway threads cancellation and deadlines into provider work", () => {
