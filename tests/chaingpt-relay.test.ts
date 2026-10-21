@@ -21,3 +21,16 @@ let lastFetchUrl: string | null = null;
 let lastFetchBody: string | null = null;
 let lastFetchHeaders: Record<string, string> | null = null;
 let lastFetchStatuses: number[] = [];
+
+function mockChainGptFetch(payload: unknown, status = 200, contentType = "text/plain"): void {
+    lastFetchStatuses = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        lastFetchUrl = url;
+        lastFetchBody = typeof init?.body === "string" ? init.body : null;
+        lastFetchHeaders = (init?.headers ?? {}) as Record<string, string>;
+        lastFetchStatuses.push(status);
+        const body = typeof payload === "string" ? payload : JSON.stringify(payload);
+        return new Response(body, { status, headers: { "Content-Type": contentType } });
+    }) as typeof fetch;
+}
