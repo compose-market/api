@@ -34,3 +34,7 @@ function mockChainGptFetch(payload: unknown, status = 200, contentType = "text/p
         return new Response(body, { status, headers: { "Content-Type": contentType } });
     }) as typeof fetch;
 }
+
+function restoreFetch(): void {
+    globalThis.fetch = ORIGINAL_FETCH;
+}
