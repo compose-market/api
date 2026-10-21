@@ -17,3 +17,4 @@ import { handler } from "../handler.js";
 import { callChainGptChat } from "../chaingpt.js";
 
 const ORIGINAL_FETCH = globalThis.fetch;
+let lastFetchUrl: string | null = null;
