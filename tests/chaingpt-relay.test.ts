@@ -18,3 +18,4 @@ import { callChainGptChat } from "../chaingpt.js";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 let lastFetchUrl: string | null = null;
+let lastFetchBody: string | null = null;
