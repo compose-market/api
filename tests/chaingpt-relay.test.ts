@@ -20,3 +20,4 @@ const ORIGINAL_FETCH = globalThis.fetch;
 let lastFetchUrl: string | null = null;
 let lastFetchBody: string | null = null;
 let lastFetchHeaders: Record<string, string> | null = null;
+let lastFetchStatuses: number[] = [];
