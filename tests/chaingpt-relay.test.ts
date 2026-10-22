@@ -38,3 +38,12 @@ function mockChainGptFetch(payload: unknown, status = 200, contentType = "text/p
 function restoreFetch(): void {
     globalThis.fetch = ORIGINAL_FETCH;
 }
+
+function createEvent(method: string, rawPath: string, body?: unknown, headers?: Record<string, string>) {
+    return {
+        rawPath,
+        requestContext: { http: { method } },
+        headers: headers ?? {},
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    };
+}
