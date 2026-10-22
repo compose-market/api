@@ -49,3 +49,13 @@ function createEvent(method: string, rawPath: string, body?: unknown, headers?: 
 }
 
 const INTERNAL_TOKEN = process.env.BACKPACK_INTERNAL_TOKEN?.trim();
+
+test("POST /chaingpt/chat requires the internal token", async () => {
+    if (!INTERNAL_TOKEN) return;
+
+    const wrong = await handler(createEvent("POST", "/chaingpt/chat", { model: "smart_contract_auditor", question: "x" }, { "x-backpack-internal-token": "wrong" }), {});
+    assert.equal(wrong.statusCode, 401);
+
+    const missing = await handler(createEvent("POST", "/chaingpt/chat", { model: "smart_contract_auditor", question: "x" }), {});
+    assert.equal(missing.statusCode, 401);
+});
