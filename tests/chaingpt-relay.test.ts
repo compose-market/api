@@ -59,3 +59,15 @@ test("POST /chaingpt/chat requires the internal token", async () => {
     const missing = await handler(createEvent("POST", "/chaingpt/chat", { model: "smart_contract_auditor", question: "x" }), {});
     assert.equal(missing.statusCode, 401);
 });
+
+test("POST /chaingpt/chat validates model and question", async () => {
+    if (!INTERNAL_TOKEN) return;
+    const headers = { "x-backpack-internal-token": INTERNAL_TOKEN };
+
+    const missingQuestion = await handler(createEvent("POST", "/chaingpt/chat", { model: "smart_contract_auditor" }, headers), {});
+    assert.equal(missingQuestion.statusCode, 400);
+
+    const unsupportedModel = await handler(createEvent("POST", "/chaingpt/chat", { model: "some_other_model", question: "x" }, headers), {});
+    assert.equal(unsupportedModel.statusCode, 400);
+    assert.equal(JSON.parse(String(unsupportedModel.body)).error, "unsupported model: some_other_model");
+});
