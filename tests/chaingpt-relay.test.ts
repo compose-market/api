@@ -47,3 +47,5 @@ function createEvent(method: string, rawPath: string, body?: unknown, headers?: 
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     };
 }
+
+const INTERNAL_TOKEN = process.env.BACKPACK_INTERNAL_TOKEN?.trim();
