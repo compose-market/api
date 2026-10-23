@@ -124,3 +124,7 @@ test("callChainGptChat handles a missing api key", async () => {
         process.env.CHAIN_GPT_SECRET_KEY = previous;
     }
 });
+
+after(() => {
+    restoreFetch();
+});
