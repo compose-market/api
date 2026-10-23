@@ -3,6 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 
+import {
+  groupApiModels,
+  parseAsyncApiFluxSpec,
+  parseDeepgramPricing,
+  parseModelsLanguagesDocs,
+  parseOpenApiRestSpec,
+  parseTtsModelsDocs,
+  resolveSttPricing,
+} from "../inference/scripts/sync-deepgram.js";
+
 const ROOT = path.join(import.meta.dirname, "..", "inference", "data");
 
 interface Catalog {
@@ -49,4 +59,75 @@ test("Deepgram sync keeps premium models out of the public compiled catalog", ()
   assert.deepEqual(compiledIds, coreIds, "compiled models.json must include only core Deepgram ids");
   assert.equal(coreIds.filter((modelId) => premiumIds.includes(modelId)).length, 0, "core/premium catalogs must not overlap");
   assert.equal(compiledIds.filter((modelId) => premiumIds.includes(modelId)).length, 0, "premium ids must not leak into models.json");
+});
+
+test("parseOpenApiRestSpec resolves $ref parameters, union enums, numeric bounds, and JSON request bodies", () => {
+  const spec = {
+    openapi: "3.1.0",
+    servers: [{ url: "https://api.deepgram.com/" }],
+    paths: {
+      "/v1/speak": {
+        post: {
+          parameters: [
+            { $ref: "#/components/parameters/EncodingParam" },
+            { $ref: "#/components/parameters/SampleRateParam" },
+            {
+              name: "speed",
+              in: "query",
+              schema: { type: "number", minimum: 0.7, maximum: 1.5, default: 1 },
+            },
+          ],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/SpeakBody" },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      parameters: {
+        EncodingParam: {
+          name: "encoding",
+          in: "query",
+          schema: {
+            oneOf: [
+              { $ref: "#/components/schemas/EncLinear16" },
+              { $ref: "#/components/schemas/EncMp3" },
+            ],
+          },
+        },
+        SampleRateParam: {
+          name: "sample_rate",
+          in: "query",
+          schema: {
+            oneOf: [
+              { type: "string", enum: ["8000", "16000"] },
+              { type: "string", enum: ["24000"] },
+            ],
+          },
+        },
+      },
+      schemas: {
+        EncLinear16: { type: "string", enum: ["linear16"] },
+        EncMp3: { type: "string", enum: ["mp3"] },
+        SpeakBody: {
+          type: "object",
+          properties: {
+            text: { type: "string" },
+          },
+        },
+      },
+    },
+  };
+
+  const parsed = parseOpenApiRestSpec(spec, "/v1/speak");
+  assert.equal(parsed.endpoint, "https://api.deepgram.com/v1/speak");
+  assert.equal(parsed.method, "POST");
+  assert.deepEqual(parsed.query.encoding, ["linear16", "mp3"]);
+  assert.deepEqual(parsed.query.sample_rate, [8000, 16000, 24000]);
+  assert.deepEqual(parsed.query.speed, { min: 0.7, max: 1.5, default: 1 });
+  assert.deepEqual(parsed.request, { text: "string" });
 });
