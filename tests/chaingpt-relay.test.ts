@@ -71,3 +71,42 @@ test("POST /chaingpt/chat validates model and question", async () => {
     assert.equal(unsupportedModel.statusCode, 400);
     assert.equal(JSON.parse(String(unsupportedModel.body)).error, "unsupported model: some_other_model");
 });
+
+test("POST /chaingpt/chat relays the chat call with the api-side key", async () => {
+    if (!INTERNAL_TOKEN || !process.env.CHAIN_GPT_SECRET_KEY?.trim()) return;
+    const headers = { "x-backpack-internal-token": INTERNAL_TOKEN };
+
+    // Live plain-text shape (HTTP 201).
+    mockChainGptFetch("The contract is safe.", 201);
+    const ok = await handler(
+        createEvent("POST", "/chaingpt/chat", { model: "smart_contract_auditor", question: "Audit:\n```solidity\ncontract X {}\n```" }, headers),
+        {},
+    );
+    assert.equal(ok.statusCode, 200);
+    const payload = JSON.parse(String(ok.body));
+    assert.equal(payload.ok, true);
+    assert.equal(payload.answer, "The contract is safe.");
+    assert.equal(lastFetchUrl, "https://api.chaingpt.org/chat/stream");
+    assert.equal(lastFetchHeaders?.Authorization, `Bearer ${process.env.CHAIN_GPT_SECRET_KEY.trim()}`);
+    const sentBody = JSON.parse(String(lastFetchBody));
+    assert.equal(sentBody.model, "smart_contract_auditor");
+    assert.equal(sentBody.chatHistory, "off");
+    assert.equal(sentBody.question.includes("contract X {}"), true);
+    restoreFetch();
+
+    // Documented JSON blob shape.
+    mockChainGptFetch({ status: true, message: "OK", data: { bot: "contract Token {}" } }, 200, "application/json");
+    const blob = await handler(createEvent("POST", "/chaingpt/chat", { model: "smart_contract_generator", question: "a token" }, headers), {});
+    assert.equal(blob.statusCode, 200);
+    assert.equal(JSON.parse(String(blob.body)).answer, "contract Token {}");
+    restoreFetch();
+
+    // Provider error body maps to the relay error envelope.
+    mockChainGptFetch({ status: false, message: "Insufficient credits. Your balance is 0.0 credits." }, 200, "application/json");
+    const error = await handler(createEvent("POST", "/chaingpt/chat", { model: "smart_contract_auditor", question: "x" }, headers), {});
+    assert.equal(error.statusCode, 200);
+    const errorPayload = JSON.parse(String(error.body));
+    assert.equal(errorPayload.ok, false);
+    assert.equal(errorPayload.error, "Insufficient credits. Your balance is 0.0 credits.");
+    restoreFetch();
+});
