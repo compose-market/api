@@ -110,3 +110,17 @@ test("POST /chaingpt/chat relays the chat call with the api-side key", async () 
     assert.equal(errorPayload.error, "Insufficient credits. Your balance is 0.0 credits.");
     restoreFetch();
 });
+
+test("callChainGptChat handles a missing api key", async () => {
+    const previous = process.env.CHAIN_GPT_SECRET_KEY;
+    process.env.CHAIN_GPT_SECRET_KEY = "";
+    try {
+        const result = await callChainGptChat({ model: "general_assistant", question: "hi" });
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+            assert.equal(result.error.includes("CHAIN_GPT_SECRET_KEY"), true);
+        }
+    } finally {
+        process.env.CHAIN_GPT_SECRET_KEY = previous;
+    }
+});
