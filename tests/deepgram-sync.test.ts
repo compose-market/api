@@ -213,3 +213,46 @@ components:
   assert.equal(parsed.query.numerals, "boolean");
   assert.deepEqual([...(parsed.modelScopedParams.get("language_hint") ?? [])], ["flux-general-multi"]);
 });
+
+test("parseModelsLanguagesDocs and parseTtsModelsDocs match header-keyed tables regardless of section renames or column order", () => {
+  const modelsMarkdown = `
+## Models
+
+| Model | Best For |
+| --- | --- |
+| [Flux STT](/docs/flux) | Conversational turn-taking ASR |
+
+## Flux STT
+
+| Language | Model Option |
+| --- | --- |
+| English: \`en\` | \`flux-general-en\` |
+| Multilingual: \`en\`, \`es\`, \`fr\` | \`flux-general-multi\` |
+`;
+
+  const parsedModels = parseModelsLanguagesDocs(modelsMarkdown, ["flux-general-en", "flux-general-multi"]);
+  assert.equal(parsedModels.fluxRows.length, 2);
+  assert.equal(parsedModels.fluxRows[0]?.sectionKey, "flux-stt");
+  assert.equal(parsedModels.overviewByFamily.get("flux-stt"), "Conversational turn-taking ASR");
+  assert.deepEqual(parsedModels.fluxRows[1]?.languages, ["en", "es", "fr"]);
+
+  const ttsMarkdown = `
+## Aura-2 English Voices
+### Featured Aura-2 English Voices
+
+| Use Cases | Characteristics | Accent | Expressed Gender | Name | Model |
+| --- | --- | --- | --- | --- | --- |
+| IVR, chat | clear, calm | American | Feminine | Thalia | \`aura-2-thalia-en\` |
+`;
+
+  const groups = groupApiModels([
+    { canonical_name: "aura-2-thalia-en", architecture: "aura-2", languages: ["en"] },
+  ]);
+  const parsedTts = parseTtsModelsDocs(ttsMarkdown, groups);
+  assert.deepEqual([...parsedTts.featuredModelIds], ["aura-2-thalia-en"]);
+  const thalia = parsedTts.voicesByModelId.get("aura-2-thalia-en");
+  assert.equal(thalia?.name, "Thalia");
+  assert.equal(thalia?.accent, "American");
+  assert.deepEqual(thalia?.tags, ["feminine", "clear", "calm"]);
+  assert.deepEqual(thalia?.useCases, ["IVR", "chat"]);
+});
