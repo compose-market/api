@@ -131,3 +131,85 @@ test("parseOpenApiRestSpec resolves $ref parameters, union enums, numeric bounds
   assert.deepEqual(parsed.query.speed, { min: 0.7, max: 1.5, default: 1 });
   assert.deepEqual(parsed.request, { text: "string" });
 });
+
+test("parseAsyncApiFluxSpec extracts models, encodings, model-scoped params, and GFM table supplements independent of heading case", () => {
+  const asyncApiYaml = `
+asyncapi: 2.6.0
+servers:
+  Production:
+    url: wss://api.deepgram.com/
+    protocol: wss
+    x-default: true
+channels:
+  /v2/listen:
+    bindings:
+      ws:
+        query:
+          type: object
+          properties:
+            model:
+              $ref: '#/components/schemas/ListenV2Model'
+            encoding:
+              $ref: '#/components/schemas/ListenV2Encoding'
+            sample_rate:
+              $ref: '#/components/schemas/ListenV2SampleRate'
+            eot_threshold:
+              $ref: '#/components/schemas/ListenV2EotThreshold'
+              default: '0.7'
+            language_hint:
+              $ref: '#/components/schemas/ListenV2LanguageHint'
+            numerals:
+              $ref: '#/components/schemas/ListenV2Numerals'
+components:
+  schemas:
+    ListenV2Model:
+      type: string
+      enum:
+        - flux-general-en
+        - flux-general-multi
+    ListenV2Encoding:
+      type: string
+      enum:
+        - linear16
+        - opus
+    ListenV2SampleRate:
+      description: Any type
+    ListenV2EotThreshold:
+      description: Any type
+    ListenV2LanguageHint:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+      description: Only valid when model is flux-general-multi.
+    ListenV2Numerals:
+      type: string
+      enum:
+        - 'true'
+        - 'false'
+`;
+
+  const docsWithRenamedSentenceCaseHeadings = `
+### Audio format requirements
+
+| Supported Sample Rates | Audio Type | Encoding |
+| --- | --- | --- |
+| \`8000\`, \`16000\`, \`48000\` | Raw | \`linear16\` |
+
+### Turn detection knobs
+
+| Default | Parameter | Range |
+| --- | --- | --- |
+| \`0.7\` | \`eot_threshold\` | \`0.5\` - \`1.0\` |
+`;
+
+  const parsed = parseAsyncApiFluxSpec(asyncApiYaml, [docsWithRenamedSentenceCaseHeadings]);
+  assert.equal(parsed.endpoint, "wss://api.deepgram.com/v2/listen");
+  assert.deepEqual(parsed.modelIds, ["flux-general-en", "flux-general-multi"]);
+  assert.deepEqual(parsed.encodings, ["linear16", "opus"]);
+  assert.deepEqual(parsed.sampleRates, [8000, 16000, 48000]);
+  assert.deepEqual(parsed.parameterRanges.eot_threshold, { min: 0.5, max: 1, default: 0.7 });
+  assert.equal(parsed.query.numerals, "boolean");
+  assert.deepEqual([...(parsed.modelScopedParams.get("language_hint") ?? [])], ["flux-general-multi"]);
+});
