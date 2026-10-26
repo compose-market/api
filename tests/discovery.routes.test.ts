@@ -92,12 +92,10 @@ before(() => {
 });
 
 after(() => {
-  globalThis.fetch = NATIVE_FETCH;
   restoreEnv("FACILITATOR_KEY");
   restoreEnv("MERCHANT_WALLET_ADDRESS");
   restoreEnv("AVALANCHE_MAINNET_RPC");
   restoreEnv("SOLANA_MAINNET_RPC");
-  restoreEnv("AGENTS_URL");
 });
 
 test("handler serves OpenAPI with x-network-id as a header parameter only", async () => {
