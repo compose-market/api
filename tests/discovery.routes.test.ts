@@ -131,6 +131,24 @@ test("handler serves OpenAPI for universal facilitator and model seller only", a
   assert.equal((body.components?.parameters?.NetworkIdHeaderOptional as { name?: string; in?: string })?.in, "header");
 });
 
+test("well-known x402 advertises only the models paid entrypoint on api", async () => {
+  const { handler } = await import("../handler.js");
+
+  const result = await handler(createEvent("GET", "/.well-known/x402"), {});
+  assert.equal(result.statusCode, 200);
+
+  const body = JSON.parse(result.body) as { resources: string[]; ownershipProofs: string[] };
+  assert.deepEqual(body.resources, [
+    "https://api.compose.market/models",
+  ]);
+  assert.equal(body.resources.some((resource) => resource.includes("/agents")), false);
+  assert.equal(body.resources.some((resource) => resource.includes("/networks/")), false);
+  assert.equal(body.resources.some((resource) => resource.includes("/api/x402/facilitator/supported")), false);
+  assert.equal(body.resources.some((resource) => resource.includes("/v1/responses")), false);
+  assert.equal(body.resources.some((resource) => resource.includes("/agent/")), false);
+  assert.ok(body.ownershipProofs.length > 0);
+});
+
 test("api.inference.diy discovery and payment resources remain on api.inference.diy", async () => {
   const { handler } = await import("../handler.js");
 
