@@ -98,7 +98,7 @@ after(() => {
   restoreEnv("SOLANA_MAINNET_RPC");
 });
 
-test("handler serves OpenAPI with x-network-id as a header parameter only", async () => {
+test("handler serves OpenAPI for universal facilitator and model seller only", async () => {
   const { handler } = await import("../handler.js");
 
   const result = await handler(createEvent("GET", "/openapi.json"), {});
@@ -112,45 +112,23 @@ test("handler serves OpenAPI with x-network-id as a header parameter only", asyn
 
   assert.equal(body.openapi, "3.1.0");
   assert.ok(body.paths["/models"]?.post);
-  assert.ok(body.paths["/agents"]?.post);
   assert.ok(body.paths["/models/list"]?.get);
-  assert.ok(body.paths["/agents/list"]?.get);
   assert.ok(body.paths["/api/x402/facilitator/supported"]?.get);
+  assert.equal(body.paths["/agents"], undefined);
+  assert.equal(body.paths["/agents/list"], undefined);
   assert.equal(body.paths["/v1/responses/{modelId}"], undefined);
   assert.equal(body.paths["/agent/{walletAddress}/stream"], undefined);
   assert.equal(body.paths["/networks/"], undefined);
   assert.equal((body.paths["/models/list"].get as { security?: unknown[] }).security?.length, 0);
-  assert.equal((body.paths["/agents/list"].get as { security?: unknown[] }).security?.length, 0);
   const paidOps = Object.entries(body.paths)
     .flatMap(([path, methods]) => Object.entries(methods).map(([method, operation]) => ({ path, method, operation })))
     .filter(({ operation }) => Boolean((operation as { "x-payment-info"?: unknown })["x-payment-info"]))
     .map(({ method, path }) => `${method.toUpperCase()} ${path}`)
     .sort();
-  assert.deepEqual(paidOps, ["POST /agents", "POST /models"]);
+  assert.deepEqual(paidOps, ["POST /models"]);
   assert.deepEqual(body.components?.securitySchemes ?? {}, {});
   assert.equal((body.components?.parameters?.NetworkIdHeaderOptional as { name?: string; in?: string })?.name, "x-network-id");
   assert.equal((body.components?.parameters?.NetworkIdHeaderOptional as { name?: string; in?: string })?.in, "header");
-});
-
-test("well-known x402 advertises only the two paid entrypoints", async () => {
-  const { handler } = await import("../handler.js");
-
-  const result = await handler(createEvent("GET", "/.well-known/x402"), {});
-  assert.equal(result.statusCode, 200);
-
-  const body = JSON.parse(result.body) as { resources: string[]; ownershipProofs: string[] };
-  assert.deepEqual(body.resources.sort(), [
-    "https://api.compose.market/agents",
-    "https://api.compose.market/models",
-  ]);
-  assert.equal(body.resources.some((resource) => resource.includes("/networks/")), false);
-  assert.equal(body.resources.some((resource) => resource.includes("/api/x402/facilitator/supported")), false);
-  assert.equal(body.resources.some((resource) => resource.includes("/api/mcps")), false);
-  assert.equal(body.resources.some((resource) => resource.includes("/api/onchain")), false);
-  assert.equal(body.resources.some((resource) => resource.includes("/v1/responses")), false);
-  assert.equal(body.resources.some((resource) => resource.includes("/agent/{walletAddress}/stream")), false);
-  assert.equal(body.resources.some((resource) => resource.includes("/agent/{walletAddress}/responses")), false);
-  assert.ok(body.ownershipProofs.length > 0);
 });
 
 test("api.inference.diy discovery and payment resources remain on api.inference.diy", async () => {
