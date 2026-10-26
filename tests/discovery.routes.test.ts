@@ -17,8 +17,6 @@ const ORIGINAL_ENV = {
   SOLANA_MAINNET_RPC: process.env.SOLANA_MAINNET_RPC,
 };
 
-const NATIVE_FETCH = globalThis.fetch;
-
 function restoreEnv(name: keyof typeof ORIGINAL_ENV): void {
   const value = ORIGINAL_ENV[name];
   if (value === undefined) delete process.env[name];
