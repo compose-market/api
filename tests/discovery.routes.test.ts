@@ -157,8 +157,7 @@ test("api.inference.diy discovery and payment resources remain on api.inference.
   assert.equal(JSON.parse(openapi.body).servers[0].url, "https://api.inference.diy");
 
   const wellKnown = await handler(createHostedEvent("GET", "/.well-known/x402", "api.inference.diy"), {});
-  assert.deepEqual(JSON.parse(wellKnown.body).resources.sort(), [
-    "https://api.inference.diy/agents",
+  assert.deepEqual(JSON.parse(wellKnown.body).resources, [
     "https://api.inference.diy/models",
   ]);
 
