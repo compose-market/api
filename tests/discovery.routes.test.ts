@@ -88,7 +88,6 @@ async function withFullApp<T>(run: (baseUrl: string) => Promise<T>): Promise<T> 
 before(() => {
   process.env.FACILITATOR_KEY = ORIGINAL_ENV.FACILITATOR_KEY || `0x${"11".repeat(32)}`;
   process.env.MERCHANT_WALLET_ADDRESS = ORIGINAL_ENV.MERCHANT_WALLET_ADDRESS || "0x2222222222222222222222222222222222222222";
-  process.env.AGENTS_URL = "https://agents.test";
   delete process.env.SOLANA_MAINNET_RPC;
 });
 
