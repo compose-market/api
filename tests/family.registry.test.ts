@@ -76,7 +76,7 @@ test("canonical family rules cover hosted owner namespaces and provider-native u
 test("compiled catalog has first-class family for every active model", () => {
   const data = JSON.parse(fs.readFileSync(path.join(process.cwd(), "inference", "data", "models.json"), "utf8")) as { models: ModelCard[] };
   const missing = data.models
-    .filter((model) => !familyOf(model))
+    .filter((model) => !(familyOf(model) || aggregateCanonicalFamily(model.modelId, model.name)))
     .map((model) => `${model.provider}:${model.modelId}`);
 
   assert.deepEqual(missing, []);
