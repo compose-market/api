@@ -227,13 +227,18 @@ test("/models/ is a paid entrypoint and /models/list is the separate compiled ca
   assert.equal(description.includes("GET https://api.compose.market/networks/"), false);
   assert.ok(paymentRequired.extensions?.bazaar);
 
-  const expectedNetworks = (await getFacilitatorSupported()).kinds
-    .filter((kind) => kind.scheme === "upto")
+  const facilitatorSupported = await getFacilitatorSupported();
+  const expectedNetworks = facilitatorSupported.kinds
+    .filter((kind) => kind.scheme === "upto" && isServiceAllowedNetwork(kind.network as NetworkId))
     .map((kind) => kind.network)
     .sort();
   const actualNetworks = [...schemesByNetwork(paymentRequired).keys()].sort();
   assert.deepEqual(actualNetworks, expectedNetworks);
   assert.equal(paymentRequired.accepts.every((accept) => accept.scheme === "upto"), true);
+  assert.equal(actualNetworks.includes("eip155:84532"), true);
+  assert.equal(actualNetworks.includes("eip155:42431"), false);
+  assert.equal(actualNetworks.includes("eip155:1328"), false);
+  assert.equal(actualNetworks.includes("eip155:43113"), false);
 
   const apiCatalog = await handler(createEvent("GET", "/models/list", undefined, { limit: "2", cursor: "2" }), {});
   assert.equal(apiCatalog.statusCode, 200);
