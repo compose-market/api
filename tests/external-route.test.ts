@@ -23,7 +23,7 @@ import {
 } from "../x402/keys/valkey.js";
 import { listExecutionEvidence } from "../x402/evidence.js";
 
-const NETWORK = "eip155:5042002" as const;
+const NETWORK = "eip155:84532" as const;
 
 function wallet(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
