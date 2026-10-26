@@ -80,7 +80,7 @@ async function withFullApp<T>(run: (baseUrl: string) => Promise<T>): Promise<T> 
     return await run(`http://127.0.0.1:${port}`);
   } finally {
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
+      server.close((error) => (error ? reject(error) : resolve()));
     });
   }
 }
