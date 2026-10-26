@@ -8,13 +8,13 @@ import test, { after, before } from "node:test";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import { validatePaymentRequired } from "@x402/core/schemas";
 import express from "express";
+import { isServiceAllowedNetwork, type NetworkId } from "../x402/configs/chains.js";
 
 const ORIGINAL_ENV = {
   FACILITATOR_KEY: process.env.FACILITATOR_KEY,
   MERCHANT_WALLET_ADDRESS: process.env.MERCHANT_WALLET_ADDRESS,
   AVALANCHE_MAINNET_RPC: process.env.AVALANCHE_MAINNET_RPC,
   SOLANA_MAINNET_RPC: process.env.SOLANA_MAINNET_RPC,
-  AGENTS_URL: process.env.AGENTS_URL,
 };
 
 const NATIVE_FETCH = globalThis.fetch;
