@@ -256,3 +256,78 @@ test("parseModelsLanguagesDocs and parseTtsModelsDocs match header-keyed tables 
   assert.deepEqual(thalia?.tags, ["feminine", "clear", "calm"]);
   assert.deepEqual(thalia?.useCases, ["IVR", "chat"]);
 });
+
+test("parseDeepgramPricing and resolveSttPricing use structured OfferCatalog/FAQ rates and reject unpriced model variants", () => {
+  const html = `<!doctype html><html><head>
+    <script type="application/ld+json">${JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "OfferCatalog",
+          itemListElement: [
+            {
+              "@type": "Offer",
+              name: "Speech-to-text: Nova-3 Monolingual (Streaming) — Pay as you go",
+              category: "Pay as you go",
+              itemOffered: { "@type": "Service", name: "Nova-3 Monolingual", category: "Speech-to-text" },
+              priceSpecification: { "@type": "UnitPriceSpecification", price: 0.0048, unitText: "minute" },
+            },
+            {
+              "@type": "Offer",
+              name: "Speech-to-text: Nova-3 Monolingual (Pre-recorded) — Pay as you go",
+              category: "Pay as you go",
+              itemOffered: { "@type": "Service", name: "Nova-3 Monolingual", category: "Speech-to-text" },
+              priceSpecification: { "@type": "UnitPriceSpecification", price: 0.0043, unitText: "minute" },
+            },
+            {
+              "@type": "Offer",
+              name: "Speech-to-text: Whisper Large (Pre-recorded) — Pay as you go",
+              category: "Pay as you go",
+              itemOffered: { "@type": "Service", name: "Whisper Large", category: "Speech-to-text" },
+              priceSpecification: { "@type": "UnitPriceSpecification", price: 0.0048, unitText: "minute" },
+            },
+            {
+              "@type": "Offer",
+              name: "Text-to-speech: Aura-2 — Pay as you go",
+              category: "Pay as you go",
+              itemOffered: { "@type": "Service", name: "Aura-2", category: "Text-to-speech" },
+              priceSpecification: { "@type": "UnitPriceSpecification", price: 0.03, unitText: "1,000 characters" },
+            },
+          ],
+        },
+        {
+          "@type": "FAQPage",
+          mainEntity: [
+            {
+              "@type": "Question",
+              name: "Are older models still available?",
+              acceptedAnswer: {
+                "@type": "Answer",
+                text: "Yes, at unchanged rates for existing deployments: Nova-2 streaming $0.35 an hour, Enhanced $0.99, Base $0.87. Growth is lower.",
+              },
+            },
+          ],
+        },
+      ],
+    })}</script>
+  </head><body></body></html>`;
+
+  const pricing = parseDeepgramPricing(html);
+  assert.equal(pricing.speechToTextPreRecorded.get("nova-3-monolingual")?.entries.pay_as_you_go, 0.0043);
+  assert.equal(pricing.speechToTextStreaming.get("nova-3-monolingual")?.entries.pay_as_you_go, 0.0048);
+  assert.equal(pricing.speechToText.get("enhanced")?.unitKey, "per_audio_minute_usd");
+  assert.equal(pricing.speechToText.get("enhanced")?.entries.pay_as_you_go, 0.0165);
+  assert.equal(pricing.textToSpeech.get("aura-2")?.unitKey, "per_1k_characters_usd");
+
+  const [whisperLargeGroup, whisperTinyGroup] = groupApiModels([
+    { canonical_name: "whisper-large", architecture: "whisper", batch: true, multilingual: false },
+    { canonical_name: "whisper-tiny", architecture: "whisper", batch: true, multilingual: false },
+  ]);
+
+  const largeSections = resolveSttPricing(whisperLargeGroup!, pricing);
+  assert.equal(largeSections.length, 1);
+  assert.equal(largeSections[0]?.entries.pay_as_you_go, 0.0048);
+
+  const tinySections = resolveSttPricing(whisperTinyGroup!, pricing);
+  assert.deepEqual(tinySections, [], "unpriced whisper-tiny must not inherit whisper-large pricing");
+});
