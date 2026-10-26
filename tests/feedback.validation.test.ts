@@ -14,11 +14,11 @@ test("normalizeFeedbackInput accepts a model rating with payment and request con
     context: {
       requestId: "req_feedback_1",
       paymentIntentId: "pi_123",
-      network: "eip155:5042002",
+      network: "eip155:84532",
       modelId: "gpt-image-2",
       provider: "openai",
       receipt: {
-        network: "eip155:5042002",
+        network: "eip155:84532",
         txHash: `0x${"12".repeat(32)}`,
         finalAmountWei: "12000",
       },
