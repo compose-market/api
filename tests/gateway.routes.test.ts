@@ -261,7 +261,7 @@ test("registerInferenceRoutes challenges chat completions before provider execut
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Network-ID": "eip155:5042002",
+          "X-Network-ID": "eip155:84532",
         },
         body: JSON.stringify({
           model: TEXT_MODEL_ID,
@@ -275,7 +275,7 @@ test("registerInferenceRoutes challenges chat completions before provider execut
 
       const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
       assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-      assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
+      assert.equal(paymentRequired.accepts[0]?.network, "eip155:84532");
       assert.equal(paymentRequired.accepts[0]?.amount, "1000000");
     });
   } finally {
