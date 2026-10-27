@@ -593,7 +593,7 @@ test("adaptError preserves x402 payment-required negotiation metadata from settl
   const { encodePaymentRequiredHeader } = await import("../x402/facilitator.js");
 
   const paymentRequired = createPaymentRequired402Response({
-    network: "eip155:5042002",
+    network: "eip155:84532",
     amountWei: 25_000_000,
     resourceUrl: "https://api.compose.market/v1/responses",
     errorMessage: "Session expired or insufficient allowance",
