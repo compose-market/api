@@ -71,7 +71,7 @@ test("toPublicFeedback omits reviewer address but preserves verification kind", 
     reviewer: {
       kind: "compose_key",
       address: "0x0000000000000000000000000000000000000002",
-      network: "eip155:5042002",
+      network: "eip155:84532",
     },
     createdAt: 1_700_000_000_000,
   };
