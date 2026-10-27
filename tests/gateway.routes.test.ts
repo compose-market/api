@@ -730,7 +730,7 @@ test("registerInferenceRoutes rejects non-boolean stream flags before payment ne
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:5042002",
+        "X-Network-ID": "eip155:84532",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
