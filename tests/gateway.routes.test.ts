@@ -360,7 +360,7 @@ test("registerInferenceRoutes accepts image-only universal embedding requests be
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:5042002",
+        "X-Network-ID": "eip155:84532",
       },
       body: JSON.stringify({
         model: IMAGE_EMBEDDING_MODEL_ID,
