@@ -758,7 +758,7 @@ test("registerInferenceRoutes exposes universal response streams to payment nego
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:5042002",
+        "X-Network-ID": "eip155:84532",
         "x-x402-max-amount-wei": "250000",
       },
       body: JSON.stringify({
@@ -774,7 +774,7 @@ test("registerInferenceRoutes exposes universal response streams to payment nego
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:84532");
     assert.equal(paymentRequired.accepts[0]?.amount, "250000");
   });
 });
