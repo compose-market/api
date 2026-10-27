@@ -294,7 +294,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for deterministic
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:5042002",
+        "X-Network-ID": "eip155:84532",
       },
       body: JSON.stringify({
         model: AUDIO_MODEL_ID,
@@ -308,7 +308,7 @@ test("registerInferenceRoutes negotiates raw x402 upto pricing for deterministic
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:84532");
     assert.ok(Number(paymentRequired.accepts[0]?.amount || "0") > 0);
   });
 });
