@@ -521,7 +521,7 @@ test("realtime-only REST calls enter paid inference instead of legacy websocket 
   await withInferenceServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-network-id": "eip155:5042002" },
+      headers: { "Content-Type": "application/json", "x-network-id": "eip155:84532" },
       body: JSON.stringify({
         model: "gpt-realtime-2",
         input: [{ type: "input_text", text: "Start a voice session." }],
