@@ -227,7 +227,7 @@ test("registerInferenceRoutes issues a 402 upto challenge with default envelope 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Network-ID": "eip155:5042002",
+        "X-Network-ID": "eip155:84532",
       },
       body: JSON.stringify({
         model: TEXT_MODEL_ID,
@@ -242,7 +242,7 @@ test("registerInferenceRoutes issues a 402 upto challenge with default envelope 
 
     const paymentRequired = decodePaymentRequiredHeader(response.headers.get("payment-required")!);
     assert.equal(paymentRequired.accepts[0]?.scheme, "upto");
-    assert.equal(paymentRequired.accepts[0]?.network, "eip155:5042002");
+    assert.equal(paymentRequired.accepts[0]?.network, "eip155:84532");
     // Default envelope is 1 USDC (1_000_000 atomic units)
     assert.equal(paymentRequired.accepts[0]?.amount, "1000000");
   });
