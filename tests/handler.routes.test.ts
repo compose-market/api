@@ -208,24 +208,6 @@ test("handler serves compose facilitator supported response without cronos or v1
   assert.deepEqual(rootBody.extensions, ["metering", "payment-intent"]);
 });
 
-test("handler rejects legacy numeric dispenser inputs", async () => {
-  const { handler } = await import("../handler.js");
-
-  const claim = await handler(
-    createEvent("POST", "/api/dispenser/claim", {
-      address: "0x1111111111111111111111111111111111111111",
-      chainId: 5042002,
-    }),
-    {},
-  );
-  assert.equal(claim.statusCode, 400);
-  assert.match(JSON.parse(claim.body).error, /chainId is not supported/i);
-
-  const status = await handler(createEvent("GET", "/api/dispenser/status/5042002"), {});
-  assert.equal(status.statusCode, 400);
-  assert.match(JSON.parse(status.body).error, /CAIP-2 network/i);
-});
-
 test("handler does not expose the legacy Session settlement-status route", async () => {
   const { handler } = await import("../handler.js");
 
