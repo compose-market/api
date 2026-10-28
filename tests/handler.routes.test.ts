@@ -439,7 +439,7 @@ test("handler rejects api key creation when the tied wallet lacks the required U
   const { handler } = await import("../handler.js");
 
   const userAddress = randomWalletAddress();
-  const network = "eip155:5042002" as const;
+  const network = "eip155:84532" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   try {
