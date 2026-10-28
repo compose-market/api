@@ -199,8 +199,13 @@ test("handler serves compose facilitator supported response without cronos or v1
   assert.equal(body.kinds.some((kind) => kind.scheme === "upto"), true);
   assert.deepEqual(
     body.extensions,
-    ["compose-metering-v1", "compose-payment-intent-v1"],
+    ["metering", "payment-intent"],
   );
+
+  const rootResult = await handler(createEvent("GET", "/supported"), {});
+  assert.equal(rootResult.statusCode, 200);
+  const rootBody = JSON.parse(rootResult.body) as typeof body;
+  assert.deepEqual(rootBody.extensions, ["metering", "payment-intent"]);
 });
 
 test("handler rejects legacy numeric dispenser inputs", async () => {
