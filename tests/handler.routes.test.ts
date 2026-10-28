@@ -412,7 +412,7 @@ test("handler rejects session creation when the tied wallet lacks the required U
 test("handler rejects malformed header wallet identity when creating a key", async () => {
   const { handler } = await import("../handler.js");
 
-  const network = "eip155:5042002" as const;
+  const network = "eip155:84532" as const;
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   await assert.rejects(
