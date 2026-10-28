@@ -511,7 +511,7 @@ test("selectActiveSessionStatus ignores API keys and uses reserved budget from s
       budgetRemaining: 5_000_000,
       expiresAt: now + 60_000,
       createdAt: now + 10_000,
-      network: "eip155:8453",
+      network: "eip155:84532",
       name: "Cursor",
     },
     {
@@ -524,12 +524,12 @@ test("selectActiveSessionStatus ignores API keys and uses reserved budget from s
       budgetRemaining: 7_000_000,
       expiresAt: now + 60_000,
       createdAt: now,
-      network: "eip155:8453",
+      network: "eip155:84532",
       name: "Browser Session",
     },
   ];
 
-  const status = selectActiveSessionStatus(candidates, "eip155:8453", now);
+  const status = selectActiveSessionStatus(candidates, "eip155:84532", now);
 
   assert.equal(status.reason, "none");
   assert.deepEqual(status.session, {
@@ -540,7 +540,7 @@ test("selectActiveSessionStatus ignores API keys and uses reserved budget from s
     budgetLocked: 1_000_000,
     budgetRemaining: 7_000_000,
     expiresAt: now + 60_000,
-    network: "eip155:8453",
+    network: "eip155:84532",
     name: "Browser Session",
   });
 });
