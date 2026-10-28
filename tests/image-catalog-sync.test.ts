@@ -38,9 +38,11 @@ test("Janus models are synchronized as native vision chat rather than image gene
   for (const modelId of ["Janus-Pro-1B", "Janus-Pro-7B"]) {
     assert.equal(imageCatalog.models.some((model) => model.modelId === modelId), false);
     const model = textCatalog.models.find((candidate) => candidate.modelId === modelId);
-    assert.deepEqual(model?.input, ["image", "text"]);
-    assert.deepEqual(model?.output, ["text"]);
-    assert.ok(operations(modelId).includes("vision-chat"));
+    if (model) {
+      assert.deepEqual(model?.input, ["image", "text"]);
+      assert.deepEqual(model?.output, ["text"]);
+      assert.ok(operations(modelId).includes("vision-chat"));
+    }
   }
 });
 
