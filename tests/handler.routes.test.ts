@@ -62,7 +62,7 @@ function sessionBudgetKey(userAddress: string, network: string): string {
 }
 
 after(async () => {
-  const backpack = await import("../backpack/storage.js");
+  const backpack = await import("../permissions/storage.js");
   await backpack.close();
   await closeValkey();
 });
