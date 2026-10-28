@@ -312,29 +312,14 @@ test("handler persists Backpack cloud permissions via dedicated permission route
   );
 });
 
-test("registerHandlerRoutes does not expose legacy /api/backpack routes", async () => {
+test("registerHandlerRoutes does not expose legacy /api/backpack, /accounts, /gated, or /backpack/status routes", async () => {
   const app = await createHandlerApp();
   const routes = listRegisteredRoutes(app);
 
   assert.equal(routes.some((route) => route.path.startsWith("/api/backpack")), false);
-});
-
-test("handler requires explicit connectedAccountId for account execution", async () => {
-  const { handler } = await import("../handler.js");
-
-  const result = await handler(
-    createEvent("POST", "/accounts/execute", {
-      userAddress: "0x1111111111111111111111111111111111111111",
-      agentWallet: "0x2222222222222222222222222222222222222222",
-      toolkit: "gmail",
-      action: "GMAIL_SEND_EMAIL",
-      params: {},
-    }),
-    {},
-  );
-
-  assert.equal(result.statusCode, 400);
-  assert.match(JSON.parse(result.body).error, /connectedAccountId/);
+  assert.equal(routes.some((route) => route.path.startsWith("/accounts")), false);
+  assert.equal(routes.some((route) => route.path.startsWith("/gated")), false);
+  assert.equal(routes.some((route) => route.path === "/backpack/status"), false);
 });
 
 test("handler rejects session creation when the tied wallet lacks the required USDC funding", async () => {
