@@ -322,6 +322,20 @@ test("registerHandlerRoutes does not expose legacy /api/backpack, /accounts, /ga
   assert.equal(routes.some((route) => route.path === "/backpack/status"), false);
 });
 
+test("handler returns 404 for removed /accounts, /gated, and /backpack/status routes", async () => {
+  const { handler } = await import("../handler.js");
+
+  for (const [method, path] of [
+    ["GET", "/accounts"],
+    ["POST", "/accounts/execute"],
+    ["GET", "/gated"],
+    ["GET", "/backpack/status"],
+  ] as const) {
+    const result = await handler(createEvent(method, path), {});
+    assert.equal(result.statusCode, 404, `expected 404 for ${method} ${path}`);
+  }
+});
+
 test("handler rejects session creation when the tied wallet lacks the required USDC funding", async () => {
   const { handler } = await import("../handler.js");
 
