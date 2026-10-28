@@ -336,6 +336,17 @@ test("handler returns 404 for removed /accounts, /gated, and /backpack/status ro
   }
 });
 
+test("registerUtilityRoutes does not proxy /api/mcps, /api/onchain, /agent, or /workflow", async () => {
+  const { registerUtilityRoutes } = await import("../routes.js");
+  const app = express();
+  registerUtilityRoutes(app);
+  const stack = app.router.stack as Array<{ regexp?: RegExp }>;
+  assert.equal(stack.some((layer) => String(layer.regexp || "").includes("mcps")), false);
+  assert.equal(stack.some((layer) => String(layer.regexp || "").includes("onchain")), false);
+  assert.equal(stack.some((layer) => String(layer.regexp || "").includes("agent")), false);
+  assert.equal(stack.some((layer) => String(layer.regexp || "").includes("workflow")), false);
+});
+
 test("handler rejects session creation when the tied wallet lacks the required USDC funding", async () => {
   const { handler } = await import("../handler.js");
 
