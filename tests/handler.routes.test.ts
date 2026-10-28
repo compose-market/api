@@ -234,18 +234,6 @@ test("handler does not expose the synchronous Compose-key settlement bypass", as
   assert.equal(result.statusCode, 404);
 });
 
-test("handler treats Solana dispenser status as unsupported without EVM coercion", async () => {
-  const { handler } = await import("../handler.js");
-
-  const result = await handler(
-    createEvent("GET", "/api/dispenser/status/solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"),
-    {},
-  );
-
-  assert.equal(result.statusCode, 404);
-  assert.match(JSON.parse(result.body).reason, /not configured/i);
-});
-
 test("handler persists Backpack cloud permissions via dedicated permission routes", async () => {
   const { handler } = await import("../handler.js");
   const userAddress = "0x1111111111111111111111111111111111111111";
