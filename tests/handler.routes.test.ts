@@ -216,7 +216,7 @@ test("handler does not expose the legacy Session settlement-status route", async
     requestContext: { http: { method: "GET" } },
     headers: {
       "x-session-user-address": "0x1111111111111111111111111111111111111111",
-      "x-network-id": "eip155:5042002",
+      "x-network-id": "eip155:84532",
     },
   }, {});
 
