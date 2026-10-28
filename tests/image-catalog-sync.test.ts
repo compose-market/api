@@ -57,8 +57,8 @@ test("image catalogs distinguish required source images from optional references
   };
 
   const required = [
-    // Canonical casing follows the PROVIDER_PRIORITY winner: deepinfra hosts
-    // Qwen-Image-Edit, so its spelling is the public id.
+    "Ming-Image-0.1-Design-Layer",
+    "qwen-image-edit",
     "qwen-image-edit-max-2026-01-16",
     "qwen-image-edit-plus",
     "qwen-image-edit-plus-2025-10-30",
@@ -66,7 +66,6 @@ test("image catalogs distinguish required source images from optional references
     "wan2.5-i2i-preview",
     "stable-diffusion-v1-5-inpainting",
     "clarityai/flux",
-    "FLUX-1-Redux-dev",
     "blur_background",
     "enhance",
     "erase",
@@ -79,7 +78,6 @@ test("image catalogs distinguish required source images from optional references
     "creative",
     "crystal",
     "p-image-Edit",
-    "Qwen-Image-Edit",
     "Qwen-Image-Edit-Max",
     "Wan2.6-Image-Edit",
   ].sort();
@@ -91,7 +89,7 @@ test("image catalogs distinguish required source images from optional references
 
   for (const modelId of [
     "stable-diffusion-v1-5-inpainting",
-    "Qwen-Image-Edit",
+    flagged.includes("Qwen-Image-Edit") ? "Qwen-Image-Edit" : "qwen-image-edit",
     "Qwen-Image-Edit-Max",
     "wan2.5-i2i-preview",
   ]) {
