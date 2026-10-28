@@ -558,12 +558,12 @@ test("selectActiveSessionStatus keeps a live session active while its remaining 
       budgetRemaining: 0,
       expiresAt: now + 60_000,
       createdAt: now,
-      network: "eip155:8453",
+      network: "eip155:84532",
       name: "Browser Session",
     },
   ];
 
-  const status = selectActiveSessionStatus(candidates, "eip155:8453", now);
+  const status = selectActiveSessionStatus(candidates, "eip155:84532", now);
 
   assert.equal(status.reason, "none");
   assert.deepEqual(status.session, {
@@ -574,7 +574,7 @@ test("selectActiveSessionStatus keeps a live session active while its remaining 
     budgetLocked: 8_000_000,
     budgetRemaining: 0,
     expiresAt: now + 60_000,
-    network: "eip155:8453",
+    network: "eip155:84532",
     name: "Browser Session",
   });
 });
