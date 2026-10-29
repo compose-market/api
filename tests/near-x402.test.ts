@@ -36,3 +36,4 @@ const FACILITATOR_SOURCE = await readFile(new URL("../x402/facilitator.ts", impo
 const BATCH_SOURCE = await readFile(new URL("../x402/batch.ts", import.meta.url), "utf8");
 const SETTLEMENT_SOURCE = await readFile(new URL("../x402/settlement.ts", import.meta.url), "utf8");
 const ALLOWANCE_SOURCE = await readFile(new URL("../x402/session/allowance.ts", import.meta.url), "utf8");
+const INDEX_SOURCE = await readFile(new URL("../x402/index.ts", import.meta.url), "utf8");
