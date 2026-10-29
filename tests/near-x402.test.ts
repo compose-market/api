@@ -35,3 +35,4 @@ import { getSessionFundingReadiness } from "../x402/session/allowance.js";
 const FACILITATOR_SOURCE = await readFile(new URL("../x402/facilitator.ts", import.meta.url), "utf8");
 const BATCH_SOURCE = await readFile(new URL("../x402/batch.ts", import.meta.url), "utf8");
 const SETTLEMENT_SOURCE = await readFile(new URL("../x402/settlement.ts", import.meta.url), "utf8");
+const ALLOWANCE_SOURCE = await readFile(new URL("../x402/session/allowance.ts", import.meta.url), "utf8");
