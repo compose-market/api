@@ -39,3 +39,4 @@ const ALLOWANCE_SOURCE = await readFile(new URL("../x402/session/allowance.ts", 
 const INDEX_SOURCE = await readFile(new URL("../x402/index.ts", import.meta.url), "utf8");
 
 const NEAR_TESTNET: NearNetworkId = "near:testnet";
+const NEAR_MAINNET: NearNetworkId = "near:mainnet";
