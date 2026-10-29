@@ -298,3 +298,130 @@ test("Gemini image params retain only image config reachable from the model oper
     ["predict"],
   ), undefined);
 });
+
+test("Gemini text-generation params retain GenerationConfig and ThinkingConfig without flattening Schema, ImageConfig, SpeechConfig, or ResponseFormatConfig", () => {
+  const discovery = {
+    resources: {
+      models: {
+        methods: {
+          generateContent: { request: { $ref: "GenerateContentRequest" } },
+        },
+      },
+    },
+    schemas: {
+      GenerateContentRequest: {
+        id: "GenerateContentRequest",
+        type: "object",
+        properties: { generationConfig: { $ref: "GenerationConfig" } },
+      },
+      GenerationConfig: {
+        id: "GenerationConfig",
+        type: "object",
+        properties: {
+          temperature: { type: "number", description: "Controls randomness." },
+          topP: { type: "number" },
+          topK: { type: "integer" },
+          maxOutputTokens: { type: "integer" },
+          mediaResolution: {
+            type: "string",
+            enum: ["MEDIA_RESOLUTION_UNSPECIFIED", "MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_HIGH"],
+          },
+          _responseJsonSchema: { type: "any", deprecated: true },
+          responseJsonSchema: { type: "any", description: "Internal detail." },
+          responseSchema: { $ref: "Schema", deprecated: true },
+          thinkingConfig: { $ref: "ThinkingConfig" },
+          imageConfig: { $ref: "ImageConfig" },
+          speechConfig: { $ref: "SpeechConfig" },
+          responseFormat: { $ref: "ResponseFormatConfig" },
+        },
+      },
+      ThinkingConfig: {
+        id: "ThinkingConfig",
+        type: "object",
+        properties: {
+          thinkingLevel: {
+            type: "string",
+            enum: ["THINKING_LEVEL_UNSPECIFIED", "LOW", "HIGH"],
+          },
+          includeThoughts: { type: "boolean" },
+          thinkingBudget: { type: "integer" },
+        },
+      },
+      Schema: {
+        id: "Schema",
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          maxLength: { type: "string" },
+          enum: { type: "array" },
+        },
+      },
+      ImageConfig: {
+        id: "ImageConfig",
+        type: "object",
+        properties: {
+          aspectRatio: { type: "string", enum: ["1:1", "16:9"] },
+          imageSize: { type: "string", default: "1K" },
+        },
+      },
+      SpeechConfig: {
+        id: "SpeechConfig",
+        type: "object",
+        properties: {
+          languageCode: { type: "string" },
+        },
+      },
+      ResponseFormatConfig: {
+        id: "ResponseFormatConfig",
+        type: "object",
+        properties: {
+          audio: { $ref: "AudioResponseFormat" },
+          text: { $ref: "TextResponseFormat" },
+        },
+      },
+      AudioResponseFormat: {
+        id: "AudioResponseFormat",
+        type: "object",
+        properties: {
+          mimeType: { type: "string", enum: ["AUDIO_MP3", "AUDIO_WAV"] },
+          bitRate: { type: "integer" },
+        },
+      },
+      TextResponseFormat: {
+        id: "TextResponseFormat",
+        type: "object",
+        properties: {
+          mimeType: { type: "string", enum: ["APPLICATION_JSON", "TEXT_PLAIN"] },
+        },
+      },
+    },
+  };
+
+  const textParams = buildGeminiGenParamsFromDiscovery(
+    discovery,
+    "gemini-2.5-flash",
+    "text-generation",
+    ["generateContent"],
+    {
+      apiModel: {
+        temperature: 1,
+        maxTemperature: 2,
+        topP: 0.95,
+        topK: 64,
+        outputTokenLimit: 65536,
+        thinking: true,
+      },
+    },
+  );
+
+  assert.deepEqual(textParams, {
+    temperature: { type: "number", required: false, description: "Controls randomness.", default: 1, minimum: 0, maximum: 2 },
+    topP: { type: "number", required: false, default: 0.95, minimum: 0, maximum: 1 },
+    topK: { type: "integer", required: false, default: 64, minimum: 1 },
+    maxOutputTokens: { type: "integer", required: false, minimum: 1, maximum: 65536 },
+    mediaResolution: { type: "string", required: false, options: ["MEDIA_RESOLUTION_LOW", "MEDIA_RESOLUTION_HIGH"] },
+    thinkingLevel: { type: "string", required: false, options: ["LOW", "HIGH"] },
+    includeThoughts: { type: "boolean", required: false },
+    thinkingBudget: { type: "integer", required: false },
+  });
+});
