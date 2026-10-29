@@ -33,3 +33,22 @@ async function withServer<T>(
     });
   }
 }
+
+test("api routes and discovery contain zero runtime or agent-run coupling", () => {
+  const routesSource = source("routes.ts");
+  const handlerSource = source("handler.ts");
+  const discoverySource = source("x402/discovery.ts");
+
+  assert.doesNotMatch(
+    routesSource,
+    /RUNTIME_URL|callRuntime|\/internal\/manowar|payableStreamRoute|payableJsonRoute|passthroughJsonRoute|passthroughStreamRoute|agentBill|resolveAgentTextSettlement|resolveWorkflowSettlement/u,
+  );
+  assert.doesNotMatch(
+    handlerSource,
+    /AGENTS_ENTRYPOINT|AGENTS_CATALOG|registerManowarRoutes/u,
+  );
+  assert.doesNotMatch(
+    discoverySource,
+    /AGENTS_ENTRYPOINT|AGENTS_CATALOG|fetchAgentCatalog|buildAgentsPaymentRequired|buildAgentStreamPaymentRequired/u,
+  );
+});
