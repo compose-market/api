@@ -52,3 +52,40 @@ test("api routes and discovery contain zero runtime or agent-run coupling", () =
     /AGENTS_ENTRYPOINT|AGENTS_CATALOG|fetchAgentCatalog|buildAgentsPaymentRequired|buildAgentStreamPaymentRequired/u,
   );
 });
+
+test("registerUtilityRoutes exposes only receipts, IPFS pin proxy, and frameworks", async () => {
+  const app = express();
+  app.use(express.json());
+  registerUtilityRoutes(app);
+  app.use((_req, res) => {
+    res.status(404).json({ error: "Not Found" });
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const frameworksRes = await fetch(`${baseUrl}/frameworks`);
+    assert.equal(frameworksRes.status, 200);
+    const frameworksBody = await frameworksRes.json() as { frameworks?: Array<{ id: string }> };
+    assert.deepEqual(frameworksBody.frameworks?.map((f) => f.id), ["manowar", "other"]);
+
+    const receiptsUnauth = await fetch(`${baseUrl}/api/receipts`);
+    assert.equal(receiptsUnauth.status, 401);
+
+    for (const [method, path] of [
+      ["POST", "/agent/0x1111111111111111111111111111111111111111/stream"],
+      ["POST", "/agent/0x1111111111111111111111111111111111111111/responses"],
+      ["GET", "/agent/0x1111111111111111111111111111111111111111/runs/run-1/state"],
+      ["POST", "/workflow/execute"],
+      ["GET", "/workflow/prices"],
+      ["POST", "/api/memory/search"],
+      ["POST", "/api/workspace/search"],
+    ] as const) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method,
+        ...(method === "POST"
+          ? { headers: { "content-type": "application/json" }, body: "{}" }
+          : {}),
+      });
+      assert.equal(response.status, 404, `expected 404 on api for ${method} ${path}`);
+    }
+  });
+});
