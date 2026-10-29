@@ -89,3 +89,47 @@ test("registerUtilityRoutes exposes only receipts, IPFS pin proxy, and framework
     }
   });
 });
+
+test("handler and registerHandlerRoutes return 404 for all agent, workflow, memory, and workspace routes", async () => {
+  const app = express();
+  app.use(express.json());
+  registerHandlerRoutes(app);
+  app.use((_req, res) => {
+    res.status(404).json({ error: "Not Found" });
+  });
+
+  const removedPaths: Array<readonly [string, string]> = [
+    ["GET", "/agents"],
+    ["POST", "/agents"],
+    ["GET", "/agents/list"],
+    ["GET", "/agents/search"],
+    ["GET", "/agent/0x1111111111111111111111111111111111111111"],
+    ["GET", "/agent/0x1111111111111111111111111111111111111111/avatar"],
+    ["POST", "/agent/0x1111111111111111111111111111111111111111/stream"],
+    ["POST", "/agent/0x1111111111111111111111111111111111111111/responses"],
+    ["GET", "/workflows"],
+    ["GET", "/workflow/0x1111111111111111111111111111111111111111"],
+    ["POST", "/workflow/execute"],
+    ["POST", "/api/memory/search"],
+    ["POST", "/api/workspace/index"],
+  ];
+
+  await withServer(app, async (baseUrl) => {
+    for (const [method, path] of removedPaths) {
+      const expressRes = await fetch(`${baseUrl}${path}`, {
+        method,
+        ...(method === "POST"
+          ? { headers: { "content-type": "application/json" }, body: "{}" }
+          : {}),
+      });
+      assert.equal(expressRes.status, 404, `expected Express 404 for ${method} ${path}`);
+
+      const directRes = await handler({
+        rawPath: path,
+        requestContext: { http: { method } },
+        headers: {},
+      }, {});
+      assert.equal(directRes.statusCode, 404, `expected handler 404 for ${method} ${path}`);
+    }
+  });
+});
