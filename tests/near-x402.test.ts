@@ -55,3 +55,10 @@ const ORIGINAL_ENV = {
   NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC: process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC,
   NEAR_TESTNET_MERCHANT_WALLET_ADDRESS: process.env.NEAR_TESTNET_MERCHANT_WALLET_ADDRESS,
 };
+
+function restoreEnv(): void {
+  for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
