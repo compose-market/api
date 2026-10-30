@@ -42,3 +42,4 @@ const NEAR_TESTNET: NearNetworkId = "near:testnet";
 const NEAR_MAINNET: NearNetworkId = "near:mainnet";
 const FEE_PAYER = "compose-relayer.testnet";
 const MERCHANT = "compose-merchant.testnet";
+const RESOURCE_URL = "https://api.compose.market/models";
