@@ -40,3 +40,4 @@ const INDEX_SOURCE = await readFile(new URL("../x402/index.ts", import.meta.url)
 
 const NEAR_TESTNET: NearNetworkId = "near:testnet";
 const NEAR_MAINNET: NearNetworkId = "near:mainnet";
+const FEE_PAYER = "compose-relayer.testnet";
