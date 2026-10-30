@@ -71,3 +71,7 @@ before(() => {
   delete process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC;
   delete process.env.NEAR_TESTNET_MERCHANT_WALLET_ADDRESS;
 });
+
+after(() => {
+  restoreEnv();
+});
