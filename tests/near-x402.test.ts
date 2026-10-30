@@ -62,3 +62,12 @@ function restoreEnv(): void {
     else process.env[key] = value;
   }
 }
+
+before(() => {
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+  process.env.NEAR_MERCHANT_WALLET_ADDRESS = MERCHANT;
+  delete process.env.NEAR_FACILITATOR_ACCOUNT;
+  delete process.env.NEAR_TESTNET_FACILITATOR_ACCOUNT;
+  delete process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC;
+  delete process.env.NEAR_TESTNET_MERCHANT_WALLET_ADDRESS;
+});
