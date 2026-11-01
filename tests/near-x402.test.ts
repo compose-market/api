@@ -101,3 +101,7 @@ function signNearMessage(keyPair: KeyPair, message: Uint8Array): string {
   const signed = keyPair.sign(message);
   return `ed25519:${base58.encode(signed.signature)}`;
 }
+
+class MemoryNonceStore {
+  private readonly used = new Set<string>();
+}
