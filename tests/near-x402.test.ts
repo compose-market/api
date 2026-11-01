@@ -88,3 +88,7 @@ function orderedRecord(input: Record<string, unknown>): Record<string, unknown> 
       return acc;
     }, {});
 }
+
+function canonicalJson(input: Record<string, unknown>): string {
+  return JSON.stringify(orderedRecord(input));
+}
