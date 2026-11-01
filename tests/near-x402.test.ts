@@ -75,3 +75,16 @@ before(() => {
 after(() => {
   restoreEnv();
 });
+
+function orderedRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.keys(input)
+    .filter((key) => input[key] !== undefined)
+    .sort()
+    .reduce<Record<string, unknown>>((acc, key) => {
+      const value = input[key];
+      acc[key] = value && typeof value === "object" && !Array.isArray(value)
+        ? orderedRecord(value as Record<string, unknown>)
+        : value;
+      return acc;
+    }, {});
+}
