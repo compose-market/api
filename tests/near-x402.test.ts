@@ -92,3 +92,7 @@ function orderedRecord(input: Record<string, unknown>): Record<string, unknown> 
 function canonicalJson(input: Record<string, unknown>): string {
   return JSON.stringify(orderedRecord(input));
 }
+
+function implicitAccountFromKeyPair(keyPair: KeyPair): string {
+  return Buffer.from(keyPair.getPublicKey().data).toString("hex");
+}
