@@ -96,3 +96,8 @@ function canonicalJson(input: Record<string, unknown>): string {
 function implicitAccountFromKeyPair(keyPair: KeyPair): string {
   return Buffer.from(keyPair.getPublicKey().data).toString("hex");
 }
+
+function signNearMessage(keyPair: KeyPair, message: Uint8Array): string {
+  const signed = keyPair.sign(message);
+  return `ed25519:${base58.encode(signed.signature)}`;
+}
