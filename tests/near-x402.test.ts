@@ -235,3 +235,22 @@ test("createPaymentRequirement emits spec-compliant NEAR requirements across all
   );
   process.env.NEAR_MERCHANT_WALLET_ADDRESS = MERCHANT;
 });
+
+test("NEAR native 3-scheme parity lives in the existing x402 modules", () => {
+  assert.match(FACILITATOR_SOURCE, /new ExactNearFacilitator\(signer\)/);
+  assert.match(FACILITATOR_SOURCE, /new UptoNearFacilitator\(feePayer\)/);
+  assert.match(FACILITATOR_SOURCE, /new BatchSettlementNearFacilitator\(feePayer\)/);
+  assert.match(FACILITATOR_SOURCE, /NEAR_FACILITATOR_KEY/);
+  assert.match(FACILITATOR_SOURCE, /NEAR_TREASURY_SERVER_WALLET_PUBLIC/);
+  assert.match(FACILITATOR_SOURCE, /NEAR_MERCHANT_WALLET_ADDRESS/);
+
+  assert.match(BATCH_SOURCE, /export async function validateNearBatchPayment/);
+  assert.match(BATCH_SOURCE, /export async function rememberNearBatchChannel/);
+  assert.match(BATCH_SOURCE, /export async function commitNearBatchCharge/);
+  assert.match(BATCH_SOURCE, /export async function runNearBatchSettlement/);
+
+  assert.match(SETTLEMENT_SOURCE, /async function prepareNearKeyPayment/);
+  assert.match(ALLOWANCE_SOURCE, /async function readNearDelegateAllowanceWei/);
+  assert.match(ALLOWANCE_SOURCE, /async function readNearUsdcBalanceWei/);
+  assert.match(INDEX_SOURCE, /runNearBatchSettlement/);
+});
