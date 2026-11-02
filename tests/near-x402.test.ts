@@ -764,3 +764,40 @@ test("runNearBatchSettlement executes the durable attempt state machine identica
     },
   ]);
 });
+
+test("NEAR session funding readiness resolves NEAR_TREASURY_SERVER_WALLET_PUBLIC and fails closed without it", async () => {
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+
+  const readyResult = await getSessionFundingReadiness(
+    {
+      userAddress: "alice.testnet",
+      network: NEAR_TESTNET,
+      requiredBudgetWei: 1_000_000,
+    },
+    {
+      readBalanceWei: async () => 5_000_000n,
+      readAllowanceWei: async () => 10_000_000n,
+    },
+  );
+  assert.equal(readyResult.ready, true);
+  assert.equal(readyResult.network, NEAR_TESTNET);
+  assert.equal(readyResult.spender, FEE_PAYER);
+  assert.equal(readyResult.asset, getNetwork(NEAR_TESTNET).asset.address);
+
+  delete process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC;
+  const missingSpenderResult = await getSessionFundingReadiness(
+    {
+      userAddress: "alice.testnet",
+      network: NEAR_MAINNET,
+      requiredBudgetWei: 1_000_000,
+    },
+    {
+      readBalanceWei: async () => 5_000_000n,
+      readAllowanceWei: async () => 10_000_000n,
+    },
+  );
+  assert.equal(missingSpenderResult.ready, false);
+  assert.equal(missingSpenderResult.reason, "network_configuration_error");
+  assert.match(missingSpenderResult.error || "", /NEAR_TREASURY_SERVER_WALLET_PUBLIC/);
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+});
