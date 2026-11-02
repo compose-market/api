@@ -340,3 +340,117 @@ test("UptoNearFacilitator verifies implicit 64-hex account Ed25519 signatures, s
   assert.equal(replayedSettle.success, false);
   assert.equal(replayedSettle.errorReason, "duplicate_authorization");
 });
+
+test("UptoNearFacilitator verifies named NEAR account signatures against on-chain access keys and rejects unowned publicKeyHint", async () => {
+  const ownerKeyPair = KeyPair.fromRandom("ed25519");
+  const attackerKeyPair = KeyPair.fromRandom("ed25519");
+  const namedPayer = "alice.testnet";
+
+  const rpcServer = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += String(chunk);
+    });
+    req.on("end", () => {
+      const rpcReq = JSON.parse(body) as { id: string | number };
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: rpcReq.id,
+          result: {
+            block_height: 12345,
+            block_hash: "11111111111111111111111111111111",
+            keys: [
+              {
+                public_key: ownerKeyPair.getPublicKey().toString(),
+                access_key: { nonce: 1, permission: "FullAccess" },
+              },
+            ],
+          },
+        }),
+      );
+    });
+  });
+
+  await new Promise<void>((resolve) => rpcServer.listen(0, "127.0.0.1", resolve));
+  const { port } = rpcServer.address() as AddressInfo;
+  process.env.NEAR_TESTNET_RPC = `http://127.0.0.1:${port}`;
+
+  try {
+    const facilitator = new UptoNearFacilitator(
+      FEE_PAYER,
+      async () => ({ success: true, status: "confirmed", txHash: "NamedAccountTxHash" }),
+      new MemoryNonceStore(),
+    );
+
+    const requirements: PaymentRequirements = {
+      scheme: "upto",
+      network: NEAR_TESTNET,
+      asset: getNetwork(NEAR_TESTNET).asset.address,
+      amount: "500",
+      payTo: MERCHANT,
+      maxTimeoutSeconds: 300,
+      extra: { feePayer: FEE_PAYER },
+    };
+
+    const authorization = {
+      scheme: "upto" as const,
+      network: NEAR_TESTNET,
+      asset: requirements.asset,
+      payTo: MERCHANT,
+      resource: RESOURCE_URL,
+      payer: namedPayer,
+      maxAmount: "1000",
+      nonce: "nonce-named-001",
+      deadline: Math.floor(Date.now() / 1000) + 300,
+    };
+
+    const messageBytes = new TextEncoder().encode(
+      canonicalJson({
+        asset: authorization.asset,
+        deadline: String(authorization.deadline),
+        maxAmount: authorization.maxAmount,
+        network: authorization.network,
+        nonce: authorization.nonce,
+        payTo: authorization.payTo,
+        payer: authorization.payer,
+        resource: authorization.resource,
+        scheme: authorization.scheme,
+      }),
+    );
+
+    // 1. Forged signature using attackerKeyPair + attacker publicKeyHint must be rejected
+    const forgedPayload: PaymentPayload = {
+      x402Version: 2,
+      resource: { url: RESOURCE_URL },
+      accepted: { ...requirements, amount: "1000" },
+      payload: {
+        authorization: {
+          ...authorization,
+          publicKey: attackerKeyPair.getPublicKey().toString(),
+        },
+        signature: signNearMessage(attackerKeyPair, messageBytes),
+      },
+    };
+    const forgedVerify = await facilitator.verify(forgedPayload, requirements);
+    assert.equal(forgedVerify.isValid, false);
+    assert.equal(forgedVerify.invalidReason, "invalid_signature");
+
+    // 2. Valid signature from on-chain ownerKeyPair succeeds
+    const validPayload: PaymentPayload = {
+      x402Version: 2,
+      resource: { url: RESOURCE_URL },
+      accepted: { ...requirements, amount: "1000" },
+      payload: {
+        authorization,
+        signature: signNearMessage(ownerKeyPair, messageBytes),
+      },
+    };
+    const validVerify = await facilitator.verify(validPayload, requirements);
+    assert.equal(validVerify.isValid, true);
+    assert.equal(validVerify.payer, namedPayer);
+  } finally {
+    await new Promise<void>((resolve, reject) => rpcServer.close((err) => (err ? reject(err) : resolve())));
+  }
+});
