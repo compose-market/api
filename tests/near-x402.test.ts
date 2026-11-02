@@ -104,4 +104,8 @@ function signNearMessage(keyPair: KeyPair, message: Uint8Array): string {
 
 class MemoryNonceStore {
   private readonly used = new Set<string>();
+
+  async has(key: string): Promise<boolean> {
+    return this.used.has(key);
+  }
 }
