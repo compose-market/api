@@ -108,4 +108,10 @@ class MemoryNonceStore {
   async has(key: string): Promise<boolean> {
     return this.used.has(key);
   }
+
+  async consume(key: string, _ttlSeconds: number): Promise<boolean> {
+    if (this.used.has(key)) return false;
+    this.used.add(key);
+    return true;
+  }
 }
