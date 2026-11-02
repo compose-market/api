@@ -454,3 +454,81 @@ test("UptoNearFacilitator verifies named NEAR account signatures against on-chai
     await new Promise<void>((resolve, reject) => rpcServer.close((err) => (err ? reject(err) : resolve())));
   }
 });
+
+test("BatchSettlementNearFacilitator verifies signed vouchers and queues batch settlement deltas", async () => {
+  const keyPair = KeyPair.fromRandom("ed25519");
+  const payer = implicitAccountFromKeyPair(keyPair);
+  const asset = getNetwork(NEAR_TESTNET).asset.address;
+  const salt = `0x${"ab".repeat(32)}`;
+
+  const channelConfig = {
+    payer,
+    receiver: MERCHANT,
+    token: asset,
+    salt,
+    network: NEAR_TESTNET,
+    resource: RESOURCE_URL,
+  };
+
+  const channelId = `0x${createHash("sha256")
+    .update(canonicalJson(channelConfig))
+    .digest("hex")}`;
+
+  const maxClaimableAmount = "5000";
+  const voucherMessage = new TextEncoder().encode(
+    canonicalJson({
+      channelConfig,
+      type: "voucher",
+      voucher: {
+        channelId,
+        maxClaimableAmount,
+      },
+    }),
+  );
+  const signature = signNearMessage(keyPair, voucherMessage);
+
+  const requirements: PaymentRequirements = {
+    scheme: "batch-settlement",
+    network: NEAR_TESTNET,
+    asset,
+    amount: "1200",
+    payTo: MERCHANT,
+    maxTimeoutSeconds: 300,
+    extra: { feePayer: FEE_PAYER },
+  };
+
+  const payload: PaymentPayload = {
+    x402Version: 2,
+    resource: { url: RESOURCE_URL },
+    accepted: { ...requirements, amount: maxClaimableAmount },
+    payload: {
+      type: "voucher",
+      channelConfig,
+      voucher: {
+        channelId,
+        maxClaimableAmount,
+        signature,
+      },
+    },
+  };
+
+  const facilitator = new BatchSettlementNearFacilitator(
+    FEE_PAYER,
+    async (_payload, amountWei) => ({
+      channelId,
+      cumulativeAmountWei: amountWei,
+    }),
+    (candidatePayload, candidateReq) =>
+      validateNearBatchPayment(candidatePayload, candidateReq, async () => null),
+  );
+
+  const settled = await facilitator.settle(payload, requirements);
+  assert.equal(settled.success, true);
+  assert.equal(settled.payer, payer);
+  assert.equal(settled.transaction, "");
+  assert.deepEqual(settled.extra, {
+    settlementStatus: "queued",
+    channelId,
+    cumulativeAmountWei: "1200",
+  });
+});
