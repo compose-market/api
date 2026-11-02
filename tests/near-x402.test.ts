@@ -115,3 +115,57 @@ class MemoryNonceStore {
     return true;
   }
 }
+
+test("NEAR chain configurations define canonical CAIP-2 identifiers, NEP-141 USDC assets, and explorer links without RPC fallbacks", () => {
+  assert.equal(NETWORK_IDS.nearTestnet, "near:testnet");
+  assert.equal(NETWORK_IDS.near, "near:mainnet");
+
+  const testnetDef = getNetwork(NEAR_TESTNET);
+  assert.equal(testnetDef.namespace, "near");
+  assert.equal(testnetDef.environment, "testnet");
+  assert.equal(testnetDef.rpcEnvVar, "NEAR_TESTNET_RPC");
+  assert.equal(
+    testnetDef.asset.address,
+    "usdc.tidepool-sandbox.testnet",
+  );
+  assert.equal(testnetDef.asset.decimals, 6);
+  assert.equal(testnetDef.asset.symbol, "USDC");
+
+  const mainnetDef = getNetwork(NEAR_MAINNET);
+  assert.equal(mainnetDef.namespace, "near");
+  assert.equal(mainnetDef.environment, "mainnet");
+  assert.equal(mainnetDef.rpcEnvVar, "NEAR_MAINNET_RPC");
+  assert.equal(
+    mainnetDef.asset.address,
+    "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+  );
+  assert.equal(mainnetDef.asset.decimals, 6);
+  assert.equal(mainnetDef.asset.symbol, "USDC");
+
+  assert.equal(isNearNetwork(NEAR_TESTNET), true);
+  assert.equal(isNearNetwork(NEAR_MAINNET), true);
+  assert.equal(isNearNetwork("eip155:8453"), false);
+  assert.equal(isNearNetwork("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"), false);
+
+  assert.equal(isTestnetNetwork(NEAR_TESTNET), true);
+  assert.equal(isTestnetNetwork(NEAR_MAINNET), false);
+  assert.equal(isServiceAllowedNetwork(NEAR_MAINNET), true);
+  // TEMP(near:testnet): temporary E2E exception alongside Base Sepolia; flip back to false/true when locking exclusively to near:mainnet.
+  assert.equal(isServiceAllowedNetwork(NEAR_TESTNET), true);
+  assert.equal(isServiceBlockedNetwork(NEAR_TESTNET), false);
+  assert.equal(isServiceBlockedNetwork(NEAR_MAINNET), false);
+
+  assert.equal(
+    getExplorerUrl(NEAR_TESTNET, "tx", "9abc123TxHash"),
+    "https://testnet.nearblocks.io/txns/9abc123TxHash",
+  );
+  assert.equal(
+    getExplorerUrl(NEAR_MAINNET, "tx", "9abc123TxHash"),
+    "https://nearblocks.io/txns/9abc123TxHash",
+  );
+
+  delete process.env.NEAR_TESTNET_RPC;
+  delete process.env.NEAR_MAINNET_RPC;
+  assert.throws(() => getNetworkRpcUrl(NEAR_TESTNET), /NEAR_TESTNET_RPC/);
+  assert.throws(() => getNetworkRpcUrl(NEAR_MAINNET), /NEAR_MAINNET_RPC/);
+});
