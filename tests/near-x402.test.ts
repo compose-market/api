@@ -200,3 +200,38 @@ test("validateNearAddress accepts canonical universal, implicit, and named NEAR 
   assert.equal(validateNearAddress("invalid..near"), false);
   assert.equal(validateNearAddress("a".repeat(65)), false);
 });
+
+test("createPaymentRequirement emits spec-compliant NEAR requirements across all 3 schemes and fails closed without env vars", () => {
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+  process.env.NEAR_MERCHANT_WALLET_ADDRESS = MERCHANT;
+
+  for (const network of [NEAR_TESTNET, NEAR_MAINNET] as const) {
+    for (const scheme of ["exact", "upto", "batch-settlement"] as const) {
+      const req = createPaymentRequirement({
+        amountWei: "2500",
+        network,
+        scheme,
+      });
+      assert.equal(req.scheme, scheme);
+      assert.equal(req.network, network);
+      assert.equal(req.amount, "2500");
+      assert.equal(req.asset, getNetwork(network).asset.address);
+      assert.equal(req.payTo, MERCHANT);
+      assert.deepEqual(req.extra, { feePayer: FEE_PAYER });
+    }
+  }
+
+  delete process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC;
+  assert.throws(
+    () => createPaymentRequirement({ amountWei: "100", network: NEAR_TESTNET, scheme: "exact" }),
+    /NEAR_TREASURY_SERVER_WALLET_PUBLIC/,
+  );
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+
+  delete process.env.NEAR_MERCHANT_WALLET_ADDRESS;
+  assert.throws(
+    () => createPaymentRequirement({ amountWei: "100", network: NEAR_MAINNET, scheme: "upto" }),
+    /NEAR_MERCHANT_WALLET_ADDRESS/,
+  );
+  process.env.NEAR_MERCHANT_WALLET_ADDRESS = MERCHANT;
+});
