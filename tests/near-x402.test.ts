@@ -532,3 +532,235 @@ test("BatchSettlementNearFacilitator verifies signed vouchers and queues batch s
     cumulativeAmountWei: "1200",
   });
 });
+
+test("runNearBatchSettlement executes the durable attempt state machine identically to SVM", async () => {
+  const { runNearBatchSettlement } = await import("../x402/batch.js");
+
+  type Attempt = {
+    status: "preparing" | "prepared" | "submitted" | "failed";
+    settledCumulativeAmountWei: string;
+    claimedCumulativeAmountWei: string;
+    deltaWei: string;
+    txHash?: string;
+    payload?: string;
+    nonce?: string;
+    error?: string;
+    preparedAt?: number;
+    submittedAt?: number;
+    lastCheckedAt?: number;
+    failedAt?: number;
+    receiptsReconciledAt?: number;
+    receiptsReconciledCount?: number;
+    evidenceReconciledAt?: number;
+    evidenceReconciledCount?: number;
+  };
+
+  type Channel = {
+    channelId: string;
+    payer: string;
+    network: NearNetworkId;
+    asset: string;
+    payTo: string;
+    resource: string;
+    signedMaxClaimable: string;
+    chargedCumulativeAmount: string;
+    settledCumulativeAmount: string;
+    balance: string;
+    signature: string;
+    channelConfigFingerprint: string;
+    backingFingerprint: string;
+    createdAt: number;
+    lastRequestTimestamp: number;
+    lastTxHash?: string;
+  };
+
+  type Stored = {
+    channel: Channel;
+    attempt?: Attempt;
+    ownerToken?: string;
+    ownerExpiresAt?: number;
+  };
+
+  const records = new Map<string, Stored>();
+  const pending = new Set<string>();
+
+  const seeded: Channel = {
+    channelId: "0xnearchannel001",
+    payer: "alice.testnet",
+    network: NEAR_TESTNET,
+    asset: getNetwork(NEAR_TESTNET).asset.address,
+    payTo: MERCHANT,
+    resource: RESOURCE_URL,
+    signedMaxClaimable: "5000",
+    chargedCumulativeAmount: "400",
+    settledCumulativeAmount: "100",
+    balance: "5000",
+    signature: "ed25519:sig",
+    channelConfigFingerprint: "cfg-fp",
+    backingFingerprint: "back-fp",
+    createdAt: 1,
+    lastRequestTimestamp: 1,
+  };
+  records.set(seeded.channelId, { channel: structuredClone(seeded) });
+  pending.add(seeded.channelId);
+
+  const store = {
+    async listPendingChannelIds() {
+      return [...pending];
+    },
+    async acquireAttempt(input: { channelId: string; ownerToken: string; now: number; ownerExpiresAt: number }) {
+      const record = records.get(input.channelId);
+      if (!record) return { outcome: "missing" as const };
+      if (!record.attempt) {
+        const charged = BigInt(record.channel.chargedCumulativeAmount);
+        const settled = BigInt(record.channel.settledCumulativeAmount);
+        record.attempt = {
+          status: "preparing",
+          settledCumulativeAmountWei: settled.toString(),
+          claimedCumulativeAmountWei: charged.toString(),
+          deltaWei: (charged - settled).toString(),
+        };
+      }
+      record.ownerToken = input.ownerToken;
+      record.ownerExpiresAt = input.ownerExpiresAt;
+      return { outcome: "acquired" as const, work: structuredClone({ channel: record.channel, attempt: record.attempt }) };
+    },
+    async persistPreparedAttempt(input: {
+      channelId: string;
+      ownerToken: string;
+      prepared: { network: NearNetworkId; txHash: string; payload: string; nonce?: string };
+      preparedAt: number;
+    }) {
+      const record = records.get(input.channelId);
+      if (!record || record.ownerToken !== input.ownerToken || !record.attempt) return null;
+      record.attempt = {
+        ...record.attempt,
+        status: "prepared",
+        txHash: input.prepared.txHash,
+        payload: input.prepared.payload,
+        ...(input.prepared.nonce ? { nonce: input.prepared.nonce } : {}),
+        preparedAt: input.preparedAt,
+      };
+      return structuredClone({ channel: record.channel, attempt: record.attempt });
+    },
+    async markAttemptSubmitted(input: { channelId: string; ownerToken: string; txHash: string; submittedAt: number; error?: string }) {
+      const record = records.get(input.channelId);
+      if (!record || record.ownerToken !== input.ownerToken || !record.attempt) return null;
+      record.attempt = {
+        ...record.attempt,
+        status: "submitted",
+        submittedAt: input.submittedAt,
+        ...(input.error ? { error: input.error } : {}),
+      };
+      return structuredClone({ channel: record.channel, attempt: record.attempt });
+    },
+    async releaseAttemptClaim(input: { channelId: string; ownerToken: string; expectedStatus: "prepared" | "submitted"; checkedAt: number; error: string }) {
+      const record = records.get(input.channelId);
+      if (!record || record.ownerToken !== input.ownerToken || record.attempt?.status !== input.expectedStatus) return false;
+      record.attempt.lastCheckedAt = input.checkedAt;
+      record.attempt.error = input.error;
+      delete record.ownerToken;
+      delete record.ownerExpiresAt;
+      return true;
+    },
+    async abandonPreparation() {
+      return true;
+    },
+    async markAttemptReconciled(input: { channelId: string; ownerToken: string; kind: "receipts" | "evidence"; count: number; reconciledAt: number }) {
+      const record = records.get(input.channelId);
+      if (!record || record.ownerToken !== input.ownerToken || !record.attempt) return null;
+      if (input.kind === "receipts") {
+        record.attempt.receiptsReconciledAt = input.reconciledAt;
+        record.attempt.receiptsReconciledCount = input.count;
+      } else {
+        record.attempt.evidenceReconciledAt = input.reconciledAt;
+        record.attempt.evidenceReconciledCount = input.count;
+      }
+      return structuredClone({ channel: record.channel, attempt: record.attempt });
+    },
+    async markAttemptFailed() {
+      return null;
+    },
+    async completeConfirmedAttempt(input: { channelId: string; ownerToken: string; txHash: string; completedAt: number }) {
+      const record = records.get(input.channelId);
+      if (!record || record.ownerToken !== input.ownerToken || !record.attempt) {
+        return { completed: false, hasMore: true };
+      }
+      record.channel.settledCumulativeAmount = record.attempt.claimedCumulativeAmountWei;
+      record.channel.lastTxHash = input.txHash;
+      record.channel.lastRequestTimestamp = input.completedAt;
+      delete record.attempt;
+      delete record.ownerToken;
+      delete record.ownerExpiresAt;
+      pending.delete(input.channelId);
+      return { completed: true, hasMore: false };
+    },
+  };
+
+  let clock = 1000;
+  let loseFirstBroadcast = true;
+  let prepareCalls = 0;
+
+  const preparedTx = {
+    network: NEAR_TESTNET,
+    txHash: "NearBatchSettlementTxHash999",
+    payload: "SignedBorshNearTransactionBase64==",
+    nonce: "42",
+  };
+
+  const dependencies = {
+    store,
+    now: () => ++clock,
+    createOwnerToken: () => `near-owner-${clock}`,
+    prepareKeyPaymentForNetwork: async (payer: string, amountWei: string, network: string) => {
+      prepareCalls += 1;
+      assert.equal(payer, "alice.testnet");
+      assert.equal(amountWei, "300");
+      assert.equal(network, NEAR_TESTNET);
+      return { success: true as const, prepared: preparedTx };
+    },
+    broadcastPreparedKeyPaymentForNetwork: async () => {
+      if (loseFirstBroadcast) {
+        loseFirstBroadcast = false;
+        throw new Error("network timeout after broadcast");
+      }
+      return { success: false as const, status: "submitted" as const, txHash: preparedTx.txHash };
+    },
+    reconcileKeyPaymentForNetwork: async (txHash: string) => ({
+      success: true as const,
+      status: "confirmed" as const,
+      txHash,
+    }),
+    markBatchReceiptsSettled: async () => 1,
+    markBatchEvidenceSettled: async () => 1,
+  };
+
+  // Run 1: prepares transaction and persists identity before lost broadcast
+  await runNearBatchSettlement(dependencies as never);
+  const afterFirst = records.get(seeded.channelId)!;
+  assert.equal(afterFirst.attempt?.status, "prepared");
+  assert.equal(afterFirst.attempt?.txHash, preparedTx.txHash);
+  assert.equal(afterFirst.attempt?.nonce, "42");
+  assert.equal(afterFirst.channel.settledCumulativeAmount, "100");
+
+  // Run 2: reuses prepared transaction without re-preparing, confirms, and settles cumulative amount
+  const secondSummary = await runNearBatchSettlement(dependencies as never);
+  assert.equal(prepareCalls, 1);
+  const afterSecond = records.get(seeded.channelId)!;
+  assert.equal(afterSecond.attempt, undefined);
+  assert.equal(afterSecond.channel.settledCumulativeAmount, "400");
+  assert.equal(afterSecond.channel.lastTxHash, preparedTx.txHash);
+  assert.equal(pending.has(seeded.channelId), false);
+  assert.deepEqual(secondSummary.channels, [
+    {
+      channelId: seeded.channelId,
+      payer: "alice.testnet",
+      network: NEAR_TESTNET,
+      settledAmountWei: "300",
+      claimedAmountWei: "400",
+      txHash: preparedTx.txHash,
+      reconciledReceipts: 1,
+      reconciledEvidence: 1,
+    },
+  ]);
+});
