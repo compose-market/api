@@ -254,3 +254,89 @@ test("NEAR native 3-scheme parity lives in the existing x402 modules", () => {
   assert.match(ALLOWANCE_SOURCE, /async function readNearUsdcBalanceWei/);
   assert.match(INDEX_SOURCE, /runNearBatchSettlement/);
 });
+
+test("UptoNearFacilitator verifies implicit 64-hex account Ed25519 signatures, settles NEP-141 transfers, and blocks nonce replay", async () => {
+  const keyPair = KeyPair.fromRandom("ed25519");
+  const payer = implicitAccountFromKeyPair(keyPair);
+  const nonceStore = new MemoryNonceStore();
+  const settlements: Array<{ payer: string; amount: string; network: string }> = [];
+
+  const facilitator = new UptoNearFacilitator(
+    FEE_PAYER,
+    async (settledPayer, amountWei, network) => {
+      settlements.push({ payer: settledPayer, amount: String(amountWei), network });
+      return {
+        success: true,
+        status: "confirmed",
+        txHash: "NearUptoConfirmedTxHash123",
+      };
+    },
+    nonceStore,
+  );
+
+  const requirements: PaymentRequirements = {
+    scheme: "upto",
+    network: NEAR_TESTNET,
+    asset: getNetwork(NEAR_TESTNET).asset.address,
+    amount: "750",
+    payTo: MERCHANT,
+    maxTimeoutSeconds: 300,
+    extra: { feePayer: FEE_PAYER },
+  };
+
+  const authorization = {
+    scheme: "upto" as const,
+    network: NEAR_TESTNET,
+    asset: requirements.asset,
+    payTo: MERCHANT,
+    resource: RESOURCE_URL,
+    payer,
+    maxAmount: "1000",
+    nonce: "nonce-implicit-001",
+    deadline: Math.floor(Date.now() / 1000) + 300,
+  };
+
+  const messageBytes = new TextEncoder().encode(
+    canonicalJson({
+      asset: authorization.asset,
+      deadline: String(authorization.deadline),
+      maxAmount: authorization.maxAmount,
+      network: authorization.network,
+      nonce: authorization.nonce,
+      payTo: authorization.payTo,
+      payer: authorization.payer,
+      resource: authorization.resource,
+      scheme: authorization.scheme,
+    }),
+  );
+  const signature = signNearMessage(keyPair, messageBytes);
+
+  const payload: PaymentPayload = {
+    x402Version: 2,
+    resource: { url: RESOURCE_URL },
+    accepted: { ...requirements, amount: "1000" },
+    payload: {
+      authorization,
+      signature,
+    },
+  };
+
+  const verified = await facilitator.verify(payload, requirements);
+  assert.equal(verified.isValid, true);
+  assert.equal(verified.payer, payer);
+
+  const settled = await facilitator.settle(payload, requirements);
+  assert.equal(settled.success, true);
+  assert.equal(settled.transaction, "NearUptoConfirmedTxHash123");
+  assert.equal(settled.payer, payer);
+  assert.deepEqual(settlements, [{ payer, amount: "750", network: NEAR_TESTNET }]);
+
+  // Replay with same nonce must fail closed
+  const replayedVerify = await facilitator.verify(payload, requirements);
+  assert.equal(replayedVerify.isValid, false);
+  assert.equal(replayedVerify.invalidReason, "duplicate_authorization");
+
+  const replayedSettle = await facilitator.settle(payload, requirements);
+  assert.equal(replayedSettle.success, false);
+  assert.equal(replayedSettle.errorReason, "duplicate_authorization");
+});
