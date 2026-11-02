@@ -169,3 +169,34 @@ test("NEAR chain configurations define canonical CAIP-2 identifiers, NEP-141 USD
   assert.throws(() => getNetworkRpcUrl(NEAR_TESTNET), /NEAR_TESTNET_RPC/);
   assert.throws(() => getNetworkRpcUrl(NEAR_MAINNET), /NEAR_MAINNET_RPC/);
 });
+
+test("validateNearAddress accepts canonical universal, implicit, and named NEAR accounts while rejecting malformed addresses", () => {
+  const universalBody = "0123456789abcdefghjkmnpqrstvwxyz".repeat(2).slice(0, 51);
+  assert.equal(validateNearAddress(`0u${universalBody}0`), true);
+  assert.equal(validateNearAddress(`0u${universalBody}g`), true);
+  assert.equal(validateNearAddress("a".repeat(64)), true);
+  assert.equal(validateNearAddress("3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af"), true);
+  assert.equal(validateNearAddress("alice.near"), true);
+  assert.equal(validateNearAddress("bob_1-2.testnet"), true);
+  assert.equal(validateNearAddress("relayer.compose.near"), true);
+  assert.equal(validateNearAddress("0user.near"), true);
+
+  assert.equal(validateNearAddress(`0u${universalBody.slice(1)}0`), false);
+  assert.equal(validateNearAddress(`0u${universalBody}00`), false);
+  assert.equal(validateNearAddress(`0u${universalBody}0`.toUpperCase()), false);
+  assert.equal(validateNearAddress(`0u${universalBody.replace("a", "A")}0`), false);
+  for (const symbol of ["i", "l", "o", "u"]) {
+    assert.equal(validateNearAddress(`0u${symbol}${universalBody.slice(1)}0`), false);
+  }
+  for (const symbol of ["1", "f", "h", "z"]) {
+    assert.equal(validateNearAddress(`0u${universalBody}${symbol}`), false);
+  }
+
+  assert.equal(validateNearAddress(""), false);
+  assert.equal(validateNearAddress("a"), false);
+  assert.equal(validateNearAddress("Alice.near"), false);
+  assert.equal(validateNearAddress("0x1111111111111111111111111111111111111111"), false);
+  assert.equal(validateNearAddress("-invalid.near"), false);
+  assert.equal(validateNearAddress("invalid..near"), false);
+  assert.equal(validateNearAddress("a".repeat(65)), false);
+});
