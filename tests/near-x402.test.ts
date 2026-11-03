@@ -1022,3 +1022,252 @@ test("NEAR settlement uses validated send_tx, routes reconciliation to payer acc
     await new Promise<void>((resolve) => rpcServer.close(() => resolve()));
   }
 });
+
+test("prepareKeyPaymentForNetwork wraps NEAR key settlements in NEP-366 SignedDelegate sponsored by feePayer and handles delegate failures cleanly", async () => {
+  const { deserialize: borshDeserialize } = await import("borsh");
+  const { SCHEMA: NEAR_SCHEMA } = await import("@near-js/transactions");
+  const {
+    prepareKeyPaymentForNetwork,
+    broadcastPreparedKeyPaymentForNetwork,
+    reconcileKeyPaymentForNetwork,
+  } = await import("../x402/settlement.js");
+
+  const facilitatorKeyPair = KeyPair.fromRandom("ed25519");
+  const universalPayer = "0ugdgan4z3s63ndg69mrjs6xqs6xp145z0efgbm7rsxmr5a8q9k1pg";
+  const creatorRecipient = "creator-agent.testnet";
+  const blockHash = base58.encode(new Uint8Array(32).fill(7));
+  const observedRpc: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let sendTxMode: "confirm" | "delegate_invalid_nonce" | "relayer_low_gas" = "confirm";
+
+  const rpcServer = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+      id: string;
+      method: string;
+      params: Record<string, unknown>;
+    };
+    observedRpc.push({ method: body.method, params: body.params });
+    res.setHeader("Content-Type", "application/json");
+
+    if (body.method === "block") {
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { header: { hash: blockHash, height: 250_000_000 } },
+      }));
+      return;
+    }
+
+    if (body.method === "query") {
+      if (body.params.request_type === "view_access_key") {
+        const accountId = String(body.params.account_id);
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            nonce: accountId === FEE_PAYER ? 900 : 77,
+            permission: "FullAccess",
+          },
+        }));
+        return;
+      }
+      if (body.params.request_type === "call_function") {
+        const encoded = Array.from(Buffer.from(JSON.stringify("5000000"), "utf8"));
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { result: encoded },
+        }));
+        return;
+      }
+    }
+
+    if (body.method === "send_tx") {
+      if (sendTxMode === "delegate_invalid_nonce") {
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            final_execution_status: "EXECUTED_OPTIMISTIC",
+            status: { SuccessReceiptId: "Receipt111" },
+            receipts_outcome: [
+              {
+                outcome: {
+                  status: {
+                    Failure: {
+                      ActionError: {
+                        index: 0,
+                        kind: {
+                          DelegateActionInvalidNonce: { delegate_nonce: 78, ak_nonce: 120 },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        }));
+        return;
+      }
+      if (sendTxMode === "relayer_low_gas") {
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: {
+            name: "HANDLER_ERROR",
+            cause: { info: {}, name: "INVALID_TRANSACTION" },
+            code: -32000,
+            message: "Server error",
+            data: {
+              TxExecutionError: {
+                InvalidTxError: {
+                  NotEnoughBalance: {
+                    balance: "1000",
+                    cost: "30000000000000000000000",
+                    signer_id: FEE_PAYER,
+                  },
+                },
+              },
+            },
+          },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          final_execution_status: "EXECUTED_OPTIMISTIC",
+          status: { SuccessValue: "" },
+          receipts_outcome: [{ outcome: { status: { SuccessValue: "" } } }],
+        },
+      }));
+      return;
+    }
+
+    if (body.method === "tx") {
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          final_execution_status: "EXECUTED_OPTIMISTIC",
+          status: { SuccessValue: "" },
+          receipts_outcome: [{ outcome: { status: { SuccessValue: "" } } }],
+        },
+      }));
+      return;
+    }
+
+    res.statusCode = 400;
+    res.end(JSON.stringify({ error: "unexpected rpc method" }));
+  });
+
+  await new Promise<void>((resolve) => rpcServer.listen(0, "127.0.0.1", () => resolve()));
+  const port = (rpcServer.address() as AddressInfo).port;
+  const previousRpc = process.env.NEAR_TESTNET_RPC;
+  const previousKey = process.env.NEAR_FACILITATOR_KEY;
+  process.env.NEAR_TESTNET_RPC = `http://127.0.0.1:${port}`;
+  process.env.NEAR_FACILITATOR_KEY = facilitatorKeyPair.toString();
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+  process.env.NEAR_MERCHANT_WALLET_ADDRESS = MERCHANT;
+
+  try {
+    // 1. Universal 0u... payer with creator+treasury split produces outer SignedTransaction signed by FEE_PAYER wrapping SignedDelegate from universalPayer
+    const preparedResult = await prepareKeyPaymentForNetwork(
+      universalPayer,
+      "1000",
+      NEAR_TESTNET,
+      {
+        royalties: { creator: creatorRecipient, treasury: MERCHANT },
+        providerAmountWei: "900",
+        platformFeeWei: "100",
+      },
+    );
+    assert.equal(preparedResult.success, true);
+    if (!preparedResult.success) return;
+
+    assert.equal(preparedResult.prepared.nonce, "901");
+    assert.equal(preparedResult.prepared.delegateNonce, "78");
+
+    const decoded = borshDeserialize(
+      NEAR_SCHEMA.SignedTransaction,
+      Buffer.from(preparedResult.prepared.payload, "base64"),
+    ) as {
+      transaction: {
+        signerId: string;
+        receiverId: string;
+        nonce: bigint;
+        actions: Array<{
+          signedDelegate?: {
+            delegateAction: {
+              senderId: string;
+              receiverId: string;
+              nonce: bigint;
+              maxBlockHeight: bigint;
+              actions: Array<{ functionCall?: { methodName: string; args: Uint8Array; deposit: bigint } }>;
+            };
+          };
+        }>;
+      };
+    };
+
+    assert.equal(decoded.transaction.signerId, FEE_PAYER, "outer transaction gas must be paid by Facilitator feePayer");
+    assert.equal(decoded.transaction.receiverId, universalPayer, "NEP-366 outer receiverId must equal delegateAction.senderId");
+    assert.equal(decoded.transaction.nonce, 901n);
+    assert.equal(decoded.transaction.actions.length, 1);
+
+    const signedDelegate = decoded.transaction.actions[0]?.signedDelegate;
+    assert.ok(signedDelegate, "outer action must be a NEP-366 SignedDelegate");
+    assert.equal(signedDelegate.delegateAction.senderId, universalPayer);
+    assert.equal(signedDelegate.delegateAction.receiverId, getNetwork(NEAR_TESTNET).asset.address);
+    assert.equal(signedDelegate.delegateAction.nonce, 78n);
+    assert.equal(signedDelegate.delegateAction.maxBlockHeight, 250_000_300n);
+    assert.equal(signedDelegate.delegateAction.actions.length, 2, "split settlement must pack both ft_transfer calls into the single DelegateAction");
+
+    const transferArgs = signedDelegate.delegateAction.actions.map((action) =>
+      JSON.parse(Buffer.from(action.functionCall!.args).toString("utf8")) as { receiver_id: string; amount: string },
+    );
+    assert.deepEqual(
+      transferArgs.map(({ receiver_id, amount }) => ({ receiver_id, amount })),
+      [
+        { receiver_id: creatorRecipient, amount: "900" },
+        { receiver_id: MERCHANT, amount: "100" },
+      ],
+    );
+
+    // 2. Reconciliation extracts FEE_PAYER from preparedTxPayload instead of querying universalPayer's shard
+    const reconciled = await reconcileKeyPaymentForNetwork(preparedResult.prepared.txHash, NEAR_TESTNET, {
+      wait: false,
+      userAddress: universalPayer,
+      preparedTxPayload: preparedResult.prepared.payload,
+    });
+    assert.equal(reconciled.status, "confirmed");
+    assert.equal(observedRpc.at(-1)?.method, "tx");
+    assert.equal(observedRpc.at(-1)?.params.sender_account_id, FEE_PAYER);
+
+    // 3. DelegateActionInvalidNonce in receipt resets preparation and returns syncNextDelegateNonce = ak_nonce + 1
+    sendTxMode = "delegate_invalid_nonce";
+    const staleDelegate = await broadcastPreparedKeyPaymentForNetwork(preparedResult.prepared);
+    assert.equal(staleDelegate.success, false);
+    assert.equal(staleDelegate.status, "queued");
+    assert.equal(staleDelegate.resetPreparation, true);
+    assert.equal(staleDelegate.syncNextDelegateNonce, "121");
+
+    // 4. Relayer NotEnoughBalance stays retryable ("queued") rather than failing user payments terminally
+    sendTxMode = "relayer_low_gas";
+    const relayerShortage = await broadcastPreparedKeyPaymentForNetwork(preparedResult.prepared);
+    assert.equal(relayerShortage.success, false);
+    assert.equal(relayerShortage.status, "queued");
+    assert.equal(relayerShortage.terminal, undefined);
+  } finally {
+    if (previousRpc === undefined) delete process.env.NEAR_TESTNET_RPC;
+    else process.env.NEAR_TESTNET_RPC = previousRpc;
+    if (previousKey === undefined) delete process.env.NEAR_FACILITATOR_KEY;
+    else process.env.NEAR_FACILITATOR_KEY = previousKey;
+    await new Promise<void>((resolve) => rpcServer.close(() => resolve()));
+  }
+});
