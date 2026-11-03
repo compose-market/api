@@ -1271,3 +1271,50 @@ test("prepareKeyPaymentForNetwork wraps NEAR key settlements in NEP-366 SignedDe
     await new Promise<void>((resolve) => rpcServer.close(() => resolve()));
   }
 });
+
+test("NEAR facilitator wallet resolution and single-word settlement memos isolate relayer from treasury", async () => {
+  const { resolveNearFacilitatorWallet, resolveNearTreasuryWallet } = await import("../x402/wallets.js");
+  const { normalizeSettlementMemo, getNearSettlementFeePayer } = await import("../x402/settlement.js");
+  const { ResponsesStreamEncoder } = await import("../inference/responses.js");
+
+  process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC = "man0u.testnet";
+  process.env.NEAR_TESTNET_FACILITATOR_ACCOUNT = "facilitator.man0u.testnet";
+  try {
+    assert.equal(resolveNearTreasuryWallet(NEAR_TESTNET), "man0u.testnet");
+    assert.equal(resolveNearFacilitatorWallet(NEAR_TESTNET), "facilitator.man0u.testnet");
+    assert.equal(getNearSettlementFeePayer(NEAR_TESTNET), "facilitator.man0u.testnet");
+  } finally {
+    delete process.env.NEAR_TESTNET_FACILITATOR_ACCOUNT;
+    delete process.env.NEAR_TESTNET_TREASURY_SERVER_WALLET_PUBLIC;
+  }
+
+  assert.equal(normalizeSettlementMemo("inference"), "inference");
+  assert.equal(normalizeSettlementMemo("connector"), "connector");
+  assert.equal(normalizeSettlementMemo("agent"), "agent");
+  assert.equal(normalizeSettlementMemo("workflow"), "workflow");
+  assert.equal(normalizeSettlementMemo("vibe"), "vibe");
+  assert.equal(normalizeSettlementMemo("banner"), "banner");
+  assert.equal(normalizeSettlementMemo(""), "settlement");
+
+  const encoder = new ResponsesStreamEncoder("resp_img_dedup", "google/gemini-3.1-flash-image-preview");
+  const frames = encoder.push({
+    type: "output-item",
+    item: {
+      id: "img_1",
+      type: "output_image",
+      image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+      mime_type: "image/png",
+    },
+  });
+  const itemFrames = frames.filter((f) => String(f.type || "").startsWith("response.output_item."));
+  assert.equal(itemFrames.length, 2);
+  assert.equal(itemFrames[0]?.type, "response.output_item.added");
+  const addedItem = itemFrames[0]?.item as Record<string, unknown> | undefined;
+  const doneItem = itemFrames[1]?.item as Record<string, unknown> | undefined;
+  assert.equal(addedItem?.image_url, undefined);
+  assert.equal(itemFrames[1]?.type, "response.output_item.done");
+  assert.equal(
+    doneItem?.image_url,
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+  );
+});
