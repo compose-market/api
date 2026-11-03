@@ -801,3 +801,28 @@ test("NEAR session funding readiness resolves NEAR_TREASURY_SERVER_WALLET_PUBLIC
   assert.match(missingSpenderResult.error || "", /NEAR_TREASURY_SERVER_WALLET_PUBLIC/);
   process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
 });
+
+test("getFacilitatorSupported registers all 3 schemes (exact, upto, batch-settlement) for near:testnet and near:mainnet", async () => {
+  const relayerKeyPair = KeyPair.fromRandom("ed25519");
+  process.env.NEAR_FACILITATOR_KEY = relayerKeyPair.toString();
+  process.env.NEAR_TREASURY_SERVER_WALLET_PUBLIC = FEE_PAYER;
+  process.env.NEAR_MERCHANT_WALLET_ADDRESS = MERCHANT;
+  process.env.NEAR_TESTNET_RPC = "https://rpc.testnet.near.org";
+  process.env.NEAR_MAINNET_RPC = "https://rpc.mainnet.near.org";
+
+  const supported = await getFacilitatorSupported();
+
+  for (const network of [NEAR_TESTNET, NEAR_MAINNET] as const) {
+    for (const scheme of ["exact", "upto", "batch-settlement"] as const) {
+      const kind = supported.kinds.find((k) => k.network === network && k.scheme === scheme);
+      assert.ok(kind, `Expected facilitator to support ${scheme} on ${network}`);
+      assert.equal(kind.x402Version, 2);
+      if (scheme === "exact") {
+        assert.equal(kind.extra, undefined);
+      } else {
+        assert.deepEqual(kind.extra, { feePayer: FEE_PAYER });
+      }
+    }
+  }
+  assert.deepEqual(supported.signers["near:*"], [FEE_PAYER]);
+});
