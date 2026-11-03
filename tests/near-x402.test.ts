@@ -826,3 +826,28 @@ test("getFacilitatorSupported registers all 3 schemes (exact, upto, batch-settle
   }
   assert.deepEqual(supported.signers["near:*"], [FEE_PAYER]);
 });
+
+test("isAddressValidForNetwork enforces CAIP-2 family and NEAR mainnet/testnet suffix boundaries", () => {
+  const evmAddr = "0x1111111111111111111111111111111111111111";
+  const svmAddr = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+  const nearImplicit = "a".repeat(64);
+
+  assert.equal(validateSolanaAddress(svmAddr), true);
+  assert.equal(validateSolanaAddress(evmAddr), false);
+
+  assert.equal(isAddressValidForNetwork(evmAddr, "eip155:84532"), true);
+  assert.equal(isAddressValidForNetwork(svmAddr, "eip155:84532"), false);
+  assert.equal(isAddressValidForNetwork("alice.testnet", "eip155:84532"), false);
+
+  assert.equal(isAddressValidForNetwork(svmAddr, "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"), true);
+  assert.equal(isAddressValidForNetwork(evmAddr, "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"), false);
+
+  assert.equal(isAddressValidForNetwork("alice.testnet", NEAR_TESTNET), true);
+  assert.equal(isAddressValidForNetwork("alice.near", NEAR_TESTNET), false);
+  assert.equal(isAddressValidForNetwork(nearImplicit, NEAR_TESTNET), true);
+  assert.equal(isAddressValidForNetwork(evmAddr, NEAR_TESTNET), false);
+
+  assert.equal(isAddressValidForNetwork("jabyl.near", NEAR_MAINNET), true);
+  assert.equal(isAddressValidForNetwork("alice.testnet", NEAR_MAINNET), false);
+  assert.equal(isAddressValidForNetwork(nearImplicit, NEAR_MAINNET), true);
+});
