@@ -851,3 +851,174 @@ test("isAddressValidForNetwork enforces CAIP-2 family and NEAR mainnet/testnet s
   assert.equal(isAddressValidForNetwork("alice.testnet", NEAR_MAINNET), false);
   assert.equal(isAddressValidForNetwork(nearImplicit, NEAR_MAINNET), true);
 });
+
+test("NEAR settlement uses validated send_tx, routes reconciliation to payer account, and classifies InvalidNonce vs terminal errors", async () => {
+  const { broadcastPreparedKeyPaymentForNetwork, reconcileKeyPaymentForNetwork } = await import("../x402/settlement.js");
+  const observedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let mode: "confirm" | "invalid_nonce" | "invalid_access_key" | "unknown_tx" = "confirm";
+
+  const rpcServer = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+      id: string;
+      method: string;
+      params: Record<string, unknown>;
+    };
+    observedCalls.push({ method: body.method, params: body.params });
+    res.setHeader("Content-Type", "application/json");
+
+    if (body.method === "tx") {
+      if (mode === "unknown_tx" || mode === "invalid_nonce") {
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: {
+            name: "HANDLER_ERROR",
+            cause: { name: "UNKNOWN_TRANSACTION", info: { tx_hash: body.params.tx_hash } },
+            code: -32000,
+            message: "Server error",
+          },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          final_execution_status: "EXECUTED_OPTIMISTIC",
+          status: { SuccessValue: "" },
+          receipts_outcome: [{ outcome: { status: { SuccessValue: "" } } }],
+        },
+      }));
+      return;
+    }
+
+    if (body.method === "send_tx") {
+      if (mode === "invalid_nonce") {
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: {
+            name: "HANDLER_ERROR",
+            cause: {
+              name: "INVALID_TRANSACTION",
+              info: {
+                error_message: "Invalid transaction",
+                tx_execution_error: {
+                  InvalidTxError: {
+                    InvalidNonce: { tx_nonce: 10, ak_nonce: 42 },
+                  },
+                },
+              },
+            },
+            code: -32000,
+            message: "Server error",
+          },
+        }));
+        return;
+      }
+      if (mode === "invalid_access_key") {
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: {
+            name: "HANDLER_ERROR",
+            cause: {
+              info: {},
+              name: "INVALID_TRANSACTION",
+            },
+            code: -32000,
+            message: "Server error",
+            data: {
+              TxExecutionError: {
+                InvalidTxError: {
+                  NotEnoughBalance: {
+                    balance: "15000000000000000000000",
+                    cost: "30919530859022500000001",
+                    signer_id: "payer-account.testnet",
+                  },
+                },
+              },
+            },
+          },
+        }));
+        return;
+      }
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          final_execution_status: "EXECUTED_OPTIMISTIC",
+          status: { SuccessValue: "" },
+          receipts_outcome: [{ outcome: { status: { SuccessValue: "" } } }],
+        },
+      }));
+      return;
+    }
+
+    res.statusCode = 400;
+    res.end(JSON.stringify({ error: "unexpected method" }));
+  });
+
+  await new Promise<void>((resolve) => rpcServer.listen(0, "127.0.0.1", () => resolve()));
+  const port = (rpcServer.address() as AddressInfo).port;
+  const previousRpc = process.env.NEAR_TESTNET_RPC;
+  process.env.NEAR_TESTNET_RPC = `http://127.0.0.1:${port}`;
+
+  try {
+    // 1. send_tx confirms in a single round-trip when receipts complete cleanly
+    mode = "confirm";
+    const confirmed = await broadcastPreparedKeyPaymentForNetwork({
+      network: NEAR_TESTNET,
+      txHash: "NearTxHashConfirm1",
+      payload: "OpaqueSignedNearBase64Payload==",
+    });
+    assert.equal(confirmed.success, true);
+    assert.equal(confirmed.status, "confirmed");
+    assert.equal(confirmed.txHash, "NearTxHashConfirm1");
+    assert.equal(observedCalls.at(-1)?.method, "send_tx");
+    assert.equal(observedCalls.at(-1)?.params.wait_until, "EXECUTED_OPTIMISTIC");
+
+    // 2. InvalidNonce checks tx status first, then requests resetPreparation + syncNextNonce = ak_nonce + 1
+    mode = "invalid_nonce";
+    const resetNonce = await broadcastPreparedKeyPaymentForNetwork({
+      network: NEAR_TESTNET,
+      txHash: "NearTxHashStaleNonce",
+      payload: "OpaqueSignedNearBase64Payload==",
+    });
+    assert.equal(resetNonce.success, false);
+    assert.equal(resetNonce.status, "queued");
+    assert.equal(resetNonce.resetPreparation, true);
+    assert.equal(resetNonce.syncNextNonce, "43");
+
+    // 3. InvalidAccessKeyError fails terminally so locked user budget releases
+    mode = "invalid_access_key";
+    const terminalAccessKey = await broadcastPreparedKeyPaymentForNetwork({
+      network: NEAR_TESTNET,
+      txHash: "NearTxHashNoKey",
+      payload: "OpaqueSignedNearBase64Payload==",
+    });
+    assert.equal(terminalAccessKey.success, false);
+    assert.equal(terminalAccessKey.status, "failed");
+    assert.equal(terminalAccessKey.terminal, true);
+
+    // 4. Non-waiting reconciliation routes sender_account_id = userAddress with wait_until = NONE and flags UNKNOWN_TRANSACTION as notObserved
+    mode = "unknown_tx";
+    const notObserved = await reconcileKeyPaymentForNetwork("NearDroppedHash99", NEAR_TESTNET, {
+      wait: false,
+      userAddress: "payer-account.testnet",
+    });
+    assert.equal(notObserved.status, "submitted");
+    assert.equal(notObserved.notObserved, true);
+    assert.equal(observedCalls.at(-1)?.method, "tx");
+    assert.equal(observedCalls.at(-1)?.params.sender_account_id, "payer-account.testnet");
+    assert.equal(observedCalls.at(-1)?.params.wait_until, "NONE");
+  } finally {
+    if (previousRpc === undefined) delete process.env.NEAR_TESTNET_RPC;
+    else process.env.NEAR_TESTNET_RPC = previousRpc;
+    await new Promise<void>((resolve) => rpcServer.close(() => resolve()));
+  }
+});
