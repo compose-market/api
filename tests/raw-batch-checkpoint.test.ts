@@ -21,7 +21,7 @@ import { prepareInferencePayment } from "../x402/index.js";
 import { closeValkey, valkeyDel, valkeyExists, valkeyExpire, valkeyHGetAll, valkeyHSet, valkeySRem } from "../x402/keys/valkey.js";
 import { merchantWalletAddress } from "../x402/wallets.js";
 
-const NETWORK: NetworkId = "eip155:5042002";
+const NETWORK: NetworkId = "eip155:84532";
 const PAYER = "0x1111111111111111111111111111111111111111";
 const RECEIVER = merchantWalletAddress;
 
