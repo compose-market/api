@@ -1907,7 +1907,7 @@ test("receipt listing returns authorized receipts", async () => {
   const userAddress = wallet();
 
   const app = express();
-  registerManowarRoutes(app);
+  registerUtilityRoutes(app);
   const server = app.listen(0);
   await once(server, "listening");
 
