@@ -176,7 +176,7 @@ test("buildError + statusForCode produce the canonical envelope", () => {
 test("GET /api/session returns the active compose-<jwt> token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const network = "eip155:5042002" as const;
+    const network = "eip155:84532" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
     let seededKeyId: string | null = null;
 
