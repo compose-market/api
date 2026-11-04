@@ -1889,7 +1889,7 @@ test("receipt JSON never emits the removed Session-budget intent alias", () => {
 
 test("receipt listing requires x-session-user-address header", async () => {
   const app = express();
-  registerManowarRoutes(app);
+  registerUtilityRoutes(app);
   const server = app.listen(0);
   await once(server, "listening");
 
