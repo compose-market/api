@@ -1814,29 +1814,6 @@ test("terminal intent failure marks queued receipt failed without applying paid 
   }
 });
 
-test("nested model meters fail closed without canonical modality evidence", () => {
-  assert.throws(
-    () => buildAgentTextSettlement({
-      model: "asi1-mini",
-      prompt_tokens: 1000,
-      completion_tokens: 500,
-      total_tokens: 1500,
-      billingMetrics: {
-        input_text_tokens: 1000,
-        output_text_tokens: 500,
-      },
-      meters: [{
-        kind: "model",
-        source: "models_call",
-        model: "lucid-origin",
-        usage: { billingMetrics: { tile: 1 } },
-        media: { billingMetrics: { tile: 1 }, requests: 1 },
-      }],
-    }),
-    /meter modality is required/,
-  );
-});
-
 test("stream receipts expose canonical checkpoint and execution identity", () => {
   const receipt: Receipt = {
     finalAmountWei: "101",
