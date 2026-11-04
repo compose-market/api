@@ -65,3 +65,43 @@ test("facilitator still supports all testnets for third-party products", async (
   assert.ok(networks.has("eip155:5042"), "Arc mainnet in facilitator");
   assert.ok(networks.has("eip155:1329"), "Sei mainnet in facilitator");
 });
+
+test("helper functions classify testnets and service allowance correctly", () => {
+  // Testnets
+  assert.equal(isTestnetNetwork("eip155:421614"), true);
+  assert.equal(isTestnetNetwork("eip155:43113"), true);
+  assert.equal(isTestnetNetwork("eip155:1328"), true);
+  assert.equal(isTestnetNetwork("eip155:42431"), true);
+  assert.equal(isTestnetNetwork("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"), true);
+  assert.equal(isTestnetNetwork("eip155:84532"), true);
+
+  // Mainnets
+  assert.equal(isTestnetNetwork("eip155:8453"), false);
+  assert.equal(isTestnetNetwork("eip155:42161"), false);
+  assert.equal(isTestnetNetwork("eip155:43114"), false);
+  assert.equal(isTestnetNetwork("eip155:5042"), false);
+  assert.equal(isTestnetNetwork("eip155:1329"), false);
+
+  // Service allowed: all mainnets + Base Sepolia & temporary NEAR Testnet exception for E2E testing
+  assert.equal(isServiceAllowedNetwork("eip155:84532"), true);
+  // TEMP(near:testnet): flip back when removing near:testnet exception
+  assert.equal(isServiceAllowedNetwork("near:testnet"), true);
+  assert.equal(isServiceAllowedNetwork("near:mainnet"), true);
+  assert.equal(isServiceAllowedNetwork("eip155:8453"), true);
+  assert.equal(isServiceAllowedNetwork("eip155:42161"), true);
+  assert.equal(isServiceAllowedNetwork("eip155:43114"), true);
+  assert.equal(isServiceAllowedNetwork("eip155:5042"), true);
+  assert.equal(isServiceAllowedNetwork("eip155:1329"), true);
+
+  // Service blocked: all other testnets
+  assert.equal(isServiceBlockedNetwork("eip155:421614"), true);
+  assert.equal(isServiceBlockedNetwork("eip155:43113"), true);
+  assert.equal(isServiceBlockedNetwork("eip155:1328"), true);
+  assert.equal(isServiceBlockedNetwork("eip155:42431"), true);
+  assert.equal(isServiceBlockedNetwork("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"), true);
+
+  // Not blocked: Base Sepolia, temporary NEAR Testnet, and mainnets
+  assert.equal(isServiceBlockedNetwork("eip155:84532"), false);
+  assert.equal(isServiceBlockedNetwork("near:testnet"), false);
+  assert.equal(isServiceBlockedNetwork("eip155:8453"), false);
+});
