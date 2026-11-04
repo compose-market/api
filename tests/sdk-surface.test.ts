@@ -457,12 +457,12 @@ test("GET /api/x402/facilitator/chains returns CAIP-2 network ids + USDC address
         assert.ok(Array.isArray(body.chains));
         assert.ok(body.chains.length > 0);
         for (const chain of body.chains) {
-            assert.match(chain.network, /^(eip155|solana):.+$/);
+            assert.match(chain.network, /^(eip155|solana|near):.+$/);
             assert.ok(chain.assetAddress.length > 0);
             assert.deepEqual(chain.schemes, ["exact", "upto", "batch-settlement"]);
             assert.equal(chain.decimals, 6);
         }
-        assert.match(body.defaultNetwork, /^(eip155|solana):.+$/);
+        assert.match(body.defaultNetwork, /^(eip155|solana|near):.+$/);
     }
 });
 
