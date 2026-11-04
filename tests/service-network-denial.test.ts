@@ -14,3 +14,17 @@ const ORIGINAL_ENV = {
   SOLANA_MAINNET_RPC: process.env.SOLANA_MAINNET_RPC,
   SVM_TREASURY_SERVER_WALLET_PUBLIC: process.env.SVM_TREASURY_SERVER_WALLET_PUBLIC,
 };
+
+function createEvent(
+  method: string,
+  rawPath: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+) {
+  return {
+    rawPath,
+    requestContext: { http: { method } },
+    headers: { ...headers },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  };
+}
