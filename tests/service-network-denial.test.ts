@@ -28,3 +28,12 @@ function createEvent(
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   };
 }
+
+before(() => {
+  process.env.FACILITATOR_KEY = ORIGINAL_ENV.FACILITATOR_KEY || `0x${"11".repeat(32)}`;
+  process.env.MERCHANT_WALLET_ADDRESS =
+    ORIGINAL_ENV.MERCHANT_WALLET_ADDRESS || "0x2222222222222222222222222222222222222222";
+  process.env.SVM_TREASURY_SERVER_WALLET_PUBLIC =
+    ORIGINAL_ENV.SVM_TREASURY_SERVER_WALLET_PUBLIC || "11111111111111111111111111111111";
+  delete process.env.SOLANA_MAINNET_RPC;
+});
