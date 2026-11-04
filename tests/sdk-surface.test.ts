@@ -283,7 +283,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
     const attacker = randomWalletAddress();
-    const network = "eip155:5042002" as const;
+    const network = "eip155:84532" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
     const userKeyIds: string[] = [];
     const attackerKeyIds: string[] = [];
