@@ -45,3 +45,23 @@ after(() => {
   if (ORIGINAL_ENV.SOLANA_MAINNET_RPC) process.env.SOLANA_MAINNET_RPC = ORIGINAL_ENV.SOLANA_MAINNET_RPC;
   if (ORIGINAL_ENV.SVM_TREASURY_SERVER_WALLET_PUBLIC) process.env.SVM_TREASURY_SERVER_WALLET_PUBLIC = ORIGINAL_ENV.SVM_TREASURY_SERVER_WALLET_PUBLIC;
 });
+
+test("facilitator still supports all testnets for third-party products", async () => {
+  const supported = await getFacilitatorSupported();
+  const networks = new Set(supported.kinds.map((k) => k.network));
+
+  // Third-party testnets MUST be supported by facilitator
+  assert.ok(networks.has("eip155:421614"), "Arbitrum Sepolia in facilitator");
+  assert.ok(networks.has("eip155:43113"), "Avalanche Fuji in facilitator");
+  assert.ok(networks.has("eip155:1328"), "Sei Testnet in facilitator");
+  assert.ok(networks.has("eip155:42431"), "Tempo Moderato in facilitator");
+  assert.ok(networks.has("eip155:84532"), "Base Sepolia in facilitator");
+  assert.ok(networks.has("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"), "Solana Devnet in facilitator");
+
+  // Mainnets must also be in facilitator
+  assert.ok(networks.has("eip155:8453"), "Base mainnet in facilitator");
+  assert.ok(networks.has("eip155:42161"), "Arbitrum mainnet in facilitator");
+  assert.ok(networks.has("eip155:43114"), "Avalanche mainnet in facilitator");
+  assert.ok(networks.has("eip155:5042"), "Arc mainnet in facilitator");
+  assert.ok(networks.has("eip155:1329"), "Sei mainnet in facilitator");
+});
