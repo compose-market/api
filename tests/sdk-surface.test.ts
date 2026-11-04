@@ -392,7 +392,7 @@ test("DELETE /api/keys/:keyId requires JWT possession of a key belonging to the 
 test("GET /api/keys/:keyId requires possession and returns key metadata without the token", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const network = "eip155:5042002" as const;
+    const network = "eip155:84532" as const;
     const expiresAt = Date.now() + 10 * 60 * 1000;
     let keyId: string | null = null;
 
