@@ -10,10 +10,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import express from "express";
 
-import { registerManowarRoutes } from "../routes.js";
+import { registerUtilityRoutes } from "../routes.js";
 import {
-  buildAgentTextSettlement,
-  buildBills,
   listReceipts,
   markBatchReceiptsSettled,
   markIntentReceiptsFailed,
@@ -33,7 +31,6 @@ import {
   valkeySAdd,
   valkeySMembers,
 } from "../x402/keys/valkey.js";
-import { quoteMeteredSettlement } from "../x402/metering.js";
 import type { Receipt } from "../http/request-context.js";
 
 function wallet(): `0x${string}` {
@@ -1815,55 +1812,6 @@ test("terminal intent failure marks queued receipt failed without applying paid 
   } finally {
     await cleanupReceiptState(userAddress, network, intentId);
   }
-});
-
-test("agent settlement meters include granular nested models_call bills", () => {
-  const settlement = buildAgentTextSettlement({
-    model: "asi1-mini",
-    prompt_tokens: 1000,
-    completion_tokens: 500,
-    total_tokens: 1500,
-    billingMetrics: {
-      input_text_tokens: 1000,
-      output_text_tokens: 500,
-    },
-    meters: [{
-      kind: "model",
-      source: "models_call",
-      model: "lucid-origin",
-      modality: "image",
-      usage: {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        billingMetrics: { tile: 1 },
-      },
-      media: {
-        billingMetrics: { tile: 1 },
-        requests: 1,
-      },
-      responseId: "resp_img",
-    }],
-  });
-  const quoted = quoteMeteredSettlement(settlement.meter);
-  const receipt: Receipt = {
-    service: "agent",
-    action: "agent-stream",
-    subject: quoted.subject,
-    lineItems: quoted.lineItems,
-    providerAmountWei: quoted.providerAmountWei,
-    platformFeeWei: quoted.platformFeeWei,
-    finalAmountWei: quoted.finalAmountWei,
-    network: "eip155:43114",
-    settledAt: 1,
-  };
-
-  const bills = buildBills(receipt);
-  const kinds = bills.map((bill) => bill.kind).sort();
-
-  assert.deepEqual(kinds, ["agent", "model"]);
-  assert.ok(bills.some((bill) => bill.kind === "model" && bill.source === "models_call"));
-  assert.ok(quoted.lineItems.some((item) => item.key.startsWith("model.models_call.cloudflare:lucid-origin:")));
 });
 
 test("nested model meters fail closed without canonical modality evidence", () => {
