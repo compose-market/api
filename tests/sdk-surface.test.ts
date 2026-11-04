@@ -238,7 +238,7 @@ test("GET /api/session returns the active compose-<jwt> token", async () => {
 test("GET /api/session never mixes raw x402 envelope state into Session identity", async () => {
     const { handler } = await import("../handler.js");
     const userAddress = randomWalletAddress();
-    const network = "eip155:5042002" as const;
+    const network = "eip155:84532" as const;
     const rootRunId = `raw-${randomUUID()}`;
 
     try {
