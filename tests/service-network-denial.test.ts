@@ -180,3 +180,28 @@ test("Universal facilitator session and key endpoints accept testnets without se
     );
   }
 });
+
+test("Compose Market service entrypoints accept Base Sepolia for testing and Mainnets", async () => {
+  const allowedNetworks = [
+    "eip155:84532", // Base Sepolia (testing exception)
+    "near:testnet", // TEMP(near:testnet): temporary NEAR Testnet E2E exception
+    "near:mainnet", // NEAR Mainnet
+    "eip155:8453",  // Base Mainnet
+    "eip155:42161", // Arbitrum One
+    "eip155:43114", // Avalanche C-Chain
+    "eip155:5042",  // Arc Mainnet
+    "eip155:1329",  // Sei Mainnet
+  ];
+
+  for (const network of allowedNetworks) {
+    const modelsRes = await handler(
+      createEvent("POST", "/models/", {}, { "x-network-id": network }),
+      {},
+    );
+    assert.equal(
+      modelsRes.statusCode,
+      402,
+      `POST /models/ with ${network} should be accepted and return 402 challenge`,
+    );
+  }
+});
