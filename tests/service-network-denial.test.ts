@@ -105,3 +105,41 @@ test("helper functions classify testnets and service allowance correctly", () =>
   assert.equal(isServiceBlockedNetwork("near:testnet"), false);
   assert.equal(isServiceBlockedNetwork("eip155:8453"), false);
 });
+
+test("Compose Market service entrypoints reject blocked testnets with 400", async () => {
+  const blockedTestnets = [
+    "eip155:421614",
+    "eip155:43113",
+    "eip155:1328",
+    "eip155:42431",
+    "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  ];
+
+  for (const network of blockedTestnets) {
+    const expectedError = `Network ${network} is not supported for this service. Use a Mainnet, or ask for Testnet access.`;
+
+    const modelsRes = await handler(
+      createEvent("POST", "/models/", {}, { "x-network-id": network }),
+      {},
+    );
+    assert.equal(modelsRes.statusCode, 400, `POST /models/ with ${network} should return 400`);
+    assert.ok(
+      modelsRes.body.includes(expectedError),
+      `Expected error message for ${network}: got ${modelsRes.body}`,
+    );
+
+    const intentRes = await handler(
+      createEvent("POST", "/api/payments/prepare", {}, { "x-network-id": network }),
+      {},
+    );
+    assert.equal(intentRes.statusCode, 400, `POST /api/payments/prepare with ${network} should return 400`);
+    assert.ok(intentRes.body.includes(expectedError));
+
+    const runtimeIntentRes = await handler(
+      createEvent("POST", "/api/payments/prepare", { service: "runtime" }, { "x-network-id": network }),
+      {},
+    );
+    assert.equal(runtimeIntentRes.statusCode, 400, `POST /api/payments/prepare (service=runtime) with ${network} should return 400`);
+    assert.ok(runtimeIntentRes.body.includes(expectedError));
+  }
+});
