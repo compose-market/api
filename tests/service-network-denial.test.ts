@@ -143,3 +143,40 @@ test("Compose Market service entrypoints reject blocked testnets with 400", asyn
     assert.ok(runtimeIntentRes.body.includes(expectedError));
   }
 });
+
+test("Universal facilitator session and key endpoints accept testnets without service network denial", async () => {
+  const testCases = [
+    { network: "eip155:421614", address: "0x2222222222222222222222222222222222222222" }, // Arbitrum Sepolia
+    { network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", address: "11111111111111111111111111111111" }, // Solana Devnet
+  ];
+
+  for (const { network, address } of testCases) {
+    const sessionRes = await handler(
+      createEvent("GET", "/api/session", undefined, {
+        "x-network-id": network,
+        "x-session-user-address": address,
+      }),
+      {},
+    );
+    assert.equal(sessionRes.statusCode, 200, `GET /api/session with ${network} should return 200`);
+    assert.equal(JSON.parse(sessionRes.body).hasSession, false);
+
+    const keyRes = await handler(
+      createEvent(
+        "POST",
+        "/api/keys",
+        { purpose: "session", budgetLimit: 1000000, expiresAt: Date.now() + 60000 },
+        {
+          "x-network-id": network,
+          "x-session-user-address": address,
+        },
+      ),
+      {},
+    );
+    // Must NOT fail with "Network ... is not supported for this service"
+    assert.ok(
+      !keyRes.body.includes("is not supported for this service"),
+      `POST /api/keys should not block testnet ${network} with service denial: got ${keyRes.body}`,
+    );
+  }
+});
