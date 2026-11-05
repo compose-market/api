@@ -7,8 +7,9 @@ import {
   getSessionFundingReadiness,
   resolveSessionAllowanceSpenderAddress,
 } from "../x402/session/allowance.js";
+import { getNetwork } from "../x402/configs/chains.js";
 
-const TEST_NETWORK = "eip155:5042002" as const;
+const TEST_NETWORK = "eip155:84532" as const;
 const TEST_PAYER = "0x1111111111111111111111111111111111111111";
 const COMPOSE_SETTLEMENT_SPENDER = "0x89Caf60b0E742B9299E14d611B205870207B5cE3";
 
