@@ -11,7 +11,7 @@ import {
   valkeySRem,
 } from "../x402/keys/valkey.js";
 
-const TEST_NETWORK = "eip155:5042002" as const;
+const TEST_NETWORK = "eip155:84532" as const;
 const TEST_BUDGET_WEI = 1_000_000;
 const TEST_SPENDER = "0x89Caf60b0E742B9299E14d611B205870207B5cE3";
 
