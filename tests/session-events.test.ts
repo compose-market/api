@@ -47,7 +47,7 @@ test("session events close path clears all timers", () => {
 });
 
 const USER = "0x058271e764154c322f3d3ddc18af44f7d91b1c80";
-const NETWORK = "eip155:5042002" as const;
+const NETWORK = "eip155:84532" as const;
 
 class FakeRequest extends EventEmitter {
   query = { userAddress: USER, network: NETWORK };
