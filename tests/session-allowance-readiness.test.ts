@@ -52,7 +52,7 @@ test("funding readiness reports RPC failure instead of inventing zero allowance"
   assert.equal(result.reason, "rpc_unavailable");
   assert.equal(result.network, TEST_NETWORK);
   assert.equal(result.payer, TEST_PAYER);
-  assert.equal(result.asset, "0x3600000000000000000000000000000000000000");
+  assert.equal(result.asset, "0x036CbD53842c5426634e7929541eC2318f3dCF7e");
   assert.equal(result.requiredWei, "1000000");
   assert.equal(result.spender, COMPOSE_SETTLEMENT_SPENDER);
   assert.equal(result.balanceWei, undefined);
