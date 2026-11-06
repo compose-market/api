@@ -13,6 +13,20 @@ const TEST_NETWORK = "eip155:84532" as const;
 const TEST_PAYER = "0x1111111111111111111111111111111111111111";
 const COMPOSE_SETTLEMENT_SPENDER = "0x89Caf60b0E742B9299E14d611B205870207B5cE3";
 
+test("Tempo readiness uses the advertised OpenUSD asset and names it in funding errors", async () => {
+  const definition = getNetwork("eip155:42431");
+  assert.equal(definition.asset.symbol, "OUSD");
+  assert.equal(definition.asset.name, "OpenUSD");
+  const result = await getSessionFundingReadiness({ userAddress: TEST_PAYER, network: definition.id, requiredBudgetWei: 1_000_000 }, {
+    resolveSpender: () => COMPOSE_SETTLEMENT_SPENDER,
+    readBalanceWei: async () => 0n,
+    readAllowanceWei: async () => 0n,
+  });
+  assert.equal(result.asset, definition.asset.address);
+  assert.equal(result.reason, "insufficient_balance");
+  assert.match(result.error ?? "", /OUSD/);
+});
+
 test("EVM readiness uses the configured public Compose settlement spender", () => {
   const spender = resolveSessionAllowanceSpenderAddress({
     TREASURY_SERVER_WALLET_PUBLIC: COMPOSE_SETTLEMENT_SPENDER,
