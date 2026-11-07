@@ -107,7 +107,7 @@ test("Session creation reports RPC failure separately from insufficient allowanc
     assert.equal(body.code, "rpc_unavailable");
     assert.equal(body.details?.network, TEST_NETWORK);
     assert.equal(body.details?.payer, userAddress);
-    assert.equal(body.details?.asset, "0x3600000000000000000000000000000000000000");
+    assert.equal(body.details?.asset, "0x036CbD53842c5426634e7929541eC2318f3dCF7e");
     assert.equal(body.details?.requiredWei, String(TEST_BUDGET_WEI));
     assert.equal(body.details?.balanceWei, String(TEST_BUDGET_WEI));
     assert.equal(body.details?.allowanceWei, undefined);
