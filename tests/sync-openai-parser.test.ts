@@ -151,3 +151,5 @@ const s${suffix}=Object.assign({
 export{m${suffix} as b,s${suffix} as c};
 `;
 }
+
+type LoaderOverrides = Record<string, string | undefined>;
