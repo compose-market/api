@@ -105,3 +105,49 @@ const b={
 const r={renamed_bucket:a,another_arbitrary_bucket:b};
 export{r as p};
 `;
+
+function registryModule(currentSnapshot = "direct-model-2026-01-01", suffix = ""): string {
+  return `
+import{p as z${suffix}}from"./rates.Z9v3Bc.js";
+var a${suffix}={name:"direct-model",slug:"direct-model",current_snapshot:"${currentSnapshot}",tagline:"Direct",description:"Direct model",type:"chat",snapshots:["${currentSnapshot}"]};
+const A${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:a${suffix},name:a${suffix}.name,slug:a${suffix}.slug,current_snapshot:a${suffix}.current_snapshot},Symbol.toStringTag,{value:"Module"}));
+var b${suffix}={name:"snapshot-priced-model",slug:"snapshot-priced-model",current_snapshot:"snapshot-priced-model-2026-01-02",tagline:"Snapshot",description:"Snapshot-priced model",type:"audio",snapshots:["snapshot-priced-model-2026-01-02"]};
+const B${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:b${suffix},name:b${suffix}.name,slug:b${suffix}.slug,current_snapshot:b${suffix}.current_snapshot},Symbol.toStringTag,{value:"Module"}));
+var c${suffix}={name:"direct",slug:"direct",current_snapshot:"direct-snapshot",tagline:"Exact",description:"Must not prefix-match",type:"chat",snapshots:["direct-snapshot"]};
+const C${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:c${suffix},name:c${suffix}.name,slug:c${suffix}.slug,current_snapshot:c${suffix}.current_snapshot},Symbol.toStringTag,{value:"Module"}));
+var h${suffix}={name:"duration-model",slug:"duration-model",current_snapshot:"duration-snapshot",tagline:"Duration",description:"Duration model",type:"audio",snapshots:["duration-snapshot"]};
+const H${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:h${suffix},name:h${suffix}.name,slug:h${suffix}.slug,current_snapshot:h${suffix}.current_snapshot},Symbol.toStringTag,{value:"Module"}));
+
+var d${suffix}={name:"direct-model-2026-01-01",slug:"direct-model-2026-01-01",modalities:{input:["text"],output:["text"]},supported_features:["streaming"],supported_endpoints:["responses"],context_window:128e3,max_output_tokens:16e3,knowledge_cutoff:new Date(17356896e5),reasoning_tokens:!1};
+const D${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:d${suffix},name:d${suffix}.name,slug:d${suffix}.slug},Symbol.toStringTag,{value:"Module"}));
+var e${suffix}={name:"snapshot-priced-model-2026-01-02",slug:"snapshot-priced-model-2026-01-02",modalities:{input:["audio"],output:["text"]},supported_features:["streaming"],supported_endpoints:["speech_generation"],context_window:64e3,max_output_tokens:8e3,knowledge_cutoff:new Date(1735776e6),reasoning_tokens:!1};
+const E${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:e${suffix},name:e${suffix}.name,slug:e${suffix}.slug},Symbol.toStringTag,{value:"Module"}));
+var f${suffix}={name:"direct-snapshot",slug:"direct-snapshot",modalities:{input:["text"],output:["text"]},supported_features:[],supported_endpoints:["responses"],context_window:32e3,max_output_tokens:4e3,reasoning_tokens:!1};
+const F${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:f${suffix},name:f${suffix}.name,slug:f${suffix}.slug},Symbol.toStringTag,{value:"Module"}));
+var i${suffix}={name:"duration-snapshot",slug:"duration-snapshot",modalities:{input:["audio"],output:["text"]},supported_features:[],supported_endpoints:["speech_generation"],context_window:32e3,max_output_tokens:4e3,reasoning_tokens:!1};
+const I${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:i${suffix},name:i${suffix}.name,slug:i${suffix}.slug},Symbol.toStringTag,{value:"Module"}));
+var g${suffix}={name:"publisher-alias",slug:"publisher-alias",current_snapshot:"direct-model-2026-01-01",snapshots:["direct-model-2026-01-01"]};
+const G${suffix}=Object.freeze(Object.defineProperty({__proto__:null,default:g${suffix},name:g${suffix}.name,slug:g${suffix}.slug,current_snapshot:g${suffix}.current_snapshot},Symbol.toStringTag,{value:"Module"}));
+
+function normalizePricing${suffix}(value){
+  const{snapshot,price_type,price_unit,columns,values,units}=value;
+  const effectiveUnit${suffix}=price_unit??"publisher quanta";
+  return{snapshot,price_type,price_unit:effectiveUnit${suffix},columns,values,units};
+}
+
+const m${suffix}=Object.assign({
+  "arbitrary-one":A${suffix},
+  "opaque:two":B${suffix},
+  "third-key":C${suffix},
+  "fourth-key":H${suffix}
+});
+const s${suffix}=Object.assign({
+  "unrelated-four":D${suffix},
+  "opaque:five":E${suffix},
+  "sixth-key":F${suffix},
+  "seventh-key":I${suffix},
+  "alias-key":G${suffix}
+});
+export{m${suffix} as b,s${suffix} as c};
+`;
+}
