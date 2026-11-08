@@ -36,3 +36,15 @@ const ALL_MODELS_HTML = `<!doctype html>
     </astro-island>
   </body>
 </html>`;
+
+const ENTRY_MODULE = `
+import{b as q}from"./catalog-data.k2Lm8N.js";
+const x={
+  unrelated:[{name:"not_an_endpoint",label:"Ignore me"}],
+  endpoints:[
+    {name:"responses",label:"Responses",icon:"chat",route:"v1/responses"},
+    {name:"speech_generation",label:"Speech generation",icon:"speech",route:"v1/audio/speech"}
+  ]
+};
+export{x as z};
+`;
