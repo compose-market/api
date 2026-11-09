@@ -153,3 +153,22 @@ export{m${suffix} as b,s${suffix} as c};
 }
 
 type LoaderOverrides = Record<string, string | undefined>;
+
+function fixtureLoader(overrides: LoaderOverrides = {}) {
+  const modules = new Map<string, string>([
+    [ENTRY_URL, ENTRY_MODULE],
+    [MANIFEST_URL, registryModule()],
+    [PRICING_URL, PRICING_MODULE],
+  ]);
+  for (const [url, source] of Object.entries(overrides)) {
+    if (source === undefined) modules.delete(url);
+    else modules.set(url, source);
+  }
+
+  return async (url: string | URL): Promise<string> => {
+    const key = String(url);
+    const source = modules.get(key);
+    if (source === undefined) throw new Error(`Fixture has no module for ${key}`);
+    return source;
+  };
+}
