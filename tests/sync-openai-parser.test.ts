@@ -195,3 +195,8 @@ function encodeAstroValue(value: unknown): unknown {
   if (Array.isArray(value)) return [1, value.map(encodeAstroValue)];
   return [0, value];
 }
+
+function pricingTableIsland(props: Record<string, unknown>): string {
+  const encoded = Object.fromEntries(Object.entries(props).map(([key, value]) => [key, encodeAstroValue(value)]));
+  return `<astro-island props='${JSON.stringify(encoded)}'></astro-island>`;
+}
