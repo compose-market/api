@@ -186,3 +186,7 @@ function scalarStrings(value: unknown): string[] {
   }
   return [];
 }
+
+function staticPricingModule(catalog: unknown): string {
+  return `const catalog=JSON.parse(${JSON.stringify(JSON.stringify(catalog))});export{catalog as arbitraryExport};`;
+}
