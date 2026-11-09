@@ -172,3 +172,7 @@ function fixtureLoader(overrides: LoaderOverrides = {}) {
     return source;
   };
 }
+
+function keyed<T>(collection: Map<string, T> | Record<string, T>, key: string): T | undefined {
+  return collection instanceof Map ? collection.get(key) : collection[key];
+}
