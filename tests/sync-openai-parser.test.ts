@@ -190,3 +190,8 @@ function scalarStrings(value: unknown): string[] {
 function staticPricingModule(catalog: unknown): string {
   return `const catalog=JSON.parse(${JSON.stringify(JSON.stringify(catalog))});export{catalog as arbitraryExport};`;
 }
+
+function encodeAstroValue(value: unknown): unknown {
+  if (Array.isArray(value)) return [1, value.map(encodeAstroValue)];
+  return [0, value];
+}
