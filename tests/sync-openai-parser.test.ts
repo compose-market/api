@@ -176,3 +176,13 @@ function fixtureLoader(overrides: LoaderOverrides = {}) {
 function keyed<T>(collection: Map<string, T> | Record<string, T>, key: string): T | undefined {
   return collection instanceof Map ? collection.get(key) : collection[key];
 }
+
+function scalarStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(scalarStrings);
+  if (value !== null && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .flatMap(([key, child]) => [key, ...scalarStrings(child)]);
+  }
+  return [];
+}
