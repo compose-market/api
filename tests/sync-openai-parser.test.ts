@@ -226,3 +226,17 @@ function duplicateTokenPricing(records: Array<{ values: Record<string, unknown> 
     },
   });
 }
+
+function snapshotPricing(item: Record<string, unknown>): string {
+  return staticPricingModule({
+    arbitraryCategory: {
+      name: "Publisher category",
+      subsections: [{
+        price_type: "Publisher pricing type",
+        price_unit: "request",
+        columns: [{ name: "cost", label: "Cost" }],
+        items: [item],
+      }],
+    },
+  });
+}
