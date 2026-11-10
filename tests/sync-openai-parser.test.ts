@@ -240,3 +240,47 @@ function snapshotPricing(item: Record<string, unknown>): string {
     },
   });
 }
+
+test("loads model, snapshot, endpoint, and pricing manifests through arbitrary hashed imports", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader(),
+  });
+
+  assert.deepEqual([...source.visibleSlugs].sort(), [
+    "direct",
+    "direct-model",
+    "duration-model",
+    "snapshot-priced-model",
+  ]);
+  assert.equal(source.modelPageUrls.get("direct-model"), "https://docs.example.test/api/docs/models/direct-model");
+
+  assert.equal(keyed(source.models, "direct-model")?.description, "Direct model");
+  assert.equal(keyed(source.models, "snapshot-priced-model")?.current_snapshot, "snapshot-priced-model-2026-01-02");
+  assert.equal(keyed(source.snapshots, "direct-model-2026-01-01")?.context_window, 128_000);
+  assert.deepEqual(keyed(source.snapshots, "snapshot-priced-model-2026-01-02")?.modalities, {
+    input: ["audio"],
+    output: ["text"],
+  });
+  assert.equal(keyed(source.snapshots, "publisher-alias")?.current_snapshot, "direct-model-2026-01-01");
+  assert.equal(source.snapshotAliases.get("publisher-alias"), "direct-model-2026-01-01");
+
+  const endpoints = source.endpoints instanceof Map
+    ? [...source.endpoints.values()]
+    : Array.isArray(source.endpoints)
+      ? source.endpoints
+      : Object.values(source.endpoints);
+  assert.deepEqual(endpoints.map((endpoint) => ({
+    name: endpoint.name,
+    label: endpoint.label,
+    route: endpoint.route,
+  })), [
+    { name: "responses", label: "Responses", route: "v1/responses" },
+    { name: "speech_generation", label: "Speech generation", route: "v1/audio/speech" },
+  ]);
+
+  assert.ok(keyed(source.pricingById, "direct-model"));
+  assert.ok(keyed(source.pricingById, "snapshot-priced-model-2026-01-02"));
+  assert.equal(source.implicitPriceUnit, "publisher quanta");
+});
