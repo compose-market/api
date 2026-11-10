@@ -284,3 +284,18 @@ test("loads model, snapshot, endpoint, and pricing manifests through arbitrary h
   assert.ok(keyed(source.pricingById, "snapshot-priced-model-2026-01-02"));
   assert.equal(source.implicitPriceUnit, "publisher quanta");
 });
+
+test("rejects conflicting discovered hrefs for the same exact model id", async () => {
+  const conflictingHtml = ALL_MODELS_HTML.replace(
+    "    </astro-island>\n  </body>",
+    '      <a href="/api/docs/models/direct-model?conflict=1">Conflicting exact href</a>\n    </astro-island>\n  </body>',
+  );
+  await assert.rejects(
+    loadOpenAiStructuredSource({
+      allModelsHtml: conflictingHtml,
+      pageUrl: PAGE_URL,
+      loadModule: fixtureLoader(),
+    }),
+    /conflicting canonical model links/i,
+  );
+});
