@@ -299,3 +299,22 @@ test("rejects conflicting discovered hrefs for the same exact model id", async (
     /conflicting canonical model links/i,
   );
 });
+
+test("resolves pricing only by an exact canonical id or its declared current snapshot", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader(),
+  });
+
+  const direct = priceSectionsForModel(source, "direct-model");
+  const implicit = direct.find((section) => section.unitKey === "per_publisher_quanta_usd");
+  assert.deepEqual(implicit?.entries, { input: 2, output: 8 });
+
+  const throughDeclaredSnapshot = priceSectionsForModel(source, "snapshot-priced-model");
+  assert.equal(throughDeclaredSnapshot.length, 1);
+
+  // `direct-model` and `direct-model-pro` exist in the pricing source. The
+  // unpriced model `direct` must not acquire either through prefix matching.
+  assert.deepEqual(priceSectionsForModel(source, "direct"), []);
+});
