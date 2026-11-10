@@ -200,3 +200,11 @@ function pricingTableIsland(props: Record<string, unknown>): string {
   const encoded = Object.fromEntries(Object.entries(props).map(([key, value]) => [key, encodeAstroValue(value)]));
   return `<astro-island props='${JSON.stringify(encoded)}'></astro-island>`;
 }
+
+function defaultTierPricingPage(tier: string, rows: unknown[][]): string {
+  return `<div data-content-switcher-root data-content-switcher-initial="${tier}">
+    <div data-content-switcher-pane data-value="${tier}">
+      ${pricingTableIsland({ tier, rows })}
+    </div>
+  </div>`;
+}
