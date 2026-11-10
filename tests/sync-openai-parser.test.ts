@@ -208,3 +208,21 @@ function defaultTierPricingPage(tier: string, rows: unknown[][]): string {
     </div>
   </div>`;
 }
+
+function duplicateTokenPricing(records: Array<{ values: Record<string, unknown> }>): string {
+  return staticPricingModule({
+    arbitraryCategory: {
+      name: "Arbitrary category",
+      subsections: records.map((record, index) => ({
+        title: `Opaque ${index}`,
+        price_type: "Text tokens",
+        price_unit: "1M tokens",
+        columns: [
+          { name: "input", label: "Input" },
+          { name: "output", label: "Output" },
+        ],
+        items: [{ name: "direct-model", values: record.values }],
+      })),
+    },
+  });
+}
