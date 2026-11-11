@@ -318,3 +318,18 @@ test("resolves pricing only by an exact canonical id or its declared current sna
   // unpriced model `direct` must not acquire either through prefix matching.
   assert.deepEqual(priceSectionsForModel(source, "direct"), []);
 });
+
+test("uses an explicit publisher metric unit without renaming its metric", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader(),
+  });
+
+  const characters = priceSectionsForModel(source, "direct-model")
+    .find((section) => section.unitKey === "per_1m_characters_usd");
+  assert.deepEqual(characters?.entries, { cost: 15 });
+  assert.equal(characters?.source.publisherUnit, "1M characters");
+  assert.equal(characters?.source.currency, null);
+  assert.equal(characters?.source.unitKeyOrigin, "repository_adapter");
+});
