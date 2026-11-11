@@ -361,3 +361,25 @@ test("rejects distinct publisher units that collide in the repository unit-key a
 
   assert.throws(() => priceSectionsForModel(source, "direct-model"), /collide.*repository adapter key/i);
 });
+
+test("rejects conflicting explicit metric units", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: snapshotPricing({
+        name: "publisher-parent",
+        current_snapshot: "direct-model-2026-01-01",
+        units: { cost: "minute" },
+        values: { main: { cost: 2 } },
+        snapshots: [{
+          name: "direct-model-2026-01-01",
+          units: { cost: "second" },
+          values: { main: { cost: 2 } },
+        }],
+      }),
+    }),
+  });
+
+  assert.throws(() => priceSectionsForModel(source, "direct-model"), /conflicting explicit units/i);
+});
