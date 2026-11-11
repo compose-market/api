@@ -433,3 +433,23 @@ test("rejects equal billing sections with conflicting publisher identities inste
     /ambiguous equal pricing sections.*conflicting publisher labels/i,
   );
 });
+
+test("rejects a billable record with no publisher label instead of inventing one", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          subsections: [{
+            price_unit: "request",
+            columns: [{ name: "cost", label: "Cost" }],
+            items: [{ name: "direct-model", values: { main: { cost: 2 } } }],
+          }],
+        },
+      }),
+    }),
+  });
+
+  assert.throws(() => priceSectionsForModel(source, "direct-model"), /publisher.*label|price.type|title|category/i);
+});
