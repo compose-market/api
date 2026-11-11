@@ -383,3 +383,25 @@ test("rejects conflicting explicit metric units", async () => {
 
   assert.throws(() => priceSectionsForModel(source, "direct-model"), /conflicting explicit units/i);
 });
+
+test("rejects a category-only unit that the publisher renderer does not inherit", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          price_unit: "request",
+          subsections: [{
+            price_type: "Publisher pricing type",
+            columns: [{ name: "cost", label: "Cost" }],
+            items: [{ name: "direct-model", values: { main: { cost: 2 } } }],
+          }],
+        },
+      }),
+    }),
+  });
+
+  assert.throws(() => priceSectionsForModel(source, "direct-model"), /category unit.*renderer-established precedence/i);
+});
