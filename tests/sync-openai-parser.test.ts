@@ -453,3 +453,25 @@ test("rejects a billable record with no publisher label instead of inventing one
 
   assert.throws(() => priceSectionsForModel(source, "direct-model"), /publisher.*label|price.type|title|category/i);
 });
+
+test("rejects an exact populated price record that yields no validated numeric billing", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: [{
+            price_type: "Publisher pricing type",
+            price_unit: "request",
+            columns: [{ name: "cost", label: "Cost" }],
+            items: [{ name: "direct-model", values: { main: { cost: "$2" } } }],
+          }],
+        },
+      }),
+    }),
+  });
+
+  assert.throws(() => priceSectionsForModel(source, "direct-model"), /no validated billable sections/i);
+});
