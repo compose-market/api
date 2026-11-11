@@ -333,3 +333,31 @@ test("uses an explicit publisher metric unit without renaming its metric", async
   assert.equal(characters?.source.currency, null);
   assert.equal(characters?.source.unitKeyOrigin, "repository_adapter");
 });
+
+test("rejects distinct publisher units that collide in the repository unit-key adapter", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: [
+            {
+              price_type: "First type",
+              columns: [{ name: "cost", label: "Cost" }],
+              items: [{ name: "direct-model", units: { cost: "1M tokens" }, values: { main: { cost: 2 } } }],
+            },
+            {
+              price_type: "Second type",
+              columns: [{ name: "cost", label: "Cost" }],
+              items: [{ name: "direct-model", units: { cost: "1m_tokens" }, values: { main: { cost: 3 } } }],
+            },
+          ],
+        },
+      }),
+    }),
+  });
+
+  assert.throws(() => priceSectionsForModel(source, "direct-model"), /collide.*repository adapter key/i);
+});
