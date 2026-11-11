@@ -405,3 +405,31 @@ test("rejects a category-only unit that the publisher renderer does not inherit"
 
   assert.throws(() => priceSectionsForModel(source, "direct-model"), /category unit.*renderer-established precedence/i);
 });
+
+test("rejects equal billing sections with conflicting publisher identities instead of keeping the first", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: ["First identity", "Second identity"].map((priceType) => ({
+            price_type: priceType,
+            columns: [{ name: "cost", label: "Cost" }],
+            items: [{
+              name: "direct-model",
+              units: { cost: "request" },
+              values: { main: { cost: 2 } },
+            }],
+          })),
+        },
+      }),
+    }),
+  });
+
+  assert.throws(
+    () => priceSectionsForModel(source, "direct-model"),
+    /ambiguous equal pricing sections.*conflicting publisher labels/i,
+  );
+});
