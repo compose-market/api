@@ -662,3 +662,22 @@ test("rejects duplicate pricing when a default-tier row matches more than one re
     /default-tier evidence|ambiguous duplicate/i,
   );
 });
+
+test("keeps a mixed-unit estimated cost as provenance instead of additive billing", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader(),
+  });
+  const sections = priceSectionsForModel(source, "snapshot-priced-model");
+
+  const tokens = sections.find((section) => section.unitKey === "per_1m_tokens_usd");
+  const minutes = sections.find((section) => section.unitKey === "per_minute_usd");
+  assert.deepEqual(tokens?.entries, { input: 1.25, output: 5 });
+  assert.equal(minutes, undefined);
+
+  const retained = scalarStrings(tokens?.source.raw);
+  assert.ok(retained.includes("estimated_cost"), "raw metadata must retain the publisher metric name");
+  assert.ok(retained.includes("Estimated cost"), "raw metadata must retain the publisher column label");
+  assert.ok(retained.includes("minute"), "raw metadata must retain the publisher-declared unit");
+});
