@@ -553,3 +553,53 @@ test("emits exact publisher selectors for distinct conditional prices", async ()
     { selector: { quality: "high" }, entries: { cost: 0.04 } },
   ]);
 });
+
+test("rejects invalid, duplicate, missing-current, and conflicting same-id pricing snapshots", async () => {
+  const invalidItems: Array<{ item: Record<string, unknown>; error: RegExp }> = [
+    {
+      item: { name: "direct-model", values: { main: { cost: 2 } }, snapshots: "not-an-array" },
+      error: /invalid snapshots declaration/i,
+    },
+    {
+      item: {
+        name: "direct-model",
+        current_snapshot: "snapshot-one",
+        values: { main: { cost: 2 } },
+        snapshots: [
+          { name: "snapshot-one", values: { main: { cost: 2 } } },
+          { name: "snapshot-one", values: { main: { cost: 2 } } },
+        ],
+      },
+      error: /duplicate snapshot/i,
+    },
+    {
+      item: {
+        name: "direct-model",
+        current_snapshot: "missing-snapshot",
+        values: { main: { cost: 2 } },
+        snapshots: [{ name: "snapshot-one", values: { main: { cost: 2 } } }],
+      },
+      error: /current snapshot.*missing/i,
+    },
+    {
+      item: {
+        name: "direct-model",
+        current_snapshot: "direct-model",
+        values: { main: { cost: 2 } },
+        snapshots: [{ name: "direct-model", values: { main: { cost: 3 } } }],
+      },
+      error: /same-id snapshot/i,
+    },
+  ];
+
+  for (const { item, error } of invalidItems) {
+    await assert.rejects(
+      loadOpenAiStructuredSource({
+        allModelsHtml: ALL_MODELS_HTML,
+        pageUrl: PAGE_URL,
+        loadModule: fixtureLoader({ [PRICING_URL]: snapshotPricing(item) }),
+      }),
+      error,
+    );
+  }
+});
