@@ -603,3 +603,24 @@ test("rejects invalid, duplicate, missing-current, and conflicting same-id prici
     );
   }
 });
+
+test("selects a duplicate pricing record only from an exact publisher default-tier row", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    pricingPageHtml: defaultTierPricingPage("publisher-default", [["direct-model", 2, 8]]),
+    pricingPageUrl: PRICING_PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: duplicateTokenPricing([
+        { values: { main: { input: 1, output: 4 } } },
+        { values: { main: { input: 2, output: 8 } } },
+      ]),
+    }),
+  });
+
+  const sections = priceSectionsForModel(source, "direct-model");
+  assert.equal(sections.length, 1);
+  assert.deepEqual(sections[0]?.entries, { input: 2, output: 8 });
+  assert.equal(sections[0]?.default, undefined);
+  assert.ok(scalarStrings(sections[0]?.source.raw).includes("opaque_duplicate_dimension"));
+});
