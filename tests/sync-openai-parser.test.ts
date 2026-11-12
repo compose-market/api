@@ -522,3 +522,34 @@ test("prefers exact direct-id pricing over the declared current snapshot", async
 
   assert.deepEqual(priceSectionsForModel(source, "direct-model")[0]?.entries, { cost: 2 });
 });
+
+test("emits exact publisher selectors for distinct conditional prices", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: [{
+            price_type: "Conditional pricing",
+            columns: [
+              { name: "quality", label: "Quality" },
+              { name: "cost", label: "Cost" },
+            ],
+            items: [
+              { name: "direct-model", units: { cost: "image" }, values: { main: { quality: "low", cost: 0.01 } } },
+              { name: "direct-model", units: { cost: "image" }, values: { main: { quality: "high", cost: 0.04 } } },
+            ],
+          }],
+        },
+      }),
+    }),
+  });
+
+  const sections = priceSectionsForModel(source, "direct-model");
+  assert.deepEqual(sections.map((section) => ({ selector: section.selector, entries: section.entries })), [
+    { selector: { quality: "low" }, entries: { cost: 0.01 } },
+    { selector: { quality: "high" }, entries: { cost: 0.04 } },
+  ]);
+});
