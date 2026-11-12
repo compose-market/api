@@ -720,3 +720,18 @@ test("rejects a sole estimated cost without an explicit publisher metric unit", 
     /estimated cost.*explicit publisher metric unit/i,
   );
 });
+
+test("rejects decorated tier labels instead of recovering an id from display markup", async () => {
+  await assert.rejects(
+    loadOpenAiStructuredSource({
+      allModelsHtml: ALL_MODELS_HTML,
+      pageUrl: PAGE_URL,
+      pricingPageHtml: defaultTierPricingPage("publisher-default", [
+        [{ __pricingHtml: "direct-model" }, 2, 8],
+      ]),
+      pricingPageUrl: PRICING_PAGE_URL,
+      loadModule: fixtureLoader(),
+    }),
+    /invalid structured row/i,
+  );
+});
