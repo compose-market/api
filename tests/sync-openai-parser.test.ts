@@ -695,3 +695,28 @@ test("emits a sole estimated cost from its exact declared column and explicit me
   assert.deepEqual(sections[0]?.entries, { estimated_cost: 0.05 });
   assert.equal(sections[0]?.default, undefined);
 });
+
+test("rejects a sole estimated cost without an explicit publisher metric unit", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: [{
+            price_type: "Duration",
+            price_unit: "minute",
+            columns: [{ name: "estimated_cost", label: "Publisher estimate" }],
+            items: [{ name: "duration-model", values: { main: { estimated_cost: 0.05 } } }],
+          }],
+        },
+      }),
+    }),
+  });
+
+  assert.throws(
+    () => priceSectionsForModel(source, "duration-model"),
+    /estimated cost.*explicit publisher metric unit/i,
+  );
+});
