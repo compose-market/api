@@ -735,3 +735,20 @@ test("rejects decorated tier labels instead of recovering an id from display mar
     /invalid structured row/i,
   );
 });
+
+test("rejects unsupported JavaScript syntax instead of evaluating or ignoring it", async () => {
+  const invalidRegistry = `
+import{p as z}from"./rates.Z9v3Bc.js";
+const data=buildCatalogAtRuntime();
+export{data as b};
+`;
+
+  await assert.rejects(
+    loadOpenAiStructuredSource({
+      allModelsHtml: ALL_MODELS_HTML,
+      pageUrl: PAGE_URL,
+      loadModule: fixtureLoader({ [MANIFEST_URL]: invalidRegistry }),
+    }),
+    /unsupported|unsafe|static|syntax/i,
+  );
+});
