@@ -624,3 +624,21 @@ test("selects a duplicate pricing record only from an exact publisher default-ti
   assert.equal(sections[0]?.default, undefined);
   assert.ok(scalarStrings(sections[0]?.source.raw).includes("opaque_duplicate_dimension"));
 });
+
+test("rejects duplicate pricing when exact default-tier evidence is absent", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: duplicateTokenPricing([
+        { values: { main: { input: 3, output: 12 }, flex: { input: 1, output: 4 } } },
+        { values: { main: { input: 1, output: 4 } } },
+      ]),
+    }),
+  });
+
+  assert.throws(
+    () => priceSectionsForModel(source, "direct-model"),
+    /default-tier evidence|ambiguous duplicate/i,
+  );
+});
