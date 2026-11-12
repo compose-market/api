@@ -681,3 +681,17 @@ test("keeps a mixed-unit estimated cost as provenance instead of additive billin
   assert.ok(retained.includes("Estimated cost"), "raw metadata must retain the publisher column label");
   assert.ok(retained.includes("minute"), "raw metadata must retain the publisher-declared unit");
 });
+
+test("emits a sole estimated cost from its exact declared column and explicit metric unit", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader(),
+  });
+
+  const sections = priceSectionsForModel(source, "duration-model");
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0]?.unitKey, "per_minute_usd");
+  assert.deepEqual(sections[0]?.entries, { estimated_cost: 0.05 });
+  assert.equal(sections[0]?.default, undefined);
+});
