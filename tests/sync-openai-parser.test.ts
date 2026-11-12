@@ -642,3 +642,23 @@ test("rejects duplicate pricing when exact default-tier evidence is absent", asy
     /default-tier evidence|ambiguous duplicate/i,
   );
 });
+
+test("rejects duplicate pricing when a default-tier row matches more than one record", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    pricingPageHtml: defaultTierPricingPage("publisher-default", [["direct-model", 2, 8]]),
+    pricingPageUrl: PRICING_PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: duplicateTokenPricing([
+        { values: { main: { input: 2, output: 8 } } },
+        { values: { main: { input: 2, output: 8 } } },
+      ]),
+    }),
+  });
+
+  assert.throws(
+    () => priceSectionsForModel(source, "direct-model"),
+    /default-tier evidence|ambiguous duplicate/i,
+  );
+});
