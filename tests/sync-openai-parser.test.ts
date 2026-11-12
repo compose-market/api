@@ -497,3 +497,28 @@ test("preserves publisher Free as a zero rate instead of treating it as missing"
 
   assert.deepEqual(priceSectionsForModel(source, "direct-model")[0]?.entries, { cost: 0 });
 });
+
+test("prefers exact direct-id pricing over the declared current snapshot", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: [{
+            price_type: "Publisher pricing type",
+            price_unit: "request",
+            columns: [{ name: "cost", label: "Cost" }],
+            items: [
+              { name: "direct-model", values: { main: { cost: 2 } } },
+              { name: "direct-model-2026-01-01", values: { main: { cost: 9 } } },
+            ],
+          }],
+        },
+      }),
+    }),
+  });
+
+  assert.deepEqual(priceSectionsForModel(source, "direct-model")[0]?.entries, { cost: 2 });
+});
