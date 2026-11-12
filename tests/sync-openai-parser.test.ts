@@ -475,3 +475,25 @@ test("rejects an exact populated price record that yields no validated numeric b
 
   assert.throws(() => priceSectionsForModel(source, "direct-model"), /no validated billable sections/i);
 });
+
+test("preserves publisher Free as a zero rate instead of treating it as missing", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: staticPricingModule({
+        arbitraryCategory: {
+          name: "Publisher category",
+          subsections: [{
+            price_type: "Publisher pricing type",
+            price_unit: "request",
+            columns: [{ name: "cost", label: "Cost" }],
+            items: [{ name: "direct-model", values: { main: { cost: "Free" } } }],
+          }],
+        },
+      }),
+    }),
+  });
+
+  assert.deepEqual(priceSectionsForModel(source, "direct-model")[0]?.entries, { cost: 0 });
+});
