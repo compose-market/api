@@ -773,3 +773,16 @@ export{x as z};
     /ambiguous|multiple|duplicate/i,
   );
 });
+
+test("rejects a model whose declared current snapshot is absent", async () => {
+  await assert.rejects(
+    loadOpenAiStructuredSource({
+      allModelsHtml: ALL_MODELS_HTML,
+      pageUrl: PAGE_URL,
+      loadModule: fixtureLoader({
+        [MANIFEST_URL]: registryModule("missing-current-snapshot"),
+      }),
+    }),
+    /current snapshot|missing.*snapshot|snapshot.*missing/i,
+  );
+});
