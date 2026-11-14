@@ -752,3 +752,24 @@ export{data as b};
     /unsupported|unsafe|static|syntax/i,
   );
 });
+
+test("rejects an ambiguous graph containing more than one model registry module", async () => {
+  const ambiguousEntry = `
+import{b as q}from"./catalog-data.k2Lm8N.js";
+import{b as r}from"./catalog-data.second.R4p6.js";
+const x={endpoints:[{name:"responses",label:"Responses",route:"v1/responses"}]};
+export{x as z};
+`;
+
+  await assert.rejects(
+    loadOpenAiStructuredSource({
+      allModelsHtml: ALL_MODELS_HTML,
+      pageUrl: PAGE_URL,
+      loadModule: fixtureLoader({
+        [ENTRY_URL]: ambiguousEntry,
+        [SECOND_MANIFEST_URL]: registryModule("direct-model-2026-01-01", "2"),
+      }),
+    }),
+    /ambiguous|multiple|duplicate/i,
+  );
+});
