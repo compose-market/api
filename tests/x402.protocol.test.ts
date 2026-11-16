@@ -363,7 +363,7 @@ test("queued and submitted payment backing never invents a settlement timestamp"
           success: true,
           userAddress: "0x1111111111111111111111111111111111111111",
           finalAmountWei: "24",
-          network: "eip155:5042002",
+          network: "eip155:84532",
           settlementStatus,
           paymentIntentId: `intent-${settlementStatus}`,
           ...(settlementStatus === "submitted" ? { txHash: `0x${"78".repeat(32)}` } : {}),
