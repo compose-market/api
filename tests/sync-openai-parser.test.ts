@@ -786,3 +786,59 @@ test("rejects a model whose declared current snapshot is absent", async () => {
     /current snapshot|missing.*snapshot|snapshot.*missing/i,
   );
 });
+
+test("loads models and snapshots bundled with Rolldown module namespace exports and template literal units", async () => {
+  const singleModelHtml = `<!doctype html>
+<html>
+  <body>
+    <astro-island
+      component-url="/_astro/catalog-entry.A7f9Qx.js"
+      component-export="RenamedCatalogRenderer"
+      props='{"view":[0,"all"],"localization":[0]}'
+    >
+      <a href="/api/docs/models/direct-model">Direct model</a>
+    </astro-island>
+  </body>
+</html>`;
+
+  const rolldownRegistry = `
+import { n as exportHelper } from "./rolldown-runtime.js";
+import { p as z } from "./rates.Z9v3Bc.js";
+const modelData = {
+  name: "direct-model",
+  type: "chat",
+  current_snapshot: "direct-model-2026-01-01",
+  snapshots: ["direct-model-2026-01-01"]
+};
+const snapshotData = {
+  name: "direct-model-2026-01-01",
+  modalities: { input: ["text"], output: ["text"] },
+  supported_endpoints: ["v1/responses"]
+};
+const mExp = exportHelper({ default: () => modelData });
+const sExp = exportHelper({ default: () => snapshotData });
+const models = Object.assign({ "./models-data/direct-model.yaml": mExp });
+const snapshots = Object.assign({ "./snapshots-data/direct-model.yaml": sExp });
+function render() {
+  for (const e of []) {
+    let { price_unit: n } = e;
+    const fallback = n ?? \`1M tokens\`;
+    const obj = { snapshot: "", price_type: "", price_unit: fallback, columns: [], values: {}, units: {} };
+  }
+}
+export { models as b, snapshots as s };
+`;
+
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: singleModelHtml,
+    pageUrl: PAGE_URL,
+    loadModule: fixtureLoader({
+      [MANIFEST_URL]: rolldownRegistry,
+      "https://docs.example.test/_astro/rolldown-runtime.js": "export function n(e){return e;}",
+    }),
+  });
+
+  assert.equal(source.models.has("direct-model"), true);
+  assert.equal(source.snapshots.has("direct-model-2026-01-01"), true);
+  assert.equal(source.implicitPriceUnit, "1M tokens");
+});
