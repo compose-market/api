@@ -30,7 +30,7 @@ const ENVELOPE_SOURCE = readFileSync(new URL("../x402/envelope.ts", import.meta.
 test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requirements with compose extensions", () => {
   const body = createPaymentRequired402Response({
     amountWei: 1122,
-    network: "eip155:5042002",
+    network: "eip155:84532",
     resourceUrl: "https://api.compose.market/agent/test/stream",
     errorMessage: "Payment required",
   });
@@ -40,7 +40,7 @@ test("createPaymentRequired402Response emits spec-compliant x402 v2 payment requ
   assert.equal(body.x402Version, 2);
   assert.equal(body.resource.url, "https://api.compose.market/agent/test/stream");
   assert.equal(body.accepts[0]?.scheme, "exact");
-  assert.equal(body.accepts[0]?.network, "eip155:5042002");
+  assert.equal(body.accepts[0]?.network, "eip155:84532");
   assert.equal(body.accepts[0]?.amount, "1122");
   assert.equal("maxAmountRequired" in body.accepts[0]!, false);
   assert.deepEqual(body.extensions, {
