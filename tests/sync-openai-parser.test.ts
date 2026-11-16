@@ -945,3 +945,123 @@ test("accepts publisher deprecated-model row descriptors in tier tables while di
   assert.deepEqual(sections[0]!.entries, { input: 2, output: 8 });
   assert.equal(source.serviceTierEvidence?.rowsByModelId.get("legacy-nano-model")?.length, 2);
 });
+
+test("extracts OpenAPI parameter schemas structurally by endpoint route without hardcoded schema names", () => {
+  const spec = {
+    paths: {
+      "/responses": {
+        post: {
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/RenamedResponseBody" },
+              },
+            },
+          },
+        },
+      },
+      "/live/sessions": {
+        post: {
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/LiveEnvelope" },
+              },
+            },
+          },
+        },
+      },
+      "/realtime/client_secrets": {
+        post: {
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/RealtimeSecretEnvelope" },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        RenamedResponseBody: {
+          type: "object",
+          required: ["model"],
+          properties: {
+            model: { type: "string" },
+            temperature: { type: "number", default: 1, minimum: 0, maximum: 2 },
+          },
+        },
+        LiveEnvelope: {
+          type: "object",
+          properties: {
+            session: { $ref: "#/components/schemas/LiveSessionParams" },
+            transport: { type: "object" },
+          },
+        },
+        LiveSessionParams: {
+          type: "object",
+          properties: {
+            model: { type: "string" },
+            voice: { type: "string", enum: ["marin", "cedar"] },
+          },
+        },
+        RealtimeSecretEnvelope: {
+          type: "object",
+          properties: {
+            expires_after: { type: "object" },
+            session: {
+              oneOf: [
+                { $ref: "#/components/schemas/RealtimeSessionParams" },
+                { $ref: "#/components/schemas/RealtimeTranscriptionParams" },
+              ],
+            },
+          },
+        },
+        RealtimeSessionParams: {
+          type: "object",
+          properties: {
+            type: { type: "string", const: "realtime" },
+            model: { type: "string" },
+            output_modalities: { type: "array" },
+          },
+        },
+        RealtimeTranscriptionParams: {
+          type: "object",
+          properties: {
+            type: { type: "string", const: "transcription" },
+            include: { type: "array" },
+          },
+        },
+      },
+    },
+  };
+
+  const paramsByEndpoint = extractOpenApiParamsByEndpoint(spec, [
+    { name: "responses", label: "Responses", route: "v1/responses" },
+    { name: "live", label: "Live", route: "v1/live/sessions" },
+    { name: "realtime", label: "Realtime", route: "v1/realtime" },
+  ]);
+
+  assert.deepEqual(paramsByEndpoint.responses?.temperature, {
+    type: "number",
+    required: false,
+    default: 1,
+    minimum: 0,
+    maximum: 2,
+  });
+  assert.deepEqual(paramsByEndpoint.live?.voice, {
+    type: "string",
+    required: false,
+    options: ["marin", "cedar"],
+  });
+  assert.equal("transport" in (paramsByEndpoint.live ?? {}), false);
+  assert.equal("output_modalities" in (paramsByEndpoint.realtime ?? {}), true);
+  assert.equal("expires_after" in (paramsByEndpoint.realtime ?? {}), false);
+  assert.equal("include" in (paramsByEndpoint.realtime ?? {}), false);
+});
+
+
+
+
