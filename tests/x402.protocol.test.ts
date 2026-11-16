@@ -235,7 +235,7 @@ test("SVM settlements carry a fixed public-safe explorer memo", () => {
 test("settlePreparedInferencePayment preserves x402 payment-required negotiation details on settlement failures", async () => {
   const paymentRequired = createPaymentRequired402Response({
     amountWei: 76,
-    network: "eip155:5042002",
+    network: "eip155:84532",
     resourceUrl: "https://api.compose.market/v1/audio/speech",
     errorMessage: "Session expired or insufficient allowance",
   });
