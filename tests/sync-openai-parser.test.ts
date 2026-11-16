@@ -842,3 +842,61 @@ export { models as b, snapshots as s };
   assert.equal(source.snapshots.has("direct-model-2026-01-01"), true);
   assert.equal(source.implicitPriceUnit, "1M tokens");
 });
+
+test("loads split AllModels island when endpoints live in the imported registry module and standalone pricing tables exist", async () => {
+  const splitAllModelsHtml = `<!doctype html>
+<html>
+  <body>
+    <astro-island
+      component-url="/_astro/NavbarMenu.react.js"
+      component-export="NavbarMenu"
+      props="{}"
+    >
+      <a href="/api/docs">Docs</a>
+    </astro-island>
+    <astro-island
+      component-url="/_astro/AllModels.react.js"
+      component-export="AllModels"
+      props="{}"
+    >
+      <a href="/api/docs/models/direct-model">Direct model</a>
+      <a href="/api/docs/models/snapshot-priced-model">Snapshot-priced model</a>
+      <a href="/api/docs/models/direct">Exact-match sentinel</a>
+      <a href="/api/docs/models/duration-model">Duration model</a>
+    </astro-island>
+  </body>
+</html>`;
+
+  const thinEntryModule = `
+import { b as q } from "./catalog-data.k2Lm8N.js";
+export function AllModels() { return q; }
+`;
+
+  const registryWithEndpoints = `${registryModule()}
+const endpointConfig = {
+  endpoints: [
+    { name: "responses", label: "Responses", icon: "chat", route: "v1/responses" },
+    { name: "speech_generation", label: "Speech generation", icon: "speech", route: "v1/audio/speech" }
+  ]
+};
+export { endpointConfig as e };
+`;
+
+  const pricingPageWithStandaloneGroup = `${defaultTierPricingPage("standard", [["direct-model", 2, 8]])}
+  ${pricingTableIsland({ tier: "standard", modelGroup: "cyber", rows: [["direct-model-pro", 20, 80]] })}`;
+
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: splitAllModelsHtml,
+    pageUrl: PAGE_URL,
+    pricingPageHtml: pricingPageWithStandaloneGroup,
+    pricingPageUrl: PRICING_PAGE_URL,
+    loadModule: fixtureLoader({
+      "https://docs.example.test/_astro/AllModels.react.js": thinEntryModule,
+      [MANIFEST_URL]: registryWithEndpoints,
+    }),
+  });
+
+  assert.equal(source.models.has("direct-model"), true);
+  assert.equal(source.endpoints instanceof Map ? source.endpoints.has("responses") : false, true);
+  assert.equal(source.serviceTierEvidence?.defaultTier, "standard");
+});
