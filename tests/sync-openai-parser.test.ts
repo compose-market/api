@@ -900,3 +900,48 @@ export { endpointConfig as e };
   assert.equal(source.endpoints instanceof Map ? source.endpoints.has("responses") : false, true);
   assert.equal(source.serviceTierEvidence?.defaultTier, "standard");
 });
+
+test("accepts publisher deprecated-model row descriptors in tier tables while disambiguating default tier", async () => {
+  const pricingPageHtml = `<div data-content-switcher-root data-content-switcher-initial="standard">
+    <div data-content-switcher-pane data-value="standard">
+      ${pricingTableIsland({
+        tier: "standard",
+        rows: [
+          ["direct-model", 2, 8],
+          [{ label: "legacy-nano-model", deprecated: true }, 0.2, 0.02, 1.25],
+        ],
+      })}
+    </div>
+    <div data-content-switcher-pane data-value="batch">
+      ${pricingTableIsland({
+        tier: "batch",
+        rows: [
+          ["direct-model", 1, 4],
+          [{ label: "legacy-nano-model", deprecated: true }, 0.1, 0.01, 0.625],
+        ],
+        alternateRows: [
+          ["direct-model", 1, 4],
+          [{ label: "legacy-nano-model", deprecated: true }, 0.1, 0.01, 0.625],
+        ],
+      })}
+    </div>
+  </div>`;
+
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    pricingPageHtml,
+    pricingPageUrl: PRICING_PAGE_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: duplicateTokenPricing([
+        { values: { main: { input: 2, output: 8 } } },
+        { values: { main: { input: 1, output: 4 } } },
+      ]),
+    }),
+  });
+
+  const sections = priceSectionsForModel(source, "direct-model");
+  assert.equal(sections.length, 1);
+  assert.deepEqual(sections[0]!.entries, { input: 2, output: 8 });
+  assert.equal(source.serviceTierEvidence?.rowsByModelId.get("legacy-nano-model")?.length, 2);
+});
