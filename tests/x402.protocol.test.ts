@@ -78,7 +78,7 @@ test("PriceLookupParams uses canonical mcp source naming only", () => {
 test("prepareInferencePayment emits PAYMENT-REQUIRED header that matches the spec body", async () => {
   const headers: Record<string, string> = {
     host: "api.compose.market",
-    "x-network-id": "eip155:5042002",
+    "x-network-id": "eip155:84532",
   };
   const req = {
     headers,
