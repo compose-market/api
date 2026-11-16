@@ -52,15 +52,26 @@ deduplicated by provider priority.
 | `roboflow` | Roboflow vision, embeddings, OCR |
 | `asicloud` | ASI Cloud |
 
-The model string is the contract. Compose does not inspect the prompt to guess
-a provider, and it does not silently fall back to a duplicate provider row.
-Duplicate upstream IDs are explicit: the priority winner keeps the bare ID, the
-other provider rows get readable public aliases.
+The model string is the contract. One model, one catalog row, one public ID.
+When several providers serve the same model, the row is not duplicated: the
+`PROVIDER_PRIORITY` winner is the primary provider and every other provider
+becomes an entry in that row's `providerRoutes` fallback chain — ordered by
+priority, each carrying its own wire model ID, pricing, and dispatch
+metadata. Routing tries the primary first and advances to the secondary or
+tertiary provider only when the previous one failed transiently (5xx, 429,
+timeouts, network). Payment/auth errors never fall back.
 
-| Public model ID | Provider selected | Provider wire model |
-| --- | --- | --- |
-| `gpt-5.5` | `azure` | `gpt-5.5` |
-| `openai/gpt-5.5` | `openai` | `gpt-5.5` |
+Qualified addresses still work for explicit provider selection: a
+`<provider>/<model-id>` request pins that provider's route, and the legacy
+`<family>/<model-id>` form resolves to the primary row. Genuine family
+collisions on one slug (deepgram `flux` speech vs blackforestlabs `flux`
+image generation) stay separate rows; the non-priority family keeps a
+family-qualified ID (`clarityai/flux`).
+
+| Public model ID | Provider selected | Provider wire model | Fallback chain |
+| --- | --- | --- | --- |
+| `gpt-5.5` | `azure` | `gpt-5.5` | `azure` → `openai` |
+| `openai/gpt-5.5` | `openai` (pinned) | `gpt-5.5` | `openai` → `azure` |
 
 ## Native routes
 
