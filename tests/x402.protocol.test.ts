@@ -389,7 +389,7 @@ test("settlePreparedInferencePayment preserves settlement chain id for stream re
       settle: async () => ({
         success: true,
         finalAmountWei: "8836",
-        network: "eip155:5042002",
+        network: "eip155:84532",
         txHash: "0xagentsettlement",
       }),
       abort: async () => undefined,
@@ -400,7 +400,7 @@ test("settlePreparedInferencePayment preserves settlement chain id for stream re
   );
 
   assert.equal(receipt?.finalAmountWei, "8836");
-  assert.equal(receipt?.network, "eip155:5042002");
+  assert.equal(receipt?.network, "eip155:84532");
   assert.equal(receipt?.txHash, "0xagentsettlement");
 });
 
