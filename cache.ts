@@ -172,3 +172,33 @@ export async function closeCache(): Promise<void> {
   connecting = null;
   retryAfter = 0;
 }
+
+export function l1Get<T>(key: string): T | undefined {
+  if (!isCacheEnabled()) return undefined;
+  const entry = l1.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    l1.delete(key);
+    return undefined;
+  }
+  return entry.value as T;
+}
+
+export function l1Set<T>(key: string, value: T, ttlMs: number): void {
+  if (!isCacheEnabled() || ttlMs <= 0) return;
+  if (l1.size >= MAX_L1_ENTRIES && !l1.has(key)) {
+    const oldestKey = l1.keys().next().value;
+    if (oldestKey !== undefined) l1.delete(oldestKey);
+  }
+  l1.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
+export function l1Del(...keys: string[]): void {
+  for (const key of keys) {
+    if (key) l1.delete(key);
+  }
+}
+
+export function l1Clear(): void {
+  l1.clear();
+}
