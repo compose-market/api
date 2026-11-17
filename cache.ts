@@ -63,3 +63,29 @@ function stopKeepAlive(): void {
     keepAliveTimer = null;
   }
 }
+
+function cacheTarget(): { uri: string; password?: string; tls: boolean } | null {
+  const uri = process.env.VALKEY_CACHE_SERVICE_URI?.trim();
+  const password = process.env.VALKEY_CACHE_PASSWORD?.trim();
+  const tls = process.env.VALKEY_TLS === "true";
+
+  if (uri) {
+    return {
+      uri,
+      ...(password ? { password } : {}),
+      tls: tls || uri.startsWith("rediss://"),
+    };
+  }
+
+  const host = process.env.VALKEY_CACHE_HOST?.trim();
+  if (host) {
+    const scheme = tls ? "rediss" : "redis";
+    return {
+      uri: `${scheme}://${host}`,
+      ...(password ? { password } : {}),
+      tls,
+    };
+  }
+
+  return null;
+}
