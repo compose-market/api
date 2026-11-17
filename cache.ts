@@ -333,3 +333,22 @@ export async function cacheVersion(namespace: string): Promise<string> {
     return "0";
   }
 }
+
+export async function bumpCacheVersion(namespace: string): Promise<string> {
+  const key = versionKey(namespace);
+  const l2 = await store();
+  if (!l2) {
+    const next = String(Number(l1Get<string>(key) || "0") + 1);
+    l1Set(key, next, VERSION_L1_TTL_MS);
+    return next;
+  }
+  try {
+    const next = String(await l2.incr(key));
+    await l2.expire(key, VERSION_TTL_SECONDS).catch(() => undefined);
+    l1Set(key, next, VERSION_L1_TTL_MS);
+    return next;
+  } catch {
+    l1Del(key);
+    return "0";
+  }
+}
