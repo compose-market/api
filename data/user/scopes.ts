@@ -24,10 +24,12 @@ export function buildWalletScopes(
   pair: WalletPair,
   networks?: readonly NetworkId[],
 ): WalletScope[] {
-  return selectedNetworks(networks).map((network) => ({
-    network,
-    address: network.startsWith("eip155:") ? pair.evmAddress.toLowerCase() : pair.svmAddress,
-  }));
+  return selectedNetworks(networks)
+    .filter((network) => network.startsWith("eip155:") || network.startsWith("solana:"))
+    .map((network) => ({
+      network,
+      address: network.startsWith("eip155:") ? pair.evmAddress.toLowerCase() : pair.svmAddress,
+    }));
 }
 
 export async function resolveWalletScopes(
