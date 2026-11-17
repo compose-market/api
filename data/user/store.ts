@@ -111,7 +111,15 @@ export async function putWalletPair(
       RETURNING evm_address, svm_address, consented_at, consent_version, consent_signature, consent_message, consent_metadata
     `, [pair.evmAddress, pair.svmAddress]);
     const created = pairFromRow(inserted[0]);
-    if (created) return created;
+    if (created) {
+      if (!database) {
+        await Promise.all([
+          cacheSet(pairCacheKey(created.evmAddress), created, USER_L2_TTL_S, USER_L1_TTL_MS),
+          cacheSet(pairCacheKey(created.svmAddress), created, USER_L2_TTL_S, USER_L1_TTL_MS),
+        ]);
+      }
+      return created;
+    }
 
     const conflicts = await db.query(`
       SELECT evm_address, svm_address, consented_at, consent_version, consent_signature, consent_message, consent_metadata
@@ -124,6 +132,12 @@ export async function putWalletPair(
       && existing[0]!.evmAddress === pair.evmAddress
       && existing[0]!.svmAddress === pair.svmAddress
     ) {
+      if (!database) {
+        await Promise.all([
+          cacheSet(pairCacheKey(existing[0]!.evmAddress), existing[0]!, USER_L2_TTL_S, USER_L1_TTL_MS),
+          cacheSet(pairCacheKey(existing[0]!.svmAddress), existing[0]!, USER_L2_TTL_S, USER_L1_TTL_MS),
+        ]);
+      }
       return existing[0]!;
     }
     throw new PairConflictError();
