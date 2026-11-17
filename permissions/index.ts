@@ -1,4 +1,12 @@
 import * as store from "./storage.js";
+import { cached, cacheDel } from "../cache.js";
+
+const PERMISSIONS_CACHE_L2_TTL_SECONDS = 60;
+const PERMISSIONS_CACHE_L1_TTL_MS = 30_000;
+
+function listCacheKey(userAddress: string, agentWallet: string): string {
+    return `permissions:list:${userAddress}:${agentWallet}`;
+}
 
 export type ConsentType =
     | "filesystem"
