@@ -1,6 +1,18 @@
+import { cacheDel, cached, cacheSet } from "../../cache.js";
 import { userDatabase, type UserDatabaseExecutor } from "./db.js";
 import type { WalletPair, UserConsentRecord, RecordConsentInput, ConsentLookupQuery } from "./types.js";
 import { parsePairBody, parsePairLookupAddress, parseConsentBody, parseConsentLookup } from "./validation.js";
+
+const USER_L2_TTL_S = 300;
+const USER_L1_TTL_MS = 60_000;
+
+function pairCacheKey(address: string): string {
+  return `user:pair:${address}`;
+}
+
+function consentCacheKey(address: string, policyVersion?: string): string {
+  return `user:consent:${address}:${policyVersion ?? ""}`;
+}
 
 export class PairConflictError extends Error {
   readonly statusCode = 409;
@@ -8,6 +20,15 @@ export class PairConflictError extends Error {
   constructor(message = "Wallet address is already paired") {
     super(message);
     this.name = "PairConflictError";
+  }
+}
+
+export class PairNotFoundError extends Error {
+  readonly statusCode = 404;
+
+  constructor(message = "Wallet pair not found") {
+    super(message);
+    this.name = "PairNotFoundError";
   }
 }
 
@@ -65,7 +86,13 @@ async function available<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof PairConflictError) throw error;
+    if (
+      error instanceof PairConflictError
+      || error instanceof PairNotFoundError
+      || (error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number")
+    ) {
+      throw error;
+    }
     throw new PairStoreUnavailableError(undefined, { cause: error });
   }
 }
