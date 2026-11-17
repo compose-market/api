@@ -249,3 +249,32 @@ export async function cacheMGet<T>(keys: string[], l1TtlMs = 30_000): Promise<Ma
   }
   return result;
 }
+
+export async function cacheSet<T>(
+  key: string,
+  value: T,
+  l2TtlSeconds = 300,
+  l1TtlMs = Math.min(l2TtlSeconds * 1_000, 60_000),
+): Promise<void> {
+  l1Set(key, value, l1TtlMs);
+  const l2 = await store();
+  if (!l2) return;
+  try {
+    await l2.set(key, JSON.stringify(value), "EX", Math.max(1, Math.floor(l2TtlSeconds)));
+  } catch {
+    // Non-fatal L2 write failure; L1 still serves in-process.
+  }
+}
+
+export async function cacheDel(...keys: string[]): Promise<void> {
+  const valid = keys.filter(Boolean);
+  if (valid.length === 0) return;
+  l1Del(...valid);
+  const l2 = await store();
+  if (!l2) return;
+  try {
+    await l2.del(...valid);
+  } catch {
+    // Non-fatal L2 delete failure.
+  }
+}
