@@ -41,3 +41,25 @@ function isCacheEnabled(): boolean {
   if (!isTestProcess()) return true;
   return process.env.TEST_CACHE_ENABLED === "true";
 }
+
+function startKeepAlive(instance: Redis): void {
+  stopKeepAlive();
+  keepAliveTimer = setInterval(() => {
+    if (instance.status !== "ready") return;
+    instance.ping().catch(() => {
+      try {
+        instance.disconnect(true);
+      } catch {
+        // Already disconnecting.
+      }
+    });
+  }, KEEPALIVE_PING_MS);
+  keepAliveTimer.unref?.();
+}
+
+function stopKeepAlive(): void {
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+}
