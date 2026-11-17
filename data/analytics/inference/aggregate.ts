@@ -39,6 +39,10 @@ export function normalizeFilters(input: Filters): Required<Pick<Filters, "from" 
   };
 }
 
+function analyticsOwnerKey(address: string): string {
+  return /^0x[a-fA-F0-9]{40}$/.test(address) ? address.toLowerCase() : address;
+}
+
 export async function build(
   userAddress: string,
   input: Filters,
