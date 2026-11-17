@@ -209,7 +209,19 @@ export async function putUserConsent(
     ]);
 
     let record = consentFromRow(updated[0]);
-    if (record) return record;
+    if (record) {
+      if (!database) {
+        await cacheDel(
+          pairCacheKey(record.evmAddress),
+          pairCacheKey(record.svmAddress),
+          consentCacheKey(record.evmAddress),
+          consentCacheKey(record.svmAddress),
+          consentCacheKey(record.evmAddress, record.policyVersion),
+          consentCacheKey(record.svmAddress, record.policyVersion),
+        );
+      }
+      return record;
+    }
 
     // 2. If no pair row matched, extract paired counterpart from input or metadata and insert
     const svmAddr = typeof input.svmAddress === "string" && input.svmAddress.trim()
@@ -225,14 +237,7 @@ export async function putUserConsent(
           evm_address, svm_address, consented_at, consent_version, consent_signature, consent_message, consent_metadata
         )
         VALUES ($1, $2, now(), $3, $4, $5, $6)
-        ON CONFLICT (evm_address)
-        DO UPDATE SET
-          svm_address = EXCLUDED.svm_address,
-          consented_at = now(),
-          consent_version = EXCLUDED.consent_version,
-          consent_signature = EXCLUDED.consent_signature,
-          consent_message = EXCLUDED.consent_message,
-          consent_metadata = EXCLUDED.consent_metadata
+        ON CONFLICT DO NOTHING
         RETURNING evm_address, svm_address, consented_at, consent_version, consent_signature, consent_message, consent_metadata
       `, [
         evmAddr,
@@ -243,10 +248,53 @@ export async function putUserConsent(
         consent.metadata ? JSON.stringify(consent.metadata) : null,
       ]);
       record = consentFromRow(inserted[0]);
-      if (record) return record;
+      if (!record) {
+        const conflicts = await db.query(`
+          SELECT evm_address, svm_address
+          FROM public.wallet_pairs
+          WHERE evm_address = $1 OR svm_address = $2
+        `, [evmAddr, svmAddr]);
+        const exactMatch = conflicts.length === 1
+          && conflicts[0]?.evm_address === evmAddr
+          && conflicts[0]?.svm_address === svmAddr;
+        if (!exactMatch) {
+          throw new PairConflictError("Wallet address is already paired with a different counterpart");
+        }
+        const reupdated = await db.query(`
+          UPDATE public.wallet_pairs
+          SET consented_at = now(),
+              consent_version = $3,
+              consent_signature = $4,
+              consent_message = $5,
+              consent_metadata = $6
+          WHERE evm_address = $1 AND svm_address = $2
+          RETURNING evm_address, svm_address, consented_at, consent_version, consent_signature, consent_message, consent_metadata
+        `, [
+          evmAddr,
+          svmAddr,
+          consent.policyVersion,
+          consent.signature,
+          consent.message,
+          consent.metadata ? JSON.stringify(consent.metadata) : null,
+        ]);
+        record = consentFromRow(reupdated[0]);
+      }
+      if (record) {
+        if (!database) {
+          await cacheDel(
+            pairCacheKey(record.evmAddress),
+            pairCacheKey(record.svmAddress),
+            consentCacheKey(record.evmAddress),
+            consentCacheKey(record.svmAddress),
+            consentCacheKey(record.evmAddress, record.policyVersion),
+            consentCacheKey(record.svmAddress, record.policyVersion),
+          );
+        }
+        return record;
+      }
     }
 
-    throw new Error("Wallet pair not found. Please connect your wallet to pair your EVM and SVM accounts before signing.");
+    throw new PairNotFoundError("Wallet pair not found. Please connect your wallet to pair your EVM and SVM accounts before signing.");
   });
 }
 
