@@ -1,4 +1,6 @@
+import { bumpCacheVersion } from "../../cache.js";
 import { getValkeyClient } from "../../x402/keys/valkey.js";
+import { getWalletPair } from "../user/store.js";
 
 export type EventName = "keys" | "inference-analytics";
 export type InvalidationReason = "created" | "revoked" | "budget" | "expired" | "telemetry";
@@ -22,14 +24,27 @@ export async function publishInvalidation(
   address: string,
   reason: InvalidationReason,
 ): Promise<void> {
+  const normalized = EVM_ADDRESS.test(address) ? address.toLowerCase() : address;
+  const addresses = new Set<string>([normalized]);
+  const pair = await getWalletPair(normalized).catch(() => null);
+  if (pair) {
+    addresses.add(pair.evmAddress.toLowerCase());
+    addresses.add(pair.svmAddress);
+  }
+  await Promise.all(
+    [...addresses].map((owner) => bumpCacheVersion(`${domain}:${owner}`).catch(() => undefined)),
+  );
   const event: InvalidateEvent = {
     type: "invalidate",
     domain,
     reason,
     timestamp: new Date().toISOString(),
   };
+  const payload = JSON.stringify(event);
   const valkey = await getValkeyClient();
-  await valkey.publish(domainEventChannel(domain, address), JSON.stringify(event));
+  await Promise.all(
+    [...addresses].map((owner) => valkey.publish(domainEventChannel(domain, owner), payload)),
+  );
 }
 
 export async function publishInvalidationBestEffort(
