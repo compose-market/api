@@ -143,3 +143,32 @@ async function connect(): Promise<Redis | null> {
     return null;
   }
 }
+
+async function store(): Promise<Store | null> {
+  if (override) return override;
+  if (!isCacheEnabled()) return null;
+  if (client?.status === "ready") return client;
+  if (Date.now() < retryAfter) return null;
+  if (connecting) return connecting;
+
+  connecting = connect().finally(() => {
+    connecting = null;
+  });
+  return connecting;
+}
+
+export function setCacheStore(next: Store | null): void {
+  override = next;
+}
+
+export async function closeCache(): Promise<void> {
+  stopKeepAlive();
+  if (client) {
+    await client.quit().catch(() => {
+      client?.disconnect(false);
+    });
+    client = null;
+  }
+  connecting = null;
+  retryAfter = 0;
+}
