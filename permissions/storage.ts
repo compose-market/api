@@ -120,19 +120,6 @@ export async function get(name: string): Promise<string | null> {
     return (await valkey()).get(name);
 }
 
-export async function take(name: string): Promise<string | null> {
-    const db = await valkey();
-    const getDel = (db as unknown as { getdel?: (key: string) => Promise<string | null> }).getdel;
-    if (typeof getDel === "function") {
-        return getDel.call(db, name);
-    }
-    const value = await db.get(name);
-    if (value) {
-        await db.del(name);
-    }
-    return value;
-}
-
 export async function set(name: string, value: string, ttl?: number): Promise<void> {
     const db = await valkey();
     if (ttl && ttl > 0) {
@@ -140,11 +127,6 @@ export async function set(name: string, value: string, ttl?: number): Promise<vo
         return;
     }
     await db.set(name, value);
-}
-
-export async function once(name: string, value: string, ttl: number): Promise<boolean> {
-    const result = await (await valkey()).set(name, value, "EX", ttl, "NX");
-    return result === "OK";
 }
 
 export async function del(...names: string[]): Promise<number> {
@@ -171,19 +153,6 @@ export async function warm(): Promise<void> {
     await valkey().catch(() => undefined);
 }
 
-export async function push(name: string, value: string, limit: number, ttl: number): Promise<void> {
-    const db = await valkey();
-    const pipeline = db.pipeline();
-    pipeline.rpush(name, value);
-    pipeline.ltrim(name, -Math.max(1, limit), -1);
-    pipeline.expire(name, ttl);
-    await pipeline.exec();
-}
-
-export async function range(name: string, start = 0, stop = -1): Promise<string[]> {
-    return (await valkey()).lrange(name, start, stop);
-}
-
 export async function json<T>(name: string): Promise<T | null> {
     const raw = await get(name);
     if (!raw) return null;
@@ -193,6 +162,25 @@ export async function json<T>(name: string): Promise<T | null> {
         await del(name);
         return null;
     }
+}
+
+export async function mgetJson<T>(names: string[]): Promise<Array<T | null>> {
+    if (names.length === 0) return [];
+    const raws = await (await valkey()).mget(...names);
+    const corrupt: string[] = [];
+    const out = raws.map((raw, idx) => {
+        if (!raw) return null;
+        try {
+            return JSON.parse(raw) as T;
+        } catch {
+            corrupt.push(names[idx]);
+            return null;
+        }
+    });
+    if (corrupt.length > 0) {
+        await del(...corrupt).catch(() => undefined);
+    }
+    return out;
 }
 
 export async function put(name: string, value: unknown, ttl?: number): Promise<void> {
