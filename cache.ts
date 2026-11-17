@@ -278,3 +278,35 @@ export async function cacheDel(...keys: string[]): Promise<void> {
     // Non-fatal L2 delete failure.
   }
 }
+
+export function singleFlight<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const existing = inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const promise = fn().finally(() => {
+    if (inflight.get(key) === promise) {
+      inflight.delete(key);
+    }
+  });
+  inflight.set(key, promise);
+  return promise;
+}
+
+export async function cached<T>(
+  key: string,
+  l2TtlSeconds: number,
+  l1TtlMs: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!isCacheEnabled()) return fn();
+  const hit = await cacheGet<T>(key, l1TtlMs);
+  if (hit !== undefined) return hit;
+  return singleFlight(`sf:${key}`, async () => {
+    const recheck = l1Get<T>(key);
+    if (recheck !== undefined) return recheck;
+    const result = await fn();
+    if (result !== undefined && result !== null) {
+      await cacheSet(key, result, l2TtlSeconds, l1TtlMs);
+    }
+    return result;
+  });
+}
