@@ -39,7 +39,9 @@ export async function resolveWalletScopes(
 ): Promise<WalletScope[]> {
   if (validateNearAddress(lookupAddress)) {
     const address = lookupAddress.trim();
-    return selectedNetworks(networks).map((network) => ({ network, address }));
+    return selectedNetworks(networks)
+      .filter((network) => network.startsWith("near:"))
+      .map((network) => ({ network, address }));
   }
   return buildWalletScopes(await resolve(lookupAddress), networks);
 }
