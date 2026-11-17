@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { cached, cacheVersion } from "../../../cache.js";
 import { query, type Cursor, type QueryInput, type QueryResult } from "./db.js";
 import type {
   AnalyticsResponse, BillingTotals, Breakdown, Filters, LatencyStats, Settlement,
@@ -18,8 +20,8 @@ export interface AnalyticsBuildDependencies {
 }
 
 export function normalizeFilters(input: Filters): Required<Pick<Filters, "from" | "to" | "interval" | "limit">> & Filters {
-  const now = Date.now();
-  const to = input.to ? new Date(input.to) : new Date(now);
+  const quantizedNow = Math.ceil(Date.now() / 60_000) * 60_000;
+  const to = input.to ? new Date(input.to) : new Date(quantizedNow);
   const from = input.from ? new Date(input.from) : new Date(to.getTime() - 30 * DAY);
   if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to) {
     throw Object.assign(new Error("Invalid analytics time range"), { statusCode: 400 });
