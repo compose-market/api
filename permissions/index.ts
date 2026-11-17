@@ -112,6 +112,7 @@ export async function grantPermission(params: {
     };
     await store.put(perm(user, agent, type), record);
     await store.add(index(user, agent), type);
+    await cacheDel(listCacheKey(user, agent));
     return record;
 }
 
