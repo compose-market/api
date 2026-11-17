@@ -103,10 +103,11 @@ export async function close(): Promise<void> {
 }
 
 function part(value: string): string {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
+    const trimmed = value.trim();
+    if (!trimmed) {
         throw new Error("ValKey key part cannot be empty");
     }
+    const normalized = /^0[xs][a-fA-F0-9]{40}$/u.test(trimmed) ? trimmed.toLowerCase() : trimmed;
     return encodeURIComponent(normalized);
 }
 
