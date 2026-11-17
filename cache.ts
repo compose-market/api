@@ -89,3 +89,57 @@ function cacheTarget(): { uri: string; password?: string; tls: boolean } | null 
 
   return null;
 }
+
+async function connect(): Promise<Redis | null> {
+  const target = cacheTarget();
+  if (!target) return null;
+
+  const instance = new Redis(target.uri, {
+    connectTimeout: CONNECT_TIMEOUT_MS,
+    commandTimeout: COMMAND_TIMEOUT_MS,
+    retryStrategy: (times: number) => Math.min(times * 100, 3_000),
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+    enableAutoPipelining: true,
+    lazyConnect: true,
+    keepAlive: KEEP_ALIVE_MS,
+    ...(target.password ? { password: target.password } : {}),
+    ...(target.tls ? { tls: {} } : {}),
+  });
+
+  instance.on("ready", () => {
+    const stream = (instance as unknown as { stream?: { unref?: () => void } }).stream;
+    stream?.unref?.();
+  });
+
+  instance.on("error", (err) => {
+    console.warn("[cache] Valkey client error:", err.message);
+  });
+
+  instance.on("end", () => {
+    if (client === instance && instance.status !== "ready") {
+      client = null;
+    }
+    stopKeepAlive();
+  });
+
+  try {
+    await instance.connect();
+    await instance.ping();
+    const stream = (instance as unknown as { stream?: { unref?: () => void } }).stream;
+    stream?.unref?.();
+    client = instance;
+    retryAfter = 0;
+    startKeepAlive(instance);
+    return instance;
+  } catch (error) {
+    retryAfter = Date.now() + RECONNECT_COOLDOWN_MS;
+    console.warn("[cache] Valkey unavailable, serving from L1:", error instanceof Error ? error.message : String(error));
+    try {
+      instance.disconnect(false);
+    } catch {
+      // Ignore cleanup failure.
+    }
+    return null;
+  }
+}
