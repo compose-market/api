@@ -126,6 +126,7 @@ export async function revokePermission(
     const type = consent(consentType);
     await store.del(perm(user, agent, type));
     await store.rem(index(user, agent), type);
+    await cacheDel(listCacheKey(user, agent));
 }
 
 export async function listPermissions(
