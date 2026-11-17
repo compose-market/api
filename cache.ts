@@ -202,3 +202,50 @@ export function l1Del(...keys: string[]): void {
 export function l1Clear(): void {
   l1.clear();
 }
+
+export async function cacheGet<T>(key: string, l1TtlMs = 30_000): Promise<T | undefined> {
+  const hit = l1Get<T>(key);
+  if (hit !== undefined) return hit;
+  const l2 = await store();
+  if (!l2) return undefined;
+  try {
+    const raw = await l2.get(key);
+    if (raw === null || raw === undefined) return undefined;
+    const parsed = JSON.parse(raw) as T;
+    l1Set(key, parsed, l1TtlMs);
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function cacheMGet<T>(keys: string[], l1TtlMs = 30_000): Promise<Map<string, T>> {
+  const result = new Map<string, T>();
+  if (keys.length === 0) return result;
+  const missing: string[] = [];
+  for (const key of keys) {
+    const hit = l1Get<T>(key);
+    if (hit !== undefined) {
+      result.set(key, hit);
+    } else {
+      missing.push(key);
+    }
+  }
+  if (missing.length === 0) return result;
+  const l2 = await store();
+  if (!l2) return result;
+  try {
+    const raws = await l2.mget(...missing);
+    for (let i = 0; i < missing.length; i += 1) {
+      const raw = raws[i];
+      if (raw !== null && raw !== undefined) {
+        const parsed = JSON.parse(raw) as T;
+        l1Set(missing[i], parsed, l1TtlMs);
+        result.set(missing[i], parsed);
+      }
+    }
+  } catch {
+    // Non-fatal L2 read failure.
+  }
+  return result;
+}
