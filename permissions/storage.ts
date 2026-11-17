@@ -65,8 +65,19 @@ async function connect(): Promise<ValkeyClientType> {
         }
         stopKeepAlive();
     });
-    await instance.connect();
-    await instance.ping();
+    try {
+        await instance.connect();
+        await instance.ping();
+    } catch (error) {
+        try {
+            instance.disconnect(false);
+        } catch {
+            // Already closed.
+        }
+        throw error;
+    }
+    const stream = (instance as unknown as { stream?: { unref?: () => void } }).stream;
+    stream?.unref?.();
     client = instance;
     startKeepAlive(instance);
     return instance;
