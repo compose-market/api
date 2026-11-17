@@ -89,6 +89,7 @@ export async function checkPermission(
     if (live(record)) return true;
     await store.del(key);
     await store.rem(index(user, agent), type);
+    await cacheDel(listCacheKey(user, agent));
     return false;
 }
 
