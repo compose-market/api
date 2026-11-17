@@ -310,3 +310,26 @@ export async function cached<T>(
     return result;
   });
 }
+
+const VERSION_TTL_SECONDS = 86_400;
+const VERSION_L1_TTL_MS = 5_000;
+
+function versionKey(namespace: string): string {
+  return `v:${namespace}`;
+}
+
+export async function cacheVersion(namespace: string): Promise<string> {
+  const key = versionKey(namespace);
+  const local = l1Get<string>(key);
+  if (local !== undefined) return local;
+  const l2 = await store();
+  if (!l2) return "0";
+  try {
+    const raw = await l2.get(key);
+    const value = raw ?? "0";
+    l1Set(key, value, VERSION_L1_TTL_MS);
+    return value;
+  } catch {
+    return "0";
+  }
+}
