@@ -149,7 +149,7 @@ export async function getWalletPair(
   database?: UserDatabaseExecutor,
 ): Promise<WalletPair | null> {
   const address = parsePairLookupAddress(input);
-  return available(async () => {
+  const load = () => available(async () => {
     const db = database ?? userDatabase();
     const rows = address.kind === "evm"
       ? await db.query(`
@@ -166,6 +166,8 @@ export async function getWalletPair(
         `, [address.value]);
     return pairFromRow(rows[0]);
   });
+  if (database) return load();
+  return cached(pairCacheKey(address.value), USER_L2_TTL_S, USER_L1_TTL_MS, load);
 }
 
 export async function resolveWalletPair(
