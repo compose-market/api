@@ -306,7 +306,7 @@ export async function getUserConsent(
     ? parseConsentLookup(input)
     : parseConsentLookup(input.address, { type: input.disclaimerType, version: input.policyVersion });
 
-  return available(async () => {
+  const load = () => available(async () => {
     const db = database ?? userDatabase();
     const rows = await db.query(`
       SELECT evm_address, svm_address, consented_at, consent_version, consent_signature, consent_message, consent_metadata
@@ -323,6 +323,8 @@ export async function getUserConsent(
     }
     return record;
   });
+  if (database) return load();
+  return cached(consentCacheKey(lookup.address, lookup.policyVersion), USER_L2_TTL_S, USER_L1_TTL_MS, load);
 }
 
 export async function listUserConsents(
