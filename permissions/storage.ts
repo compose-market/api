@@ -166,6 +166,11 @@ export async function members(name: string): Promise<string[]> {
     return (await valkey()).smembers(name);
 }
 
+export async function warm(): Promise<void> {
+    if (!process.env.VALKEY_BACKPACK_SERVICE_URI?.trim()) return;
+    await valkey().catch(() => undefined);
+}
+
 export async function push(name: string, value: string, limit: number, ttl: number): Promise<void> {
     const db = await valkey();
     const pipeline = db.pipeline();
