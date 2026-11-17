@@ -135,17 +135,31 @@ export async function listPermissions(
 ): Promise<UserPermission[]> {
     const user = wallet(userAddress, "userAddress");
     const agent = wallet(agentWallet, "agentWallet");
-    const types = await store.members(index(user, agent));
-    const records = await Promise.all(types.map((type) => store.json<UserPermission>(perm(user, agent, type))));
-    const out: UserPermission[] = [];
-    for (const record of records) {
-        if (!record) continue;
-        if (record.granted && live(record)) {
-            out.push(record);
-            continue;
-        }
-        await store.del(perm(user, agent, record.consentType));
-        await store.rem(index(user, agent), record.consentType);
-    }
-    return out.sort((left, right) => left.consentType.localeCompare(right.consentType));
+    return cached<UserPermission[]>(
+        listCacheKey(user, agent),
+        PERMISSIONS_CACHE_L2_TTL_SECONDS,
+        PERMISSIONS_CACHE_L1_TTL_MS,
+        async () => {
+            const types = await store.members(index(user, agent));
+            if (types.length === 0) return [];
+            const records = await store.mgetJson<UserPermission>(types.map((type) => perm(user, agent, type)));
+            const out: UserPermission[] = [];
+            const staleTypes: string[] = [];
+            for (const record of records) {
+                if (!record) continue;
+                if (record.granted && live(record)) {
+                    out.push(record);
+                    continue;
+                }
+                staleTypes.push(record.consentType);
+            }
+            if (staleTypes.length > 0) {
+                await Promise.all([
+                    store.del(...staleTypes.map((type) => perm(user, agent, type))),
+                    store.rem(index(user, agent), ...staleTypes),
+                ]);
+            }
+            return out.sort((left, right) => left.consentType.localeCompare(right.consentType));
+        },
+    );
 }
