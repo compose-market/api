@@ -3,6 +3,7 @@ import type { Application, NextFunction, Request, Response } from "express";
 import { build } from "./aggregate.js";
 import type { Filters, Interval, RequestStatus, SettlementStatus } from "./types.js";
 import { isNetworkId, validateNearAddress, type NetworkId } from "../../../x402/configs/chains.js";
+import { authorizeCallerForUser } from "../../../x402/keys/middleware.js";
 import { validateSvmAddress } from "@x402/svm";
 
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
@@ -58,14 +59,37 @@ export function parseFilters(query: Request["query"]): Filters {
 }
 
 function handler(req: Request, res: Response, next: NextFunction): void {
-  const address = value(req.get("x-session-user-address"));
-  const validAddress = EVM_ADDRESS.test(address || "") || validateSvmAddress(address || "") || validateNearAddress(address || "");
-  if (!validAddress) {
-    res.status(401).json({ error: "Validated wallet session required" });
-    return;
-  }
-  void build(address!, parseFilters(req.query))
-    .then((result) => res.status(200).json(result)).catch(next);
+  void (async () => {
+    const requestedAddress = value(req.get("x-session-user-address"));
+    if (requestedAddress) {
+      const validAddress = EVM_ADDRESS.test(requestedAddress)
+        || validateSvmAddress(requestedAddress)
+        || validateNearAddress(requestedAddress);
+      if (!validAddress) {
+        res.status(401).json({ error: "Validated wallet session required" });
+        return;
+      }
+    }
+    const auth = await authorizeCallerForUser({
+      authHeader: req.get("authorization"),
+      internalTokenHeader: req.get("x-backpack-internal-token"),
+      userAddress: requestedAddress,
+    });
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    const address = auth.userAddress;
+    const validAddress = Boolean(
+      address && (EVM_ADDRESS.test(address) || validateSvmAddress(address) || validateNearAddress(address)),
+    );
+    if (!validAddress || !address) {
+      res.status(401).json({ error: "Validated wallet session required" });
+      return;
+    }
+    const result = await build(address, parseFilters(req.query));
+    res.status(200).json(result);
+  })().catch(next);
 }
 
 export function register(app: Application): void {
