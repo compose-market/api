@@ -374,12 +374,14 @@ export async function invalidateBenchmarkCache(): Promise<void> {
 }
 
 export async function getBenchmarkIndex(options: { force?: boolean } = {}) {
-    if (!options.force && readCache && readCache.expiresAt > Date.now()) {
-        return readCache.value;
+    if (options.force) {
+        frontierCache = null;
+        await cacheDel(BENCHMARKS_INDEX_KEY, BENCHMARKS_FRONTIER_KEY);
+        const value = await loadBenchmarkIndex();
+        await cacheSet(BENCHMARKS_INDEX_KEY, value, BENCHMARKS_INDEX_L2_TTL_S, BENCHMARKS_INDEX_L1_TTL_MS);
+        return value;
     }
-    const value = await loadBenchmarkIndex();
-    readCache = { expiresAt: Date.now() + READ_CACHE_MS, value };
-    return value;
+    return cached(BENCHMARKS_INDEX_KEY, BENCHMARKS_INDEX_L2_TTL_S, BENCHMARKS_INDEX_L1_TTL_MS, loadBenchmarkIndex);
 }
 
 export async function getBenchmarkModels(): Promise<StandardBenchmarkModel[]> {
