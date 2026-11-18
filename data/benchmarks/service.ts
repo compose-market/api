@@ -392,6 +392,28 @@ function metricByKey(model: StandardBenchmarkModel, key: string): BenchmarkMetri
     return model.metrics.find((metric) => metric.key === key);
 }
 
+function compareBenchmarkModelOrder(left: StandardBenchmarkModel, right: StandardBenchmarkModel): number {
+    const leftMetric = left.primaryMetric ? metricByKey(left, left.primaryMetric) : undefined;
+    const rightMetric = right.primaryMetric ? metricByKey(right, right.primaryMetric) : undefined;
+    const leftValue = leftMetric?.value ?? null;
+    const rightValue = rightMetric?.value ?? null;
+    if (leftValue !== null && rightValue === null) return -1;
+    if (leftValue === null && rightValue !== null) return 1;
+    if (leftValue !== null && rightValue !== null) {
+        const leftDir = leftMetric?.direction ?? "higher";
+        const rightDir = rightMetric?.direction ?? "higher";
+        if (leftDir !== rightDir) {
+            return leftDir === "higher" ? -1 : 1;
+        }
+        if (leftValue !== rightValue) {
+            return leftDir === "lower" ? leftValue - rightValue : rightValue - leftValue;
+        }
+    }
+    return left.name.localeCompare(right.name)
+        || left.modelId.localeCompare(right.modelId)
+        || left.provider.localeCompare(right.provider);
+}
+
 export async function getBenchmarkForModel(modelId: string): Promise<StandardBenchmarkModel | null> {
     const models = await getBenchmarkModels();
     const query = modelId.trim();
