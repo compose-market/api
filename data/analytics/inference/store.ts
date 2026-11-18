@@ -85,7 +85,13 @@ export async function projectCanonicalPaymentIntentSettlement(
   insertCheckpoint: typeof insertSettlementCheckpoint = insertSettlementCheckpoint,
 ): Promise<boolean> {
   const projected = await projectSettlement(input, executor);
-  if (projected || !intent?.finalAmountWei || !/^\d+$/.test(intent.finalAmountWei)) return projected;
+  if (projected) {
+    if (!executor) {
+      await bumpAnalyticsCacheForOwner(intent?.userAddress);
+    }
+    return true;
+  }
+  if (!intent?.finalAmountWei || !/^\d+$/.test(intent.finalAmountWei)) return false;
   const finalWei = BigInt(intent.finalAmountWei);
   if (finalWei <= 0n) return true;
 
@@ -195,5 +201,8 @@ export async function projectCanonicalPaymentIntentSettlement(
     createdAt: new Date(intent.createdAt).toISOString(),
   };
   await insertCheckpoint(lifecycle, settlement);
+  if (!executor && intent.userAddress) {
+    await bumpAnalyticsCacheForOwner(intent.userAddress);
+  }
   return true;
 }
