@@ -1,3 +1,4 @@
+import { cacheDel } from "../../cache.js";
 import { totalDownloads, SDK_PACKAGE } from "./downloads.js";
 import { formatUsdcAtomic } from "./format.js";
 import { settlementTotals } from "./settlements.js";
@@ -103,6 +104,7 @@ export async function refreshMetricsSnapshot(): Promise<MetricsSnapshot> {
         sessionTotals(),
     ]);
 
+    await cacheDel("metrics:volume");
     return writeSnapshot(buildSnapshot({
         downloads,
         agents,
