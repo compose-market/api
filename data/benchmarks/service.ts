@@ -25,9 +25,6 @@ const BENCHMARKS_INDEX_L2_TTL_S = 300;
 const BENCHMARKS_INDEX_L1_TTL_MS = 60_000;
 const BENCHMARKS_FRONTIER_L2_TTL_S = 600;
 const BENCHMARKS_FRONTIER_L1_TTL_MS = 5 * 60_000;
-
-const READ_CACHE_MS = 60_000;
-const FRONTIER_CACHE_MS = 5 * 60_000;
 const MODELS_WORKER_URL = (process.env.MODELS_WORKER_URL ?? "https://models.compose.market").replace(/\/+$/, "");
 
 const MODALITY_BY_OPERATION: Record<BenchmarkOperation, BenchmarkModality> = {
@@ -96,8 +93,6 @@ const METRICS_BY_OPERATION: Record<BenchmarkOperation, BenchmarkMetricDefinition
         { key: "samples", label: "Arena Samples", unit: "matchups", direction: "higher", format: "number" },
     ],
 };
-
-let readCache: { expiresAt: number; value: Awaited<ReturnType<typeof loadBenchmarkIndex>> } | null = null;
 
 let frontierCache: { expiresAt: number; index: FrontierIndex } | null = null;
 
@@ -426,12 +421,7 @@ export async function getBenchmarkForModel(modelId: string): Promise<StandardBen
         (model.sourceSlug !== null && identityKey(model.sourceSlug) === queryKey)
     );
     if (matches.length === 0) return null;
-    return matches.sort((left, right) => {
-        const leftValue = left.primaryMetric ? metricByKey(left, left.primaryMetric)?.value ?? null : null;
-        const rightValue = right.primaryMetric ? metricByKey(right, right.primaryMetric)?.value ?? null : null;
-        if (leftValue !== null && rightValue !== null) return rightValue - leftValue;
-        return left.name.localeCompare(right.name);
-    })[0];
+    return matches.sort(compareBenchmarkModelOrder)[0];
 }
 
 function formatWinnerValue(metric: BenchmarkMetric): string {
