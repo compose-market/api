@@ -1,7 +1,11 @@
+import { cached, cacheSet } from "../../cache.js";
 import { getState, setState, stateUpdatedAt } from "./db.js";
 import type { MetricsSnapshot } from "./types.js";
 
 const key = "snapshot";
+const SNAPSHOT_CACHE_KEY = "metrics:snapshot";
+const SNAPSHOT_L2_TTL_S = 120;
+const SNAPSHOT_L1_TTL_MS = 30_000;
 
 function parse(value: string | undefined): MetricsSnapshot | undefined {
     if (!value) return undefined;
@@ -17,11 +21,12 @@ function parse(value: string | undefined): MetricsSnapshot | undefined {
 }
 
 export async function readSnapshot(): Promise<MetricsSnapshot | undefined> {
-    return parse(await getState(key));
+    return cached(SNAPSHOT_CACHE_KEY, SNAPSHOT_L2_TTL_S, SNAPSHOT_L1_TTL_MS, async () => parse(await getState(key)));
 }
 
 export async function writeSnapshot(snapshot: MetricsSnapshot): Promise<MetricsSnapshot> {
     await setState(key, JSON.stringify(snapshot));
+    await cacheSet(SNAPSHOT_CACHE_KEY, snapshot, SNAPSHOT_L2_TTL_S, SNAPSHOT_L1_TTL_MS);
     return snapshot;
 }
 
