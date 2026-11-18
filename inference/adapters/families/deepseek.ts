@@ -72,7 +72,7 @@ import type {
     Choice,
     Usage,
 } from "../../core.js";
-import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import { asRecord, assignMetric, clean, readNonNeg, stripResponsesParams } from "../shared/index.js";
 import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -160,31 +160,34 @@ export function toolChoiceToWire(choice: Choice | undefined): DeepSeekToolChoice
 // Message translation
 // ---------------------------------------------------------------------------
 
-/**
- * DeepSeek messages are pure OpenAI Chat Completions shape — no
- * vision input. `content` is always a string; multimodal parts are
- * ignored on the wire.
- */
+export type DeepSeekContentPart =
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
+
 export interface DeepSeekMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string;
+    content: string | DeepSeekContentPart[];
     name?: string;
     tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
     tool_call_id?: string;
     /** Beta: prefix mode. Only valid on the LAST assistant message. */
     prefix?: boolean;
-    /** Beta: continue thinking-mode CoT. Requires `prefix: true`. */
+    /** Beta: continue thinking-mode CoT. */
     reasoning_content?: string;
 }
 
 export function mapMessagesForDeepSeek(messages: Message[]): DeepSeekMessage[] {
     return messages.map((message) => {
-        const text = textOf(message.content);
         if (message.role === "tool") {
-            return { role: "tool", content: text, tool_call_id: clean(message.tool_call_id) };
+            return {
+                role: "tool",
+                content: textOf(message.content),
+                tool_call_id: clean(message.tool_call_id),
+                ...(message.name ? { name: message.name } : {}),
+            };
         }
         if (message.role === "assistant") {
-            const out: DeepSeekMessage = { role: "assistant", content: text };
+            const out: DeepSeekMessage = { role: "assistant", content: textOf(message.content) };
             if (message.tool_calls && message.tool_calls.length > 0) {
                 out.tool_calls = message.tool_calls.map((call) => ({
                     id: call.id,
@@ -192,12 +195,35 @@ export function mapMessagesForDeepSeek(messages: Message[]): DeepSeekMessage[] {
                     function: { name: call.function.name, arguments: call.function.arguments },
                 }));
             }
+            if (message.reasoning_content !== undefined) out.reasoning_content = message.reasoning_content;
             if (message.name) out.name = message.name;
             return out;
         }
+        if (message.role === "user" && Array.isArray(message.content)) {
+            const hasImage = message.content.some((part) => part.type === "image_url");
+            if (hasImage) {
+                const parts: DeepSeekContentPart[] = [];
+                for (const part of message.content) {
+                    if (part.type === "text" && typeof part.text === "string" && part.text) {
+                        parts.push({ type: "text", text: part.text });
+                    } else if (part.type === "image_url") {
+                        const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
+                        const detail = typeof part.image_url === "object" ? part.image_url?.detail : undefined;
+                        if (url) parts.push({ type: "image_url", image_url: { url, ...(detail ? { detail } : {}) } });
+                    }
+                }
+                if (parts.length > 0) {
+                    return {
+                        role: "user",
+                        content: parts,
+                        ...(message.name ? { name: message.name } : {}),
+                    };
+                }
+            }
+        }
         return {
             role: message.role,
-            content: text,
+            content: textOf(message.content),
             ...(message.name ? { name: message.name } : {}),
         };
     });
@@ -251,8 +277,9 @@ export function usageFromDeepSeek(rawUsage: unknown): Usage | undefined {
 // Finish reason
 // ---------------------------------------------------------------------------
 
-export function mapFinishReason(value: unknown): string {
+export function mapFinishReason(value: unknown, hasTools = false): string {
     const reason = clean(value) as DeepSeekFinishReason;
+    if (hasTools || reason === "tool_calls") return "tool-calls";
     if (!reason) return "stop";
     if (reason === "insufficient_system_resource") return "error";
     return reason;
@@ -297,6 +324,7 @@ export function buildChatBody(
 ): Record<string, unknown> {
     const tools = toolsToWire(options.tools);
     const toolChoice = toolChoiceToWire(options.toolChoice);
+    const params = stripResponsesParams(options.customParams);
     return {
         model: options.wireModelId || modelId,
         messages: mapMessagesForDeepSeek(messages),
@@ -312,9 +340,9 @@ export function buildChatBody(
         ...(typeof options.logprobs === "boolean" ? { logprobs: options.logprobs } : {}),
         ...(typeof options.topLogprobs === "number" ? { top_logprobs: options.topLogprobs } : {}),
         ...(options.userId ? { user_id: options.userId } : {}),
-        ...(streaming ? { stream: true } : {}),
-        ...(options.streamOptions ? { stream_options: options.streamOptions } : {}),
-        ...(options.customParams ?? {}),
+        ...(streaming ? { stream: true, stream_options: options.streamOptions ?? { include_usage: true } } : {}),
+        ...(!streaming && options.streamOptions ? { stream_options: options.streamOptions } : {}),
+        ...params,
     };
 }
 
@@ -352,7 +380,7 @@ export function parseChatResponse(raw: unknown): DeepSeekChatResult {
         text,
         ...(reasoningContent ? { reasoningContent } : {}),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
-        finishReason: mapFinishReason(first.finish_reason),
+        finishReason: mapFinishReason(first.finish_reason, toolCalls.length > 0),
         usage: usageFromDeepSeek(root.usage),
         ...(logprobsRecord ? { logprobs: logprobsRecord as DeepSeekChatResult["logprobs"] } : {}),
         ...(typeof root.system_fingerprint === "string" ? { systemFingerprint: root.system_fingerprint } : {}),
@@ -372,6 +400,9 @@ export type DeepSeekStreamEvent =
 
 export function createStreamParser() {
     let lastUsage: Usage | undefined;
+    let lastFinishReason = "";
+    let sawTools = false;
+
     function feed(payload: unknown): DeepSeekStreamEvent[] {
         const data = asRecord(payload);
         if (!data) return [];
@@ -380,10 +411,10 @@ export function createStreamParser() {
         const first = asRecord(choices[0]);
         const delta = asRecord(first?.delta);
         if (delta) {
-            const text = typeof delta.content === "string" ? delta.content : "";
             const reasoning = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
-            if (text) events.push({ type: "text-delta", text });
+            const text = typeof delta.content === "string" ? delta.content : "";
             if (reasoning) events.push({ type: "reasoning-delta", text: reasoning });
+            if (text) events.push({ type: "text-delta", text });
             const tc = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
             for (const call of tc) {
                 const r = asRecord(call);
@@ -395,23 +426,28 @@ export function createStreamParser() {
                     index: idx,
                     ...(r.id ? { id: clean(r.id) } : {}),
                     ...(fn?.name ? { name: clean(fn.name) } : {}),
-                    ...(fn?.arguments ? { argumentsDelta: clean(fn.arguments) } : {}),
+                    ...(typeof fn?.arguments === "string" && fn.arguments.length > 0 ? { argumentsDelta: fn.arguments } : {}),
                 });
+                sawTools = true;
             }
         }
         const usage = usageFromDeepSeek(data.usage);
         if (usage) lastUsage = usage;
-        const finishReason = first?.finish_reason;
-        if (finishReason) {
-            events.push({
-                type: "finish",
-                finishReason: mapFinishReason(finishReason),
-                ...(lastUsage ? { usage: lastUsage } : {}),
-            });
+        if (first?.finish_reason != null) {
+            lastFinishReason = clean(first.finish_reason);
         }
         return events;
     }
-    return { feed };
+
+    function finalize(): Extract<DeepSeekStreamEvent, { type: "finish" }> {
+        return {
+            type: "finish",
+            finishReason: mapFinishReason(lastFinishReason, sawTools),
+            ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+    }
+
+    return { feed, finalize };
 }
 
 // ---------------------------------------------------------------------------
