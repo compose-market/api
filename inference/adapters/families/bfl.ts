@@ -178,8 +178,10 @@ function imageInputToWire(input: ImageInput): string {
  * `image_prompt`.
  */
 export function buildFluxBody(args: {
+    model?: string;
     prompt: string;
     images?: ImageInput[];
+    imageKey?: "image_prompt" | "input_image";
     mask?: ImageInput;
     width?: number;
     height?: number;
@@ -198,7 +200,11 @@ export function buildFluxBody(args: {
     mode?: ImageEditMode;
     customParams?: Record<string, unknown>;
 }): Record<string, unknown> {
-    const body: Record<string, unknown> = { prompt: args.prompt };
+    const body: Record<string, unknown> = {
+        ...(args.customParams ?? {}),
+        ...(args.model ? { model: args.model } : {}),
+        prompt: args.prompt,
+    };
     if (args.width != null) body.width = args.width;
     if (args.height != null) body.height = args.height;
     if (args.aspectRatio) body.aspect_ratio = args.aspectRatio;
@@ -212,8 +218,9 @@ export function buildFluxBody(args: {
 
     // FLUX.2 multi-reference editing.
     if (args.images && args.images.length > 0) {
+        const singleKey = args.imageKey ?? "image_prompt";
         if (args.mode === "fill" || args.mode === "outpaint" || args.images.length === 1) {
-            body.image_prompt = imageInputToWire(args.images[0]);
+            body[singleKey] = imageInputToWire(args.images[0]);
         } else {
             body.image_prompts = args.images.map(imageInputToWire);
         }
@@ -228,6 +235,5 @@ export function buildFluxBody(args: {
         if (typeof args.expand.right === "number") body.right = args.expand.right;
     }
 
-    if (args.customParams) Object.assign(body, args.customParams);
     return body;
 }
