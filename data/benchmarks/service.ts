@@ -342,15 +342,7 @@ async function loadBenchmarkIndex() {
     }
     const models = [...linked.values()];
 
-    models.sort((left, right) => {
-        const leftValue = left.primaryMetric ? metricByKey(left, left.primaryMetric)?.value ?? null : null;
-        const rightValue = right.primaryMetric ? metricByKey(right, right.primaryMetric)?.value ?? null : null;
-        if (leftValue !== null && rightValue !== null && leftValue !== rightValue) {
-            const direction = left.metrics.find((metric) => metric.key === left.primaryMetric)?.direction ?? "higher";
-            return direction === "lower" ? leftValue - rightValue : rightValue - leftValue;
-        }
-        return left.name.localeCompare(right.name);
-    });
+    models.sort(compareBenchmarkModelOrder);
 
     const latestFetchedAt = rows
         .map((row) => row.fetchedAt)
