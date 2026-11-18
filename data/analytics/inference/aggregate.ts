@@ -49,18 +49,28 @@ export async function build(
   dependencies: AnalyticsBuildDependencies = {},
 ): Promise<AnalyticsResponse> {
   const filters = normalizeFilters(input);
-  const resolveScopes = dependencies.resolveScopes ?? resolveWalletScopes;
-  const queryRows = dependencies.queryRows ?? query;
-  const scopes = await resolveScopes(userAddress, filters.networks);
-  const { networks: _networks, requestCursor, settlementCursor, ...queryFilters } = filters;
-  const rows = await queryRows({
-    ...queryFilters,
-    scopes,
-    requestCursor: parseCursor(requestCursor),
-    settlementCursor: parseCursor(settlementCursor),
-  });
+  const compute = async (): Promise<AnalyticsResponse> => {
+    const resolveScopes = dependencies.resolveScopes ?? resolveWalletScopes;
+    const queryRows = dependencies.queryRows ?? query;
+    const scopes = await resolveScopes(userAddress, filters.networks);
+    const { networks: _networks, requestCursor, settlementCursor, ...queryFilters } = filters;
+    const rows = await queryRows({
+      ...queryFilters,
+      scopes,
+      requestCursor: parseCursor(requestCursor),
+      settlementCursor: parseCursor(settlementCursor),
+    });
+    return assemble(filters, rows, dependencies.now?.() ?? new Date());
+  };
 
-  return assemble(filters, rows, dependencies.now?.() ?? new Date());
+  if (dependencies.resolveScopes || dependencies.queryRows || dependencies.now) {
+    return compute();
+  }
+
+  const owner = analyticsOwnerKey(userAddress);
+  const version = await cacheVersion(`inference-analytics:${owner}`);
+  const fingerprint = createHash("sha256").update(JSON.stringify(filters)).digest("hex").slice(0, 24);
+  return cached(`analytics:${owner}:v${version}:${fingerprint}`, 60, 15_000, compute);
 }
 
 function emptyBilling(): BillingTotals {
