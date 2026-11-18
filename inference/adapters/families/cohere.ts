@@ -21,8 +21,8 @@
  * Spec: https://docs.cohere.com/reference/about
  */
 
-import type { Message, Tool, Choice, Usage } from "../../core.js";
-import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import type { Call, Message, Tool, Choice, Usage } from "../../core.js";
+import { asRecord, assignMetric, clean, readNonNeg, stripResponsesParams } from "../shared/index.js";
 import * as lower from "../shared/schema.js";
 import type { RerankRequest, RerankResult, RerankResultItem } from "../modalities/rerank.js";
 import { rerankBillingMetrics } from "../modalities/rerank.js";
@@ -128,6 +128,8 @@ export interface CohereChatOptions {
 
 export interface CohereChatResult {
     text: string;
+    reasoningContent?: string;
+    toolCalls?: Call[];
     finishReason?: string;
     usage?: Usage;
     raw: unknown;
@@ -150,11 +152,39 @@ function toolChoiceToWire(choice: Choice | undefined): unknown {
     return { type: "function", function: { name: choice.name } };
 }
 
+export function mapFinishReason(value: unknown, hasTools = false): string {
+    const reason = clean(value).toUpperCase();
+    if (hasTools || reason === "TOOL_CALL" || reason === "TOOL_CALLS") return "tool-calls";
+    if (reason === "MAX_TOKENS" || reason === "LENGTH") return "length";
+    if (!reason || reason === "COMPLETE" || reason === "STOP_SEQUENCE" || reason === "STOP") return "stop";
+    return clean(value).toLowerCase();
+}
+
+function parseCohereToolCalls(message: Record<string, unknown>): Call[] | undefined {
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const out: Call[] = [];
+    for (const rawCall of rawCalls) {
+        const record = asRecord(rawCall);
+        const fn = asRecord(record?.function);
+        const name = clean(fn?.name) || clean(record?.name);
+        if (!record || !name) continue;
+        const rawArgs = fn ? fn.arguments : record.parameters;
+        out.push({
+            id: clean(record.id) || `call_${out.length}`,
+            name,
+            arguments: typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs ?? {}),
+        });
+    }
+    return out.length > 0 ? out : undefined;
+}
+
 export function buildChatBody(
     modelId: string,
     messages: Message[],
     options: CohereChatOptions = {},
+    streaming = false,
 ): Record<string, unknown> {
+    const params = stripResponsesParams(options.customParams);
     return {
         model: options.wireModelId || modelId,
         messages: mapMessagesForCohere(messages),
@@ -166,7 +196,8 @@ export function buildChatBody(
         ...(options.tools ? { tools: toolsToWire(options.tools) } : {}),
         ...(options.toolChoice ? { tool_choice: toolChoiceToWire(options.toolChoice) } : {}),
         ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
-        ...(options.customParams ?? {}),
+        ...(streaming ? { stream: true } : {}),
+        ...params,
     };
 }
 
@@ -174,19 +205,102 @@ export function parseChatResponse(raw: unknown): CohereChatResult {
     const root = asRecord(raw) || {};
     const message = asRecord(root.message) || {};
     const contentBlocks = Array.isArray(message.content) ? message.content : [];
-    const text = contentBlocks
-        .map((part) => {
-            const r = asRecord(part);
-            return r && r.type === "text" ? clean(r.text) : "";
-        })
-        .filter(Boolean)
-        .join("");
+    const textParts: string[] = [];
+    const thinkingParts: string[] = [];
+    for (const part of contentBlocks) {
+        const r = asRecord(part);
+        if (!r) continue;
+        if (r.type === "text" && typeof r.text === "string") textParts.push(r.text);
+        if (r.type === "thinking" && typeof r.thinking === "string") thinkingParts.push(r.thinking);
+    }
+    const text = textParts.join("") || (typeof message.content === "string" ? message.content : "");
+    const reasoningContent = thinkingParts.join("");
+    const toolCalls = parseCohereToolCalls(message);
     return {
         text,
-        finishReason: clean(root.finish_reason) || undefined,
+        ...(reasoningContent ? { reasoningContent } : {}),
+        ...(toolCalls ? { toolCalls } : {}),
+        finishReason: mapFinishReason(root.finish_reason, Boolean(toolCalls?.length)),
         usage: usageFromCohere(root.usage ?? root.meta),
         raw,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming — Cohere v2 SSE parser
+// ---------------------------------------------------------------------------
+
+export type CohereStreamEvent =
+    | { type: "text-delta"; text: string }
+    | { type: "reasoning-delta"; text: string }
+    | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
+    | { type: "finish"; finishReason?: string; usage?: Usage };
+
+export function createStreamParser() {
+    let lastUsage: Usage | undefined;
+    let lastFinishReason = "";
+    let sawTools = false;
+
+    function feed(payload: unknown): CohereStreamEvent[] {
+        const chunk = asRecord(payload);
+        if (!chunk) return [];
+        const events: CohereStreamEvent[] = [];
+        const type = clean(chunk.type);
+        const delta = asRecord(chunk.delta);
+        const message = asRecord(delta?.message);
+
+        if (type === "content-delta") {
+            const content = asRecord(message?.content);
+            if (typeof content?.thinking === "string" && content.thinking) {
+                events.push({ type: "reasoning-delta", text: content.thinking });
+            }
+            if (typeof content?.text === "string" && content.text) {
+                events.push({ type: "text-delta", text: content.text });
+            }
+            return events;
+        }
+
+        if (type === "tool-call-start" || type === "tool-call-delta") {
+            const index = typeof chunk.index === "number" ? chunk.index : 0;
+            const call = asRecord(message?.tool_calls);
+            const fn = asRecord(call?.function);
+            const id = clean(call?.id);
+            const name = clean(fn?.name);
+            const argsDelta = typeof fn?.arguments === "string" ? fn.arguments : "";
+            if (id || name || argsDelta) {
+                events.push({
+                    type: "tool-call-delta",
+                    index,
+                    ...(id ? { id } : {}),
+                    ...(name ? { name } : {}),
+                    ...(argsDelta ? { argumentsDelta: argsDelta } : {}),
+                });
+                sawTools = true;
+            }
+            return events;
+        }
+
+        if (type === "message-end") {
+            if (delta?.finish_reason != null) {
+                lastFinishReason = clean(delta.finish_reason);
+            }
+            const parsedUsage = usageFromCohere(delta?.usage ?? chunk.usage ?? chunk.meta);
+            if (parsedUsage) lastUsage = parsedUsage;
+            return events;
+        }
+
+        return events;
+    }
+
+    function finalize(): Extract<CohereStreamEvent, { type: "finish" }> {
+        return {
+            type: "finish",
+            finishReason: mapFinishReason(lastFinishReason, sawTools),
+            ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+    }
+
+    return { feed, finalize };
 }
 
 // ---------------------------------------------------------------------------
@@ -252,13 +366,19 @@ export function parseEmbedResponse(raw: unknown): CohereEmbedResult {
 // Rerank v2
 // ---------------------------------------------------------------------------
 
-export function buildRerankBody(modelId: string, request: RerankRequest): Record<string, unknown> {
+export type CohereRerankBodyRequest = Omit<RerankRequest, "documents"> & {
+    documents: Array<string | Record<string, unknown>>;
+    max_chunks_per_doc?: number;
+};
+
+export function buildRerankBody(modelId: string, request: CohereRerankBodyRequest): Record<string, unknown> {
     return {
         model: modelId,
         query: request.query,
         documents: request.documents,
         ...(typeof request.top_n === "number" ? { top_n: request.top_n } : {}),
         ...(typeof request.max_tokens_per_doc === "number" ? { max_tokens_per_doc: request.max_tokens_per_doc } : {}),
+        ...(typeof request.max_chunks_per_doc === "number" ? { max_chunks_per_doc: request.max_chunks_per_doc } : {}),
         ...(request.customParams ?? {}),
     };
 }
