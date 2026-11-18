@@ -26,7 +26,7 @@
  * Spec: https://help.aliyun.com/zh/model-studio/
  */
 
-import type { Message, Tool, Choice, Usage } from "../../core.js";
+import type { Call, Message, Tool, Choice, Usage } from "../../core.js";
 import {
     asRecord,
     assignMetric,
@@ -58,28 +58,32 @@ export function usageFromDashScope(raw: unknown): Usage | undefined {
     const root = asRecord(raw) || {};
     const usage = asRecord(root.usage) ?? asRecord(asRecord(root.output)?.usage);
     if (!usage) return undefined;
+    const inputDetails = asRecord(usage.prompt_tokens_details) || asRecord(usage.input_tokens_details);
+    const outputDetails = asRecord(usage.completion_tokens_details) || asRecord(usage.output_tokens_details);
     const inputTokens = readNonNeg(usage, ["input_tokens", "prompt_tokens"]) ?? 0;
     const outputTokens = readNonNeg(usage, ["output_tokens", "completion_tokens"]) ?? 0;
     const totalTokens = readNonNeg(usage, ["total_tokens"]) ?? inputTokens + outputTokens;
-    const reasoning = readNonNeg(usage, ["reasoning_tokens"]);
-    const cached = readNonNeg(usage, ["cached_tokens", "prefix_tokens"]);
-    const audioIn = readNonNeg(usage, ["audio_tokens"]);
-    const imageIn = readNonNeg(usage, ["image_tokens"]);
+    const reasoning = readNonNeg(outputDetails, ["reasoning_tokens"]) ?? readNonNeg(usage, ["reasoning_tokens"]);
+    const cached = readNonNeg(inputDetails, ["cached_tokens"]) ?? readNonNeg(usage, ["cached_tokens", "prefix_tokens"]);
+    const audioIn = readNonNeg(inputDetails, ["audio_tokens"]) ?? readNonNeg(usage, ["audio_tokens"]);
+    const imageIn = readNonNeg(inputDetails, ["image_tokens"]) ?? readNonNeg(usage, ["image_tokens"]);
     const billingMetrics: Record<string, unknown> = {};
-    assignMetric(billingMetrics, "input_tokens", inputTokens);
-    assignMetric(billingMetrics, "output_tokens", outputTokens);
-    assignMetric(billingMetrics, "total_tokens", totalTokens);
+    if (inputTokens > 0 || outputTokens > 0 || totalTokens > 0) {
+        assignMetric(billingMetrics, "input_tokens", inputTokens);
+        assignMetric(billingMetrics, "output_tokens", outputTokens);
+        assignMetric(billingMetrics, "total_tokens", totalTokens);
+    }
     assignMetric(billingMetrics, "reasoning_tokens", reasoning);
     assignMetric(billingMetrics, "cached_input_tokens", cached);
-    assignMetric(billingMetrics, "audio_input_tokens", audioIn);
-    assignMetric(billingMetrics, "image_input_tokens", imageIn);
+    assignMetric(billingMetrics, "input_audio_tokens", audioIn);
+    assignMetric(billingMetrics, "input_image_tokens", imageIn);
     return {
         promptTokens: inputTokens,
         completionTokens: outputTokens,
         totalTokens,
         ...(typeof reasoning === "number" ? { reasoningTokens: reasoning } : {}),
         ...(typeof cached === "number" ? { cachedInputTokens: cached } : {}),
-        billingMetrics,
+        ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
         raw: usage,
     };
 }
@@ -152,6 +156,8 @@ export interface AlibabaChatOptions {
 
 export interface AlibabaChatResult {
     text: string;
+    reasoning?: string;
+    toolCalls?: Call[];
     finishReason?: string;
     usage?: Usage;
     raw: unknown;
@@ -246,19 +252,56 @@ export function buildChatBody(
     };
 }
 
-function textFromOpenAI(raw: unknown): { text: string; finishReason?: string; usage?: Usage } {
+function textFromOpenAI(raw: unknown): {
+    text: string;
+    reasoning?: string;
+    toolCalls?: Call[];
+    finishReason?: string;
+    usage?: Usage;
+} {
     const root = asRecord(raw) || {};
     const choices = Array.isArray(root.choices) ? root.choices : [];
     const first = asRecord(choices[0]) || {};
     const message = asRecord(first.message) || {};
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const toolCalls: Call[] = [];
+    for (const rawCall of rawCalls) {
+        const record = asRecord(rawCall);
+        const fn = asRecord(record?.function);
+        const name = clean(fn?.name);
+        if (!record || !fn || !name) continue;
+        toolCalls.push({
+            id: clean(record.id) || `call_${toolCalls.length}`,
+            name,
+            arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
+        });
+    }
+    const content = message.content;
+    const text = typeof content === "string"
+        ? content
+        : Array.isArray(content)
+            ? content
+                .map((part) => {
+                    const r = asRecord(part);
+                    return typeof r?.text === "string" ? r.text : "";
+                })
+                .filter(Boolean)
+                .join("\n")
+            : "";
+    const reasoning = typeof message.reasoning_content === "string" && message.reasoning_content
+        ? message.reasoning_content
+        : undefined;
+    const finish = clean(first.finish_reason);
     return {
-        text: clean(message.content),
-        finishReason: clean(first.finish_reason) || undefined,
+        text,
+        ...(reasoning ? { reasoning } : {}),
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        finishReason: toolCalls.length > 0 || finish === "tool_calls" ? "tool-calls" : finish || "stop",
         usage: normalizeOpenAIUsage(root.usage),
     };
 }
 
-function textFromDashScope(raw: unknown): string {
+export function textFromDashScope(raw: unknown): string {
     const root = asRecord(raw) || {};
     const output = asRecord(root.output) ?? root;
     const text = clean(output.text) || clean(output.output_text);
