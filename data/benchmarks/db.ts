@@ -25,7 +25,12 @@ function sql(): Sql {
 }
 
 export async function ensureBenchmarkDatabase(): Promise<void> {
-    ready ??= migrateBenchmarkDatabase();
+    if (!ready) {
+        ready = migrateBenchmarkDatabase().catch((error) => {
+            ready = null;
+            throw error;
+        });
+    }
     await ready;
 }
 
