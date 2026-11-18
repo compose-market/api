@@ -368,6 +368,11 @@ async function loadBenchmarkIndex() {
     return { snapshot, models, etag };
 }
 
+export async function invalidateBenchmarkCache(): Promise<void> {
+    frontierCache = null;
+    await cacheDel(BENCHMARKS_INDEX_KEY, BENCHMARKS_FRONTIER_KEY);
+}
+
 export async function getBenchmarkIndex(options: { force?: boolean } = {}) {
     if (!options.force && readCache && readCache.expiresAt > Date.now()) {
         return readCache.value;
