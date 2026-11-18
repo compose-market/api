@@ -190,6 +190,13 @@ export function requestForSettlementCheckpoint(
   settlement: InferenceSettlementTelemetry,
 ): StoredRequest {
   const at = settlement.createdAt;
+  const atMs = Date.parse(at);
+  const latencyMs = Number.isFinite(atMs) && Number.isFinite(lifecycle.startedAt)
+    ? Math.max(0, Math.round(atMs - lifecycle.startedAt))
+    : 0;
+  const startedAtIso = Number.isFinite(lifecycle.startedAt)
+    ? new Date(lifecycle.startedAt).toISOString()
+    : at;
   return {
     id: settlement.id,
     userAddress: lifecycle.userAddress,
@@ -201,9 +208,9 @@ export function requestForSettlementCheckpoint(
     operation: settlement.operation,
     streamed: lifecycle.request.stream,
     status: settlement.status === "failed" ? "failed" : "succeeded",
-    startedAt: at,
+    startedAt: startedAtIso,
     completedAt: at,
-    latencyMs: 0,
+    latencyMs,
     timeToFirstTokenMs: lifecycle.firstOutputAt === undefined
       ? undefined
       : lifecycle.firstOutputAt - lifecycle.startedAt,
