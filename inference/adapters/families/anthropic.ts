@@ -21,7 +21,7 @@ import type {
     Choice,
     Usage,
 } from "../../core.js";
-import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import { asRecord, assignMetric, clean, readNonNeg, stripResponsesParams } from "../shared/index.js";
 import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -81,90 +81,196 @@ export interface AnthropicMessage {
 // Translation: Message ⇔ AnthropicMessage
 // ---------------------------------------------------------------------------
 
+export type AnthropicSystemBlock = {
+    type: "text";
+    text: string;
+    cache_control?: AnthropicCacheControl;
+};
+
 /**
  * Translate Compose `Message[]` into Anthropic `messages` plus
- * an extracted top-level `system` string. Anthropic does NOT have a
- * `system` role inside `messages`; system-prompt parts must be lifted
- * to the top-level `system` parameter.
+ * an extracted top-level `system` string or content-block array
+ * (when any system block carries `cache_control`). Anthropic does NOT
+ * have a `system` role inside `messages`; system-prompt parts must be
+ * lifted to the top-level `system` parameter.
  */
 export function mapMessagesForAnthropic(
     messages: Message[],
-): { system: string | undefined; messages: AnthropicMessage[] } {
-    const systemTexts: string[] = [];
+): { system: string | AnthropicSystemBlock[] | undefined; messages: AnthropicMessage[] } {
+    const systemBlocks: AnthropicSystemBlock[] = [];
     const out: AnthropicMessage[] = [];
 
     for (const message of messages) {
         if (message.role === "system") {
-            const text = textOf(message.content);
-            if (text) systemTexts.push(text);
+            const msgCache = cacheControl(message.cache_control);
+            if (typeof message.content === "string") {
+                if (message.content) {
+                    systemBlocks.push({
+                        type: "text",
+                        text: message.content,
+                        ...(msgCache ? { cache_control: msgCache } : {}),
+                    });
+                }
+            } else if (Array.isArray(message.content)) {
+                const startIdx = systemBlocks.length;
+                for (const part of message.content) {
+                    if (part.type === "text" && typeof part.text === "string" && part.text) {
+                        const partCache = cacheControl(part.cache_control);
+                        systemBlocks.push({
+                            type: "text",
+                            text: part.text,
+                            ...(partCache ? { cache_control: partCache } : {}),
+                        });
+                    }
+                }
+                if (msgCache && systemBlocks.length > startIdx && !systemBlocks[systemBlocks.length - 1].cache_control) {
+                    systemBlocks[systemBlocks.length - 1].cache_control = msgCache;
+                }
+            }
             continue;
         }
 
         // Tool-result message → user-role content with `tool_result` blocks.
+        // Coalesce consecutive tool results into one user turn (Anthropic rejects consecutive user turns).
         if (message.role === "tool") {
             const id = clean(message.tool_call_id);
             if (!id) continue;
             const text = textOf(message.content);
-            out.push({
-                role: "user",
-                content: [{
-                    type: "tool_result",
-                    tool_use_id: id,
-                    content: text,
-                    ...(cacheControl(message.cache_control) ? { cache_control: cacheControl(message.cache_control) } : {}),
-                }],
-            });
+            const msgCache = cacheControl(message.cache_control);
+            const block: AnthropicContentBlock = {
+                type: "tool_result",
+                tool_use_id: id,
+                content: text,
+                ...(msgCache ? { cache_control: msgCache } : {}),
+            };
+            const prev = out[out.length - 1];
+            if (
+                prev
+                && prev.role === "user"
+                && Array.isArray(prev.content)
+                && prev.content.length > 0
+                && prev.content.every((item) => item.type === "tool_result")
+            ) {
+                prev.content.push(block);
+            } else {
+                out.push({
+                    role: "user",
+                    content: [block],
+                });
+            }
             continue;
         }
 
-        // Assistant message — carries text plus optional tool_calls.
+        // Assistant message — preserves thinking / redacted_thinking blocks, text, tool_calls, and cache_control.
         if (message.role === "assistant") {
             const blocks: AnthropicContentBlock[] = [];
-            const text = textOf(message.content);
-            if (text) blocks.push({
-                type: "text",
-                text,
-                ...(cacheControl(message.cache_control) ? { cache_control: cacheControl(message.cache_control) } : {}),
-            });
+            const msgCache = cacheControl(message.cache_control);
+            if (typeof message.content === "string") {
+                if (message.content) {
+                    blocks.push({ type: "text", text: message.content });
+                }
+            } else if (Array.isArray(message.content)) {
+                for (const part of message.content) {
+                    if (part.type === "thinking" && typeof part.thinking === "string") {
+                        blocks.push({
+                            type: "thinking",
+                            thinking: part.thinking,
+                            signature: typeof part.signature === "string" ? part.signature : "",
+                        });
+                    } else if (part.type === "redacted_thinking" && typeof part.data === "string") {
+                        blocks.push({
+                            type: "redacted_thinking",
+                            data: part.data,
+                        });
+                    } else if (part.type === "text" && typeof part.text === "string" && part.text) {
+                        const partCache = cacheControl(part.cache_control);
+                        blocks.push({
+                            type: "text",
+                            text: part.text,
+                            ...(partCache ? { cache_control: partCache } : {}),
+                        });
+                    }
+                }
+            }
             for (const call of message.tool_calls ?? []) {
                 let input: Record<string, unknown> = {};
                 try { input = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>; }
                 catch { input = {}; }
                 blocks.push({ type: "tool_use", id: call.id, name: call.function.name, input });
             }
-            out.push({ role: "assistant", content: blocks.length === 1 && blocks[0].type === "text" ? blocks[0].text : blocks });
+            if (msgCache) {
+                for (let i = blocks.length - 1; i >= 0; i -= 1) {
+                    const block = blocks[i];
+                    if ((block.type === "text" || block.type === "tool_use") && !block.cache_control) {
+                        block.cache_control = msgCache;
+                        break;
+                    }
+                }
+            }
+            out.push({
+                role: "assistant",
+                content: blocks.length === 1 && blocks[0].type === "text" && !blocks[0].cache_control
+                    ? blocks[0].text
+                    : blocks,
+            });
             continue;
         }
 
-        // User message — text + optional image_url / video_url / input_audio parts.
+        // User message — text + optional image_url parts, preserving cache_control breakpoints.
         const content: AnthropicContentBlock[] = [];
+        const msgCache = cacheControl(message.cache_control);
         if (typeof message.content === "string") {
-            if (message.content) content.push({ type: "text", text: message.content });
+            if (message.content) {
+                content.push({
+                    type: "text",
+                    text: message.content,
+                    ...(msgCache ? { cache_control: msgCache } : {}),
+                });
+            }
         } else if (Array.isArray(message.content)) {
             for (const part of message.content) {
                 if (part.type === "text" && part.text) {
+                    const partCache = cacheControl(part.cache_control);
                     content.push({
                         type: "text",
                         text: part.text,
-                        ...(cacheControl(part.cache_control) ? { cache_control: cacheControl(part.cache_control) } : {}),
+                        ...(partCache ? { cache_control: partCache } : {}),
                     });
                 } else if (part.type === "image_url") {
                     const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url;
                     if (!url) continue;
+                    const partCache = cacheControl(part.cache_control);
                     content.push({
                         type: "image",
                         source: url.startsWith("data:")
                             ? parseDataUrlToAnthropicImage(url)
                             : { type: "url", url },
+                        ...(partCache ? { cache_control: partCache } : {}),
                     });
                 }
                 // video_url / input_audio not supported by Anthropic Messages API — silently dropped.
             }
+            if (msgCache && content.length > 0) {
+                const last = content[content.length - 1];
+                if ((last.type === "text" || last.type === "image") && !last.cache_control) {
+                    last.cache_control = msgCache;
+                }
+            }
         }
-        out.push({ role: "user", content: content.length === 1 && content[0].type === "text" ? content[0].text : content });
+        out.push({
+            role: "user",
+            content: content.length === 1 && content[0].type === "text" && !content[0].cache_control
+                ? content[0].text
+                : content,
+        });
     }
 
-    const system = systemTexts.length > 0 ? systemTexts.join("\n\n") : undefined;
+    const hasSystemCacheControl = systemBlocks.some((block) => Boolean(block.cache_control));
+    const system = systemBlocks.length === 0
+        ? undefined
+        : hasSystemCacheControl
+            ? systemBlocks
+            : systemBlocks.map((block) => block.text).join("\n\n");
     return { system, messages: out };
 }
 
@@ -279,15 +385,58 @@ export interface AnthropicChatOptions {
     wireModelId?: string;
 }
 
+export type AnthropicThinkingBlock =
+    | { type: "thinking"; thinking: string; signature: string }
+    | { type: "redacted_thinking"; data: string };
+
 export interface AnthropicChatResult {
     text: string;
+    reasoningContent?: string;
+    thinkingBlocks?: AnthropicThinkingBlock[];
     toolCalls?: Call[];
     finishReason?: string;
     usage?: Usage;
     raw: unknown;
 }
 
-const DEFAULT_MAX_TOKENS = 4096;
+const NON_ANTHROPIC_PARAM_KEYS = [
+    "fail_fast",
+    "n",
+    "min_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "prompt_cache_key",
+    "prompt_cache_options",
+    "seed",
+    "logprobs",
+    "top_logprobs",
+    "stop",
+    "models",
+    "response_format",
+    "chat_template_kwargs",
+    "continue_final_message",
+    "ignore_eos",
+    "stop_token_ids",
+    "cache_salt",
+    "media_io_kwargs",
+    "reasoning",
+    "reasoning_effort",
+    "max_tokens",
+    "max_output_tokens",
+    "max_completion_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+] as const;
+
+function sanitizeAnthropicParams(customParams: Record<string, unknown> | undefined): Record<string, unknown> {
+    const params = stripResponsesParams(customParams);
+    for (const key of NON_ANTHROPIC_PARAM_KEYS) {
+        delete params[key];
+    }
+    return params;
+}
 
 /**
  * Build a `POST /v1/messages` request body. Vendors POST this to their
@@ -303,19 +452,22 @@ export function buildChatBody(
     const { system, messages: anthMessages } = mapMessagesForAnthropic(messages);
     const tools = toolsToWire(options.tools);
     const toolChoice = toolChoiceToWire(options.toolChoice);
+    const params = sanitizeAnthropicParams(options.customParams);
+    const hasTemp = typeof options.temperature === "number";
+    const validTopK = typeof options.topK === "number" && options.topK > 0 ? options.topK : undefined;
     return {
+        ...params,
         model: options.wireModelId || modelId,
         messages: anthMessages,
-        max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+        ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
         ...(system ? { system } : {}),
-        ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-        ...(typeof options.topP === "number" ? { top_p: options.topP } : {}),
-        ...(typeof options.topK === "number" ? { top_k: options.topK } : {}),
+        ...(hasTemp ? { temperature: options.temperature } : {}),
+        ...(!hasTemp && typeof options.topP === "number" ? { top_p: options.topP } : {}),
+        ...(validTopK !== undefined ? { top_k: validTopK } : {}),
         ...(options.stopSequences && options.stopSequences.length > 0 ? { stop_sequences: options.stopSequences } : {}),
         ...(tools ? { tools } : {}),
         ...(toolChoice ? { tool_choice: toolChoice } : {}),
         ...(streaming ? { stream: true } : {}),
-        ...(options.customParams ?? {}),
     };
 }
 
@@ -327,6 +479,8 @@ export function parseChatResponse(raw: unknown): AnthropicChatResult {
     const root = asRecord(raw) || {};
     const blocks = Array.isArray(root.content) ? root.content : [];
     const textParts: string[] = [];
+    const reasoningParts: string[] = [];
+    const thinkingBlocks: AnthropicThinkingBlock[] = [];
     const toolCalls: Call[] = [];
     for (const block of blocks) {
         const record = asRecord(block);
@@ -334,6 +488,18 @@ export function parseChatResponse(raw: unknown): AnthropicChatResult {
         const type = clean(record.type);
         if (type === "text" && typeof record.text === "string") {
             textParts.push(record.text);
+        } else if (type === "thinking" && typeof record.thinking === "string") {
+            reasoningParts.push(record.thinking);
+            thinkingBlocks.push({
+                type: "thinking",
+                thinking: record.thinking,
+                signature: typeof record.signature === "string" ? record.signature : "",
+            });
+        } else if (type === "redacted_thinking" && typeof record.data === "string") {
+            thinkingBlocks.push({
+                type: "redacted_thinking",
+                data: record.data,
+            });
         } else if (type === "tool_use") {
             toolCalls.push({
                 id: clean(record.id) || `call_${toolCalls.length}`,
@@ -342,8 +508,11 @@ export function parseChatResponse(raw: unknown): AnthropicChatResult {
             });
         }
     }
+    const reasoningContent = reasoningParts.join("");
     return {
         text: textParts.join(""),
+        ...(reasoningContent ? { reasoningContent } : {}),
+        ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
         finishReason: mapFinishReason(clean(root.stop_reason)),
         usage: usageFromAnthropic(root.usage),
@@ -358,7 +527,7 @@ export function mapFinishReason(reason: string): string {
     switch (reason) {
         case "end_turn": return "stop";
         case "max_tokens": return "length";
-        case "tool_use": return "tool_calls";
+        case "tool_use": return "tool-calls";
         case "stop_sequence": return "stop";
         default: return reason || "stop";
     }
@@ -371,20 +540,25 @@ export function mapFinishReason(reason: string): string {
 export type AnthropicStreamEvent =
     | { type: "text-delta"; text: string }
     | { type: "thinking-delta"; text: string }
+    | { type: "thinking-signature-delta"; index: number; signature: string }
+    | { type: "redacted-thinking"; index: number; data: string }
     | { type: "tool-call-start"; id: string; name: string; index: number }
     | { type: "tool-call-delta"; index: number; argumentsDelta: string }
-    | { type: "message-stop"; finishReason?: string; usage?: Usage };
+    | { type: "error"; code?: string; message: string }
+    | { type: "message-stop"; finishReason?: string; usage?: Usage; complete?: boolean };
 
 /**
  * Stateful parser for Anthropic Messages-API SSE frames.
  *
  * Vendors hold an instance per stream, feed it the JSON-decoded payload
  * of each `data:` frame via `feed(...)`, and yield from the returned
- * iterator until the upstream stream ends.
+ * iterator until the upstream stream ends. Call `finalize()` if the
+ * upstream closes before emitting `message_stop`.
  */
 export function createStreamParser() {
     let finishReason: string | undefined;
     let usage: Usage | undefined;
+    let rawUsageAccum: Record<string, unknown> = {};
     let stopped = false;
 
     function feed(payload: unknown): AnthropicStreamEvent[] {
@@ -392,11 +566,36 @@ export function createStreamParser() {
         if (!data || stopped) return [];
         const eventType = clean(data.type);
 
+        if (eventType === "error") {
+            stopped = true;
+            const err = asRecord(data.error);
+            const code = clean(err?.type) || clean(err?.code) || "upstream_error";
+            const message = clean(err?.message) || clean(data.message) || "Anthropic upstream stream error";
+            return [{ type: "error", code, message }];
+        }
+
+        if (eventType === "message_start") {
+            const message = asRecord(data.message);
+            const startUsage = asRecord(message?.usage);
+            if (startUsage) {
+                rawUsageAccum = { ...rawUsageAccum, ...startUsage };
+                usage = usageFromAnthropic(rawUsageAccum);
+            }
+            return [];
+        }
+
         if (eventType === "content_block_start") {
             const idx = typeof data.index === "number" ? data.index : 0;
             const block = asRecord(data.content_block);
-            if (block && clean(block.type) === "tool_use") {
+            const blockType = clean(block?.type);
+            if (block && blockType === "tool_use") {
                 return [{ type: "tool-call-start", id: clean(block.id), name: clean(block.name), index: idx }];
+            }
+            if (block && blockType === "redacted_thinking" && typeof block.data === "string") {
+                return [{ type: "redacted-thinking", index: idx, data: block.data }];
+            }
+            if (block && blockType === "thinking" && typeof block.thinking === "string" && block.thinking) {
+                return [{ type: "thinking-delta", text: block.thinking }];
             }
             return [];
         }
@@ -412,6 +611,9 @@ export function createStreamParser() {
             if (dt === "thinking_delta" && typeof delta.thinking === "string") {
                 return [{ type: "thinking-delta", text: delta.thinking }];
             }
+            if (dt === "signature_delta" && typeof delta.signature === "string") {
+                return [{ type: "thinking-signature-delta", index: idx, signature: delta.signature }];
+            }
             if (dt === "input_json_delta" && typeof delta.partial_json === "string") {
                 return [{ type: "tool-call-delta", index: idx, argumentsDelta: delta.partial_json }];
             }
@@ -420,9 +622,13 @@ export function createStreamParser() {
 
         if (eventType === "message_delta") {
             const delta = asRecord(data.delta);
-            if (delta) finishReason = mapFinishReason(clean(delta.stop_reason));
-            const newUsage = usageFromAnthropic(data.usage);
-            if (newUsage) usage = newUsage;
+            if (delta && delta.stop_reason != null) finishReason = mapFinishReason(clean(delta.stop_reason));
+            const deltaUsage = asRecord(data.usage);
+            if (deltaUsage) {
+                rawUsageAccum = { ...rawUsageAccum, ...deltaUsage };
+                const mergedUsage = usageFromAnthropic(rawUsageAccum);
+                if (mergedUsage) usage = mergedUsage;
+            }
             return [];
         }
 
@@ -430,6 +636,7 @@ export function createStreamParser() {
             stopped = true;
             return [{
                 type: "message-stop",
+                complete: true,
                 ...(finishReason ? { finishReason } : {}),
                 ...(usage ? { usage } : {}),
             }];
@@ -438,5 +645,16 @@ export function createStreamParser() {
         return [];
     }
 
-    return { feed };
+    function finalize(): Extract<AnthropicStreamEvent, { type: "message-stop" }> | null {
+        if (stopped) return null;
+        stopped = true;
+        return {
+            type: "message-stop",
+            complete: false,
+            ...(finishReason ? { finishReason } : {}),
+            ...(usage ? { usage } : {}),
+        };
+    }
+
+    return { feed, finalize };
 }
