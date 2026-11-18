@@ -1,3 +1,4 @@
+import { cacheDel, cached } from "../../../cache.js";
 import { ensure, rows, stateUpdatedAt } from "../db.js";
 import { syncAzureExpenses } from "./azure.js";
 import { syncFireworksExpenses } from "./fireworks.js";
@@ -31,6 +32,7 @@ export async function syncAllExpenses(): Promise<{
         if (!result || result.status !== "fulfilled") throw new Error(`Missing ${providers[index]} expense result`);
         return result.value;
     };
+    await cacheDel("metrics:volume");
     return {
         openai: value(0),
         azure: value(1),
@@ -39,30 +41,32 @@ export async function syncAllExpenses(): Promise<{
 }
 
 export async function volumeTotals(): Promise<{ total: string; daily: string; updatedAt?: string }> {
-    await ensure();
-    const [payments, expenses, updatedAt] = await Promise.all([
-        rows<{ total_atomic: string; daily_atomic: string }>(`
-            SELECT
-                COALESCE(sum(amount_atomic), 0)::text AS total_atomic,
-                COALESCE(sum(CASE WHEN settled_at >= date_trunc('day', now()) THEN amount_atomic ELSE 0 END), 0)::text AS daily_atomic
-             FROM logical_settlements
-             WHERE status = 'settled'
-        `),
-        rows<{ total: string; daily: string }>(`
-            SELECT
-                COALESCE(sum(cost_usd), 0)::text AS total,
-                COALESCE(sum(CASE WHEN day = CURRENT_DATE THEN cost_usd ELSE 0 END), 0)::text AS daily
-             FROM expenses
-        `),
-        stateUpdatedAt("logical-settlements"),
-    ]);
-    const paymentTotal = Number(payments[0]?.total_atomic ?? "0") / 1e6;
-    const paymentDaily = Number(payments[0]?.daily_atomic ?? "0") / 1e6;
-    const expenseTotal = Number(expenses[0]?.total ?? "0");
-    const expenseDaily = Number(expenses[0]?.daily ?? "0");
-    return {
-        total: (paymentTotal + expenseTotal).toFixed(6),
-        daily: (paymentDaily + expenseDaily).toFixed(6),
-        updatedAt,
-    };
+    return cached("metrics:volume", 120, 30_000, async () => {
+        await ensure();
+        const [payments, expenses, updatedAt] = await Promise.all([
+            rows<{ total_atomic: string; daily_atomic: string }>(`
+                SELECT
+                    COALESCE(sum(amount_atomic), 0)::text AS total_atomic,
+                    COALESCE(sum(CASE WHEN settled_at >= date_trunc('day', now()) THEN amount_atomic ELSE 0 END), 0)::text AS daily_atomic
+                 FROM logical_settlements
+                 WHERE status = 'settled'
+            `),
+            rows<{ total: string; daily: string }>(`
+                SELECT
+                    COALESCE(sum(cost_usd), 0)::text AS total,
+                    COALESCE(sum(CASE WHEN day = (SELECT max(day) FROM expenses WHERE day >= CURRENT_DATE - 1) THEN cost_usd ELSE 0 END), 0)::text AS daily
+                 FROM expenses
+            `),
+            stateUpdatedAt("logical-settlements"),
+        ]);
+        const paymentTotal = Number(payments[0]?.total_atomic ?? "0") / 1e6;
+        const paymentDaily = Number(payments[0]?.daily_atomic ?? "0") / 1e6;
+        const expenseTotal = Number(expenses[0]?.total ?? "0");
+        const expenseDaily = Number(expenses[0]?.daily ?? "0");
+        return {
+            total: (paymentTotal + expenseTotal).toFixed(6),
+            daily: (paymentDaily + expenseDaily).toFixed(6),
+            updatedAt,
+        };
+    });
 }
