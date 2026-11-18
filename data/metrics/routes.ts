@@ -6,11 +6,16 @@ import { syncLogicalSettlements } from "./settlements.js";
 import { syncSessionsFromValkey } from "./sessions.js";
 import { syncAllExpenses, volumeTotals } from "./expenses/index.js";
 import { getMetricsSnapshot, refreshMetricsSnapshot } from "./snapshot.js";
+import { hasInternalToken } from "../../x402/keys/middleware.js";
 
 export function registerMetricsRoutes(app: Application): void {
     app.get("/api/metrics", async (req, res, next) => {
         try {
             if (req.query.refresh === "true" || req.query.refresh === "1") {
+                if (!hasInternalToken(req.get("x-backpack-internal-token"), req.get("authorization"))) {
+                    res.status(401).json({ error: "unauthorized" });
+                    return;
+                }
                 await syncDownloads();
                 await syncSessionsFromValkey();
                 await syncLogicalSettlements();
