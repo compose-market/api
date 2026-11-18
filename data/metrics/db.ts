@@ -26,7 +26,10 @@ export async function rows<T = Record<string, unknown>>(query: string, params: u
 
 export async function ensure(): Promise<void> {
     if (!ready) {
-        ready = migrate();
+        ready = migrate().catch((error) => {
+            ready = null;
+            throw error;
+        });
     }
     return ready;
 }
