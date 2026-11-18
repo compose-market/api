@@ -132,6 +132,13 @@ function settlementParams(request: StoredRequest, settlement: Settlement): unkno
 
 export function requestForSettlement(request: StoredRequest, settlement: Settlement): StoredRequest {
   const at = settlement.createdAt;
+  const startedMs = Date.parse(request.startedAt);
+  const atMs = Date.parse(at);
+  const derivedLatency = Number.isFinite(request.latencyMs) && request.latencyMs > 0
+    ? request.latencyMs
+    : Number.isFinite(startedMs) && Number.isFinite(atMs)
+      ? Math.max(0, Math.round(atMs - startedMs))
+      : 0;
   const usage = "usage" in settlement && settlement.usage
     ? settlement.usage
     : { metrics: {}, units: settlement.pricedUnits.map(({ unitPriceUsd: _, amountAtomic: __, ...unit }) => unit) };
@@ -143,9 +150,9 @@ export function requestForSettlement(request: StoredRequest, settlement: Settlem
     types: settlement.types,
     operation: settlement.operation,
     status: settlement.status === "failed" ? "failed" : "succeeded",
-    startedAt: at,
+    startedAt: request.startedAt || at,
     completedAt: at,
-    latencyMs: 0,
+    latencyMs: derivedLatency,
     usage,
     billing: settlement.billing,
     settlementIds: [settlement.id],
