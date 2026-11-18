@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 
-import { getModelById, getModelRegistry } from "../../inference/catalog/registry.js";
+import { cacheDel, cached, cacheSet } from "../../cache.js";
+import { getModelById, getModelRegistry } from "../../inference/adapters/registry.js";
 import { isProvider, type ModelCard } from "../../inference/types.js";
 
 import { latestBenchmarkObservations, type LatestObservationRecord } from "./db.js";
@@ -17,6 +18,13 @@ import {
     type RadarDataPoint,
     type StandardBenchmarkModel,
 } from "./types.js";
+
+const BENCHMARKS_INDEX_KEY = "benchmarks:index";
+const BENCHMARKS_FRONTIER_KEY = "benchmarks:frontier";
+const BENCHMARKS_INDEX_L2_TTL_S = 300;
+const BENCHMARKS_INDEX_L1_TTL_MS = 60_000;
+const BENCHMARKS_FRONTIER_L2_TTL_S = 600;
+const BENCHMARKS_FRONTIER_L1_TTL_MS = 5 * 60_000;
 
 const READ_CACHE_MS = 60_000;
 const FRONTIER_CACHE_MS = 5 * 60_000;
@@ -90,6 +98,7 @@ const METRICS_BY_OPERATION: Record<BenchmarkOperation, BenchmarkMetricDefinition
 };
 
 let readCache: { expiresAt: number; value: Awaited<ReturnType<typeof loadBenchmarkIndex>> } | null = null;
+
 let frontierCache: { expiresAt: number; index: FrontierIndex } | null = null;
 
 export class BenchmarkHttpError extends Error {
@@ -153,37 +162,45 @@ export function isFrontierModel(frontier: FrontierIndex, provider: string, model
 async function fetchFrontierIndex(): Promise<FrontierIndex> {
     if (frontierCache && frontierCache.expiresAt > Date.now()) return frontierCache.index;
 
-    const rows: Array<{ provider: string; modelId: string }> = [];
-    let cursor: string | null = "0";
-    for (let page = 0; page < 50 && cursor !== null; page += 1) {
-        const url = new URL(`${MODELS_WORKER_URL}/models`);
-        url.searchParams.set("frontier", "1");
-        url.searchParams.set("compact", "1");
-        url.searchParams.set("limit", "200");
-        url.searchParams.set("cursor", cursor);
-        const response = await fetch(url, {
-            headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(8_000),
-        });
-        if (!response.ok) {
-            throw new Error(`models.compose.market frontier request failed with HTTP ${response.status}`);
-        }
-        const body = await response.json() as { data?: unknown; next_cursor?: unknown };
-        if (!Array.isArray(body.data)) {
-            throw new Error("models.compose.market returned an invalid frontier response");
-        }
-        for (const item of body.data) {
-            if (!item || typeof item !== "object") continue;
-            const row = item as Record<string, unknown>;
-            if (typeof row.provider === "string" && typeof row.modelId === "string") {
-                rows.push({ provider: row.provider, modelId: row.modelId });
+    const rows = await cached(
+        BENCHMARKS_FRONTIER_KEY,
+        BENCHMARKS_FRONTIER_L2_TTL_S,
+        BENCHMARKS_FRONTIER_L1_TTL_MS,
+        async () => {
+            const collected: Array<{ provider: string; modelId: string }> = [];
+            let cursor: string | null = "0";
+            for (let page = 0; page < 50 && cursor !== null; page += 1) {
+                const url = new URL(`${MODELS_WORKER_URL}/models`);
+                url.searchParams.set("frontier", "1");
+                url.searchParams.set("compact", "1");
+                url.searchParams.set("limit", "200");
+                url.searchParams.set("cursor", cursor);
+                const response = await fetch(url, {
+                    headers: { Accept: "application/json" },
+                    signal: AbortSignal.timeout(8_000),
+                });
+                if (!response.ok) {
+                    throw new Error(`models.compose.market frontier request failed with HTTP ${response.status}`);
+                }
+                const body = await response.json() as { data?: unknown; next_cursor?: unknown };
+                if (!Array.isArray(body.data)) {
+                    throw new Error("models.compose.market returned an invalid frontier response");
+                }
+                for (const item of body.data) {
+                    if (!item || typeof item !== "object") continue;
+                    const row = item as Record<string, unknown>;
+                    if (typeof row.provider === "string" && typeof row.modelId === "string") {
+                        collected.push({ provider: row.provider, modelId: row.modelId });
+                    }
+                }
+                cursor = typeof body.next_cursor === "string" ? body.next_cursor : null;
             }
-        }
-        cursor = typeof body.next_cursor === "string" ? body.next_cursor : null;
-    }
+            return collected;
+        },
+    );
 
     const index = buildFrontierIndex(rows);
-    frontierCache = { expiresAt: Date.now() + FRONTIER_CACHE_MS, index };
+    frontierCache = { expiresAt: Date.now() + BENCHMARKS_FRONTIER_L1_TTL_MS, index };
     return index;
 }
 
