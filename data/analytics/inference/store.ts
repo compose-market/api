@@ -11,9 +11,9 @@ import type {
   InferenceTelemetryLifecycle,
   InferenceTelemetryRecord,
 } from "../../../inference/events.js";
-import { aggregateCanonicalFamily } from "../../../inference/catalog/families/index.js";
-import { getModelCapabilities } from "../../../inference/catalog/modalities/index.js";
-import { getModelById } from "../../../inference/catalog/registry.js";
+import { aggregateCanonicalFamily } from "../../../inference/adapters/families/index.js";
+import { getModelCapabilities } from "../../../inference/adapters/modalities/index.js";
+import { getModelById } from "../../../inference/adapters/registry.js";
 import { resolveBillingModel } from "../../../x402/metering.js";
 import type { PaymentIntentRecord } from "../../../x402/intents.js";
 import {
@@ -21,6 +21,24 @@ import {
   type EventName,
   type InvalidationReason,
 } from "../../shared/updates.js";
+import { bumpCacheVersion } from "../../../cache.js";
+import { getWalletPair } from "../../user/store.js";
+
+async function bumpAnalyticsCacheForOwner(userAddress: string | undefined): Promise<void> {
+  if (!userAddress) return;
+  const normalized = /^0x[a-fA-F0-9]{40}$/.test(userAddress)
+    ? userAddress.toLowerCase()
+    : userAddress;
+  const owners = new Set<string>([normalized]);
+  const pair = await getWalletPair(normalized).catch(() => null);
+  if (pair) {
+    owners.add(pair.evmAddress.toLowerCase());
+    owners.add(pair.svmAddress);
+  }
+  await Promise.all(
+    [...owners].map((owner) => bumpCacheVersion(`inference-analytics:${owner}`).catch(() => undefined)),
+  );
+}
 
 export interface AnalyticsRecordDependencies {
   insert?: typeof insertRequest;
