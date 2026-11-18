@@ -5,28 +5,34 @@ import { getModelById } from "./registry.js";
 import { normalizeSourceValue } from "./source.js";
 import type { ModelProvider } from "../types.js";
 import type {
+  Call,
   Message,
   Output,
   Request,
   Event,
   Usage,
 } from "../core.js";
-import * as openaiFamily from "./families/openai.js";
+import { valkeyGet, valkeySet } from "../../x402/keys/valkey.js";
+import * as anthropicFamily from "./families/anthropic.js";
+import * as deepseekFamily from "./families/deepseek.js";
 import * as googleFamily from "./families/google.js";
+import * as minimaxFamily from "./families/minimax.js";
+import * as mistralFamily from "./families/mistral.js";
 import * as moonshotFamily from "./families/moonshot.js";
+import * as openaiFamily from "./families/openai.js";
+import * as xaiFamily from "./families/xai.js";
+import * as zaiFamily from "./families/zai.js";
 import {
   generateImage as googleGenerateImage,
   streamImage as googleStreamImage,
   generateMusic as googleGenerateMusic,
   generateSpeech as googleGenerateSpeech,
-  generateVideo as googleGenerateVideo,
 } from "./families/google.js";
 import {
   openaiGenerateImage,
   isOpenAIImageStreamingUnsupportedError,
   openaiStreamImage,
   openaiGenerateSpeech,
-  openaiGenerateVideo,
   openaiTranscribeAudio,
 } from "./families/openai.js";
 import {
@@ -37,7 +43,6 @@ import {
   generateVertexEmbeddings,
   generateVertexImage,
   generateVertexSpeech,
-  generateVertexVideo,
   transcribeVertexAudio,
 } from "./vendors/vertex.js";
 import {
@@ -133,6 +138,12 @@ function targetCard(target: AdapterTarget): ReturnType<typeof getModelById> {
   return getModelById(target.catalogModelId || target.modelId, target.provider);
 }
 
+function isTextOnlyModel(target: AdapterTarget): boolean {
+  const input = targetCard(target)?.input;
+  if (!Array.isArray(input) || input.length === 0) return false;
+  return input.every((modality) => modality === "text");
+}
+
 export interface AdapterResult {
   output: Output;
 }
@@ -149,187 +160,62 @@ export interface AdapterStatus {
   usage?: Usage;
 }
 
-function normalizeContentToString(content: unknown): string {
-  if (content == null) {
-    return "";
-  }
-
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return String(content);
-  }
-
-  const textParts = content
-    .filter((part) => part && typeof part === "object" && (part as { type?: string }).type === "text")
-    .map((part) => (part as { text?: unknown }).text)
-    .filter((value): value is string => typeof value === "string");
-
-  if (textParts.length) {
-    return textParts.join("\n");
-  }
-
-  return JSON.stringify(content);
-}
-
-function normalizeContentParts(contentArray: unknown[]): unknown[] {
-  const normalized: unknown[] = [];
-
-  for (const rawPart of contentArray) {
-    if (!rawPart || typeof rawPart !== "object") {
-      continue;
-    }
-
-    const part = rawPart as Record<string, unknown>;
-    const type = typeof part.type === "string" ? part.type : "";
-
-    if (type === "text" && typeof part.text === "string") {
-      normalized.push({ type: "text", text: part.text });
-      continue;
-    }
-
-    if (type === "image_url") {
-      const value = part.image_url;
-      const url = typeof value === "string" ? value : (value as { url?: string } | undefined)?.url;
-      if (url) {
-        normalized.push({ type: "image", image: url });
-      }
-      continue;
-    }
-
-    if (type === "input_audio") {
-      const value = part.input_audio;
-      const url = typeof value === "string" ? value : (value as { url?: string } | undefined)?.url;
-      if (url) {
-        normalized.push({ type: "file", data: url, mimeType: "audio/mpeg" });
-      }
-      continue;
-    }
-
-    if (type === "video_url") {
-      const value = part.video_url;
-      const url = typeof value === "string" ? value : (value as { url?: string } | undefined)?.url;
-      if (url) {
-        normalized.push({ type: "file", data: url, mimeType: "video/mp4" });
-      }
-      continue;
-    }
-
-    if (type === "tool-call" || type === "tool_call") {
-      normalized.push({
-        type: "tool-call",
-        toolCallId: part.toolCallId || part.id || "",
-        toolName: part.toolName || part.name || "",
-        input: part.input ?? part.args ?? {},
-      });
-      continue;
-    }
-
-    if (type === "tool-result" || type === "tool_result") {
-      normalized.push({
-        type: "tool-result",
-        toolCallId: part.toolCallId || "",
-        toolName: part.toolName || "",
-        output: normalizeToolOutput(part.output ?? part.result),
-      });
-      continue;
-    }
-
-    normalized.push({ type: "text", text: JSON.stringify(part) });
-  }
-
-  return normalized;
-}
-
-function normalizeToolOutput(value: unknown): unknown {
-  if (value && typeof value === "object" && "type" in (value as Record<string, unknown>)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    return {
-      type: "text",
-      value,
-    };
-  }
-
-  return {
-    type: "json",
-    value: value ?? null,
-  };
-}
-
 // =============================================================================
-// Gemini thought_signature round-trip cache
+// Gemini thought_signature round-trip cache (L1 memory + L2 Valkey)
 // =============================================================================
 //
 // Gemini 3+ (and 2.5 reasoning models) require that every functionCall part
 // returned in a previous turn be sent back with its `thoughtSignature` when
-// the next turn carries the tool result. The signature is an opaque blob the
-// model uses to reconstruct its own reasoning state.
-//
-// The OpenAI-compatible wire format we use between runtime, api, and provider
-// has no slot for `thoughtSignature` on a `tool_calls[i]` entry, and legacy
-// tool-call converters strip unknown fields before they hit the wire. So we
-// cannot piggyback on the wire; we cache server-side, keyed by the
-// api-generated `toolCallId`, which DOES survive the round trip unchanged.
-//
-// In-process Map only. A multi-step Gemini tool loop is held inside ONE
-// SSE response on ONE api instance for the entire turn — tool calls
-// within that turn never cross instances. Cross-turn continuity is
-// handled by the persisted message history (Responses API).
-//
-// TTL is 10m: a regular multi-step tool loop completes in seconds.
+// the next turn carries the tool result. We store it in local L1 cache AND
+// Valkey (short TTL) so multi-replica Cloud Run never drops signatures.
 
-const THOUGHT_SIGNATURE_TTL_MS = 10 * 60_000;
+const THOUGHT_SIGNATURE_TTL_SECONDS = 1800;
+const THOUGHT_SIGNATURE_TTL_MS = THOUGHT_SIGNATURE_TTL_SECONDS * 1000;
+const THOUGHT_SIGNATURE_KEY_PREFIX = "inference:thought_signature:";
 const thoughtSignatures = new Map<string, { signature: string; expiresAt: number }>();
 
-function rememberThoughtSignature(toolCallId: string | undefined, signature: string | undefined): void {
+function valkeyEnabled(): boolean {
+  return Boolean(process.env.VALKEY_KEYS_SERVICE_URI?.trim());
+}
+
+async function rememberThoughtSignature(toolCallId: string | undefined, signature: string | undefined): Promise<void> {
   if (!toolCallId || typeof signature !== "string" || signature.length === 0) return;
   thoughtSignatures.set(toolCallId, {
     signature,
     expiresAt: Date.now() + THOUGHT_SIGNATURE_TTL_MS,
   });
-  // Cheap GC pass: when the map gets large, prune everything expired.
   if (thoughtSignatures.size > 2_000) {
     const now = Date.now();
     for (const [key, entry] of thoughtSignatures) {
       if (entry.expiresAt <= now) thoughtSignatures.delete(key);
     }
   }
+  if (valkeyEnabled()) {
+    await valkeySet(`${THOUGHT_SIGNATURE_KEY_PREFIX}${toolCallId}`, signature, THOUGHT_SIGNATURE_TTL_SECONDS)
+      .catch((error) => {
+        console.warn("[inference] Failed to persist Gemini thoughtSignature in Valkey:", error);
+      });
+  }
 }
 
-function recallThoughtSignature(toolCallId: string | undefined): string | undefined {
+async function recallThoughtSignature(toolCallId: string | undefined): Promise<string | undefined> {
   if (!toolCallId) return undefined;
   const entry = thoughtSignatures.get(toolCallId);
-  if (!entry) return undefined;
-  if (entry.expiresAt <= Date.now()) {
+  if (entry) {
+    if (entry.expiresAt > Date.now()) return entry.signature;
     thoughtSignatures.delete(toolCallId);
-    return undefined;
   }
-  return entry.signature;
-}
-
-function mapMessagesForVertex(messages: Message[]): Array<{ role: string; content: string | unknown[] }> {
-  return messages.map((message) => {
-    if (Array.isArray(message.content)) {
-      return { role: message.role, content: message.content };
+  if (valkeyEnabled()) {
+    const remote = await valkeyGet(`${THOUGHT_SIGNATURE_KEY_PREFIX}${toolCallId}`).catch(() => null);
+    if (remote) {
+      thoughtSignatures.set(toolCallId, {
+        signature: remote,
+        expiresAt: Date.now() + THOUGHT_SIGNATURE_TTL_MS,
+      });
+      return remote;
     }
-
-    if (message.role === "tool") {
-      return {
-        role: "user",
-        content: normalizeContentToString(message.content),
-      };
-    }
-
-    return {
-      role: message.role,
-      content: normalizeContentToString(message.content),
-    };
-  });
+  }
+  return undefined;
 }
 
 // Endpoint resolution for OpenAI-compatible aggregators that piggyback on
@@ -417,7 +303,11 @@ function estimateTokens(text: string): number {
   return Math.ceil((text || "").length / 4);
 }
 
-function moonshotResponseFormat(request: Request): Record<string, unknown> | undefined {
+function resolvedFamily(target: AdapterTarget): string {
+  return (target.family || targetCard(target)?.family || "").toLowerCase();
+}
+
+function openAIStyleResponseFormat(request: Request): Record<string, unknown> | undefined {
   const format = request.responseFormat;
   if (!format || format.type === "text") return undefined;
   if (format.type === "json_object") return { type: "json_object" };
@@ -432,8 +322,8 @@ function moonshotResponseFormat(request: Request): Record<string, unknown> | und
   } : { type: "json_object" };
 }
 
-function moonshotOptions(request: Request): moonshotFamily.MoonshotChatOptions {
-  const responseFormat = moonshotResponseFormat(request);
+function commonChatOptions(request: Request) {
+  const responseFormat = openAIStyleResponseFormat(request);
   const topP = typeof request.customParams?.top_p === "number" ? request.customParams.top_p : undefined;
   const stop = typeof request.customParams?.stop === "string" || Array.isArray(request.customParams?.stop)
     ? request.customParams.stop as string | string[]
@@ -450,18 +340,110 @@ function moonshotOptions(request: Request): moonshotFamily.MoonshotChatOptions {
   };
 }
 
-async function invokeMoonshotText(request: Request, target: AdapterTarget): Promise<Output> {
+type FamilyStreamChunk =
+  | { type: "text-delta"; text: string }
+  | { type: "reasoning-delta"; text: string }
+  | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
+  | { type: "finish"; finishReason?: string; usage?: Usage };
+
+interface OpenAICompatFamilyWire {
+  label: string;
+  buildChatBody: (modelId: string, messages: Message[], request: Request, streaming: boolean) => Record<string, unknown>;
+  parseChatResponse: (raw: unknown) => {
+    text: string;
+    reasoningContent?: string;
+    toolCalls?: Call[];
+    finishReason?: string;
+    usage?: Usage;
+  };
+  createStreamParser: () => {
+    feed: (payload: unknown) => FamilyStreamChunk[];
+    finalize: () => { finishReason?: string; usage?: Usage };
+  };
+}
+
+const OPENAI_COMPAT_FAMILY_WIRES: Record<string, OpenAICompatFamilyWire> = {
+  moonshot: {
+    label: "Moonshot",
+    buildChatBody: (modelId, messages, request, streaming) =>
+      moonshotFamily.buildChatBody(modelId, messages, commonChatOptions(request), streaming),
+    parseChatResponse: moonshotFamily.parseChatResponse,
+    createStreamParser: moonshotFamily.createStreamParser,
+  },
+  deepseek: {
+    label: "DeepSeek",
+    buildChatBody: (modelId, messages, request, streaming) => {
+      const opts = commonChatOptions(request);
+      return deepseekFamily.buildChatBody(modelId, messages, {
+        ...opts,
+        responseFormat: opts.responseFormat as deepseekFamily.DeepSeekResponseFormat | undefined,
+      }, streaming);
+    },
+    parseChatResponse: deepseekFamily.parseChatResponse,
+    createStreamParser: deepseekFamily.createStreamParser,
+  },
+  mistral: {
+    label: "Mistral",
+    buildChatBody: (modelId, messages, request, streaming) =>
+      mistralFamily.buildChatBody(modelId, messages, commonChatOptions(request), streaming),
+    parseChatResponse: mistralFamily.parseChatResponse,
+    createStreamParser: mistralFamily.createStreamParser,
+  },
+  xai: {
+    label: "xAI",
+    buildChatBody: (modelId, messages, request, streaming) => {
+      const { maxTokens, ...rest } = commonChatOptions(request);
+      return xaiFamily.buildChatBody(modelId, messages, {
+        ...rest,
+        ...(typeof maxTokens === "number" ? { maxCompletionTokens: maxTokens } : {}),
+      }, streaming);
+    },
+    parseChatResponse: xaiFamily.parseChatResponse,
+    createStreamParser: xaiFamily.createStreamParser,
+  },
+  zai: {
+    label: "Z.AI",
+    buildChatBody: (modelId, messages, request, streaming) => {
+      const { stop, responseFormat, ...rest } = commonChatOptions(request);
+      return zaiFamily.buildChatBody(modelId, messages, {
+        ...rest,
+        ...(stop !== undefined ? { stop: Array.isArray(stop) ? stop : [stop] } : {}),
+        ...(responseFormat ? { responseFormat: responseFormat as { type: "text" | "json_object" } } : {}),
+      }, streaming);
+    },
+    parseChatResponse: zaiFamily.parseChatResponse,
+    createStreamParser: zaiFamily.createStreamParser,
+  },
+  minimax: {
+    label: "MiniMax",
+    buildChatBody: (modelId, messages, request, streaming) =>
+      minimaxFamily.buildChatBody(modelId, messages, commonChatOptions(request), streaming),
+    parseChatResponse: minimaxFamily.parseChatResponse,
+    createStreamParser: minimaxFamily.createStreamParser,
+  },
+};
+
+function openAICompatFamilyWireFor(target: AdapterTarget): OpenAICompatFamilyWire | undefined {
+  if (!usesSharedOpenAICompatTransport(target.provider)) return undefined;
+  return OPENAI_COMPAT_FAMILY_WIRES[resolvedFamily(target)];
+}
+
+async function invokeFamilyChat(
+  wire: OpenAICompatFamilyWire,
+  request: Request,
+  target: AdapterTarget,
+): Promise<Output> {
   const endpoint = openaiCompatEndpointFor(target.provider);
   const response = await fetch(openaiFamily.endpointUrl(endpoint, "chat"), {
     method: "POST",
     headers: openaiFamily.endpointHeaders(endpoint, "application/json"),
-    body: JSON.stringify(moonshotFamily.buildChatBody(target.modelId, request.messages, moonshotOptions(request))),
+    body: JSON.stringify(wire.buildChatBody(target.modelId, request.messages, request, false)),
     signal: target.signal,
   });
   if (!response.ok) {
-    throw await openaiFamily.responseError("Moonshot chat", response);
+    throw await openaiFamily.responseError(`${wire.label} chat`, response);
   }
-  const result = moonshotFamily.parseChatResponse(await response.json());
+  const result = wire.parseChatResponse(await response.json());
   return {
     modality: "text",
     content: result.text,
@@ -471,24 +453,28 @@ async function invokeMoonshotText(request: Request, target: AdapterTarget): Prom
       completionTokens: estimateTokens(result.text),
       totalTokens: estimateTokens(result.text),
     },
-    finishReason: result.finishReason,
+    finishReason: result.finishReason || "stop",
     ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
   };
 }
 
-async function* streamMoonshotText(request: Request, target: AdapterTarget): AsyncGenerator<Event> {
+async function* streamFamilyChat(
+  wire: OpenAICompatFamilyWire,
+  request: Request,
+  target: AdapterTarget,
+): AsyncGenerator<Event> {
   const endpoint = openaiCompatEndpointFor(target.provider);
   const response = await fetch(openaiFamily.endpointUrl(endpoint, "chat"), {
     method: "POST",
     headers: openaiFamily.endpointHeaders(endpoint, "application/json"),
-    body: JSON.stringify(moonshotFamily.buildChatBody(target.modelId, request.messages, moonshotOptions(request), true)),
+    body: JSON.stringify(wire.buildChatBody(target.modelId, request.messages, request, true)),
     signal: target.signal,
   });
   if (!response.ok || !response.body) {
-    throw await openaiFamily.responseError("Moonshot stream", response);
+    throw await openaiFamily.responseError(`${wire.label} stream`, response);
   }
 
-  const parser = moonshotFamily.createStreamParser();
+  const parser = wire.createStreamParser();
   const calls = new Map<number, { id: string; name: string; arguments: string }>();
   for await (const data of openaiFamily.readOpenAISSE(response.body.getReader())) {
     let payload: unknown;
@@ -522,6 +508,194 @@ async function* streamMoonshotText(request: Request, target: AdapterTarget): Asy
     type: "done",
     finishReason: done.finishReason || (calls.size ? "tool-calls" : "stop"),
     usage: done.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  };
+}
+
+function anthropicVertexRequiredMaxTokens(target: AdapterTarget): number | undefined {
+  if (target.provider !== "vertex") return undefined;
+  const card = targetCard(target);
+  const rawWindow = card?.contextWindow;
+  const outputTokens = typeof rawWindow === "object" && rawWindow !== null
+    ? (rawWindow as { outputTokens?: unknown }).outputTokens
+    : undefined;
+  if (typeof card?.maxOutputTokens === "number" && card.maxOutputTokens > 0) return card.maxOutputTokens;
+  if (typeof outputTokens === "number" && outputTokens > 0) return outputTokens;
+  return undefined;
+}
+
+function anthropicRequestTarget(
+  target: AdapterTarget,
+  request: Request,
+  streaming: boolean,
+): { url: string; headers: Record<string, string>; body: Record<string, unknown> } {
+  const stop = request.customParams?.stop;
+  const stopSequences = Array.isArray(stop)
+    ? stop.filter((s): s is string => typeof s === "string")
+    : typeof stop === "string" ? [stop] : undefined;
+  const topP = typeof request.customParams?.top_p === "number" ? request.customParams.top_p : undefined;
+  const topK = typeof request.customParams?.top_k === "number" && request.customParams.top_k > 0
+    ? request.customParams.top_k
+    : undefined;
+  const resolvedMaxTokens = typeof request.maxTokens === "number"
+    ? request.maxTokens
+    : anthropicVertexRequiredMaxTokens(target);
+  const body = anthropicFamily.buildChatBody(target.modelId, request.messages, {
+    ...(resolvedMaxTokens !== undefined ? { maxTokens: resolvedMaxTokens } : {}),
+    ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
+    ...(typeof request.temperature !== "number" && topP !== undefined ? { topP } : {}),
+    ...(topK !== undefined ? { topK } : {}),
+    ...(stopSequences?.length ? { stopSequences } : {}),
+    ...(request.tools ? { tools: request.tools } : {}),
+    ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
+    customParams: request.customParams,
+  }, streaming);
+
+  if (target.provider === "vertex") {
+    const projectId = process.env.VERTEX_PROJECT_ID || "";
+    const accessToken = process.env.VERTEX_AI_API_KEY || "";
+    const location = process.env.VERTEX_LOCATION || "us-central1";
+    if (!projectId || !accessToken) {
+      throw new Error("VERTEX_PROJECT_ID and VERTEX_AI_API_KEY are required for Vertex Anthropic generation");
+    }
+    delete body.model;
+    body.anthropic_version = "vertex-2023-10-16";
+    const action = streaming ? "streamRawPredict" : "rawPredict";
+    return {
+      url: `https://${location}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/anthropic/models/${encodeURIComponent(target.modelId)}:${action}`,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body,
+    };
+  }
+
+  const apiKey = process.env.DEEPINFRA_API_KEY || "";
+  if (!apiKey) {
+    throw new Error("DEEPINFRA_API_KEY not configured");
+  }
+  return {
+    url: "https://api.deepinfra.com/anthropic/v1/messages",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body,
+  };
+}
+
+function usesAnthropicWire(target: AdapterTarget): boolean {
+  return resolvedFamily(target) === "anthropic"
+    && (target.provider === "deepinfra" || target.provider === "vertex");
+}
+
+async function invokeAnthropicText(request: Request, target: AdapterTarget): Promise<Output> {
+  const { url, headers, body } = anthropicRequestTarget(target, request, false);
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: target.signal,
+  });
+  if (!response.ok) {
+    throw await openaiFamily.responseError("Anthropic messages", response);
+  }
+  const result = anthropicFamily.parseChatResponse(await response.json());
+  return {
+    modality: "text",
+    content: result.text,
+    ...(result.reasoningContent ? { reasoning: result.reasoningContent } : {}),
+    usage: result.usage || {
+      promptTokens: 0,
+      completionTokens: estimateTokens(result.text),
+      totalTokens: estimateTokens(result.text),
+    },
+    finishReason: result.finishReason || "stop",
+    ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+  };
+}
+
+async function* streamAnthropicText(request: Request, target: AdapterTarget): AsyncGenerator<Event> {
+  const { url, headers, body } = anthropicRequestTarget(target, request, true);
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: target.signal,
+  });
+  if (!response.ok || !response.body) {
+    throw await openaiFamily.responseError("Anthropic messages stream", response);
+  }
+
+  const parser = anthropicFamily.createStreamParser();
+  const calls = new Map<number, { id: string; name: string; arguments: string }>();
+  let doneEvent: { finishReason?: string; usage?: Usage } | null = null;
+  let emittedOutput = false;
+
+  for await (const data of openaiFamily.readOpenAISSE(response.body.getReader())) {
+    let payload: unknown;
+    try { payload = JSON.parse(data); } catch { continue; }
+    for (const event of parser.feed(payload)) {
+      if (event.type === "error") {
+        yield {
+          type: "error",
+          error: {
+            code: event.code || "upstream_error",
+            message: event.message,
+          },
+        };
+        return;
+      }
+      if (event.type === "text-delta") {
+        emittedOutput = true;
+        yield { type: "text-delta", text: event.text };
+      } else if (event.type === "thinking-delta") yield { type: "reasoning-delta", text: event.text };
+      else if (event.type === "tool-call-start") {
+        emittedOutput = true;
+        const id = event.id || `call_${event.index}`;
+        calls.set(event.index, { id, name: event.name, arguments: "" });
+        yield {
+          type: "tool-call-delta",
+          toolCallDelta: { index: event.index, id, ...(event.name ? { name: event.name } : {}) },
+        };
+      } else if (event.type === "tool-call-delta") {
+        emittedOutput = true;
+        const current = calls.get(event.index) || { id: `call_${event.index}`, name: "", arguments: "" };
+        current.arguments += event.argumentsDelta;
+        calls.set(event.index, current);
+        yield {
+          type: "tool-call-delta",
+          toolCallDelta: { index: event.index, arguments: event.argumentsDelta },
+        };
+      } else if (event.type === "message-stop") {
+        doneEvent = { finishReason: event.finishReason, usage: event.usage };
+      }
+    }
+  }
+
+  if (!doneEvent) {
+    const finalized = parser.finalize();
+    if (!emittedOutput && (finalized?.usage?.completionTokens ?? 0) <= 0) {
+      yield {
+        type: "error",
+        ...(finalized?.usage ? { usage: finalized.usage } : {}),
+        error: {
+          code: "incomplete_provider_stream",
+          message: "Upstream Anthropic stream ended before completion",
+        },
+      };
+      return;
+    }
+    if (finalized) doneEvent = { finishReason: finalized.finishReason, usage: finalized.usage };
+  }
+  for (const [index, call] of [...calls.entries()].sort(([left], [right]) => left - right)) {
+    yield { type: "tool-call", toolCall: { ...call, index, arguments: call.arguments || "{}" } };
+  }
+  yield {
+    type: "done",
+    finishReason: doneEvent?.finishReason || (calls.size ? "tool-calls" : "stop"),
+    usage: doneEvent?.usage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   };
 }
 
@@ -725,10 +899,6 @@ function findPositiveNumericField(value: unknown, keys: Set<string>, depth = 0):
 
 function findProviderDurationSeconds(value: unknown): number | undefined {
   return findPositiveNumericField(value, new Set(["seconds", "duration", "durationseconds", "videodurationseconds"]));
-}
-
-function usageFromResult(result: { promptTokens?: number; completionTokens?: number; totalTokens?: number }): Usage {
-  return normalizeUsage(result);
 }
 
 type Tokens = {
@@ -1004,74 +1174,6 @@ function estimatedEmbeddingUsage(values: string[]): Usage {
   };
 }
 
-class AsyncEventQueue<T> {
-  private values: T[] = [];
-  private waiters: Array<{ resolve: (value: IteratorResult<T>) => void; reject: (error: unknown) => void }> = [];
-  private ended = false;
-  private failure: unknown = null;
-
-  push(value: T): void {
-    if (this.ended || this.failure) {
-      return;
-    }
-
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter.resolve({ value, done: false });
-      return;
-    }
-
-    this.values.push(value);
-  }
-
-  end(): void {
-    if (this.ended || this.failure) {
-      return;
-    }
-    this.ended = true;
-    while (this.waiters.length > 0) {
-      const waiter = this.waiters.shift();
-      waiter?.resolve({ value: undefined as T, done: true });
-    }
-  }
-
-  error(error: unknown): void {
-    if (this.ended || this.failure) {
-      return;
-    }
-    this.failure = error;
-    while (this.waiters.length > 0) {
-      const waiter = this.waiters.shift();
-      waiter?.reject(error);
-    }
-  }
-
-  async next(): Promise<IteratorResult<T>> {
-    if (this.failure) {
-      throw this.failure;
-    }
-
-    if (this.values.length > 0) {
-      const value = this.values.shift() as T;
-      return { value, done: false };
-    }
-
-    if (this.ended) {
-      return { value: undefined as T, done: true };
-    }
-
-    return new Promise<IteratorResult<T>>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: () => this.next(),
-    };
-  }
-}
-
 async function transcribe(request: Request, target: AdapterTarget): Promise<Output> {
   const audioUrl = findUrl(request.messages, "input_audio");
   const prompt = getPrimaryText(request.messages);
@@ -1189,10 +1291,6 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
     return transcribe(request, target);
   }
 
-  if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
-    return invokeMoonshotText(request, target);
-  }
-
   if (target.provider === "roboflow") {
     const prompt = getPrimaryText(request.messages);
     const imageUrl = findUrl(request.messages, "image_url");
@@ -1229,6 +1327,9 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
   }
 
   if (target.provider === "vertex") {
+    if (usesAnthropicWire(target)) {
+      return invokeAnthropicText(request, target);
+    }
     return googleFamily.chat(vertexGoogleEndpoint(), target.modelId, request.messages, {
       ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
       ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
@@ -1425,6 +1526,17 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
     return result;
   }
 
+  // Anthropic Messages wire (DeepInfra native /anthropic/v1/messages)
+  if (usesAnthropicWire(target)) {
+    return invokeAnthropicText(request, target);
+  }
+
+  // Pure-protocol OpenAI-compat family wires (moonshot, deepseek, mistral, xai, zai, minimax)
+  const familyWire = openAICompatFamilyWireFor(target);
+  if (familyWire) {
+    return invokeFamilyChat(familyWire, request, target);
+  }
+
   // OpenAI Chat Completions wire family fall-through (openai, cloudflare,
   // fireworks, asicloud, hugging face router).
   const endpoint = openaiCompatEndpointFor(target.provider);
@@ -1453,6 +1565,7 @@ async function invokeText(request: Request, target: AdapterTarget): Promise<Outp
     ...(request.tools ? { tools: request.tools } : {}),
     ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
     ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+    ...(isTextOnlyModel(target) ? { textOnly: true } : {}),
     customParams: request.customParams,
     signal: target.signal,
   });
@@ -2059,30 +2172,6 @@ async function invokeVideo(request: Request, target: AdapterTarget): Promise<Out
 
   const output: { buffer: Buffer; mimeType: string; url?: string; usage?: Usage } = await withRetry(async () => {
     switch (target.provider) {
-      case "gemini": {
-        const result = await googleGenerateVideo(target.modelId, prompt, {
-          duration: request.videoOptions?.duration,
-          aspectRatio: request.videoOptions?.aspectRatio as "16:9" | "9:16" | undefined,
-          resolution: resolutionTier as "720p" | "1080p" | undefined,
-          negativePrompt: typeof request.customParams?.negative_prompt === "string" ? request.customParams.negative_prompt : undefined,
-        });
-        return { buffer: result.videoBuffer, mimeType: result.mimeType };
-      }
-      case "openai": {
-        const result = await openaiGenerateVideo(target.modelId, prompt, {
-          duration: request.videoOptions?.duration,
-          size: dimensionSize,
-          imageUrl,
-        });
-        return { buffer: result.videoBuffer, mimeType: result.mimeType };
-      }
-      case "vertex": {
-        const result = await generateVertexVideo(target.modelId, prompt, {
-          duration: request.videoOptions?.duration,
-          aspectRatio: request.videoOptions?.aspectRatio,
-        });
-        return { buffer: result.buffer, mimeType: result.mimeType };
-      }
       case "hugging face": {
         const imageBuffer = await fetchRemoteBuffer(imageUrl, target.signal);
         const input: HFInferenceInput = {
@@ -2635,11 +2724,6 @@ export async function* streamWithTools(
     throw new Error(`Streaming is only supported for text and image modalities. Requested: ${request.modality}`);
   }
 
-  if (target.family === "moonshot" && usesSharedOpenAICompatTransport(target.provider)) {
-    yield* streamMoonshotText(request, target);
-    return;
-  }
-
   if (isSpeechToTextOperation(request)) {
     const output = await transcribe(request, target);
     if (output.content) {
@@ -2726,6 +2810,10 @@ export async function* streamWithTools(
   }
 
   if (target.provider === "vertex") {
+    if (usesAnthropicWire(target)) {
+      yield* streamAnthropicText(request, target);
+      return;
+    }
     yield* googleFamily.streamChat(vertexGoogleEndpoint(), target.modelId, request.messages, {
       ...(typeof request.temperature === "number" ? { temperature: request.temperature } : {}),
       ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
@@ -2791,6 +2879,19 @@ export async function* streamWithTools(
     return;
   }
 
+  // Anthropic Messages wire streaming (DeepInfra native /anthropic/v1/messages)
+  if (usesAnthropicWire(target)) {
+    yield* streamAnthropicText(request, target);
+    return;
+  }
+
+  // Pure-protocol OpenAI-compat family wires (moonshot, deepseek, mistral, xai, zai, minimax)
+  const familyWire = openAICompatFamilyWireFor(target);
+  if (familyWire) {
+    yield* streamFamilyChat(familyWire, request, target);
+    return;
+  }
+
   // OpenAI Chat Completions wire family streaming fall-through (openai,
   // cloudflare, fireworks, asicloud, hugging face router).
   const endpoint = openaiCompatEndpointFor(target.provider);
@@ -2820,6 +2921,7 @@ export async function* streamWithTools(
     ...(request.tools ? { tools: request.tools } : {}),
     ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
     ...(request.responseFormat ? { responseFormat: request.responseFormat } : {}),
+    ...(isTextOnlyModel(target) ? { textOnly: true } : {}),
     customParams: request.customParams,
     signal: target.signal,
   })) {
@@ -2948,7 +3050,11 @@ export async function retrieveJob(jobId: string): Promise<AdapterStatus> {
         throw new Error("VERTEX_AI_API_KEY or GOOGLE_CLOUD_API_KEY not configured");
       }
 
-      const response = await fetch(`https://${location}-aiplatform.googleapis.com/v1/${providerJobId}`, {
+      const cleanJobId = providerJobId.trim();
+      if (!/^[a-zA-Z0-9/_-]{1,300}$/.test(cleanJobId) || cleanJobId.includes("..")) {
+        throw new Error(`Invalid Vertex providerJobId: ${providerJobId}`);
+      }
+      const response = await fetch(`https://${location}-aiplatform.googleapis.com/v1/${cleanJobId}`, {
         headers: { Authorization: `Bearer ${apiKey}` },
       });
 
