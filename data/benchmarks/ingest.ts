@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-import { getAllModelCards, getModelRegistry } from "../../inference/catalog/registry.js";
+import { getAllModelCards, getModelRegistry } from "../../inference/adapters/registry.js";
 
 import {
     beginBenchmarkRun,
@@ -15,6 +15,7 @@ import {
     selectBestPowerVariants,
 } from "./matching.js";
 import { BENCHMARK_ENDPOINTS, fetchBenchmarkEndpoint } from "./source.js";
+import { invalidateBenchmarkCache } from "./service.js";
 
 export interface BenchmarkIngestionSummary {
     lockAcquired: boolean;
@@ -112,5 +113,6 @@ export async function ingestBenchmarks(): Promise<BenchmarkIngestionSummary> {
     if (summary.succeeded === 0) {
         throw new Error("Artificial Analysis ingestion failed for every endpoint");
     }
+    await invalidateBenchmarkCache();
     return summary;
 }
