@@ -12,8 +12,11 @@
  * via openaiCompatEndpointFor("deepinfra") in the adapter.
  */
 
-import { asRecord, audioMimeType, bufferFromPayload, imagesFromResponse, normalizeOpenAIUsage, throwHttpError } from "../shared/index.js";
+import { asRecord, audioMimeType, bufferFromPayload, imagesFromResponse, normalizeOpenAIUsage, sizeToDimensions, throwHttpError } from "../shared/index.js";
 import { buildBriaBody } from "../families/bria.js";
+import { buildFluxBody } from "../families/bfl.js";
+import * as minimaxFamily from "../families/minimax.js";
+import * as stabilityaiFamily from "../families/stabilityai.js";
 import { rerankBillingMetrics } from "../modalities/rerank.js";
 import { audioDurationSeconds } from "../modalities/audio.js";
 import { getModelById } from "../registry.js";
@@ -274,13 +277,46 @@ export async function generateDeepInfraImage(
         retryable: false,
       });
     }
-    body = buildBriaBody(wireModelId, prompt, {
-      image: imageUrls[0],
-      mask: options.operation === "inpainting" ? options.maskUrl : undefined,
-      size: options.size,
-      n: options.n,
-      customParams,
-    });
+    const family = card?.family?.toLowerCase();
+    const dims = sizeToDimensions(options.size);
+    const ratio = aspectRatio(options.size);
+    if (family === "stabilityai") {
+      const built = stabilityaiFamily.buildCoreGenerateRequest(prompt, {
+        ...(typeof customParams.negative_prompt === "string" ? { negativePrompt: customParams.negative_prompt } : {}),
+        ...(typeof customParams.seed === "number" ? { seed: customParams.seed } : {}),
+        ...(typeof customParams.cfg_scale === "number" ? { cfgScale: customParams.cfg_scale } : {}),
+        ...(ratio ? { aspectRatio: ratio as stabilityaiFamily.StabilityAspectRatio } : {}),
+      });
+      body = { ...customParams, ...built.fields };
+    } else if (family === "blackforestlabs") {
+      body = buildFluxBody({
+        prompt,
+        ...(typeof dims.width === "number" && dims.width > 0 ? { width: dims.width } : {}),
+        ...(typeof dims.height === "number" && dims.height > 0 ? { height: dims.height } : {}),
+        ...(ratio ? { aspectRatio: ratio } : {}),
+        ...(typeof options.n === "number" ? { n: options.n } : {}),
+        ...(imageUrls.length > 0 ? { images: imageUrls.map((url) => ({ type: "url" as const, url })) } : {}),
+        customParams,
+      });
+    } else if (family === "minimax") {
+      body = {
+        ...customParams,
+        ...minimaxFamily.buildImageBody(wireModelId, prompt, {
+          ...(typeof options.n === "number" ? { n: options.n } : {}),
+          ...(ratio ? { aspectRatio: ratio as minimaxFamily.MinimaxImageOptions["aspectRatio"] } : {}),
+          ...(typeof dims.width === "number" && dims.width > 0 ? { width: dims.width } : {}),
+          ...(typeof dims.height === "number" && dims.height > 0 ? { height: dims.height } : {}),
+        }),
+      };
+    } else {
+      body = buildBriaBody(wireModelId, prompt, {
+        image: imageUrls[0],
+        mask: options.operation === "inpainting" ? options.maskUrl : undefined,
+        size: options.size,
+        n: options.n,
+        customParams,
+      });
+    }
     for (const key of Object.keys(body)) {
       if (!accepted.has(key)) delete body[key];
     }
@@ -410,8 +446,18 @@ export async function generateDeepInfraVideo(
   const referenceOperation = options.operation === "reference-to-video" || options.operation === "video-edit";
   const imageOperation = options.operation === "image-to-video";
   const videoOperation = options.operation === "video-to-video";
-  const body: Record<string, unknown> = Object.fromEntries(Object.entries(options.customParams || {})
-    .filter(([key, value]) => accepted.has(key) && value !== undefined));
+  const family = card?.family?.toLowerCase();
+  const baseBody = family === "minimax"
+    ? Object.fromEntries(Object.entries(minimaxFamily.buildVideoBody(wireModelId, prompt, {
+      ...(imageUrls[0] ? { firstFrameImage: imageUrls[0] } : {}),
+      ...(imageUrls[1] ? { lastFrameImage: imageUrls[1] } : {}),
+    })).filter(([key, value]) => accepted.has(key) && value !== undefined))
+    : {};
+  const body: Record<string, unknown> = {
+    ...baseBody,
+    ...Object.fromEntries(Object.entries(options.customParams || {})
+      .filter(([key, value]) => accepted.has(key) && value !== undefined)),
+  };
 
   if (accepted.has("prompt") && prompt) body.prompt = prompt;
   else if (accepted.has("instruction") && prompt) body.instruction = prompt;
