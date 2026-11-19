@@ -17,7 +17,11 @@ import {
   buildBodyResponses,
   mapMessagesForResponsesWire,
 } from "../families/openai.js";
-import { resolveFluxPath } from "../families/bfl.js";
+import { buildFluxBody, resolveFluxPath } from "../families/bfl.js";
+import * as cohereFamily from "../families/cohere.js";
+import * as deepseekFamily from "../families/deepseek.js";
+import * as mistralFamily from "../families/mistral.js";
+import * as xaiFamily from "../families/xai.js";
 import {
   MAI_PATH_IMAGES,
   buildImageBody as buildMaiImageBody,
@@ -26,7 +30,6 @@ import {
 } from "../families/microsoft.js";
 import {
   asRecord,
-  audioMimeType as _audioMimeType,
   bufferFromPayload,
   clean,
   findAttachmentUrl,
@@ -38,8 +41,6 @@ import {
   sizeToDimensions,
   throwHttpError,
 } from "../shared/index.js";
-
-void _audioMimeType;
 
 interface AzureCredential {
   label: string;
@@ -429,6 +430,150 @@ function bflImagePath(modelId: string): string {
 // Provider-native routes
 // ---------------------------------------------------------------------------
 
+function azureFamily(modelId: string): string {
+  const card = getModelById(modelId, "azure");
+  if (card?.family) return card.family.toLowerCase();
+  const format = (deploymentMetadata(modelId).modelFormat || "").toLowerCase();
+  if (format === "xai") return "xai";
+  if (format === "deepseek") return "deepseek";
+  if (format === "mistral ai" || format === "mistral") return "mistral";
+  if (format === "cohere") return "cohere";
+  return "";
+}
+
+function buildAzureResponsesPayload(
+  modelId: string,
+  messages: Message[],
+  options: AzureChatOptions,
+  streaming: boolean,
+): Record<string, unknown> {
+  const input = options.inputItems?.length ? options.inputItems : mapMessagesForResponsesWire(messages);
+  const customParams = omit(options.customParams, ["stream", "stream_options"]);
+  if (azureFamily(modelId) === "xai") {
+    return xaiFamily.buildResponsesBody(modelId, input, {
+      wireModelId: deploymentNameForModel(modelId),
+      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+      ...(typeof options.maxTokens === "number" ? { maxOutputTokens: options.maxTokens } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+      ...(options.previousResponseId ? { previousResponseId: options.previousResponseId } : {}),
+      ...(streaming ? { stream: true } : {}),
+      customParams,
+    });
+  }
+  return buildBodyResponses(modelId, input, {
+    wireModelId: deploymentNameForModel(modelId),
+    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+    ...(typeof options.maxTokens === "number" ? { maxOutputTokens: options.maxTokens } : {}),
+    ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+    ...(options.previousResponseId ? { previousResponseId: options.previousResponseId } : {}),
+    customParams,
+    ...(streaming ? { stream: true } : {}),
+  });
+}
+
+function buildAzureChatPayload(
+  modelId: string,
+  wireMessages: Message[],
+  options: AzureChatOptions,
+  streaming: boolean,
+): Record<string, unknown> {
+  const joined = `${modelId} ${deploymentMetadata(modelId).deploymentName || ""} ${deploymentMetadata(modelId).modelName || ""}`.toLowerCase();
+  const omitMaxTokens = joined.includes("grok-4-20-non-reasoning") || joined.includes("mistral-large-3");
+  const maxTokens = typeof options.maxTokens === "number" && !omitMaxTokens ? options.maxTokens : undefined;
+  const customParams = omit(options.customParams, ["stream", "stream_options"]);
+  const wireModelId = deploymentNameForModel(modelId);
+  const family = azureFamily(modelId);
+
+  if (family === "xai") {
+    return xaiFamily.buildChatBody(modelId, wireMessages, {
+      wireModelId,
+      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+      ...(typeof maxTokens === "number" ? { maxCompletionTokens: maxTokens } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+      customParams,
+    }, streaming);
+  }
+  if (family === "deepseek") {
+    return deepseekFamily.buildChatBody(modelId, wireMessages, {
+      wireModelId,
+      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+      ...(typeof maxTokens === "number" ? { maxTokens } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat as deepseekFamily.DeepSeekResponseFormat } : {}),
+      customParams,
+    }, streaming);
+  }
+  if (family === "mistral") {
+    return mistralFamily.buildChatBody(modelId, wireMessages, {
+      wireModelId,
+      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+      ...(typeof maxTokens === "number" ? { maxTokens } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+      customParams,
+    }, streaming);
+  }
+  const baseBody = buildBodyChat(modelId, wireMessages, {
+    wireModelId,
+    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+    ...(typeof maxTokens === "number" ? { maxTokens } : {}),
+    maxTokensField: "max_completion_tokens",
+    ...(options.tools ? { tools: options.tools } : {}),
+    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+    customParams,
+  });
+  return streaming
+    ? { ...baseBody, stream: true, stream_options: { include_usage: true } }
+    : baseBody;
+}
+
+function parseAzureChatPayload(modelId: string, raw: unknown): AzureChatResult {
+  const family = azureFamily(modelId);
+  if (family === "xai") {
+    const parsed = xaiFamily.parseChatResponse(raw);
+    return {
+      text: parsed.text,
+      ...(parsed.reasoningContent ? { reasoning: parsed.reasoningContent } : {}),
+      ...(parsed.toolCalls ? { toolCalls: parsed.toolCalls } : {}),
+      finishReason: parsed.finishReason,
+      usage: parsed.usage,
+      raw,
+    };
+  }
+  if (family === "deepseek") {
+    const parsed = deepseekFamily.parseChatResponse(raw);
+    return {
+      text: parsed.text,
+      ...(parsed.reasoningContent ? { reasoning: parsed.reasoningContent } : {}),
+      ...(parsed.toolCalls ? { toolCalls: parsed.toolCalls } : {}),
+      finishReason: parsed.finishReason,
+      usage: parsed.usage,
+      raw,
+    };
+  }
+  if (family === "mistral") {
+    const parsed = mistralFamily.parseChatResponse(raw);
+    return {
+      text: parsed.text,
+      ...(parsed.reasoningContent ? { reasoning: parsed.reasoningContent } : {}),
+      ...(parsed.toolCalls ? { toolCalls: parsed.toolCalls } : {}),
+      finishReason: parsed.finishReason,
+      usage: parsed.usage,
+      raw,
+    };
+  }
+  return { ...chatText(raw), raw };
+}
+
 export async function generateAzureResponses(
   modelId: string,
   messages: Message[],
@@ -445,16 +590,7 @@ export async function generateAzureResponses(
   },
 ): Promise<AzureChatResult> {
   const credential = credentialForModel(modelId);
-  const body = buildBodyResponses(modelId, options.inputItems?.length ? options.inputItems : mapMessagesForResponsesWire(messages), {
-    wireModelId: deploymentNameForModel(modelId),
-    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-    ...(typeof options.maxTokens === "number" ? { maxOutputTokens: options.maxTokens } : {}),
-    ...(options.tools ? { tools: options.tools } : {}),
-    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-    ...(options.previousResponseId ? { previousResponseId: options.previousResponseId } : {}),
-    customParams: omit(options.customParams, ["stream", "stream_options"]),
-  });
+  const body = buildAzureResponsesPayload(modelId, messages, options, false);
   const raw = await postAzure(credential, "/openai/v1/responses", body, "api-key", options.signal);
   const root = asRecord(raw) || {};
   const toolCalls = callsFromResponses(raw);
@@ -462,9 +598,12 @@ export async function generateAzureResponses(
     .map((item) => asRecord(item))
     .filter((item): item is Record<string, unknown> => item !== null && typeof item.type === "string")
     .map((item) => ({ ...item } as ResponsesOutputItem));
+  const usage = azureFamily(modelId) === "xai"
+    ? xaiFamily.usageFromXai(root.usage)
+    : normalizeOpenAIUsage(root.usage);
   return {
     text: textFromResponses(raw),
-    usage: normalizeOpenAIUsage(root.usage),
+    usage,
     finishReason: toolCalls ? "tool-calls" : clean(root.status) || "stop",
     ...(toolCalls ? { toolCalls } : {}),
     ...(outputItems.length > 0 ? { outputItems } : {}),
@@ -500,14 +639,32 @@ async function generateAzureRerank(
       : "Azure Cohere rerank requires documents");
   }
   const credential = credentialForModel(modelId);
-  const raw = await postAzure(credential, "/providers/cohere/v2/rerank", {
-    model: deploymentNameForModel(modelId),
+  const topN = typeof customParams.top_k === "number"
+    ? customParams.top_k
+    : typeof customParams.top_n === "number"
+      ? customParams.top_n
+      : undefined;
+  const deploymentModel = deploymentNameForModel(modelId);
+  const body = cohereFamily.buildRerankBody(deploymentModel, {
+    model: deploymentModel,
     query,
-    documents,
-    ...(typeof customParams.top_n === "number" ? { top_n: customParams.top_n } : {}),
-    ...(typeof customParams.top_k === "number" ? { top_n: customParams.top_k } : {}),
+    documents: documents as Array<string | Record<string, unknown>>,
+    ...(typeof topN === "number" ? { top_n: topN } : {}),
     ...(typeof customParams.max_chunks_per_doc === "number" ? { max_chunks_per_doc: customParams.max_chunks_per_doc } : {}),
   });
+  const raw = await postAzure(credential, `/providers/cohere${cohereFamily.COHERE_PATH_RERANK}`, body);
+  const cohereUsage = cohereFamily.usageFromCohere(asRecord(raw)?.meta);
+  const usage: Usage = cohereUsage
+    ? {
+      ...cohereUsage,
+      billingMetrics: {
+        request: 1,
+        search: 1,
+        document: documents.length,
+        ...(cohereUsage.billingMetrics || {}),
+      },
+    }
+    : { promptTokens: 0, completionTokens: 0, totalTokens: 0, billingMetrics: { request: 1, search: 1, document: documents.length } };
   if (labelDocs.length > 0 && documents === labelDocs) {
     const root = asRecord(raw) || {};
     const results = Array.isArray(root.results) ? root.results : [];
@@ -527,14 +684,14 @@ async function generateAzureRerank(
     }));
     return {
       text: JSON.stringify({ labels, raw }),
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, billingMetrics: { request: 1, search: 1, document: documents.length } },
+      usage,
       finishReason: "stop",
       raw,
     };
   }
   return {
     text: JSON.stringify(raw),
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, billingMetrics: { request: 1, search: 1, document: documents.length } },
+    usage,
     finishReason: "stop",
     raw,
   };
@@ -557,15 +714,25 @@ async function generateAzureOcr(
     model: deploymentNameForModel(modelId),
     document,
   });
+  const parsed = mistralFamily.parseOcrResponse(raw);
   const root = asRecord(raw) || {};
-  const pages = Array.isArray(root.pages) ? root.pages : [];
-  const text = pages.map((page) => {
-    const record = asRecord(page) || {};
-    return clean(record.markdown) || clean(record.text);
+  const rawPages = Array.isArray(root.pages) ? root.pages : [];
+  const text = parsed.pages.map((page, index) => {
+    const fallback = clean(asRecord(rawPages[index])?.text);
+    return page.markdown || fallback;
   }).filter(Boolean).join("\n\n") || JSON.stringify(raw);
   return {
     text,
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, billingMetrics: { request: 1, page: pages.length || 1 } },
+    usage: {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      billingMetrics: {
+        ...(parsed.usage?.billingMetrics || {}),
+        request: 1,
+        page: parsed.pagesProcessed || rawPages.length || 1,
+      },
+    },
     finishReason: "stop",
     raw,
   };
@@ -602,20 +769,10 @@ export async function generateAzureChat(
   if (servicesEndpoint(credential) && capabilities.responses === true) {
     return generateAzureResponses(modelId, messages, options);
   }
-  const joined = `${modelId} ${deploymentMetadata(modelId).deploymentName || ""} ${deploymentMetadata(modelId).modelName || ""}`.toLowerCase();
-  const omitMaxCompletionTokens = joined.includes("grok-4-20-non-reasoning") || joined.includes("mistral-large-3");
   const wireMessages = await inlineAudio(messages, options.signal);
-  const raw = await postAzure(credential, "/openai/v1/chat/completions", buildBodyChat(modelId, wireMessages, {
-    wireModelId: deploymentNameForModel(modelId),
-    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-    ...(typeof options.maxTokens === "number" && !omitMaxCompletionTokens ? { maxTokens: options.maxTokens } : {}),
-    maxTokensField: "max_completion_tokens",
-    ...(options.tools ? { tools: options.tools } : {}),
-    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-    customParams: omit(options.customParams, ["stream", "stream_options"]),
-  }), "api-key", options.signal);
-  return { ...chatText(raw), raw };
+  const body = buildAzureChatPayload(modelId, wireMessages, options, false);
+  const raw = await postAzure(credential, "/openai/v1/chat/completions", body, "api-key", options.signal);
+  return parseAzureChatPayload(modelId, raw);
 }
 
 interface AzureToolAccumulator {
@@ -625,6 +782,7 @@ interface AzureToolAccumulator {
   name: string;
   arguments: string;
   index: number;
+  nameEmitted?: boolean;
 }
 
 type AzureChatOptions = NonNullable<Parameters<typeof generateAzureChat>[2]>;
@@ -707,30 +865,58 @@ async function* streamAzureChatWire(
   options: AzureChatOptions,
   credential: AzureCredential,
 ): AsyncGenerator<Event> {
-  const joined = `${modelId} ${deploymentMetadata(modelId).deploymentName || ""} ${deploymentMetadata(modelId).modelName || ""}`.toLowerCase();
-  const omitMaxCompletionTokens = joined.includes("grok-4-20-non-reasoning") || joined.includes("mistral-large-3");
   const wireMessages = await inlineAudio(messages, options.signal);
-  const baseBody = buildBodyChat(modelId, wireMessages, {
-    wireModelId: deploymentNameForModel(modelId),
-    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-    ...(typeof options.maxTokens === "number" && !omitMaxCompletionTokens ? { maxTokens: options.maxTokens } : {}),
-    maxTokensField: "max_completion_tokens",
-    ...(options.tools ? { tools: options.tools } : {}),
-    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-    customParams: omit(options.customParams, ["stream", "stream_options"]),
-  });
+  const body = buildAzureChatPayload(modelId, wireMessages, options, true);
   const response = await fetch(azureUrl(credential, "/openai/v1/chat/completions"), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...azureHeaders(credential, "api-key") },
-    body: JSON.stringify({
-      ...baseBody,
-      stream: true,
-      stream_options: { include_usage: true },
-    }),
+    body: JSON.stringify(body),
     signal: options.signal,
   });
   const tools = new Map<number, AzureToolAccumulator>();
+  const family = azureFamily(modelId);
+  const familyParser = family === "xai"
+    ? xaiFamily.createStreamParser()
+    : family === "deepseek"
+      ? deepseekFamily.createStreamParser()
+      : family === "mistral"
+        ? mistralFamily.createStreamParser()
+        : null;
+
+  if (familyParser) {
+    for await (const chunk of sseJson(response)) {
+      for (const parsed of familyParser.feed(chunk)) {
+        if (parsed.type === "text-delta") {
+          yield { type: "text-delta", text: parsed.text };
+        } else if (parsed.type === "reasoning-delta") {
+          yield { type: "reasoning-delta", text: parsed.text };
+        } else if (parsed.type === "tool-call-delta") {
+          const current = tools.get(parsed.index) || { id: parsed.id || `call_${parsed.index}`, name: "", arguments: "", index: parsed.index };
+          if (parsed.id) current.id = parsed.id;
+          if (parsed.name) current.name += parsed.name;
+          if (parsed.argumentsDelta) current.arguments += parsed.argumentsDelta;
+          tools.set(parsed.index, current);
+          yield {
+            type: "tool-call-delta",
+            toolCallDelta: {
+              index: parsed.index,
+              ...(parsed.id ? { id: parsed.id } : {}),
+              ...(parsed.name ? { name: parsed.name } : {}),
+              ...(parsed.argumentsDelta ? { arguments: parsed.argumentsDelta } : {}),
+            },
+          };
+        }
+      }
+    }
+    for (const call of [...tools.values()].sort((left, right) => left.index - right.index)) {
+      yield { type: "tool-call", toolCall: { ...call, arguments: call.arguments || "{}" } };
+    }
+    const final = familyParser.finalize();
+    if (!final.usage) throw new Error(`Azure chat stream returned no authoritative usage for ${modelId}`);
+    yield { type: "done", finishReason: streamFinishReason(final.finishReason, tools.size > 0), usage: final.usage };
+    return;
+  }
+
   let usage: Usage | undefined;
   let finishReason: unknown;
 
@@ -740,11 +926,11 @@ async function* streamAzureChatWire(
     for (const rawChoice of choices) {
       const choice = asRecord(rawChoice);
       const delta = asRecord(choice?.delta);
-      if (typeof delta?.content === "string" && delta.content) {
-        yield { type: "text-delta", text: delta.content };
-      }
       if (typeof delta?.reasoning_content === "string" && delta.reasoning_content) {
         yield { type: "reasoning-delta", text: delta.reasoning_content };
+      }
+      if (typeof delta?.content === "string" && delta.content) {
+        yield { type: "text-delta", text: delta.content };
       }
       for (const rawCall of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
         const call = asRecord(rawCall);
@@ -786,21 +972,7 @@ async function* streamAzureResponsesWire(
   options: AzureChatOptions,
   credential: AzureCredential,
 ): AsyncGenerator<Event> {
-  const body = buildBodyResponses(
-    modelId,
-    options.inputItems?.length ? options.inputItems : mapMessagesForResponsesWire(messages),
-    {
-      wireModelId: deploymentNameForModel(modelId),
-      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-      ...(typeof options.maxTokens === "number" ? { maxOutputTokens: options.maxTokens } : {}),
-      ...(options.tools ? { tools: options.tools } : {}),
-      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-      ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-      ...(options.previousResponseId ? { previousResponseId: options.previousResponseId } : {}),
-      customParams: omit(options.customParams, ["stream", "stream_options"]),
-      stream: true,
-    },
-  );
+  const body = buildAzureResponsesPayload(modelId, messages, options, true);
   const response = await fetch(azureUrl(credential, "/openai/v1/responses"), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...azureHeaders(credential, "api-key") },
@@ -809,11 +981,12 @@ async function* streamAzureResponsesWire(
   });
   const tools = new Map<number, AzureToolAccumulator>();
   const outputItems = new Map<number, ResponsesOutputItem>();
+  const parseUsage = azureFamily(modelId) === "xai" ? xaiFamily.usageFromXai : normalizeOpenAIUsage;
   let usage: Usage | undefined;
   let status: unknown;
 
   for await (const event of sseJson(response)) {
-    usage = normalizeOpenAIUsage(event.usage) || usage;
+    usage = parseUsage(event.usage) || usage;
     const type = clean(event.type);
     const outputIndex = typeof event.output_index === "number" ? event.output_index : 0;
     if (type === "response.output_text.delta" && typeof event.delta === "string" && event.delta) {
@@ -851,6 +1024,8 @@ async function* streamAzureResponsesWire(
         index: outputIndex,
       };
       current.arguments += delta;
+      const emitName = !current.nameEmitted && Boolean(current.name);
+      if (emitName) current.nameEmitted = true;
       tools.set(outputIndex, current);
       yield {
         type: "tool-call-delta",
@@ -859,7 +1034,7 @@ async function* streamAzureResponsesWire(
           id: current.id,
           itemId: current.itemId,
           callId: current.callId,
-          ...(current.name ? { name: current.name } : {}),
+          ...(emitName ? { name: current.name } : {}),
           ...(delta ? { arguments: delta } : {}),
         },
       };
@@ -881,8 +1056,8 @@ async function* streamAzureResponsesWire(
     }
     if (type === "response.completed" || type === "response.incomplete") {
       const completed = asRecord(event.response);
-      usage = normalizeOpenAIUsage(completed?.usage) || usage;
-      status = completed?.status;
+      usage = parseUsage(completed?.usage) || usage;
+      status = completed?.status || (type === "response.incomplete" ? "incomplete" : "completed");
       for (const [index, rawItem] of (Array.isArray(completed?.output) ? completed.output : []).entries()) {
         const item = asRecord(rawItem);
         if (!item || typeof item.type !== "string") continue;
@@ -1000,15 +1175,16 @@ export async function generateAzureImage(
       ? (await bufferFromPayload(options.imageUrl, "image/png", options.signal)).buffer.toString("base64")
       : undefined;
     const schema = asRecord(getModelById(modelId, "azure")?.params) || {};
-    const inputKey = ["input_image", "image_prompt"].find((key) => asRecord(schema[key]));
-    raw = await postAzure(credential, bflImagePath(modelId), {
+    const inputKey = ["input_image", "image_prompt"].find((key) => asRecord(schema[key])) as "input_image" | "image_prompt" | undefined;
+    const body = buildFluxBody({
       model: deploymentNameForModel(modelId),
       prompt,
       ...(typeof dimensions.width === "number" && dimensions.width > 0 ? { width: dimensions.width } : {}),
       ...(typeof dimensions.height === "number" && dimensions.height > 0 ? { height: dimensions.height } : {}),
-      ...(inputImage && inputKey ? { [inputKey]: inputImage } : {}),
-      ...customParams,
-    }, "bearer", options.signal);
+      ...(inputImage && inputKey ? { images: [{ type: "base64", data: inputImage }], imageKey: inputKey } : {}),
+      customParams,
+    });
+    raw = await postAzure(credential, bflImagePath(modelId), body, "bearer", options.signal);
   } else if (route === "mai_image") {
     const maiOptions = {
       n: options.n,
@@ -1062,15 +1238,49 @@ export async function generateAzureImage(
 
   const images = await azureImagesFromRaw(raw, options.signal);
   const root = asRecord(raw) || {};
+  const normalizedUsage = normalizeOpenAIUsage(root.usage);
+  const usage = normalizedUsage
+    ? (() => {
+        const billingMetrics: Record<string, unknown> = { ...(normalizedUsage.billingMetrics || {}) };
+        if (
+          !options.imageUrl
+          && normalizedUsage.promptTokens > 0
+          && billingMetrics.input_text_tokens === undefined
+          && billingMetrics.input_image_tokens === undefined
+        ) {
+          billingMetrics.input_text_tokens = normalizedUsage.promptTokens;
+          if (
+            typeof normalizedUsage.cachedInputTokens === "number"
+            && normalizedUsage.cachedInputTokens > 0
+            && billingMetrics.cached_input_text_tokens === undefined
+          ) {
+            billingMetrics.cached_input_text_tokens = normalizedUsage.cachedInputTokens;
+          }
+        }
+        const hasInputBreakdown = billingMetrics.input_text_tokens !== undefined
+          || billingMetrics.input_image_tokens !== undefined;
+        if (
+          normalizedUsage.completionTokens > 0
+          && billingMetrics.output_image_tokens === undefined
+          && (normalizedUsage.promptTokens === 0 || hasInputBreakdown)
+        ) {
+          billingMetrics.output_image_tokens = normalizedUsage.completionTokens;
+        }
+        return {
+          ...normalizedUsage,
+          billingMetrics,
+        };
+      })()
+    : {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        billingMetrics: { request: 1, image: images.length },
+      };
   return {
     ...images[0],
     images,
-    usage: normalizeOpenAIUsage(root.usage) || {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-      billingMetrics: { request: 1, image: images.length },
-    },
+    usage,
     raw,
   };
 }
