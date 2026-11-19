@@ -73,48 +73,6 @@ export function selectImageTaskForInput(imageUrl?: string | null): "text-to-imag
   return typeof imageUrl === "string" && imageUrl.length > 0 ? "image-to-image" : "text-to-image";
 }
 
-export function getImageParameterCatalog(): Record<string, Record<string, unknown>> {
-  return {
-    n: {
-      type: "integer",
-      required: false,
-      default: 1,
-      options: [1, 2, 3, 4, 6, 8],
-      description: "Number of images to generate.",
-    },
-    size: {
-      type: "string",
-      required: false,
-      options: ["512x512", "768x768", "1024x1024", "1024x1792", "1792x1024", "2048x2048"],
-      description: "Generated image size.",
-    },
-    aspect_ratio: {
-      type: "string",
-      required: false,
-      options: ["1:1", "4:5", "5:4", "3:2", "2:3", "16:9", "9:16", "21:9", "9:21"],
-      description: "Generated image aspect ratio.",
-    },
-    resolution: {
-      type: "string",
-      required: false,
-      options: ["720P", "1080P", "4K"],
-      description: "Generated image resolution.",
-    },
-    quality: {
-      type: "string",
-      required: false,
-      options: ["low", "standard", "medium", "high", "hd", "max"],
-      description: "Generated image quality.",
-    },
-    output_format: {
-      type: "string",
-      required: false,
-      options: ["jpeg", "jpg", "webp", "png", "gif"],
-      description: "Generated image output format.",
-    },
-  };
-}
-
 function readImageDimensions(buffer: Buffer): { width: number; height: number } | null {
   if (buffer.length >= 24 && buffer.readUInt32BE(0) === 0x89504e47) {
     return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
