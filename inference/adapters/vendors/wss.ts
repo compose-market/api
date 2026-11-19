@@ -202,11 +202,16 @@ function service(route: string): URL {
   return join(root(), route);
 }
 
+function internalRealtimeHeaders(): Record<string, string> {
+  const token = (process.env.BACKPACK_INTERNAL_TOKEN || "").trim();
+  return token ? { "x-backpack-internal-token": token } : {};
+}
+
 async function post(responseId: string, route: "input" | "close", frames?: Frame[]): Promise<boolean> {
   const url = service(`/sessions/${encodeURIComponent(responseId)}/${route}`);
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...internalRealtimeHeaders() },
     body: JSON.stringify({
       responseId,
       ...(frames ? {
@@ -951,7 +956,10 @@ async function boot(ws: WebSocket, item: Target, req: Request, bytes: Buffer | n
 
 function connect(url: URL, signal?: AbortSignal): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url.toString());
+    const headers = internalRealtimeHeaders();
+    const ws = Object.keys(headers).length > 0
+      ? new WebSocket(url.toString(), { headers })
+      : new WebSocket(url.toString());
     const abort = () => {
       ws.close();
       reject(new Error("Realtime execution aborted"));
@@ -989,6 +997,7 @@ async function run(item: Target, req: Request, signal?: AbortSignal): Promise<Ou
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       ws.removeAllListeners();
+      ws.on("error", () => {});
     };
     const abort = () => {
       cleanup();
@@ -1078,6 +1087,7 @@ async function* runStream(item: Target, req: Request, signal?: AbortSignal): Asy
   const cleanup = () => {
     signal?.removeEventListener("abort", abort);
     ws.removeAllListeners();
+    ws.on("error", () => {});
   };
 
   const finish = () => {
