@@ -23,122 +23,38 @@ import { imagesFromResponse, normalizeOpenAIUsage } from "../shared/index.js";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-if (!OPENAI_API_KEY) {
-    console.warn("[openai] OPENAI_API_KEY not set - OpenAI model discovery disabled");
-}
-
-export interface OpenAIModel {
-    id: string;
-    object: string;
-    created: number;
-    owned_by: string;
-}
-
-export interface OpenAIModelInfo {
-    id: string;
-    name: string;
-    ownedBy: string;
-    created: number;
-    object: string;
-    task: string;
-}
-
-// =============================================================================
-// Task Detection - Infer from model ID patterns (API doesn't provide task)
-// =============================================================================
-
-function detectOpenAITask(modelId: string): string {
-    const id = modelId.toLowerCase();
-
-    // Video generation (Sora)
-    if (id.includes("sora")) {
-        return "text-to-video";
-    }
-
-    // Speech recognition
-    if (id.includes("whisper")) {
-        return "automatic-speech-recognition";
-    }
-
-    // Text-to-speech
-    if (id.startsWith("tts-") || id.includes("-tts")) {
-        return "text-to-speech";
-    }
-
-    // Embeddings
-    if (id.includes("embedding") || id.includes("embed")) {
-        return "feature-extraction";
-    }
-
-    // Moderation
-    if (id.includes("moderation")) {
-        return "text-classification";
-    }
-
-    // Default to text generation for all chat/completion models
-    return "text-generation";
-}
-
-// =============================================================================
-// Cache
-// =============================================================================
-
-let modelsCache: OpenAIModelInfo[] | null = null;
-let modelsCacheTimestamp = 0;
-const CACHE_TTL = 6 * 60 * 60 * 1000;
-
-export async function fetchOpenAIModels(forceRefresh = false): Promise<OpenAIModelInfo[]> {
-    if (!OPENAI_API_KEY) {
-        console.warn("[openai] API key not set, skipping model fetch");
-        return [];
-    }
-
-    if (!forceRefresh && modelsCache && Date.now() - modelsCacheTimestamp < CACHE_TTL) {
-        return modelsCache;
-    }
-
-    try {
-        const response = await fetch("https://api.openai.com/v1/models", {
-            headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-        });
-
-        if (!response.ok) {
-            const error = await response.text();
-            console.error("[openai] Failed to fetch models:", response.status, error);
-            return modelsCache || [];
-        }
-
-        const data = await response.json() as { data: OpenAIModel[] };
-
-        // Extract metadata from API - task inferred from model ID
-        const models: OpenAIModelInfo[] = data.data.map((model) => ({
-            id: model.id,
-            name: model.id, // OpenAI API doesn't provide display names
-            ownedBy: model.owned_by,
-            created: model.created,
-            object: model.object,
-            task: detectOpenAITask(model.id),
-        }));
-
-        modelsCache = models;
-        modelsCacheTimestamp = Date.now();
-
-        console.log(`[openai] Fetched ${models.length} models`);
-        return models;
-    } catch (error) {
-        console.error("[openai] Error fetching models:", error);
-        return modelsCache || [];
-    }
-}
-
-export function clearOpenAICache(): void {
-    modelsCache = null;
-    modelsCacheTimestamp = 0;
-}
-
 // =============================================================================
 // Inference Functions - OpenAI-specific API calls
 // =============================================================================
+
+function enrichOpenAIImageUsage(rawUsage: unknown, hasInputImages: boolean): Usage | undefined {
+    const normalized = normalizeOpenAIUsage(rawUsage);
+    if (!normalized) return undefined;
+    const billingMetrics: Record<string, unknown> = { ...(normalized.billingMetrics || {}) };
+    if (
+        !hasInputImages
+        && normalized.promptTokens > 0
+        && billingMetrics.input_text_tokens === undefined
+        && billingMetrics.input_image_tokens === undefined
+    ) {
+        billingMetrics.input_text_tokens = normalized.promptTokens;
+        if (typeof normalized.cachedInputTokens === "number" && normalized.cachedInputTokens > 0 && billingMetrics.cached_input_text_tokens === undefined) {
+            billingMetrics.cached_input_text_tokens = normalized.cachedInputTokens;
+        }
+    }
+    const hasInputBreakdown = billingMetrics.input_text_tokens !== undefined || billingMetrics.input_image_tokens !== undefined;
+    if (
+        normalized.completionTokens > 0
+        && billingMetrics.output_image_tokens === undefined
+        && (normalized.promptTokens === 0 || hasInputBreakdown)
+    ) {
+        billingMetrics.output_image_tokens = normalized.completionTokens;
+    }
+    return {
+        ...normalized,
+        billingMetrics,
+    };
+}
 
 /**
  * Generate image using OpenAI models
@@ -224,7 +140,7 @@ export async function openaiGenerateImage(
             };
             const images = await imagesFromResponse(data, "image/png", options?.signal);
             if (images.length === 0) throw new Error("OpenAI image edit returned no image data");
-            const usage = normalizeOpenAIUsage(data.usage);
+            const usage = enrichOpenAIImageUsage(data.usage, true);
 
             return {
                 ...images[0],
@@ -307,7 +223,7 @@ export async function openaiGenerateImage(
         const promptTokens = result.usage?.input_tokens ?? (inputTextTokens + inputImageTokens);
         const completionTokens = result.usage?.output_tokens ?? (typeof billingMetrics.output_image_tokens === "number" ? billingMetrics.output_image_tokens as number : 0);
         const totalTokens = result.usage?.total_tokens ?? (promptTokens + completionTokens);
-        const normalized = normalizeOpenAIUsage(result.usage);
+        const normalized = enrichOpenAIImageUsage(result.usage, false);
         const usage = normalized || Object.keys(billingMetrics).length > 0
             ? {
                 ...(normalized || { promptTokens, completionTokens, totalTokens }),
@@ -487,14 +403,7 @@ export async function* openaiStreamImage(
             const rawUsage = parsed.usage && typeof parsed.usage === "object"
                 ? parsed.usage as Record<string, unknown>
                 : null;
-            const usage = rawUsage
-                ? {
-                    promptTokens: typeof rawUsage.input_tokens === "number" ? rawUsage.input_tokens : 0,
-                    completionTokens: typeof rawUsage.output_tokens === "number" ? rawUsage.output_tokens : 0,
-                    totalTokens: typeof rawUsage.total_tokens === "number" ? rawUsage.total_tokens : 0,
-                    raw: rawUsage,
-                }
-                : undefined;
+            const usage = rawUsage ? enrichOpenAIImageUsage(rawUsage, false) : undefined;
             yield {
                 type: "image-complete",
                 b64,
@@ -502,100 +411,6 @@ export async function* openaiStreamImage(
                 ...(usage ? { usage } : {}),
             };
         }
-    }
-}
-
-export async function openaiGenerateVideo(
-    modelId: string,
-    prompt: string,
-    options?: {
-        duration?: number;
-        size?: string;
-        imageUrl?: string;
-    }
-): Promise<{ videoBuffer: Buffer; mimeType: string }> {
-    if (!OPENAI_API_KEY) {
-        throw new Error("OPENAI_API_KEY not configured");
-    }
-
-    console.log(`[openai] Generating video with ${modelId}: "${prompt.slice(0, 50)}..."`);
-
-    try {
-        // Step 1: Create video generation job
-        const response = await fetch("https://api.openai.com/v1/videos", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${OPENAI_API_KEY}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                model: modelId,
-                prompt,
-                ...(options?.size ? { size: options.size } : {}),
-                ...(options?.duration ? { seconds: String(options.duration) } : {}),
-                ...(options?.imageUrl ? { input_reference: { image_url: options.imageUrl } } : {}),
-            }),
-        });
-
-        if (!response.ok) {
-            throw new Error(`OpenAI video submission failed: ${response.status} - ${await response.text()}`);
-        }
-
-        const job = await response.json() as { id?: string; status?: string };
-        if (!job.id) {
-            throw new Error("OpenAI returned no job id");
-        }
-        console.log(`[openai] Video job created: ${job.id}`);
-
-        // Step 2: Poll for completion
-        // Sora videos can take 10-30 minutes to generate depending on complexity
-        const maxWaitTime = 30 * 60 * 1000; // 30 minutes max
-        const pollInterval = 10000; // 10 seconds (less frequent to reduce API load)
-        const startTime = Date.now();
-
-        while (Date.now() - startTime < maxWaitTime) {
-            const statusResponse = await fetch(`https://api.openai.com/v1/videos/${job.id}`, {
-                headers: { "Authorization": `Bearer ${OPENAI_API_KEY}` },
-            });
-
-            if (!statusResponse.ok) {
-                throw new Error(`Failed to check job status: ${statusResponse.status}`);
-            }
-
-            const status = await statusResponse.json() as {
-                status: string;
-                output_url?: string;
-                error?: { message: string };
-            };
-
-            if (status.status === "completed") {
-                const downloadUrl = status.output_url || `https://api.openai.com/v1/videos/${job.id}/content`;
-                const videoResponse = await fetch(downloadUrl, status.output_url ? undefined : {
-                    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}` },
-                });
-                if (!videoResponse.ok) {
-                    throw new Error(`Failed to download video: ${videoResponse.status}`);
-                }
-                const arrayBuffer = await videoResponse.arrayBuffer();
-                return {
-                    videoBuffer: Buffer.from(arrayBuffer),
-                    mimeType: "video/mp4",
-                };
-            }
-
-            if (status.status === "failed") {
-                throw new Error(status.error?.message || "Video generation failed");
-            }
-
-            // Wait before next poll
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
-        }
-
-        throw new Error("Video generation timed out");
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[openai] Video generation failed:`, message);
-        throw new Error(`OpenAI video generation failed: ${message}`);
     }
 }
 
@@ -745,6 +560,8 @@ export interface OpenAIWireChatOptions {
     customParams?: Record<string, unknown>;
     /** Override the wire model id (e.g. azure deployment name). */
     wireModelId?: string;
+    /** Flatten multimodal content arrays to plain strings for text-only models (e.g. DeepInfra text endpoints). */
+    textOnly?: boolean;
     signal?: AbortSignal;
 }
 
@@ -909,22 +726,93 @@ function normalizeContentPartsWire(parts: unknown[]): unknown[] {
     return out;
 }
 
-export function mapMessagesForOpenAIWire(messages: Message[]): Array<Record<string, unknown>> {
-    return messages.map((message) => {
+function flattenContentForTextOnlyWire(content: unknown): string {
+    if (content == null) return "";
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return String(content);
+    const textParts: string[] = [];
+    const mediaRefs: string[] = [];
+    for (const raw of content) {
+        if (typeof raw === "string") {
+            if (raw) textParts.push(raw);
+            continue;
+        }
+        const part = asWireRecord(raw);
+        if (!part) continue;
+        const type = cleanWire(part.type);
+        if (type === "text" && typeof part.text === "string") {
+            textParts.push(part.text);
+            continue;
+        }
+        if (type === "tool-result" || type === "tool_result") {
+            const output = part.output ?? part.result;
+            if (typeof output === "string") textParts.push(output);
+            else if (output != null) textParts.push(JSON.stringify(output));
+            continue;
+        }
+        if (type === "image_url") {
+            const url = typeof part.image_url === "string" ? part.image_url : cleanWire(asWireRecord(part.image_url)?.url);
+            if (url) mediaRefs.push(`[image: ${url}]`);
+            continue;
+        }
+        if (type === "input_audio") {
+            const url = typeof part.input_audio === "string" ? part.input_audio : cleanWire(asWireRecord(part.input_audio)?.url);
+            if (url) mediaRefs.push(`[audio: ${url}]`);
+            continue;
+        }
+        if (type === "video_url") {
+            const url = typeof part.video_url === "string" ? part.video_url : cleanWire(asWireRecord(part.video_url)?.url);
+            if (url) mediaRefs.push(`[video: ${url}]`);
+            continue;
+        }
+        if (type === "file_url") {
+            const url = typeof part.file_url === "string" ? part.file_url : cleanWire(asWireRecord(part.file_url)?.url);
+            if (url) mediaRefs.push(`[file: ${url}]`);
+        }
+    }
+    const baseText = textParts.join("\n");
+    const extraRefs = mediaRefs.filter((ref) => {
+        const urlStart = ref.indexOf("http");
+        if (urlStart < 0) return true;
+        const url = ref.slice(urlStart, -1);
+        return !baseText.includes(url);
+    });
+    if (extraRefs.length === 0) return baseText;
+    return baseText ? `${baseText}\n${extraRefs.join("\n")}` : extraRefs.join("\n");
+}
+
+export function mapMessagesForOpenAIWire(messages: Message[], textOnly = false): Array<Record<string, unknown>> {
+    const leadingSystemParts: string[] = [];
+    let startIndex = 0;
+    while (startIndex < messages.length && messages[startIndex].role === "system") {
+        const text = normalizeContentToStringWire(messages[startIndex].content);
+        if (text) leadingSystemParts.push(text);
+        startIndex += 1;
+    }
+    const wire: Array<Record<string, unknown>> = [];
+    if (startIndex > 0) {
+        wire.push({ role: "system", content: leadingSystemParts.join("\n\n") });
+    }
+    for (let index = startIndex; index < messages.length; index += 1) {
+        const message = messages[index];
         if (message.role === "system") {
-            return { role: "system", content: normalizeContentToStringWire(message.content) };
+            wire.push({ role: "system", content: normalizeContentToStringWire(message.content) });
+            continue;
         }
         if (message.role === "tool") {
-            return {
+            wire.push({
                 role: "tool",
                 tool_call_id: message.tool_call_id || "",
                 content: normalizeContentToStringWire(message.content),
                 ...(message.name ? { name: message.name } : {}),
-            };
+            });
+            continue;
         }
         if (message.role === "assistant") {
             const out: Record<string, unknown> = { role: "assistant" };
-            if (Array.isArray(message.content)) {
+            if (textOnly) {
+                out.content = flattenContentForTextOnlyWire(message.content);
+            } else if (Array.isArray(message.content)) {
                 const parts = normalizeContentPartsWire(message.content);
                 out.content = parts.length > 0 ? parts : "";
             } else {
@@ -948,14 +836,21 @@ export function mapMessagesForOpenAIWire(messages: Message[]): Array<Record<stri
             if (message.partial === true) {
                 out.partial = true;
             }
-            return out;
+            wire.push(out);
+            continue;
+        }
+        if (textOnly) {
+            wire.push({ role: "user", content: flattenContentForTextOnlyWire(message.content) });
+            continue;
         }
         if (Array.isArray(message.content)) {
             const parts = normalizeContentPartsWire(message.content);
-            return { role: "user", content: parts.length > 0 ? parts : "" };
+            wire.push({ role: "user", content: parts.length > 0 ? parts : "" });
+            continue;
         }
-        return { role: "user", content: normalizeContentToStringWire(message.content) };
-    });
+        wire.push({ role: "user", content: normalizeContentToStringWire(message.content) });
+    }
+    return wire;
 }
 
 function toolsToWire(tools: Tool[] | undefined): Array<Record<string, unknown>> | undefined {
@@ -1317,7 +1212,7 @@ export function buildBodyChat(
 ): Record<string, unknown> {
     const body: Record<string, unknown> = {
         model: opts?.wireModelId || modelId,
-        messages: mapMessagesForOpenAIWire(messages),
+        messages: mapMessagesForOpenAIWire(messages, opts?.textOnly === true),
     };
     if (typeof opts?.temperature === "number") body.temperature = opts.temperature;
     if (typeof opts?.maxTokens === "number") {
@@ -1479,6 +1374,19 @@ export async function* streamChat(
             continue;
         }
 
+        if (parsed.error) {
+            const err = asWireRecord(parsed.error);
+            const code = cleanWire(err?.code) || cleanWire(err?.type) || "upstream_error";
+            const message = cleanWire(err?.message)
+                || (typeof parsed.error === "string" ? parsed.error : "Upstream OpenAI-wire stream error");
+            yield {
+                type: "error",
+                ...(lastUsage ? { usage: lastUsage } : {}),
+                error: { code, message },
+            };
+            return;
+        }
+
         if (parsed.usage) {
             const u = usageFromOpenAIWire(parsed.usage);
             if (u) lastUsage = u;
@@ -1489,13 +1397,13 @@ export async function* streamChat(
         if (!choice) continue;
         const delta = asWireRecord(choice.delta);
         if (delta) {
-            const content = delta.content;
-            if (typeof content === "string" && content.length > 0) {
-                yield { type: "text-delta", text: content };
-            }
             const reasoning = delta.reasoning_content;
             if (typeof reasoning === "string" && reasoning.length > 0) {
                 yield { type: "thinking", thinking: reasoning };
+            }
+            const content = delta.content;
+            if (typeof content === "string" && content.length > 0) {
+                yield { type: "text-delta", text: content };
             }
             const deltaToolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
             for (const item of deltaToolCalls) {
@@ -1652,6 +1560,7 @@ interface ResponseToolAccumulator {
     outputIndex: number;
     name: string;
     args: string;
+    nameEmitted?: boolean;
 }
 
 function responseStatusToFinishReason(status: unknown, hadToolCalls: boolean): string {
@@ -1771,6 +1680,8 @@ export async function* streamResponses(
                 args: "",
             };
             if (delta) acc.args += delta;
+            const emitName = !acc.nameEmitted && Boolean(acc.name);
+            if (emitName) acc.nameEmitted = true;
             toolCalls.set(outputIndex, acc);
             sawToolCall = true;
             yield {
@@ -1779,7 +1690,7 @@ export async function* streamResponses(
                     index: outputIndex,
                     ...(acc.callId ? { id: acc.callId, callId: acc.callId } : {}),
                     ...(acc.itemId ? { itemId: acc.itemId } : {}),
-                    ...(acc.name ? { name: acc.name } : {}),
+                    ...(emitName ? { name: acc.name } : {}),
                     ...(delta ? { arguments: delta } : {}),
                 },
             };
@@ -1801,14 +1712,16 @@ export async function* streamResponses(
             sawToolCall = true;
             continue;
         }
-        if (type === "response.completed") {
+        if (type === "response.completed" || type === "response.incomplete") {
             const responseRecord = asWireRecord(parsed.response);
             if (responseRecord) {
                 lastUsage = usageFromOpenAIWire(responseRecord.usage);
-                lastStatus = responseRecord.status;
+                lastStatus = responseRecord.status || (type === "response.incomplete" ? "incomplete" : "completed");
                 sawToolCall = mergeResponsesCompletedToolCalls(toolCalls, responseRecord) || sawToolCall;
                 const completedItems = outputItemsFromResponses(responseRecord) || [];
                 completedItems.forEach((item, index) => outputItems.set(index, item));
+            } else if (type === "response.incomplete") {
+                lastStatus = "incomplete";
             }
             continue;
         }
