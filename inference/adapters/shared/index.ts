@@ -4,7 +4,7 @@
  * shims short (just the bits that are actually vendor-specific).
  */
 
-export { clean, asRecord, readNonNeg, assignMetric } from "./coerce.js";
+export { clean, asRecord, readNonNeg, assignMetric, stripResponsesParams } from "./coerce.js";
 export { fetchJson, postJson, getJson, fetchBuffer, readErrorBody, throwHttpError, type HttpFetchInit } from "./http.js";
 export { normalizeContentToString, messageText, primaryText, findAttachmentUrl } from "./messages.js";
 export {
