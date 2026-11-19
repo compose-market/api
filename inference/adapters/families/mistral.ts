@@ -17,12 +17,13 @@
  * Spec: https://docs.mistral.ai/api/
  */
 
-import type { Message, Tool, Choice, Usage } from "../../core.js";
+import type { Call, Message, Tool, Choice, Usage } from "../../core.js";
 import {
     asRecord,
     clean,
     findAttachmentUrl,
     normalizeOpenAIUsage,
+    stripResponsesParams,
 } from "../shared/index.js";
 import * as lower from "../shared/schema.js";
 import type {
@@ -78,6 +79,8 @@ export interface MistralChatOptions {
 
 export interface MistralChatResult {
     text: string;
+    reasoningContent?: string;
+    toolCalls?: Call[];
     finishReason?: string;
     usage?: Usage;
     raw: unknown;
@@ -100,11 +103,63 @@ function toolChoiceToWire(choice: Choice | undefined): unknown {
     return { type: "function", function: { name: choice.name } };
 }
 
+export function mapFinishReason(value: unknown, hasTools = false): string {
+    const reason = clean(value);
+    if (hasTools || reason === "tool_calls") return "tool-calls";
+    if (reason === "model_length") return "length";
+    return reason || "stop";
+}
+
+function extractMistralContent(content: unknown): { text: string; reasoning: string } {
+    if (typeof content === "string") return { text: content, reasoning: "" };
+    if (!Array.isArray(content)) return { text: "", reasoning: "" };
+    const texts: string[] = [];
+    const reasonings: string[] = [];
+    for (const part of content) {
+        const record = asRecord(part);
+        if (!record) continue;
+        const type = clean(record.type);
+        if (type === "text" && typeof record.text === "string") {
+            texts.push(record.text);
+        } else if (type === "thinking") {
+            if (typeof record.thinking === "string") {
+                reasonings.push(record.thinking);
+            } else if (Array.isArray(record.thinking)) {
+                for (const sub of record.thinking) {
+                    const subRec = asRecord(sub);
+                    if (typeof subRec?.text === "string") reasonings.push(subRec.text);
+                }
+            }
+        }
+    }
+    return { text: texts.join(""), reasoning: reasonings.join("") };
+}
+
+function parseMistralToolCalls(message: Record<string, unknown>): Call[] | undefined {
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const out: Call[] = [];
+    for (const rawCall of rawCalls) {
+        const record = asRecord(rawCall);
+        const fn = asRecord(record?.function);
+        const name = clean(fn?.name);
+        if (!record || !fn || !name) continue;
+        out.push({
+            id: clean(record.id) || `call_${out.length}`,
+            name,
+            arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
+        });
+    }
+    return out.length > 0 ? out : undefined;
+}
+
 export function buildChatBody(
     modelId: string,
     messages: Message[],
     options: MistralChatOptions = {},
+    streaming = false,
 ): Record<string, unknown> {
+    const isStream = streaming || Boolean(options.stream);
+    const params = stripResponsesParams(options.customParams);
     return {
         model: options.wireModelId || modelId,
         messages,
@@ -123,8 +178,8 @@ export function buildChatBody(
         ...(options.tools ? { tools: toolsToWire(options.tools) } : {}),
         ...(options.toolChoice ? { tool_choice: toolChoiceToWire(options.toolChoice) } : {}),
         ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
-        ...(options.stream ? { stream: true } : {}),
-        ...(options.customParams ?? {}),
+        ...(isStream ? { stream: true, stream_options: { include_usage: true } } : {}),
+        ...params,
     };
 }
 
@@ -133,12 +188,79 @@ export function parseChatResponse(raw: unknown): MistralChatResult {
     const choices = Array.isArray(root.choices) ? root.choices : [];
     const first = asRecord(choices[0]) || {};
     const message = asRecord(first.message) || {};
+    const { text, reasoning } = extractMistralContent(message.content);
+    const reasoningContent = reasoning || (typeof message.reasoning_content === "string" ? message.reasoning_content : "");
+    const toolCalls = parseMistralToolCalls(message);
     return {
-        text: clean(message.content),
-        finishReason: clean(first.finish_reason) || undefined,
+        text,
+        ...(reasoningContent ? { reasoningContent } : {}),
+        ...(toolCalls ? { toolCalls } : {}),
+        finishReason: mapFinishReason(first.finish_reason, Boolean(toolCalls?.length)),
         usage: normalizeOpenAIUsage(root.usage),
         raw,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming — SSE parser
+// ---------------------------------------------------------------------------
+
+export type MistralStreamEvent =
+    | { type: "text-delta"; text: string }
+    | { type: "reasoning-delta"; text: string }
+    | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
+    | { type: "finish"; finishReason?: string; usage?: Usage };
+
+export function createStreamParser() {
+    let lastUsage: Usage | undefined;
+    let lastFinishReason = "";
+    let sawTools = false;
+
+    function feed(payload: unknown): MistralStreamEvent[] {
+        const chunk = asRecord(payload);
+        if (!chunk) return [];
+        const events: MistralStreamEvent[] = [];
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+        const first = asRecord(choices[0]);
+        const delta = asRecord(first?.delta);
+        if (delta) {
+            const { text, reasoning } = extractMistralContent(delta.content);
+            const reasoningText = reasoning || (typeof delta.reasoning_content === "string" ? delta.reasoning_content : "");
+            if (reasoningText) events.push({ type: "reasoning-delta", text: reasoningText });
+            if (text) events.push({ type: "text-delta", text });
+            const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+            for (const rawCall of toolCalls) {
+                const record = asRecord(rawCall);
+                if (!record) continue;
+                const index = typeof record.index === "number" ? record.index : 0;
+                const fn = asRecord(record.function);
+                events.push({
+                    type: "tool-call-delta",
+                    index,
+                    ...(clean(record.id) ? { id: clean(record.id) } : {}),
+                    ...(clean(fn?.name) ? { name: clean(fn?.name) } : {}),
+                    ...(typeof fn?.arguments === "string" && fn.arguments.length > 0 ? { argumentsDelta: fn.arguments } : {}),
+                });
+                sawTools = true;
+            }
+        }
+        const usage = normalizeOpenAIUsage(chunk.usage);
+        if (usage) lastUsage = usage;
+        if (first?.finish_reason != null) {
+            lastFinishReason = clean(first.finish_reason);
+        }
+        return events;
+    }
+
+    function finalize(): Extract<MistralStreamEvent, { type: "finish" }> {
+        return {
+            type: "finish",
+            finishReason: mapFinishReason(lastFinishReason, sawTools),
+            ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+    }
+
+    return { feed, finalize };
 }
 
 // ---------------------------------------------------------------------------
