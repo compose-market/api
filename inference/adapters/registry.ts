@@ -584,21 +584,6 @@ export function resolveModel(modelId: string): ResolvedModel {
 // =============================================================================
 
 /**
- * Get model provider from registry
- */
-export function getModelSource(modelId: string): ModelProvider | null {
-    const model = getModelById(modelId);
-    return model?.provider || null;
-}
-
-/**
- * Get model by ID
- */
-export function getModelCard(modelId: string): ModelCard | null {
-    return getModelById(modelId);
-}
-
-/**
  * Get all models
  */
 export function getAllModelCards(): ModelCard[] {
@@ -619,13 +604,6 @@ export async function getModelRegistry(): Promise<{
         lastUpdated: compiled.lastUpdated ? new Date(compiled.lastUpdated).getTime() : Date.now(),
         sources: Object.keys(compiled.byProvider).filter(k => (compiled.byProvider as any)[k] > 0) as ModelProvider[],
     };
-}
-
-/**
- * Get a specific model by ID (async for compatibility)
- */
-export async function getModelInfo(modelId: string): Promise<ModelCard | null> {
-    return getModelCard(modelId);
 }
 
 /**
@@ -711,7 +689,7 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
     const priceMax = Number.isFinite(input.priceMaxPerMTok) && input.priceMaxPerMTok! > 0
         ? input.priceMaxPerMTok!
         : Number.POSITIVE_INFINITY;
-    const streaming = input.streaming === true ? true : null;
+    const streaming = typeof input.streaming === "boolean" ? input.streaming : undefined;
     const limit = Math.min(Math.max(Number.isInteger(input.limit) ? input.limit! : 50, 1), 200);
     const cursor = typeof input.cursor === "string" && /^\d+$/.test(input.cursor)
         ? parseInt(input.cursor, 10)
@@ -723,7 +701,7 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
         if (!providerView) continue;
 
         if (contextMin > 0) {
-            const ctx = typeof providerView.contextWindow === "number" ? providerView.contextWindow : 0;
+            const ctx = extractContextWindowTokens(providerView.contextWindow);
             if (ctx < contextMin) continue;
         }
 
@@ -737,11 +715,11 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
             if (!haystack.includes(q)) continue;
         }
 
-        if (modality || operation || streaming === true) {
+        if (modality || operation || typeof streaming === "boolean") {
             if (!modelMatchesModalityOperation(providerView, {
                 modality,
                 operation,
-                streamable: streaming === true,
+                streamable: streaming,
             })) {
                 continue;
             }
@@ -758,6 +736,23 @@ export function searchModels(input: ModelSearchInput): ModelSearchResult {
         next_cursor: next,
         total: filtered.length,
     };
+}
+
+function extractContextWindowTokens(contextWindow: unknown): number {
+    if (typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0) {
+        return contextWindow;
+    }
+    if (!contextWindow || typeof contextWindow !== "object" || Array.isArray(contextWindow)) {
+        return 0;
+    }
+    const cw = contextWindow as Record<string, unknown>;
+    for (const key of ["tokens", "contextTokens", "context_tokens", "inputTokens", "input_tokens"]) {
+        const value = cw[key];
+        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+            return value;
+        }
+    }
+    return 0;
 }
 
 function extractInputPricePerMTok(pricing: unknown): number | null {
