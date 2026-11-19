@@ -39,8 +39,9 @@
  * status codes. Vendors check this after parsing.
  */
 
-import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
-import type { Usage } from "../../core.js";
+import { asRecord, assignMetric, clean, normalizeOpenAIUsage, readNonNeg, stripResponsesParams } from "../shared/index.js";
+import * as lower from "../shared/schema.js";
+import type { Call, Choice, Message, Tool, Usage } from "../../core.js";
 
 // ---------------------------------------------------------------------------
 // Path constants
@@ -83,6 +84,174 @@ export function assertBaseResp(raw: unknown, label: string): void {
     const code = typeof baseResp.status_code === "number" ? baseResp.status_code : 0;
     if (code === 0) return;
     throw new Error(`MiniMax ${label} status ${code}: ${clean(baseResp.status_msg) || "unknown"}`);
+}
+
+// ---------------------------------------------------------------------------
+// Chat (OpenAI-compatible M-series: MiniMax-M3, M2.7, M2.5)
+// ---------------------------------------------------------------------------
+
+export interface MinimaxChatOptions {
+    temperature?: number;
+    topP?: number;
+    maxTokens?: number;
+    stop?: string | string[];
+    tools?: Tool[];
+    toolChoice?: Choice;
+    responseFormat?: unknown;
+    customParams?: Record<string, unknown>;
+    wireModelId?: string;
+}
+
+export interface MinimaxChatResult {
+    text: string;
+    reasoningContent?: string;
+    toolCalls?: Call[];
+    finishReason?: string;
+    usage?: Usage;
+    raw: unknown;
+}
+
+export type MinimaxStreamEvent =
+    | { type: "text-delta"; text: string }
+    | { type: "reasoning-delta"; text: string }
+    | { type: "tool-call-delta"; index: number; id?: string; name?: string; argumentsDelta?: string }
+    | { type: "finish"; finishReason?: string; usage?: Usage };
+
+function mapMinimaxFinishReason(value: unknown, hasTools = false): string {
+    const reason = clean(value);
+    if (hasTools || reason === "tool_calls") return "tool-calls";
+    return reason || "stop";
+}
+
+function extractMinimaxReasoning(record: Record<string, unknown> | null | undefined): string {
+    if (!record) return "";
+    if (typeof record.reasoning_content === "string" && record.reasoning_content) {
+        return record.reasoning_content;
+    }
+    const details = Array.isArray(record.reasoning_details) ? record.reasoning_details : [];
+    return details
+        .map((entry) => {
+            const item = asRecord(entry);
+            return typeof item?.text === "string" ? item.text : "";
+        })
+        .filter(Boolean)
+        .join("");
+}
+
+export function buildChatBody(
+    modelId: string,
+    messages: Message[],
+    options: MinimaxChatOptions = {},
+    streaming = false,
+): Record<string, unknown> {
+    const tools = options.tools?.length
+        ? options.tools.map((tool) => ({
+            type: "function",
+            function: {
+                name: tool.name,
+                ...(tool.description ? { description: tool.description } : {}),
+                parameters: lower.object(tool.parameters),
+            },
+        }))
+        : undefined;
+    const toolChoice = !options.toolChoice || typeof options.toolChoice === "string"
+        ? options.toolChoice
+        : { type: "function", function: { name: options.toolChoice.name } };
+    const params = stripResponsesParams(options.customParams);
+    return {
+        model: options.wireModelId || modelId,
+        messages,
+        ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+        ...(typeof options.topP === "number" ? { top_p: options.topP } : {}),
+        ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
+        ...(options.stop !== undefined ? { stop: options.stop } : {}),
+        ...(tools ? { tools } : {}),
+        ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
+        ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+        ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
+        ...params,
+    };
+}
+
+export function parseChatResponse(raw: unknown): MinimaxChatResult {
+    assertBaseResp(raw, "chat");
+    const root = asRecord(raw) || {};
+    const choices = Array.isArray(root.choices) ? root.choices : [];
+    const first = asRecord(choices[0]) || {};
+    const message = asRecord(first.message) || {};
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const toolCalls: Call[] = [];
+    for (const rawCall of rawCalls) {
+        const record = asRecord(rawCall);
+        const fn = asRecord(record?.function);
+        const name = clean(fn?.name);
+        if (!record || !fn || !name) continue;
+        toolCalls.push({
+            id: clean(record.id) || `call_${toolCalls.length}`,
+            name,
+            arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
+        });
+    }
+    const reasoningContent = extractMinimaxReasoning(message);
+    return {
+        text: typeof message.content === "string" ? message.content : clean(message.content),
+        ...(reasoningContent ? { reasoningContent } : {}),
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        finishReason: mapMinimaxFinishReason(first.finish_reason, toolCalls.length > 0),
+        usage: normalizeOpenAIUsage(root.usage),
+        raw,
+    };
+}
+
+export function createStreamParser() {
+    let lastUsage: Usage | undefined;
+    let lastFinishReason = "";
+    let sawTools = false;
+
+    function feed(payload: unknown): MinimaxStreamEvent[] {
+        assertBaseResp(payload, "chat_stream");
+        const chunk = asRecord(payload);
+        if (!chunk) return [];
+        const events: MinimaxStreamEvent[] = [];
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+        const first = asRecord(choices[0]);
+        const delta = asRecord(first?.delta);
+        if (delta) {
+            const reasoning = extractMinimaxReasoning(delta);
+            if (reasoning) events.push({ type: "reasoning-delta", text: reasoning });
+            if (typeof delta.content === "string" && delta.content) {
+                events.push({ type: "text-delta", text: delta.content });
+            }
+            for (const rawCall of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
+                const record = asRecord(rawCall);
+                if (!record) continue;
+                const index = typeof record.index === "number" ? record.index : 0;
+                const fn = asRecord(record.function);
+                events.push({
+                    type: "tool-call-delta",
+                    index,
+                    ...(clean(record.id) ? { id: clean(record.id) } : {}),
+                    ...(clean(fn?.name) ? { name: clean(fn?.name) } : {}),
+                    ...(typeof fn?.arguments === "string" && fn.arguments.length > 0 ? { argumentsDelta: fn.arguments } : {}),
+                });
+                sawTools = true;
+            }
+        }
+        const usage = normalizeOpenAIUsage(chunk.usage);
+        if (usage) lastUsage = usage;
+        if (first?.finish_reason != null) lastFinishReason = clean(first.finish_reason);
+        return events;
+    }
+
+    function finalize(): Extract<MinimaxStreamEvent, { type: "finish" }> {
+        return {
+            type: "finish",
+            finishReason: mapMinimaxFinishReason(lastFinishReason, sawTools),
+            ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+    }
+
+    return { feed, finalize };
 }
 
 // ---------------------------------------------------------------------------
