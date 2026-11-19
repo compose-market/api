@@ -74,58 +74,6 @@ export interface VideoSubmissionOptions {
   customParams?: Record<string, unknown>;
 }
 
-export function getVideoParameterCatalog(provider?: string): Record<string, Record<string, unknown>> {
-  const family = typeof provider === "string" ? provider.trim().toLowerCase() : "";
-  const googleVideo = family === "gemini" || family === "vertex";
-  const alibabaVideo = family === "alibaba";
-  return {
-    duration: {
-      type: "integer",
-      required: false,
-      options: googleVideo ? [5, 6, 7, 8] : [4, 5, 6, 8, 10, 12],
-      description: "Generated video duration in seconds.",
-    },
-    fps: {
-      type: "integer",
-      required: false,
-      options: [16, 24, 30, 60],
-      description: "Generated video frame rate.",
-    },
-    size: {
-      type: "string",
-      required: false,
-      options: ["854x480", "1280x720", "1920x1080", "3840x2160"],
-      description: "Generated video size.",
-    },
-    aspect_ratio: {
-      type: "string",
-      required: false,
-      options: ["16:9", "9:16", "1:1", "21:9"],
-      description: "Generated video aspect ratio.",
-    },
-    resolution: {
-      type: "string",
-      required: false,
-      options: googleVideo ? ["720p", "1080p"] : ["480P", "540P", "720P", "768P", "1080P", "4K"],
-      description: "Generated video resolution.",
-    },
-    output_format: {
-      type: "string",
-      required: false,
-      options: ["mp4", "webm", "mov"],
-      description: "Generated video output format.",
-    },
-    ...(alibabaVideo ? {
-      prompt_extend: {
-        type: "boolean",
-        required: false,
-        default: false,
-        description: "Whether Alibaba Wan rewrites the prompt before video generation.",
-      },
-    } : {}),
-  };
-}
-
 export interface GoogleVideoReferenceImage {
   imageBytes: string;
   mimeType: string;
@@ -171,25 +119,6 @@ export function buildOpenAIVideoSubmissionBody(
         ? { video_url: options.videoUrl }
         : { image_url: options.imageUrl },
     } : {}),
-  };
-}
-
-export function buildAIMLVideoSubmissionBody(
-  modelId: string,
-  prompt: string,
-  options?: VideoSubmissionOptions,
-): Record<string, unknown> {
-  const customParams = copyCustomParams(options?.customParams);
-  return {
-    model: modelId,
-    prompt,
-    ...customParams,
-    ...(typeof options?.duration === "number" && options.duration > 0 ? { duration: String(options.duration) } : {}),
-    ...(options?.resolution ? { resolution: options.resolution } : {}),
-    ...(options?.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
-    ...(options?.size ? { size: options.size } : {}),
-    ...(options?.imageUrl ? { image_url: options.imageUrl } : {}),
-    ...(options?.videoUrl ? { video_url: options.videoUrl } : {}),
   };
 }
 
