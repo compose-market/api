@@ -332,7 +332,7 @@ export function modelMatchesModalityOperation(
     if (filters.operation && capability.operation !== filters.operation) {
       return false;
     }
-    if (filters.streamable === true && !capability.streamable) {
+    if (typeof filters.streamable === "boolean" && capability.streamable !== filters.streamable) {
       return false;
     }
     return true;
