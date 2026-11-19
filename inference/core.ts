@@ -1078,19 +1078,30 @@ function normalizeResponsesInput(input: unknown): NormalizedResponsesInput {
       const name = typeof record.name === "string" ? record.name : "";
       if (!name) continue;
       flushParts();
-      messages.push({
-        role: "assistant",
-        content: null,
-        ...(pendingReasoning !== undefined ? { reasoning_content: pendingReasoning } : {}),
-        tool_calls: [{
-          id: callId,
-          type: "function",
-          function: {
-            name,
-            arguments: typeof record.arguments === "string" ? record.arguments : responseItemOutput(record.arguments || {}),
-          },
-        }],
-      });
+      const providerMetadata = asRecord(record.providerMetadata) ?? asRecord(record.provider_metadata);
+      const toolCall = {
+        id: callId,
+        type: "function" as const,
+        function: {
+          name,
+          arguments: typeof record.arguments === "string" ? record.arguments : responseItemOutput(record.arguments || {}),
+        },
+        ...(providerMetadata ? { providerMetadata } : {}),
+      };
+      const prev = messages[messages.length - 1];
+      if (prev && prev.role === "assistant" && Array.isArray(prev.tool_calls)) {
+        prev.tool_calls.push(toolCall);
+        if (pendingReasoning !== undefined && !prev.reasoning_content) {
+          prev.reasoning_content = pendingReasoning;
+        }
+      } else {
+        messages.push({
+          role: "assistant",
+          content: null,
+          ...(pendingReasoning !== undefined ? { reasoning_content: pendingReasoning } : {}),
+          tool_calls: [toolCall],
+        });
+      }
       pendingReasoning = undefined;
       continue;
     }
