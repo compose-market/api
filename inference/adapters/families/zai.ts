@@ -51,7 +51,7 @@ import type {
     Choice,
     Usage,
 } from "../../core.js";
-import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import { asRecord, assignMetric, clean, readNonNeg, stripResponsesParams } from "../shared/index.js";
 import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ export type ZaiMessage =
     | { role: "system"; content: string }
     | { role: "user"; content: string | ZaiVisionContentItem[] }
     | { role: "assistant"; content?: string; reasoning_content?: string; tool_calls?: ZaiToolCall[] }
-    | { role: "tool"; content: string; tool_call_id: string };
+    | { role: "tool"; content: string; tool_call_id: string; name?: string };
 
 export type ZaiVisionContentItem =
     | { type: "text"; text: string }
@@ -124,34 +124,52 @@ export interface ZaiThinking {
 // ---------------------------------------------------------------------------
 
 export function mapMessagesForZai(messages: Message[]): ZaiMessage[] {
-    return messages.map((message) => {
+    const leadingSystemParts: string[] = [];
+    let startIndex = 0;
+    while (startIndex < messages.length && messages[startIndex].role === "system") {
+        const text = textOf(messages[startIndex].content);
+        if (text) leadingSystemParts.push(text);
+        startIndex += 1;
+    }
+    const out: ZaiMessage[] = [];
+    if (startIndex > 0) {
+        out.push({ role: "system", content: leadingSystemParts.join("\n\n") });
+    }
+    for (let index = startIndex; index < messages.length; index += 1) {
+        const message = messages[index];
         if (message.role === "system") {
-            return { role: "system", content: textOf(message.content) };
+            out.push({ role: "system", content: textOf(message.content) });
+            continue;
         }
         if (message.role === "tool") {
-            return {
+            out.push({
                 role: "tool",
                 content: textOf(message.content),
                 tool_call_id: clean(message.tool_call_id),
-            };
+                ...(message.name ? { name: message.name } : {}),
+            });
+            continue;
         }
         if (message.role === "assistant") {
-            const out: Extract<ZaiMessage, { role: "assistant" }> = { role: "assistant" };
+            const item: Extract<ZaiMessage, { role: "assistant" }> = { role: "assistant" };
             const text = textOf(message.content);
-            if (text) out.content = text;
+            if (text) item.content = text;
+            if (message.reasoning_content !== undefined) item.reasoning_content = message.reasoning_content;
             if (message.tool_calls && message.tool_calls.length > 0) {
-                out.tool_calls = message.tool_calls.map((call) => ({
+                item.tool_calls = message.tool_calls.map((call) => ({
                     id: call.id,
                     type: "function",
                     function: { name: call.function.name, arguments: call.function.arguments },
                 }));
             }
-            return out;
+            out.push(item);
+            continue;
         }
 
         // user
         if (typeof message.content === "string") {
-            return { role: "user", content: message.content };
+            out.push({ role: "user", content: message.content });
+            continue;
         }
         const items: ZaiVisionContentItem[] = [];
         if (Array.isArray(message.content)) {
@@ -172,8 +190,9 @@ export function mapMessagesForZai(messages: Message[]): ZaiMessage[] {
                 // file_url not present on Part — not round-trippable today.
             }
         }
-        return { role: "user", content: items.length > 0 ? items : "" };
-    });
+        out.push({ role: "user", content: items.length > 0 ? items : "" });
+    }
+    return out;
 }
 
 function textOf(content: Message["content"]): string {
@@ -201,10 +220,19 @@ export function toolsToWire(tools: Tool[] | undefined): ZaiToolDefinition[] | un
     }));
 }
 
-/** Z.AI only supports `tool_choice: "auto"`. */
-export function toolChoiceToWire(choice: Choice | undefined): "auto" | undefined {
+export type ZaiToolChoice =
+    | "auto"
+    | "none"
+    | "required"
+    | { type: "function"; function: { name: string } };
+
+export function toolChoiceToWire(choice: Choice | undefined): ZaiToolChoice | undefined {
     if (!choice) return undefined;
-    return "auto";
+    if (choice === "auto" || choice === "none" || choice === "required") return choice;
+    if (typeof choice === "object" && choice.type === "function") {
+        return { type: "function", function: { name: choice.name } };
+    }
+    return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,22 +242,27 @@ export function toolChoiceToWire(choice: Choice | undefined): "auto" | undefined
 export function usageFromZai(rawUsage: unknown): Usage | undefined {
     const usage = asRecord(rawUsage);
     if (!usage) return undefined;
-    const promptTokens = readNonNeg(usage, ["prompt_tokens"]) ?? 0;
-    const completionTokens = readNonNeg(usage, ["completion_tokens"]) ?? 0;
+    const promptTokens = readNonNeg(usage, ["prompt_tokens", "input_tokens"]) ?? 0;
+    const completionTokens = readNonNeg(usage, ["completion_tokens", "output_tokens"]) ?? 0;
     const totalTokens = readNonNeg(usage, ["total_tokens"]) ?? promptTokens + completionTokens;
-    const cachedTokens = readNonNeg(asRecord(usage.prompt_tokens_details), ["cached_tokens"]);
+    const cachedTokens = readNonNeg(asRecord(usage.prompt_tokens_details), ["cached_tokens"])
+        ?? readNonNeg(asRecord(usage.input_tokens_details), ["cached_tokens"]);
+    const reasoningTokens = readNonNeg(asRecord(usage.completion_tokens_details), ["reasoning_tokens"])
+        ?? readNonNeg(asRecord(usage.output_tokens_details), ["reasoning_tokens"]);
 
     const billingMetrics: Record<string, unknown> = {};
     assignMetric(billingMetrics, "input_tokens", promptTokens);
     assignMetric(billingMetrics, "output_tokens", completionTokens);
     assignMetric(billingMetrics, "total_tokens", totalTokens);
     assignMetric(billingMetrics, "cached_input_tokens", cachedTokens);
+    assignMetric(billingMetrics, "reasoning_tokens", reasoningTokens);
 
     return {
         promptTokens,
         completionTokens,
         totalTokens,
         ...(typeof cachedTokens === "number" ? { cachedInputTokens: cachedTokens } : {}),
+        ...(typeof reasoningTokens === "number" ? { reasoningTokens } : {}),
         ...(Object.keys(billingMetrics).length > 0 ? { billingMetrics } : {}),
         raw: usage,
     };
@@ -239,11 +272,11 @@ export function usageFromZai(rawUsage: unknown): Usage | undefined {
 // Finish reason
 // ---------------------------------------------------------------------------
 
-export function mapFinishReason(value: unknown): string {
+export function mapFinishReason(value: unknown, hasTools = false): string {
     const reason = clean(value);
+    if (hasTools || reason === "tool_calls") return "tool-calls";
     switch (reason) {
         case "stop": return "stop";
-        case "tool_calls": return "tool_calls";
         case "length": return "length";
         case "sensitive": return "content_filter";
         case "model_context_window_exceeded": return "length";
@@ -294,6 +327,8 @@ export function buildChatBody(
 ): Record<string, unknown> {
     const fnTools = toolsToWire(options.tools);
     const tools: ZaiToolDefinition[] = [...(fnTools ?? []), ...(options.extraTools ?? [])];
+    const toolChoice = toolChoiceToWire(options.toolChoice);
+    const params = stripResponsesParams(options.customParams);
     return {
         model: options.wireModelId || modelId,
         messages: mapMessagesForZai(messages),
@@ -307,10 +342,10 @@ export function buildChatBody(
         ...(options.thinking ? { thinking: options.thinking } : {}),
         ...(typeof options.toolStream === "boolean" ? { tool_stream: options.toolStream } : {}),
         ...(tools.length > 0 ? { tools } : {}),
-        ...(options.toolChoice ? { tool_choice: toolChoiceToWire(options.toolChoice) } : {}),
+        ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
         ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
-        ...(streaming ? { stream: true } : {}),
-        ...(options.customParams ?? {}),
+        ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
+        ...params,
     };
 }
 
@@ -342,7 +377,7 @@ export function parseChatResponse(raw: unknown): ZaiChatResult {
         text,
         ...(reasoningContent ? { reasoningContent } : {}),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
-        finishReason: mapFinishReason(first.finish_reason),
+        finishReason: mapFinishReason(first.finish_reason, toolCalls.length > 0),
         usage: usageFromZai(root.usage),
         ...(webSearch ? { webSearch } : {}),
         raw,
@@ -362,10 +397,13 @@ export type ZaiStreamEvent =
 /**
  * Stateful parser for Z.AI chat-completion SSE frames. Vendors hold an
  * instance per stream, feed the JSON-decoded payload of each `data:`
- * frame into `feed(...)`.
+ * frame into `feed(...)`, and call `finalize()` after EOF so trailing
+ * usage chunks are never lost.
  */
 export function createStreamParser() {
     let lastUsage: Usage | undefined;
+    let lastFinishReason = "";
+    let sawTools = false;
 
     function feed(payload: unknown): ZaiStreamEvent[] {
         const data = asRecord(payload);
@@ -376,10 +414,10 @@ export function createStreamParser() {
         const first = asRecord(choices[0]);
         const delta = asRecord(first?.delta);
         if (delta) {
-            const text = typeof delta.content === "string" ? delta.content : "";
             const reasoning = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
-            if (text) events.push({ type: "text-delta", text });
+            const text = typeof delta.content === "string" ? delta.content : "";
             if (reasoning) events.push({ type: "reasoning-delta", text: reasoning });
+            if (text) events.push({ type: "text-delta", text });
 
             const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
             for (const call of toolCalls) {
@@ -392,26 +430,30 @@ export function createStreamParser() {
                     index: idx,
                     ...(record.id ? { id: clean(record.id) } : {}),
                     ...(fn?.name ? { name: clean(fn.name) } : {}),
-                    ...(fn?.arguments ? { argumentsDelta: clean(fn.arguments) } : {}),
+                    ...(typeof fn?.arguments === "string" && fn.arguments.length > 0 ? { argumentsDelta: fn.arguments } : {}),
                 });
+                sawTools = true;
             }
         }
 
         const usage = usageFromZai(data.usage);
         if (usage) lastUsage = usage;
 
-        const finishReason = first?.finish_reason;
-        if (finishReason) {
-            events.push({
-                type: "finish",
-                finishReason: mapFinishReason(finishReason),
-                ...(lastUsage ? { usage: lastUsage } : {}),
-            });
+        if (first?.finish_reason != null) {
+            lastFinishReason = clean(first.finish_reason);
         }
         return events;
     }
 
-    return { feed };
+    function finalize(): Extract<ZaiStreamEvent, { type: "finish" }> {
+        return {
+            type: "finish",
+            finishReason: mapFinishReason(lastFinishReason, sawTools),
+            ...(lastUsage ? { usage: lastUsage } : {}),
+        };
+    }
+
+    return { feed, finalize };
 }
 
 // ---------------------------------------------------------------------------
