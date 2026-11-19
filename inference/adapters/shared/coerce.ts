@@ -55,3 +55,31 @@ export function assignMetric(
         metrics[key] = value;
     }
 }
+
+const RESPONSES_ONLY_PARAM_KEYS = [
+    "context_management",
+    "include",
+    "instructions",
+    "max_tool_calls",
+    "previous_response_id",
+    "prompt_cache_retention",
+    "store",
+    "stream",
+    "stream_options",
+    "text",
+    "truncation",
+    "verbosity",
+] as const;
+
+/**
+ * Shallow-copy `customParams` with Responses-API-only keys removed so
+ * Chat Completions / Messages-API family wires never send invalid params.
+ */
+export function stripResponsesParams(params: Record<string, unknown> | undefined): Record<string, unknown> {
+    if (!params) return {};
+    const out = { ...params };
+    for (const key of RESPONSES_ONLY_PARAM_KEYS) {
+        delete out[key];
+    }
+    return out;
+}
