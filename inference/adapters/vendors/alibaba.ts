@@ -2,12 +2,29 @@ import { getModelById } from "../registry.js";
 import type { Call, Choice, Event, Message, Tool, Usage } from "../../core.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { imagesFromResponse, normalizeOpenAIUsage, throwHttpError } from "../shared/index.js";
+import {
+  asRecord,
+  bufferFromPayload,
+  clean,
+  imagesFromResponse,
+  normalizeOpenAIUsage,
+  primaryText,
+  throwHttpError,
+} from "../shared/index.js";
 import {
   buildChatBody as buildAlibabaChatBody,
+  buildEmbeddingsBody as buildAlibabaEmbeddingsBody,
+  buildRerankBody as buildAlibabaRerankBody,
   buildWanVideoSubmission,
+  findMediaPayload,
+  parseChatResponse as parseAlibabaChatResponse,
+  parseEmbeddingsResponse as parseAlibabaEmbeddingsResponse,
+  readAsyncTaskId,
+  textFromDashScope,
+  usageFromDashScope,
   type AlibabaVideoRequestContract,
 } from "../families/alibaba.js";
+import * as zaiFamily from "../families/zai.js";
 
 interface AlibabaBases {
   origin: string;
@@ -81,14 +98,6 @@ export interface AlibabaVideoStatus {
   billingMetrics?: Record<string, unknown>;
   usage?: Usage;
   raw: unknown;
-}
-
-function clean(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 function credential(): string {
@@ -298,235 +307,12 @@ async function postEmptyJson(url: string): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function usageFromOpenAI(value: unknown): Usage | undefined {
-  const usage = asRecord(value);
-  if (!usage) return undefined;
-  const promptTokens = typeof usage.prompt_tokens === "number"
-    ? usage.prompt_tokens
-    : typeof usage.input_tokens === "number"
-      ? usage.input_tokens
-      : 0;
-  const completionTokens = typeof usage.completion_tokens === "number"
-    ? usage.completion_tokens
-    : typeof usage.output_tokens === "number"
-      ? usage.output_tokens
-      : 0;
-  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : promptTokens + completionTokens;
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens,
-    raw: usage,
-  };
-}
-
-function usageFromDashScope(raw: unknown): Usage | undefined {
-  const root = asRecord(raw);
-  const usage = asRecord(root?.usage) || asRecord(asRecord(root?.output)?.usage);
-  return usageFromOpenAI(usage);
-}
-
-function messageText(message: Message): string {
-  if (typeof message.content === "string") return message.content;
-  if (!Array.isArray(message.content)) return "";
-  return message.content
-    .map((part) => part.type === "text" && typeof part.text === "string" ? part.text : "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-function primaryText(messages: Message[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === "user") {
-      const text = messageText(messages[index]);
-      if (text) return text;
-    }
-  }
-  return "";
-}
-
-function urlFromPart(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  const record = asRecord(value);
-  return clean(record?.url) || undefined;
-}
-
-function findUrl(messages: Message[], type: "image_url" | "input_audio" | "video_url"): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const content = messages[index].content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (part.type !== type) continue;
-      if (type === "image_url") return urlFromPart(part.image_url);
-      if (type === "input_audio") return urlFromPart(part.input_audio);
-      return urlFromPart(part.video_url);
-    }
-  }
-  return undefined;
-}
-
-function dashscopeContent(message: Message): Array<Record<string, unknown>> {
-  if (typeof message.content === "string") {
-    return message.content ? [{ text: message.content }] : [];
-  }
-  if (!Array.isArray(message.content)) return [];
-
-  const content: Array<Record<string, unknown>> = [];
-  for (const part of message.content) {
-    if (part.type === "text" && part.text) {
-      content.push({ text: part.text });
-    } else if (part.type === "image_url") {
-      const url = urlFromPart(part.image_url);
-      if (url) content.push({ image: url });
-    } else if (part.type === "input_audio") {
-      const url = urlFromPart(part.input_audio);
-      if (url) content.push({ audio: url });
-    } else if (part.type === "video_url") {
-      const url = urlFromPart(part.video_url);
-      if (url) content.push({ video: url });
-    }
-  }
-  return content;
-}
-
-function dashscopeMessages(messages: Message[]): Array<Record<string, unknown>> {
-  return messages
-    .map((message) => ({
-      role: message.role === "tool" ? "assistant" : message.role,
-      content: dashscopeContent(message),
-    }))
-    .filter((message) => Array.isArray(message.content) && message.content.length > 0);
-}
-
-function textFromOpenAIChat(raw: unknown): {
-  text: string;
-  reasoning?: string;
-  finishReason?: string;
-  usage?: Usage;
-  toolCalls?: Call[];
-} {
-  const root = asRecord(raw) || {};
-  const choices = Array.isArray(root.choices) ? root.choices : [];
-  const first = asRecord(choices[0]) || {};
-  const message = asRecord(first.message) || {};
-  const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-  const toolCalls = rawCalls
-    .map((value, index): Call | null => {
-      const call = asRecord(value);
-      const fn = asRecord(call?.function);
-      const name = clean(fn?.name);
-      if (!name) return null;
-      return {
-        id: clean(call?.id) || `call_${index}`,
-        name,
-        arguments: typeof fn?.arguments === "string" ? fn.arguments : JSON.stringify(fn?.arguments ?? {}),
-      };
-    })
-    .filter((call): call is Call => call !== null);
-  return {
-    text: clean(message.content),
-    ...(clean(message.reasoning_content) ? { reasoning: clean(message.reasoning_content) } : {}),
-    finishReason: toolCalls.length > 0
-      ? "tool-calls"
-      : clean(first.finish_reason) || undefined,
-    usage: usageFromOpenAI(root.usage),
-    ...(toolCalls.length > 0 ? { toolCalls } : {}),
-  };
-}
-
 function audioSecondsFromOpenAIUsage(value: unknown): number | undefined {
   const usage = asRecord(value);
   const details = asRecord(usage?.prompt_tokens_details) || asRecord(usage?.promptTokensDetails);
   const audioTokens = readPositiveNumber(details, ["audio_tokens", "audioTokens"]);
   if (audioTokens === undefined) return undefined;
   return audioTokens / 25;
-}
-
-function dashscopeContentText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (!Array.isArray(value)) return "";
-  return value
-    .map((part) => {
-      const record = asRecord(part);
-      return clean(record?.text) || clean(record?.content);
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function textFromDashScope(raw: unknown): string {
-  const root = asRecord(raw) || {};
-  const output = asRecord(root.output) || root;
-  const text = clean(output.text) || clean(output.output_text);
-  if (text) return text;
-
-  const choices = Array.isArray(output.choices) ? output.choices : [];
-  const first = asRecord(choices[0]) || {};
-  const message = asRecord(first.message) || {};
-  return clean(message.content) || dashscopeContentText(message.content);
-}
-
-async function bufferFromPayload(payload: string, fallbackMimeType = "application/octet-stream"): Promise<{ buffer: Buffer; mimeType: string }> {
-  if (/^data:/i.test(payload)) {
-    const match = payload.match(/^data:([^;,]+)?;base64,(.+)$/i);
-    if (!match) throw new Error("Alibaba response contained an invalid data URL");
-    return { buffer: Buffer.from(match[2], "base64"), mimeType: match[1] || fallbackMimeType };
-  }
-
-  if (/^https?:\/\//i.test(payload)) {
-    const response = await fetch(payload);
-    if (!response.ok) throw new Error(`Failed to download Alibaba media URL: ${response.status}`);
-    return {
-      buffer: Buffer.from(await response.arrayBuffer()),
-      mimeType: response.headers.get("content-type") || fallbackMimeType,
-    };
-  }
-
-  return { buffer: Buffer.from(payload, "base64"), mimeType: fallbackMimeType };
-}
-
-function findMediaPayload(raw: unknown, keys: string[]): string {
-  const root = asRecord(raw) || {};
-  const output = asRecord(root.output) || root;
-
-  for (const key of keys) {
-    const value = clean(output[key]) || clean(root[key]);
-    if (value) return value;
-  }
-
-  const data = Array.isArray(root.data) ? root.data : [];
-  for (const item of data) {
-    const record = asRecord(item);
-    if (!record) continue;
-    for (const key of keys) {
-      const value = clean(record[key]);
-      if (value) return value;
-    }
-  }
-
-  for (const container of [asRecord(output.audio), asRecord(output.image), asRecord(output.video)]) {
-    if (!container) continue;
-    for (const key of keys) {
-      const value = clean(container[key]);
-      if (value) return value;
-    }
-  }
-
-  const choices = Array.isArray(output.choices) ? output.choices : [];
-  for (const choice of choices) {
-    const message = asRecord(asRecord(choice)?.message);
-    const content = Array.isArray(message?.content) ? message.content : [];
-    for (const part of content) {
-      const record = asRecord(part);
-      if (!record) continue;
-      for (const key of keys) {
-        const value = clean(record[key]);
-        if (value) return value;
-      }
-    }
-  }
-
-  return "";
 }
 
 function readPositiveNumber(record: Record<string, unknown> | null | undefined, keys: string[]): number | undefined {
@@ -906,7 +692,28 @@ export async function generateAlibabaChat(
   }
 
   const bases = basesForModel(modelId);
+  const isZai = getModelById(modelId, "alibaba")?.family === "zai";
   if (route === "openai_chat") {
+    if (isZai) {
+      const body = zaiFamily.buildChatBody(modelId, messages, {
+        ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+        ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
+        ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+        ...(options.responseFormat ? { responseFormat: options.responseFormat as { type: "text" | "json_object" } } : {}),
+        ...(options.customParams ? { customParams: options.customParams } : {}),
+      });
+      const raw = await postJson(`${bases.compatibleBase}/chat/completions`, body, {}, options.signal);
+      const parsed = zaiFamily.parseChatResponse(raw);
+      return {
+        text: parsed.text,
+        ...(parsed.reasoningContent ? { reasoning: parsed.reasoningContent } : {}),
+        ...(parsed.toolCalls ? { toolCalls: parsed.toolCalls } : {}),
+        finishReason: parsed.finishReason,
+        usage: parsed.usage,
+        raw,
+      };
+    }
     const request = buildAlibabaChatBody(modelId, messages, {
       wire: "openai_chat",
       ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
@@ -917,26 +724,17 @@ export async function generateAlibabaChat(
       ...(options.customParams ? { customParams: options.customParams } : {}),
     });
     const raw = await postJson(`${bases.compatibleBase}/chat/completions`, request.body, {}, options.signal);
-    return { ...textFromOpenAIChat(raw), raw };
+    return parseAlibabaChatResponse(raw, "openai_chat");
   }
 
-  const raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, {
-    model: modelId,
-    input: { messages: dashscopeMessages(messages) },
-    parameters: {
-      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-      ...(typeof options.maxTokens === "number" ? { max_tokens: options.maxTokens } : {}),
-      ...(options.customParams || {}),
-    },
-  }, {}, options.signal);
-
-  const text = textFromDashScope(raw);
-  return {
-    text,
-    usage: usageFromDashScope(raw),
-    finishReason: "stop",
-    raw,
-  };
+  const request = buildAlibabaChatBody(modelId, messages, {
+    wire: "multimodal",
+    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+    ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
+    ...(options.customParams ? { customParams: options.customParams } : {}),
+  });
+  const raw = await postJson(`${bases.apiBase}/services/aigc/multimodal-generation/generation`, request.body, {}, options.signal);
+  return parseAlibabaChatResponse(raw, "multimodal");
 }
 
 interface AlibabaToolAccumulator {
@@ -1023,30 +821,77 @@ export async function* streamAlibabaChat(
   }
 
   const bases = basesForModel(modelId);
-  const request = buildAlibabaChatBody(modelId, messages, {
-    wire: "openai_chat",
-    ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
-    ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
-    ...(options.tools ? { tools: options.tools } : {}),
-    ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
-    ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
-    ...(options.customParams ? { customParams: options.customParams } : {}),
-  });
-  const existingStreamOptions = asRecord(request.body.stream_options) || {};
+  const isZai = getModelById(modelId, "alibaba")?.family === "zai";
+  const body = isZai
+    ? zaiFamily.buildChatBody(modelId, messages, {
+      ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+      ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+      ...(options.responseFormat ? { responseFormat: options.responseFormat as { type: "text" | "json_object" } } : {}),
+      ...(options.customParams ? { customParams: options.customParams } : {}),
+    }, true)
+    : (() => {
+      const request = buildAlibabaChatBody(modelId, messages, {
+        wire: "openai_chat",
+        ...(typeof options.temperature === "number" ? { temperature: options.temperature } : {}),
+        ...(typeof options.maxTokens === "number" ? { maxTokens: options.maxTokens } : {}),
+        ...(options.tools ? { tools: options.tools } : {}),
+        ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
+        ...(options.responseFormat ? { responseFormat: options.responseFormat } : {}),
+        ...(options.customParams ? { customParams: options.customParams } : {}),
+      });
+      const existingStreamOptions = asRecord(request.body.stream_options) || {};
+      return {
+        ...request.body,
+        stream: true,
+        stream_options: { ...existingStreamOptions, include_usage: true },
+      };
+    })();
   const response = await fetch(`${bases.compatibleBase}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${credential()}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      ...request.body,
-      stream: true,
-      stream_options: { ...existingStreamOptions, include_usage: true },
-    }),
+    body: JSON.stringify(body),
     signal: options.signal,
   });
   const tools = new Map<number, AlibabaToolAccumulator>();
+  if (isZai) {
+    const parser = zaiFamily.createStreamParser();
+    for await (const chunk of alibabaSseJson(response)) {
+      for (const parsed of parser.feed(chunk)) {
+        if (parsed.type === "text-delta") {
+          yield { type: "text-delta", text: parsed.text };
+        } else if (parsed.type === "reasoning-delta") {
+          yield { type: "reasoning-delta", text: parsed.text };
+        } else if (parsed.type === "tool-call-delta") {
+          const current = tools.get(parsed.index) || { id: parsed.id || `call_${parsed.index}`, name: "", arguments: "", index: parsed.index };
+          if (parsed.id) current.id = parsed.id;
+          if (parsed.name) current.name += parsed.name;
+          if (parsed.argumentsDelta) current.arguments += parsed.argumentsDelta;
+          tools.set(parsed.index, current);
+          yield {
+            type: "tool-call-delta",
+            toolCallDelta: {
+              index: parsed.index,
+              ...(parsed.id ? { id: parsed.id } : {}),
+              ...(parsed.name ? { name: parsed.name } : {}),
+              ...(parsed.argumentsDelta ? { arguments: parsed.argumentsDelta } : {}),
+            },
+          };
+        }
+      }
+    }
+    for (const call of [...tools.values()].sort((left, right) => left.index - right.index)) {
+      yield { type: "tool-call", toolCall: { ...call, arguments: call.arguments || "{}" } };
+    }
+    const final = parser.finalize();
+    if (!final.usage) throw new Error(`Alibaba stream returned no authoritative usage for ${modelId}`);
+    yield { type: "done", finishReason: final.finishReason || "stop", usage: final.usage };
+    return;
+  }
   let usage: Usage | undefined;
   let finishReason = "";
 
@@ -1056,11 +901,11 @@ export async function* streamAlibabaChat(
     for (const rawChoice of choices) {
       const choice = asRecord(rawChoice);
       const delta = asRecord(choice?.delta);
-      if (typeof delta?.content === "string" && delta.content) {
-        yield { type: "text-delta", text: delta.content };
-      }
       if (typeof delta?.reasoning_content === "string" && delta.reasoning_content) {
         yield { type: "reasoning-delta", text: delta.reasoning_content };
+      }
+      if (typeof delta?.content === "string" && delta.content) {
+        yield { type: "text-delta", text: delta.content };
       }
       for (const rawCall of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
         const call = asRecord(rawCall);
@@ -1117,18 +962,19 @@ async function generateAlibabaRerank(
 
   const bases = basesForModel(modelId);
   const query = clean(customParams.query) || primaryText(messages);
-  const raw = await postJson(`${bases.compatibleApiBase}/reranks`, {
+  const req = buildAlibabaRerankBody(modelId, {
     model: modelId,
     query,
-    documents,
+    documents: documents as string[],
     ...(typeof customParams.top_n === "number" ? { top_n: customParams.top_n } : {}),
     ...(typeof customParams.return_documents === "boolean" ? { return_documents: customParams.return_documents } : {}),
   });
+  const raw = await postJson(`${bases.compatibleApiBase}/reranks`, req.body);
 
   const root = asRecord(raw) || {};
   return {
     text: JSON.stringify(raw),
-    usage: usageFromOpenAI(root.usage) || {
+    usage: normalizeOpenAIUsage(root.usage) || {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
@@ -1142,31 +988,13 @@ async function generateAlibabaRerank(
 export async function generateAlibabaEmbeddings(modelId: string, input: string[]): Promise<AlibabaEmbeddingResult> {
   const route = routeForModel(modelId);
   const bases = basesForModel(modelId);
-
-  if (route === "openai_embeddings") {
-    const raw = await postJson(`${bases.compatibleBase}/embeddings`, {
-      model: modelId,
-      input,
-    });
-    const root = asRecord(raw) || {};
-    const data = Array.isArray(root.data) ? root.data : [];
-    const embeddings = data
-      .map((item) => asRecord(item)?.embedding)
-      .filter((embedding): embedding is number[] => Array.isArray(embedding) && embedding.every((value) => typeof value === "number"));
-    return { embeddings, usage: usageFromOpenAI(root.usage), raw };
-  }
-
-  const raw = await postJson(`${bases.apiBase}/services/embeddings/multimodal-embedding/multimodal-embedding`, {
-    model: modelId,
-    input: {
-      contents: input.map((text) => ({ text })),
-    },
-  });
-  const output = asRecord(asRecord(raw)?.output) || {};
-  const embeddings = (Array.isArray(output.embeddings) ? output.embeddings : [])
-    .map((item) => asRecord(item)?.embedding)
-    .filter((embedding): embedding is number[] => Array.isArray(embedding) && embedding.every((value) => typeof value === "number"));
-  return { embeddings, usage: usageFromDashScope(raw), raw };
+  const multimodal = route !== "openai_embeddings";
+  const req = buildAlibabaEmbeddingsBody(modelId, input, { multimodal });
+  const url = multimodal
+    ? `${bases.apiBase}/services/embeddings/multimodal-embedding/multimodal-embedding`
+    : `${bases.compatibleBase}/embeddings`;
+  const raw = await postJson(url, req.body);
+  return parseAlibabaEmbeddingsResponse(raw, multimodal);
 }
 
 export async function generateAlibabaImage(
@@ -1329,7 +1157,7 @@ export async function transcribeAlibabaAudio(
       }],
       ...(Object.keys(asrOptions).length > 0 ? { asr_options: asrOptions } : {}),
     });
-    const parsed = textFromOpenAIChat(raw);
+    const parsed = parseAlibabaChatResponse(raw, "openai_chat");
     const root = asRecord(raw) || {};
     const usage = parsed.usage;
     const seconds = audioSecondsFromOpenAIUsage(root.usage);
@@ -1339,10 +1167,7 @@ export async function transcribeAlibabaAudio(
       usage: usage
         ? {
           ...usage,
-          billingMetrics: {
-            ...(usage.billingMetrics || {}),
-            ...(billingMetrics || {}),
-          },
+          ...(billingMetrics ? { billingMetrics } : {}),
         }
         : undefined,
       raw,
@@ -1476,7 +1301,7 @@ export async function submitAlibabaVideo(
   const raw = await postJson(`${origin}${submission.path}`, submission.body, { "X-DashScope-Async": "enable" });
 
   const output = asRecord(asRecord(raw)?.output) || {};
-  const taskId = clean(output.task_id) || clean(output.taskId) || clean(asRecord(raw)?.task_id);
+  const taskId = readAsyncTaskId(raw);
   if (!taskId) {
     throw new Error("Alibaba video submission returned no task id");
   }
