@@ -1,13 +1,14 @@
+import { randomUUID } from "node:crypto";
 import {
   resolveOptionalModelParamValues,
   resolveProvidedOptionalModelParamValues,
 } from "./params-handler.js";
-import { getModelById, getModelProtocolProfile } from "./catalog/registry.js";
+import { getModelById, getModelProtocolProfile } from "./adapters/registry.js";
 import {
   getModelCapabilities,
   type ModelOperationCapability,
-} from "./catalog/modalities/index.js";
-import { realtimeInputParams } from "./catalog/modalities/realtime.js";
+} from "./adapters/modalities/index.js";
+import { realtimeInputParams } from "./adapters/modalities/realtime.js";
 import {
   normalizeChatToolChoice,
   normalizeChatTools,
@@ -24,8 +25,11 @@ export type Modality = "text" | "image" | "audio" | "video" | "embedding" | "rea
 export type Schema = Record<string, unknown>;
 
 export interface Part {
-  type: "text" | "image_url" | "input_audio" | "video_url" | "tool-call" | "tool-result";
+  type: "text" | "image_url" | "input_audio" | "video_url" | "tool-call" | "tool-result" | "thinking" | "redacted_thinking";
   text?: string;
+  thinking?: string;
+  signature?: string;
+  data?: string;
   image_url?: { url: string; detail?: "auto" | "low" | "high" } | string;
   input_audio?: { url: string } | string;
   video_url?: { url: string } | string;
@@ -377,11 +381,11 @@ function responseUsage(usage: Usage | undefined, extraMetrics?: Record<string, u
 }
 
 function toResponseId(): string {
-  return `resp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  return `resp_${randomUUID().replace(/-/g, "")}`;
 }
 
 function toItemId(prefix: "msg" | "rs" | "fc" | "call"): string {
-  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}_${randomUUID().replace(/-/g, "")}`;
 }
 
 function parseRole(role: unknown): Message["role"] {
