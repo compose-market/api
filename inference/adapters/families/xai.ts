@@ -34,7 +34,7 @@ import type {
     Choice,
     Usage,
 } from "../../core.js";
-import { asRecord, assignMetric, clean, readNonNeg } from "../shared/index.js";
+import { asRecord, assignMetric, clean, readNonNeg, stripResponsesParams } from "../shared/index.js";
 import * as lower from "../shared/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -155,6 +155,29 @@ export function toolChoiceToWire(choice: Choice | undefined): unknown {
     return { type: "function", function: { name: choice.name } };
 }
 
+export function responsesToolsToWire(tools: Tool[] | undefined): Array<Record<string, unknown>> | undefined {
+    if (!tools || tools.length === 0) return undefined;
+    return tools.map((tool) => ({
+        type: "function",
+        name: tool.name,
+        ...(tool.description ? { description: tool.description } : {}),
+        parameters: lower.object(tool.parameters),
+        ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
+    }));
+}
+
+export function responsesToolChoiceToWire(choice: Choice | undefined): unknown {
+    if (!choice) return undefined;
+    if (typeof choice === "string") return choice;
+    return { type: "function", name: choice.name };
+}
+
+function mapFinishReason(value: unknown, hasTools = false): string {
+    const reason = clean(value);
+    if (hasTools || reason === "tool_calls") return "tool-calls";
+    return reason || "stop";
+}
+
 function toolCallsFromAssistant(message: Record<string, unknown> | null | undefined): Call[] | undefined {
     if (!message) return undefined;
     const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
@@ -238,6 +261,7 @@ export function buildChatBody(
     const tools = toolsToWire(options.tools);
     const toolChoice = toolChoiceToWire(options.toolChoice);
     const searchParameters = searchParametersToWire(options.searchParameters);
+    const params = stripResponsesParams(options.customParams);
     return {
         model: options.wireModelId || modelId,
         messages,
@@ -261,7 +285,7 @@ export function buildChatBody(
         ...(options.user ? { user: options.user } : {}),
         ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
         ...(options.deferred ? { deferred: true } : {}),
-        ...(options.customParams ?? {}),
+        ...params,
     };
 }
 
@@ -280,7 +304,7 @@ export function parseChatResponse(raw: unknown): XaiChatResult {
             ? { reasoningContent: message.reasoning_content }
             : {}),
         ...(toolCalls ? { toolCalls } : {}),
-        finishReason: clean(first.finish_reason) || undefined,
+        finishReason: mapFinishReason(first.finish_reason, Boolean(toolCalls?.length)),
         usage: usageFromXai(root.usage),
         ...(citations && citations.length > 0 ? { citations } : {}),
         raw,
@@ -321,6 +345,7 @@ export function createStreamParser() {
     let usage: Usage | undefined;
     let finishReason: string | undefined;
     let citations: string[] | undefined;
+    let sawTools = false;
 
     function feed(payload: unknown): XaiStreamEvent[] {
         const chunk = asRecord(payload);
@@ -336,11 +361,11 @@ export function createStreamParser() {
         const first = asRecord(choices[0]);
         if (first) {
             const delta = asRecord(first.delta) || {};
-            if (typeof delta.content === "string" && delta.content) {
-                events.push({ type: "text-delta", text: delta.content });
-            }
             if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
                 events.push({ type: "reasoning-delta", text: delta.reasoning_content });
+            }
+            if (typeof delta.content === "string" && delta.content) {
+                events.push({ type: "text-delta", text: delta.content });
             }
             const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
             for (const call of toolCalls) {
@@ -355,6 +380,7 @@ export function createStreamParser() {
                     ...(fn && typeof fn.name === "string" ? { name: fn.name } : {}),
                     ...(fn && typeof fn.arguments === "string" ? { argumentsDelta: fn.arguments } : {}),
                 });
+                sawTools = true;
             }
             const fr = clean(first.finish_reason);
             if (fr) finishReason = fr;
@@ -366,10 +392,10 @@ export function createStreamParser() {
         return events;
     }
 
-    function finalize(): XaiStreamEvent {
+    function finalize(): Extract<XaiStreamEvent, { type: "finish" }> {
         return {
             type: "finish",
-            ...(finishReason ? { finishReason } : {}),
+            finishReason: mapFinishReason(finishReason, sawTools),
             ...(usage ? { usage } : {}),
             ...(citations && citations.length > 0 ? { citations } : {}),
         };
@@ -448,6 +474,7 @@ export interface XaiResponsesOptions {
     responseFormat?: unknown;
     searchParameters?: XaiSearchParameters;
     store?: boolean;
+    stream?: boolean;
     user?: string;
     customParams?: Record<string, unknown>;
     wireModelId?: string;
@@ -458,9 +485,34 @@ export function buildResponsesBody(
     input: unknown,
     options: XaiResponsesOptions = {},
 ): Record<string, unknown> {
-    const tools = toolsToWire(options.tools);
-    const toolChoice = toolChoiceToWire(options.toolChoice);
+    const tools = responsesToolsToWire(options.tools);
+    const toolChoice = responsesToolChoiceToWire(options.toolChoice);
     const searchParameters = searchParametersToWire(options.searchParameters);
+    const params = { ...(options.customParams ?? {}) };
+    const effort = options.reasoningEffort
+        || (typeof params.reasoning_effort === "string" ? params.reasoning_effort : undefined);
+    delete params.reasoning_effort;
+    delete params.max_tokens;
+    delete params.max_completion_tokens;
+    const textParam = asRecord(params.text);
+    delete params.text;
+    const format = asRecord(options.responseFormat);
+    const loweredFormat = format?.type === "json_schema" && asRecord(format.json_schema)
+        ? {
+            type: "json_schema",
+            name: clean(asRecord(format.json_schema)?.name) || "response",
+            schema: lower.object(asRecord(format.json_schema)?.schema as Record<string, unknown> | undefined),
+            ...(typeof asRecord(format.json_schema)?.strict === "boolean"
+                ? { strict: asRecord(format.json_schema)?.strict }
+                : {}),
+        }
+        : options.responseFormat;
+    const textConfig = loweredFormat || textParam
+        ? {
+            ...(textParam || {}),
+            ...(loweredFormat ? { format: loweredFormat } : {}),
+        }
+        : undefined;
     return {
         model: options.wireModelId || modelId,
         input,
@@ -471,14 +523,15 @@ export function buildResponsesBody(
         ...(typeof options.topP === "number" ? { top_p: options.topP } : {}),
         ...(typeof options.maxOutputTokens === "number" ? { max_output_tokens: options.maxOutputTokens } : {}),
         ...(typeof options.parallelToolCalls === "boolean" ? { parallel_tool_calls: options.parallelToolCalls } : {}),
-        ...(options.reasoningEffort ? { reasoning: { effort: options.reasoningEffort } } : {}),
+        ...(effort && !params.reasoning ? { reasoning: { effort } } : {}),
         ...(tools ? { tools } : {}),
         ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
-        ...(options.responseFormat ? { text: { format: options.responseFormat } } : {}),
+        ...(textConfig ? { text: textConfig } : {}),
         ...(searchParameters ? { search_parameters: searchParameters } : {}),
         ...(typeof options.store === "boolean" ? { store: options.store } : {}),
+        ...(options.stream ? { stream: true } : {}),
         ...(options.user ? { user: options.user } : {}),
-        ...(options.customParams ?? {}),
+        ...params,
     };
 }
 
