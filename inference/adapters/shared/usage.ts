@@ -13,7 +13,12 @@ import { asRecord, assignMetric, readNonNeg } from "./coerce.js";
 const PROMPT_KEYS = ["prompt_tokens", "input_tokens", "promptTokens", "inputTokens"] as const;
 const COMPLETION_KEYS = ["completion_tokens", "output_tokens", "completionTokens", "outputTokens"] as const;
 const TOTAL_KEYS = ["total_tokens", "totalTokens"] as const;
-const REASONING_KEYS = ["reasoning_tokens", "reasoningTokens", "completion_tokens_details.reasoning_tokens"] as const;
+const REASONING_KEYS = [
+    "reasoning_tokens",
+    "reasoningTokens",
+    "completion_tokens_details.reasoning_tokens",
+    "output_tokens_details.reasoning_tokens",
+] as const;
 const CACHED_KEYS = [
     "cached_tokens",
     "cached_input_tokens",
