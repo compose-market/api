@@ -514,7 +514,30 @@ function normalizeContentParts(parts: unknown[]): Part[] {
     if (type === "image_url" || type === "input_image") {
       const image = part.image_url;
       const url = typeof image === "string" ? image : (image as { url?: string } | undefined)?.url;
-      if (url) normalized.push({ type: "image_url", image_url: { url } });
+      if (url) {
+        normalized.push({
+          type: "image_url",
+          image_url: { url },
+          ...(asRecord(part.cache_control) ? { cache_control: part.cache_control as Record<string, unknown> } : {}),
+        });
+      }
+      continue;
+    }
+
+    if (type === "thinking" && typeof part.thinking === "string") {
+      normalized.push({
+        type: "thinking",
+        thinking: part.thinking,
+        ...(typeof part.signature === "string" ? { signature: part.signature } : {}),
+      });
+      continue;
+    }
+
+    if (type === "redacted_thinking" && typeof part.data === "string") {
+      normalized.push({
+        type: "redacted_thinking",
+        data: part.data,
+      });
       continue;
     }
 
