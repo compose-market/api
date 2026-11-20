@@ -16,7 +16,7 @@ import {
   resolveModel,
   type ModelCard,
   type ResolvedModel,
-} from "./catalog/registry.js";
+} from "./adapters/registry.js";
 import { extractKeyFromHeader, validateKey } from "../x402/keys/middleware.js";
 import { publicOriginFromRequest } from "../http/public-origin.js";
 
@@ -344,6 +344,8 @@ function data(frame: string): string | null {
 type ExternalProtocol = "chat" | "responses";
 interface ExternalStreamState {
   sequence: number;
+  buffer: string;
+  isSse: boolean;
 }
 
 function responseFrameBody(
@@ -407,29 +409,48 @@ function frame(res: Response, value: string, protocol: ExternalProtocol, state: 
   }
 }
 
-function sse(res: Response, value: string, protocol: ExternalProtocol, state: ExternalStreamState): string {
-  if (!/^(data|event):/mu.test(value)) {
-    return value;
-  }
-  return value
-    .split("\n\n")
-    .map((item) => item.trim().length > 0 ? frame(res, item, protocol, state) : "")
-    .join("");
-}
-
 export function shape(protocol: ExternalProtocol = "chat"): RequestHandler {
   return (_req, res, next) => {
-    const streamState: ExternalStreamState = { sequence: 0 };
+    const streamState: ExternalStreamState = { sequence: 0, buffer: "", isSse: false };
     const json = res.json.bind(res);
     res.json = ((value?: unknown) => json(body(res, value))) as typeof res.json;
 
     const write = res.write.bind(res) as (...args: unknown[]) => boolean;
+    const end = res.end.bind(res) as (...args: unknown[]) => Response;
+
+    const drainSse = (flushAll: boolean): string => {
+      let out = "";
+      const boundary = /\r?\n\r?\n/;
+      let match = boundary.exec(streamState.buffer);
+      while (match) {
+        const rawFrame = streamState.buffer.slice(0, match.index);
+        streamState.buffer = streamState.buffer.slice(match.index + match[0].length);
+        if (rawFrame.trim().length > 0) {
+          out += frame(res, rawFrame, protocol, streamState);
+        }
+        match = boundary.exec(streamState.buffer);
+      }
+      if (flushAll && streamState.buffer.trim().length > 0) {
+        const trailing = streamState.buffer;
+        streamState.buffer = "";
+        out += frame(res, trailing, protocol, streamState);
+      }
+      return out;
+    };
+
     res.write = ((chunk: unknown, ...args: unknown[]) => {
       const value = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : typeof chunk === "string" ? chunk : null;
-      if (!value || !/^(data|event):/mu.test(value)) {
+      if (value === null) {
         return write(chunk, ...args);
       }
-      const nextChunk = sse(res, value, protocol, streamState);
+      if (!streamState.isSse) {
+        if (!/^(data|event):/mu.test(value)) {
+          return write(chunk, ...args);
+        }
+        streamState.isSse = true;
+      }
+      streamState.buffer += value;
+      const nextChunk = drainSse(false);
       if (nextChunk.length === 0) {
         const callback = args.find((arg): arg is () => void => typeof arg === "function");
         callback?.();
@@ -437,6 +458,21 @@ export function shape(protocol: ExternalProtocol = "chat"): RequestHandler {
       }
       return write(nextChunk, ...args);
     }) as typeof res.write;
+
+    res.end = ((chunk?: unknown, ...args: unknown[]) => {
+      if (streamState.isSse) {
+        const value = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : typeof chunk === "string" ? chunk : "";
+        if (value) {
+          streamState.buffer += value;
+        }
+        const trailing = drainSse(true);
+        if (trailing.length > 0) {
+          write(trailing);
+        }
+        return end(...(typeof chunk === "function" ? [chunk, ...args] : args));
+      }
+      return end(chunk, ...args);
+    }) as typeof res.end;
 
     next();
   };
