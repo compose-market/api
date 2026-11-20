@@ -1802,13 +1802,20 @@ function getNetworkFromInferenceRequest(req: Req): NetworkId | undefined {
 
 function receiptContextFromInferenceRequest(req: Req): ReceiptContext {
   const userHeader = req.get?.("x-session-user-address") || req.headers?.["x-session-user-address"];
-  const userAddress = Array.isArray(userHeader) ? userHeader[0] : userHeader;
+  const rawUserAddress = Array.isArray(userHeader) ? userHeader[0] : userHeader;
+  const trimmedUserAddress = typeof rawUserAddress === "string" && rawUserAddress.trim().length > 0
+    ? rawUserAddress.trim()
+    : undefined;
+  const network = getNetworkFromInferenceRequest(req);
   const kind = resourceKind(req);
   return {
     service: kind === "model" ? "inference" : kind,
     action: resourceAction(req, `${req.method || "POST"} ${req.path || req.originalUrl || req.url || "/v1"}`),
     resource: publicResourceUrl(req),
-    userAddress: typeof userAddress === "string" ? userAddress.toLowerCase() : undefined,
+    userAddress: trimmedUserAddress
+      ? (network ? normalizeReceiptUserAddress(trimmedUserAddress, network) : trimmedUserAddress)
+      : undefined,
+    ...(network ? { network } : {}),
   };
 }
 
