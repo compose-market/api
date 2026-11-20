@@ -224,8 +224,10 @@ export async function finishInferenceTelemetry(
 }
 
 function billing(settlement: InferenceSettlementReceipt): InferenceBillingTotals {
-  return { inferenceAmountAtomic: settlement.providerAmountWei || "0", platformFeeAtomic: settlement.platformFeeWei || "0",
-    finalAmountAtomic: settlement.finalAmountWei, currency: "USDC", decimals: 6 };
+  return {
+    inferenceAmountAtomic: settlement.providerAmountWei || "0", platformFeeAtomic: settlement.platformFeeWei || "0",
+    finalAmountAtomic: settlement.finalAmountWei, currency: "USDC", decimals: 6
+  };
 }
 
 function emptyBilling(): InferenceBillingTotals {
