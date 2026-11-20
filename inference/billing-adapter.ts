@@ -298,6 +298,39 @@ function collectRequestInputModalities(request: Request): Set<TokenModality> {
   return modalities;
 }
 
+function resolveDeterministicOutputModality(request: Request, output: Output): TokenModality | undefined {
+  const hasTextContent = typeof output.content === "string" && output.content.trim().length > 0;
+  const hasToolCalls = Array.isArray(output.toolCalls) && output.toolCalls.length > 0;
+  const mimeType = typeof output.media?.mimeType === "string" ? output.media.mimeType.toLowerCase() : "";
+
+  if (mimeType.startsWith("image/")) {
+    return hasTextContent || hasToolCalls ? undefined : "image";
+  }
+  if (mimeType.startsWith("video/")) {
+    return hasTextContent || hasToolCalls ? undefined : "video";
+  }
+  if (mimeType.startsWith("audio/")) {
+    return hasTextContent || hasToolCalls ? undefined : "audio";
+  }
+  if (!output.media) {
+    if (
+      output.modality === "text"
+      || hasTextContent
+      || hasToolCalls
+      || request.operation === "transcription"
+      || request.operation === "audio-to-text"
+      || request.operation === "speech-to-text"
+    ) {
+      return "text";
+    }
+    if (output.modality === "image") return "image";
+    if (output.modality === "video") return "video";
+    if (output.modality === "audio") return "audio";
+  }
+
+  return undefined;
+}
+
 export function buildSettlementMeterFromOutput(args: {
   request: Request;
   output: Output;
