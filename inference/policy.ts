@@ -1,5 +1,5 @@
 import { PROVIDER_PRIORITY, type ModelProvider } from "./types.js";
-import type { ModelCard, ModelPricing } from "./catalog/registry.js";
+import type { ModelCard, ModelPricing } from "./adapters/registry.js";
 
 /** Primary + fallback attempts, matching the documented routing contract. */
 const MAX_ROUTING_TARGETS = 3;
@@ -106,14 +106,6 @@ function errorText(error: unknown): string {
   return values.join(" ").toLowerCase();
 }
 
-/**
- * Vendor adapters throw plain errors carrying the HTTP status only in the
- * message text ("Fireworks image generation failed: 503 Service
- * Unavailable — …"), without a status property. Detect transient classes
- * at the text level too: any standalone 5xx number or a well-known
- * provider-outage phrase.
- */
-const TRANSIENT_STATUS_TEXT = /\b5\d{2}\b/u;
 const TRANSIENT_PHRASE_TEXT = /(internal server error|bad gateway|service unavailable|gateway timeout|overloaded)/u;
 
 function isRetryable(error: unknown): boolean {
@@ -121,12 +113,12 @@ function isRetryable(error: unknown): boolean {
   if (explicit !== undefined) return explicit;
 
   const status = getErrorStatus(error);
-  if (typeof status === "number") return status >= 500 || [408, 409, 425, 429].includes(status);
+  if (typeof status === "number") return (status >= 500 && status <= 599) || [408, 409, 425, 429].includes(status);
 
   const message = errorText(error);
   if (message.includes("payment") || message.includes("budget") || message.includes("401") || message.includes("403")) return false;
   if (message.includes("timeout") || message.includes("econn") || message.includes("network") || message.includes("fetch failed") || message.includes("rate limit") || message.includes("429")) return true;
-  return TRANSIENT_STATUS_TEXT.test(message) || TRANSIENT_PHRASE_TEXT.test(message);
+  return TRANSIENT_PHRASE_TEXT.test(message);
 }
 
 function canFallback(error: unknown): boolean {
