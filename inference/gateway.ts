@@ -1163,9 +1163,9 @@ class UpstreamTimeoutError extends Error {
   }
 }
 
-function directCallTimeoutMs(): number {
+function directCallTimeoutMs(): number | null {
   const parsed = Number.parseInt(process.env.INFERENCE_DIRECT_CALL_TIMEOUT_MS || "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DIRECT_CALL_TIMEOUT_MS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function createRequestAbort(req: Req, res: Res): { signal: AbortSignal; aborted: () => boolean; done: () => void; cleanup: () => void } {
