@@ -1512,14 +1512,14 @@ function buildMetricMap(media: BillingMediaEvidence): Record<string, unknown> {
   // `audio_hour`. One canonical second ⇄ minute ⇄ hour ladder.
   const seconds = readPositiveMetric(metrics, ["second", "duration", "audio_second", "compute_second"]);
   if (seconds !== undefined) {
-    if (metrics.second === undefined) metrics.second = seconds;
-    if (metrics.duration === undefined) metrics.duration = seconds;
-    if (metrics.audio_second === undefined) metrics.audio_second = seconds;
-    if (metrics.compute_second === undefined) metrics.compute_second = seconds;
-    if (metrics.minute === undefined) metrics.minute = seconds / 60;
-    if (metrics.audio_minute === undefined) metrics.audio_minute = seconds / 60;
-    if (metrics.hour === undefined) metrics.hour = seconds / 3600;
-    if (metrics.audio_hour === undefined) metrics.audio_hour = seconds / 3600;
+    if (readPositiveMetric(metrics, ["second"]) === undefined) metrics.second = seconds;
+    if (readPositiveMetric(metrics, ["duration"]) === undefined) metrics.duration = seconds;
+    if (readPositiveMetric(metrics, ["audio_second"]) === undefined) metrics.audio_second = seconds;
+    if (readPositiveMetric(metrics, ["compute_second"]) === undefined) metrics.compute_second = seconds;
+    if (readPositiveMetric(metrics, ["minute"]) === undefined) metrics.minute = seconds / 60;
+    if (readPositiveMetric(metrics, ["audio_minute"]) === undefined) metrics.audio_minute = seconds / 60;
+    if (readPositiveMetric(metrics, ["hour"]) === undefined) metrics.hour = seconds / 3600;
+    if (readPositiveMetric(metrics, ["audio_hour"]) === undefined) metrics.audio_hour = seconds / 3600;
   }
 
   // Cross-derive megapixel ⇄ pixel.
