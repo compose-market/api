@@ -1976,6 +1976,7 @@ function writeResponsesPayloads(res: Res, payloads: Array<Record<string, unknown
   for (const payload of payloads) {
     res.write(formatCoreSSE(payload));
   }
+  flushEventStream(res);
 }
 
 function closeEventStream(res: Res): void {
