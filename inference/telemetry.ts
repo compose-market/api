@@ -1399,14 +1399,23 @@ export function extractAuthoritativeUsage(value: unknown): AuthoritativeUsage {
     const promptTokens = readNonNegativeInteger(googleUsageMetadata, ["promptTokenCount"]);
     const candidateTokens = readNonNegativeInteger(googleUsageMetadata, ["candidatesTokenCount"]);
     const reasoningTokens = readNonNegativeInteger(googleUsageMetadata, ["thoughtsTokenCount"]);
+    const cachedContentTokens = readNonNegativeInteger(googleUsageMetadata, ["cachedContentTokenCount"]);
     const totalTokens = readNonNegativeInteger(googleUsageMetadata, ["totalTokenCount"]);
     if (promptTokens !== undefined && candidateTokens !== undefined) {
       const completionTokens = candidateTokens + (reasoningTokens ?? 0);
+      const billingDetails = withTokenBillingDetails({
+        ...googleUsageMetadata,
+        ...(cachedContentTokens !== undefined ? { cached_input_tokens: cachedContentTokens } : {}),
+      });
       return {
         promptTokens,
         completionTokens,
         ...withOptionalReasoning(reasoningTokens),
         totalTokens: totalTokens ?? promptTokens + completionTokens,
+        ...billingDetails,
+        ...(cachedContentTokens !== undefined && billingDetails.cachedInputTokens === undefined
+          ? { cachedInputTokens: cachedContentTokens }
+          : {}),
         source: "google_usage_metadata",
       };
     }
