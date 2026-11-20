@@ -1253,6 +1253,9 @@ function signals(signals: Array<AbortSignal | undefined>): { signal: AbortSignal
 
 function withDirectDeadline(parent: AbortSignal, timeoutOverrideMs?: number): { signal: AbortSignal; cleanup: () => void } {
   const timeoutMs = timeoutOverrideMs ?? directCallTimeoutMs();
+  if (timeoutMs === null || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return { signal: parent, cleanup: () => {} };
+  }
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new UpstreamTimeoutError(timeoutMs)), timeoutMs);
   const combined = signals([parent, deadline.signal]);
