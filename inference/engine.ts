@@ -1,10 +1,10 @@
 import type { PolicyResult } from "./policy.js";
 import { runWithPolicy } from "./policy.js";
-import type { AdapterResult, AdapterStatus } from "./catalog/adapter.js";
+import type { AdapterResult, AdapterStatus } from "./adapters/adapter.js";
 import {
   resolveModel,
   type ResolvedModel,
-} from "./catalog/registry.js";
+} from "./adapters/registry.js";
 import type { Event, Request } from "./core.js";
 
 export interface Run<T> {
@@ -29,7 +29,7 @@ function defaultRetries(request: Request): number {
 }
 
 function load() {
-  return import("./catalog/adapter.js");
+  return import("./adapters/adapter.js");
 }
 
 export function resolve(request: Pick<Request, "model">): ResolvedModel {
