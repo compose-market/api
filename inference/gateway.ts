@@ -12,9 +12,9 @@ import {
   searchModels,
   type ModelSearchInput,
   type ResolvedModel,
-} from "./catalog/registry.js";
+} from "./adapters/registry.js";
 import { isProvider, type CompiledModelsData, type ModelCard, type ModelProvider } from "./types.js";
-import type { AdapterStatus } from "./catalog/adapter.js";
+import type { AdapterStatus } from "./adapters/adapter.js";
 import {
   CANONICAL_MODALITIES,
   getModelCapabilities,
@@ -22,12 +22,12 @@ import {
   getModalityOperations,
   isCanonicalModality,
   isCanonicalOperation,
-} from "./catalog/modalities/index.js";
-import { videoBillingMetricsFromOutput } from "./catalog/modalities/video.js";
+} from "./adapters/modalities/index.js";
+import { videoBillingMetricsFromOutput } from "./adapters/modalities/video.js";
 import {
   getFamilyCatalog,
   normalizeFamily,
-} from "./catalog/families/index.js";
+} from "./adapters/families/index.js";
 import {
   buildResolvedAuthorizationInput,
   buildSettlementMeterFromOutput,
@@ -53,6 +53,7 @@ import {
   applyReceiptHeader,
   attachReceiptToJsonBody,
   finalizeReceipt,
+  normalizeReceiptUserAddress,
   receiptFromInferenceSettlement,
   receiptStreamPayload,
   receiptForJsonBody,
@@ -68,7 +69,6 @@ import {
   normalizeEmbeddingsRequest,
   normalizeAudioTranscriptionFile,
   normalizeResponsesRequest,
-  toOpenAIChatFinishReason,
   toChatCompletionsResponse,
   toChatStreamEvent,
   toChatUsageStreamEvent,
@@ -436,7 +436,7 @@ function sendCatalogPayload(req: Req, res: Res, payload: EncodedCatalogPayload):
   const etag = `"${payload.hash}-${encoding}"`;
   res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
   res.setHeader("CDN-Cache-Control", "public, s-maxage=21600, stale-while-revalidate=86400");
-  res.setHeader("Vary", "Accept-Encoding");
+  res.append("Vary", "Accept-Encoding");
   res.setHeader("ETag", etag);
   if (etagMatches(req, etag)) {
     res.status(304).end();
