@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { InferenceSettlementReceipt } from "../x402/index.js";
 import type { Request } from "./core.js";
-import type { ResolvedModel } from "./catalog/registry.js";
+import type { ResolvedModel } from "./adapters/registry.js";
 import type { MeteredModelQuote } from "../x402/metering.js";
 import type { NetworkId } from "../x402/configs/chains.js";
 
@@ -107,8 +107,10 @@ export function startInferenceTelemetry(args: {
 }): InferenceTelemetryLifecycle | null {
   const userAddress = args.userAddress?.trim();
   if (!userAddress || !args.network) return null;
-  return { id: args.request.responseId, userAddress, network: args.network, startedAt: Date.now(),
-    request: args.request, resolved: args.resolved, settlements: [], metrics: {} };
+  return {
+    id: args.request.responseId, userAddress, network: args.network, startedAt: Date.now(),
+    request: args.request, resolved: args.resolved, settlements: [], metrics: {}
+  };
 }
 
 export function markInferenceFirstOutput(lifecycle: InferenceTelemetryLifecycle | null): void {
