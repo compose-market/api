@@ -211,7 +211,8 @@ export async function finishInferenceTelemetry(
     latencyMs: completedAt - lifecycle.startedAt,
     timeToFirstTokenMs: lifecycle.firstOutputAt === undefined ? undefined : lifecycle.firstOutputAt - lifecycle.startedAt,
     usage,
-    billing: lifecycle.settlements.reduce<InferenceBillingTotals>((total, settlement) => ({ ...total,
+    billing: lifecycle.settlements.reduce<InferenceBillingTotals>((total, settlement) => ({
+      ...total,
       inferenceAmountAtomic: add(total.inferenceAmountAtomic, settlement.billing.inferenceAmountAtomic),
       platformFeeAtomic: add(total.platformFeeAtomic, settlement.billing.platformFeeAtomic),
       finalAmountAtomic: add(total.finalAmountAtomic, settlement.billing.finalAmountAtomic),
