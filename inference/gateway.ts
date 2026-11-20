@@ -3590,6 +3590,8 @@ export async function handleGetModel(req: Req, res: Res): Promise<void> {
       return;
     }
 
+    res.setHeader("Cache-Control", "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400");
+    res.setHeader("CDN-Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
     res.status(200).json(withModelOperations(model));
   } catch (error) {
     writeAdaptedError(res, error, 500);
