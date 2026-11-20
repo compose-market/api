@@ -419,6 +419,7 @@ export class ResponsesStreamEncoder {
       call_id: call.callId,
       name: call.name,
       arguments: "",
+      ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
     };
     this.outputItems.set(call.outputIndex, item);
     return [{
