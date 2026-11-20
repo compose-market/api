@@ -1,5 +1,5 @@
-import type { Output, Request } from "./core.js";
-import { resolveModel } from "./catalog/registry.js";
+import type { Output, Request, Usage } from "./core.js";
+import { resolveModel } from "./adapters/registry.js";
 import {
   buildAuthoritativeBilling,
   buildRequestBilling,
@@ -208,6 +208,94 @@ export function buildResolvedSettlementMeter(args: SettlementMeterArgs): Metered
     telemetry: billing,
     ...quoteMeteredSettlement(meter),
   };
+}
+
+type TokenModality = "text" | "image" | "audio" | "video";
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function hasNonEmptyValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some((item) => hasNonEmptyValue(item));
+  return false;
+}
+
+function hasFiniteMetric(record: Record<string, unknown> | undefined, keys: readonly string[]): boolean {
+  if (!record) return false;
+  return keys.some((key) => {
+    const value = record[key];
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  });
+}
+
+function collectRequestInputModalities(request: Request): Set<TokenModality> {
+  const modalities = new Set<TokenModality>();
+
+  if (typeof request.instructions === "string" && request.instructions.trim().length > 0) {
+    modalities.add("text");
+  }
+  if (hasNonEmptyValue(request.embeddingInput)) {
+    modalities.add("text");
+  }
+  if (typeof request.imageOptions?.imageUrl === "string" && request.imageOptions.imageUrl.trim().length > 0) {
+    modalities.add("image");
+  }
+  if (typeof request.videoOptions?.imageUrl === "string" && request.videoOptions.imageUrl.trim().length > 0) {
+    modalities.add("image");
+  }
+  if (typeof request.videoOptions?.videoUrl === "string" && request.videoOptions.videoUrl.trim().length > 0) {
+    modalities.add("video");
+  }
+
+  for (const message of request.messages || []) {
+    if (typeof message.content === "string") {
+      if (message.content.trim().length > 0) modalities.add("text");
+    } else if (Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (part.type === "image_url") {
+          modalities.add("image");
+        } else if (part.type === "input_audio") {
+          modalities.add("audio");
+        } else if (part.type === "video_url") {
+          modalities.add("video");
+        } else if (
+          (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0)
+          || part.type === "tool-call"
+          || part.type === "tool-result"
+          || part.type === "thinking"
+          || part.type === "redacted_thinking"
+        ) {
+          modalities.add("text");
+        }
+      }
+    }
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      modalities.add("text");
+    }
+  }
+
+  const custom = request.customParams;
+  if (custom) {
+    for (const key of [
+      "image", "image_url", "image_urls", "imageUrls", "mask",
+      "input_image", "input_image_2", "input_image_3", "input_image_4",
+      "input_image_5", "input_image_6", "input_image_7", "input_image_8",
+    ]) {
+      if (hasNonEmptyValue(custom[key])) modalities.add("image");
+    }
+    for (const key of ["audio", "audio_url", "file", "input_audio"]) {
+      if (hasNonEmptyValue(custom[key])) modalities.add("audio");
+    }
+    for (const key of ["video", "video_url", "input_video"]) {
+      if (hasNonEmptyValue(custom[key])) modalities.add("video");
+    }
+  }
+
+  return modalities;
 }
 
 export function buildSettlementMeterFromOutput(args: {
