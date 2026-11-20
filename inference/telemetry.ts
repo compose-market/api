@@ -1603,7 +1603,11 @@ function resolveDerivedMediaQuantity(primaryKey: string, metrics: Record<string,
   }
 
   if (primaryKeyIncludes(primaryKey, "minute")) {
-    const minutes = readPositiveMetric(metrics, [primaryKey, "minute"]);
+    const directMinutes = readPositiveMetric(metrics, [primaryKey, "minute"]);
+    const derivedSeconds = directMinutes === undefined
+      ? readPositiveMetric(metrics, ["second", "duration", "audio_second", "compute_second"])
+      : undefined;
+    const minutes = directMinutes ?? (derivedSeconds !== undefined ? derivedSeconds / 60 : undefined);
     if (minutes !== undefined) {
       factors.push(minutes);
     }
