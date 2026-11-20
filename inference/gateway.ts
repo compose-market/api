@@ -207,79 +207,10 @@ export interface TokenUsage {
   totalTokens: number;
 }
 
-export interface ChatResult {
-  content: string;
-  usage: TokenUsage;
-  finishReason?: string;
-  toolCalls?: Array<{
-    id?: string;
-    name: string;
-    arguments: string | object;
-    providerMetadata?: Record<string, unknown>;
-  }>;
-}
-
-export interface ImageOptions {
-  size?: string;
-  quality?: string;
-  n?: number;
-  imageUrl?: string;
-}
-
-export interface ImageResult {
-  buffer: Buffer;
-  mimeType: string;
-}
-
-export interface VideoOptions {
-  duration?: number;
-  aspectRatio?: string;
-  resolution?: string;
-  imageUrl?: string;
-}
-
-export interface VideoResult {
-  buffer: Buffer;
-  mimeType: string;
-}
-
-export interface VideoJobResult {
-  jobId: string;
-  status: "queued" | "processing";
-}
-
-export interface VideoJobStatus {
-  jobId: string;
-  status: "queued" | "processing" | "completed" | "failed";
-  url?: string;
-  error?: string;
-  progress?: number;
-}
-
-export interface TTSOptions {
-  voice?: string;
-  speed?: number;
-  responseFormat?: string;
-}
-
-export interface ASROptions {
-  language?: string;
-  responseFormat?: string;
-}
-
 export interface ASRResult {
   text: string;
   language?: string;
   duration?: number;
-}
-
-export interface EmbeddingOptions {
-  dimensions?: number;
-}
-
-export interface EmbeddingResult {
-  embeddings: number[][];
-  usage: { promptTokens: number; totalTokens: number };
 }
 
 export interface ChatCompletionRequest {
@@ -645,108 +576,6 @@ function buildPaymentRequiredHeaders(paymentRequiredHeader: string | null): Reco
   };
 }
 
-function adaptChatResponse(result: ChatResult, model: string, requestId: string) {
-  return {
-    id: requestId,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: {
-          role: "assistant",
-          content: result.content,
-          ...(result.toolCalls
-            ? {
-              tool_calls: result.toolCalls.map((tc, i) => ({
-                id: tc.id || `call_${i}`,
-                type: "function",
-                function: {
-                  name: tc.name,
-                  arguments:
-                    typeof tc.arguments === "string" ? tc.arguments : JSON.stringify(tc.arguments),
-                },
-                ...(tc.providerMetadata ? { providerMetadata: tc.providerMetadata } : {}),
-              })),
-            }
-            : {}),
-        },
-        finish_reason: toOpenAIChatFinishReason(
-          result.finishReason,
-          result.toolCalls?.length ? "tool_calls" : "stop",
-        ),
-      },
-    ],
-    usage: {
-      prompt_tokens: result.usage.promptTokens,
-      completion_tokens: result.usage.completionTokens,
-      total_tokens: result.usage.totalTokens,
-    },
-  };
-}
-
-function adaptStreamChunk(
-  content: string,
-  model: string,
-  requestId: string,
-  isLast = false,
-  finishReason: string | null = null,
-  isFirst = false,
-) {
-  const delta: Record<string, unknown> = isLast ? {} : { content };
-  if (!isLast && isFirst) {
-    delta.role = "assistant";
-  }
-
-  return {
-    id: requestId,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        delta,
-        finish_reason: isLast ? toOpenAIChatFinishReason(finishReason) : null,
-      },
-    ],
-  };
-}
-
-function adaptStreamToolCallChunk(
-  toolCall: { id: string; name: string; arguments: string },
-  model: string,
-  requestId: string,
-) {
-  return {
-    id: requestId,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        delta: {
-          role: "assistant",
-          tool_calls: [
-            {
-              index: 0,
-              id: toolCall.id,
-              type: "function",
-              function: {
-                name: toolCall.name,
-                arguments: toolCall.arguments,
-              },
-            },
-          ],
-        },
-        finish_reason: null,
-      },
-    ],
-  };
-}
-
 function adaptImageResponse(result: { images: Array<{ b64_json?: string; url?: string }> }) {
   return {
     created: Math.floor(Date.now() / 1000),
@@ -756,22 +585,6 @@ function adaptImageResponse(result: { images: Array<{ b64_json?: string; url?: s
 
 function adaptTranscriptionResponse(result: ASRResult) {
   return { text: result.text };
-}
-
-function adaptEmbeddingResponse(result: { embeddings: number[][] }, model: string, promptTokens: number) {
-  return {
-    object: "list",
-    data: result.embeddings.map((embedding, index) => ({
-      object: "embedding",
-      embedding,
-      index,
-    })),
-    model,
-    usage: {
-      prompt_tokens: promptTokens,
-      total_tokens: promptTokens,
-    },
-  };
 }
 
 function adaptVideoResponse(result: { videos: Array<{ base64?: string; url?: string; duration?: number }> }, model: string) {
@@ -1056,14 +869,6 @@ function usesProviderStream(request: Request): boolean {
     || !request.operation;
 }
 
-function requireModel(modelId: string): { provider: ModelProvider; card: ModelCard } {
-  const card = getModelById(modelId);
-  if (!card) {
-    throw new Error(`Model not found: ${modelId}`);
-  }
-  return { provider: card.provider, card };
-}
-
 async function invokeDirectAdapter(request: Request, signal?: AbortSignal): Promise<{ output: Output; route: Awaited<ReturnType<typeof generateEngine>>["route"] }> {
   const run = await generateEngine(request, { signal });
   return { output: run.result.output, route: run.route };
@@ -1150,8 +955,6 @@ function applyLegacyAttachments(messages: CoreMessage[], body: ChatCompletionReq
 // =============================================================================
 
 type ResponseShape = "responses" | "chat" | "embeddings";
-
-const DEFAULT_DIRECT_CALL_TIMEOUT_MS = 4 * 60_000;
 
 class UpstreamTimeoutError extends Error {
   statusCode = 504;
@@ -4035,7 +3838,9 @@ export async function handleVideoStatusStream(req: Req, res: Res): Promise<void>
 
   const startedAt = Date.now();
   let cancelled = false;
-  req.on("close", () => { cancelled = true; });
+  res.on("close", () => {
+    if (!res.writableEnded) cancelled = true;
+  });
 
   try {
     while (!cancelled) {
