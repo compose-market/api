@@ -1969,6 +1969,7 @@ function writeResponsesEvents(res: Res, encoder: ResponsesStreamEncoder, event: 
   for (const payload of encoder.push(event)) {
     res.write(formatCoreSSE(payload));
   }
+  flushEventStream(res);
 }
 
 function writeResponsesPayloads(res: Res, payloads: Array<Record<string, unknown>>): void {
