@@ -2194,6 +2194,7 @@ export async function executeRequest(args: {
     previousResponseId: args.shape === "responses" ? args.request.previousResponseId : undefined,
   };
 
+  let streamKeepalive: ReturnType<typeof setInterval> | null = null;
   try {
     let baseRecordSave: Promise<unknown> | null = null;
     if (request.stream) {
@@ -2211,6 +2212,15 @@ export async function executeRequest(args: {
           (error) => error,
         );
       }
+      // Keep SSE streams alive immediately after headers flush (including while
+      // awaiting slow provider priming / extended reasoning before the first token).
+      streamKeepalive = setInterval(() => {
+        if (!args.res.writableEnded && args.res.headersSent) {
+          args.res.write(": ping\n\n");
+          const flush = (args.res as Res & { flush?: () => void }).flush;
+          if (typeof flush === "function") flush.call(args.res);
+        }
+      }, 15_000);
     } else {
       await saveResponseRecord(baseRecord);
     }
@@ -2220,15 +2230,7 @@ export async function executeRequest(args: {
       if (!externalCompatibility) writeResponsesEvents(args.res, responsesEncoder, { type: "created" });
 
       try {
-        const direct = externalCompatibility ? null : withDirectDeadline(
-          lifecycle.signal,
-          request.modality === "video" ? 600_000 : undefined,
-        );
-        const keepalive = setInterval(() => {
-          if (!args.res.writableEnded) {
-            args.res.write(": ping\n\n");
-          }
-        }, 15_000);
+        const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
         let routed: Awaited<ReturnType<typeof generateEngine>>;
         try {
           routed = await generateEngine(request, {
@@ -2237,7 +2239,6 @@ export async function executeRequest(args: {
             allowFallback: !externalCompatibility,
           });
         } finally {
-          clearInterval(keepalive);
           direct?.cleanup();
         }
         settlementResolved = resolvedForRoute(settlementResolved, routed.route);
@@ -2394,9 +2395,7 @@ export async function executeRequest(args: {
     }
 
     if (request.stream && usesProviderStream(request)) {
-      const streamDeadline = request.modality === "image" || request.modality === "video"
-        ? withDirectDeadline(lifecycle.signal, request.modality === "video" ? 600_000 : undefined)
-        : null;
+      const streamDeadline = withDirectDeadline(lifecycle.signal);
       const routed = await streamEngine(request, {
         signal: streamDeadline?.signal || lifecycle.signal,
         retriesPerTarget: externalCompatibility ? 0 : undefined,
@@ -2496,11 +2495,6 @@ export async function executeRequest(args: {
           yield event.value;
         }
       };
-      const providerKeepalive = setInterval(() => {
-        if (!args.res.writableEnded && args.res.headersSent) {
-          args.res.write(": ping\n\n");
-        }
-      }, 15_000);
 
       try {
         for await (const event of events()) {
@@ -2662,9 +2656,24 @@ export async function executeRequest(args: {
           );
         }
         if (!settlementLane.hasEvidence()) {
+          const missingEvidenceError = new Error("missing_stream_evidence");
           await abortPaidInference("missing_stream_evidence");
-          await finishTelemetry("failed", new Error("missing_stream_evidence"));
-          args.res.end();
+          await finishTelemetry("failed", missingEvidenceError);
+          if (!args.res.writableEnded) {
+            const payload = {
+              code: "missing_stream_evidence",
+              message: "Upstream stream completed without billable usage evidence",
+            };
+            try {
+              if (responsesEncoder) {
+                writeResponsesEvents(args.res, responsesEncoder, { type: "error", error: payload });
+              } else {
+                args.res.write(toErrorStreamEvent(payload));
+              }
+            } catch { /* best-effort */ }
+            if (externalCompatibility) args.res.end();
+            else closeEventStream(args.res);
+          }
           return;
         }
 
@@ -2781,7 +2790,6 @@ export async function executeRequest(args: {
         }
         throw terminalError;
       } finally {
-        clearInterval(providerKeepalive);
         streamDeadline?.cleanup();
         activeSettlementCheckpoint = null;
         activeSettlementLane = null;
@@ -2792,10 +2800,7 @@ export async function executeRequest(args: {
 
     let routed: Awaited<ReturnType<typeof generateEngine>>;
     const runDirect = async (nextRequest: Request) => {
-      const direct = externalCompatibility ? null : withDirectDeadline(
-        lifecycle.signal,
-        nextRequest.modality === "video" ? 600_000 : undefined,
-      );
+      const direct = externalCompatibility ? null : withDirectDeadline(lifecycle.signal);
       try {
         return await generateEngine(nextRequest, {
           signal: direct?.signal || lifecycle.signal,
@@ -2866,20 +2871,51 @@ export async function executeRequest(args: {
     }
     args.res.status(200).json(attachReceiptToJsonBody(payload, jsonReceipt));
   } catch (error) {
-    await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
-    await saveResponseRecord({
-      ...baseRecord,
-      provider: settlementResolved.provider,
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
+    try {
+      await abortPaidInference(error instanceof Error ? error.message : "inference_failed");
+    } catch (abortErr) {
+      console.warn("[gateway] failed to abort inference payment on error:", abortErr instanceof Error ? abortErr.message : String(abortErr));
+    }
+    try {
+      await saveResponseRecord({
+        ...baseRecord,
+        provider: settlementResolved.provider,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (saveErr) {
+      console.warn("[gateway] failed to save failed response record:", saveErr instanceof Error ? saveErr.message : String(saveErr));
+    }
+    try {
+      await finishTelemetry(lifecycle.aborted() ? "aborted" : "failed", error);
+    } catch (telemetryErr) {
+      console.warn("[gateway] failed to finish failed telemetry:", telemetryErr instanceof Error ? telemetryErr.message : String(telemetryErr));
+    }
+    if (request.stream && args.res.headersSent && !args.res.writableEnded) {
+      try {
+        if (args.shape === "responses") {
+          const errorEncoder = new ResponsesStreamEncoder(request.responseId, modelId, baseRecord.createdAt);
+          writeResponsesEvents(args.res, errorEncoder, {
+            type: "error",
+            error: streamErrorPayload(error),
+          });
+        } else {
+          args.res.write(toErrorStreamEvent(streamErrorPayload(error)));
+          flushEventStream(args.res);
+        }
+      } catch { /* best-effort */ }
+      try {
+        if (externalCompatibility) args.res.end();
+        else closeEventStream(args.res);
+      } catch { /* best-effort */ }
+    }
     if (externalCompatibility && !args.res.headersSent) {
       writeAdaptedError(args.res, error, 500);
       return;
     }
     throw error;
   } finally {
+    if (streamKeepalive) clearInterval(streamKeepalive);
     lifecycle.signal.removeEventListener("abort", abortPaymentOnClose);
     lifecycle.cleanup();
   }
