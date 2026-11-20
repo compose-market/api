@@ -6,9 +6,9 @@
  */
 import type { Request, Response } from "express";
 
-import { getModelById } from "./catalog/registry.js";
-import { familyOf, normalizeFamily } from "./catalog/families/index.js";
-import { getModelCapabilities, type CanonicalModality } from "./catalog/modalities/index.js";
+import { getModelById } from "./adapters/registry.js";
+import { familyOf, normalizeFamily } from "./adapters/families/index.js";
+import { getModelCapabilities, type CanonicalModality } from "./adapters/modalities/index.js";
 import type { ModelCard } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -391,6 +391,8 @@ export async function handleGetModelParams(req: Request, res: Response): Promise
   }
 
   const resolved = resolveModelParams(modelId);
+  res.setHeader("Cache-Control", "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400");
+  res.setHeader("CDN-Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
   if (resolved) {
     res.json(resolved);
     return;
