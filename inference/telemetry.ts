@@ -1868,7 +1868,7 @@ function sectionMatchesTokenRange(section: BillingPriceSection, usage: Authorita
     return false;
   }
 
-  const tokenCount = usage.totalTokens > 0 ? usage.totalTokens : usage.promptTokens;
+  const tokenCount = usage.promptTokens > 0 ? usage.promptTokens : usage.totalTokens;
   if (range.minExclusive !== undefined && tokenCount <= range.minExclusive) {
     return false;
   }
