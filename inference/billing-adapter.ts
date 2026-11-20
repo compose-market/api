@@ -331,6 +331,83 @@ function resolveDeterministicOutputModality(request: Request, output: Output): T
   return undefined;
 }
 
+function enrichSingleModalityTokenBreakdown(request: Request, output: Output): Usage | undefined {
+  const usage = output.usage;
+  if (!usage) return undefined;
+
+  const billingMetrics: Record<string, unknown> = { ...(usage.billingMetrics || {}) };
+  const raw = asRecord(usage.raw);
+  const rawInputDetails = asRecord(
+    raw?.input_tokens_details
+    ?? raw?.inputTokenDetails
+    ?? raw?.prompt_tokens_details
+    ?? raw?.promptTokenDetails,
+  );
+  const rawOutputDetails = asRecord(
+    raw?.output_tokens_details
+    ?? raw?.outputTokenDetails
+    ?? raw?.completion_tokens_details
+    ?? raw?.completionTokenDetails,
+  );
+
+  let hasInputBreakdown = hasFiniteMetric(billingMetrics, [
+    "input_text_tokens", "input_image_tokens", "input_audio_tokens", "input_video_tokens",
+  ]) || hasFiniteMetric(rawInputDetails, [
+    "text_tokens", "textTokens", "image_tokens", "imageTokens",
+    "audio_tokens", "audioTokens", "video_tokens", "videoTokens",
+  ]);
+  const hasOutputBreakdown = hasFiniteMetric(billingMetrics, [
+    "output_text_tokens", "output_image_tokens", "output_audio_tokens", "output_video_tokens",
+  ]) || hasFiniteMetric(rawOutputDetails, [
+    "text_tokens", "textTokens", "image_tokens", "imageTokens",
+    "audio_tokens", "audioTokens", "video_tokens", "videoTokens",
+  ]);
+
+  let mutated = false;
+
+  if (!hasInputBreakdown && usage.promptTokens > 0) {
+    const inputModalities = collectRequestInputModalities(request);
+    if (inputModalities.size === 1) {
+      const [inputModality] = inputModalities;
+      billingMetrics[`input_${inputModality}_tokens`] = usage.promptTokens;
+      const cached = typeof usage.cachedInputTokens === "number"
+        ? usage.cachedInputTokens
+        : typeof billingMetrics.cached_input_tokens === "number"
+          ? billingMetrics.cached_input_tokens
+          : undefined;
+      if (typeof cached === "number" && cached > 0 && billingMetrics[`cached_input_${inputModality}_tokens`] === undefined) {
+        billingMetrics[`cached_input_${inputModality}_tokens`] = cached;
+      }
+      const cacheWrite = typeof usage.cacheWriteTokens === "number"
+        ? usage.cacheWriteTokens
+        : typeof billingMetrics.cache_write_input_tokens === "number"
+          ? billingMetrics.cache_write_input_tokens
+          : undefined;
+      if (typeof cacheWrite === "number" && cacheWrite > 0 && billingMetrics[`cache_write_input_${inputModality}_tokens`] === undefined) {
+        billingMetrics[`cache_write_input_${inputModality}_tokens`] = cacheWrite;
+      }
+      hasInputBreakdown = true;
+      mutated = true;
+    }
+  }
+
+  if (
+    !hasOutputBreakdown
+    && usage.completionTokens > 0
+    && (usage.promptTokens === 0 || hasInputBreakdown)
+  ) {
+    const outputModality = resolveDeterministicOutputModality(request, output);
+    if (outputModality) {
+      billingMetrics[`output_${outputModality}_tokens`] = usage.completionTokens;
+      mutated = true;
+    }
+  }
+
+  return mutated
+    ? { ...usage, billingMetrics }
+    : usage;
+}
+
 export function buildSettlementMeterFromOutput(args: {
   request: Request;
   output: Output;
