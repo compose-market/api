@@ -1960,6 +1960,11 @@ function inputItemsFromRecord(record: StoredResponseRecord): Record<string, unkn
   }));
 }
 
+function flushEventStream(res: Res): void {
+  const flush = (res as Res & { flush?: () => void }).flush;
+  if (typeof flush === "function") flush.call(res);
+}
+
 function writeResponsesEvents(res: Res, encoder: ResponsesStreamEncoder, event: Event): void {
   for (const payload of encoder.push(event)) {
     res.write(formatCoreSSE(payload));
