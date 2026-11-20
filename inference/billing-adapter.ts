@@ -419,10 +419,11 @@ export function buildSettlementMeterFromOutput(args: {
     args.request.billingMetrics,
     checkpointSequence,
   );
+  const usage = enrichSingleModalityTokenBreakdown(args.request, args.output);
   return buildResolvedSettlementMeter({
     resolved: args.resolved,
     modality: args.request.modality,
-    usage: args.output.usage,
+    usage,
     media: {
       generatedUnits: args.output.media?.generatedUnits,
       generatedSeconds: args.output.media?.duration,
@@ -430,7 +431,7 @@ export function buildSettlementMeterFromOutput(args: {
       requests: 1,
       billingMetrics: {
         ...(requestMetrics || {}),
-        ...(args.output.usage?.billingMetrics || {}),
+        ...(usage?.billingMetrics || {}),
         ...(args.output.media?.billingMetrics || {}),
         ...(checkpointSequence > 0 || args.request.modality === "realtime" ? {} : { request: 1 }),
       },
