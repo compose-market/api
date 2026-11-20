@@ -1,10 +1,10 @@
 {
-  "lastUpdated": "2026-11-16T07:53:48.207Z",
+  "lastUpdated": "2026-11-20T19:57:35.399Z",
   "totalModels": 45,
   "byProvider": {
     "alibaba": 11,
-    "gemini": 2,
-    "deepinfra": 32
+    "deepinfra": 31,
+    "gemini": 3
   },
   "byType": {
     "video generation": 45
@@ -212,6 +212,7 @@
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
             "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
             "apiReferences": [
+              "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
               "https://www.alibabacloud.com/help/en/model-studio/happyhorse-text-to-video-api-reference.md"
             ]
           },
@@ -351,6 +352,7 @@
                 "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
                 "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
                 "apiReferences": [
+                  "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
                   "https://www.alibabacloud.com/help/en/model-studio/happyhorse-text-to-video-api-reference.md"
                 ]
               },
@@ -2782,68 +2784,17 @@
         "prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
+          "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
         },
         "negative_prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
+          "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
         },
         "img_url": {
           "type": "string",
           "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
+          "description": "The URL or Base64-encoded data of the first frame image."
         }
       },
       "sourceMetadata": {
@@ -3040,68 +2991,17 @@
             "prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
             },
             "negative_prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
             },
             "img_url": {
               "type": "string",
               "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
+              "description": "The URL or Base64-encoded data of the first frame image."
             }
           },
           "name": "Wan2.1-I2V-Plus",
@@ -3169,17 +3069,9 @@
           "input:text",
           "operation:image-to-video",
           "output:video",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
+          "param:img_url The URL or Base64-encoded data of the first frame image.",
+          "param:negative_prompt Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output.",
+          "param:prompt Text prompt. Used to describe the elements and visual features expected in the generated image.",
           "source:video-generation",
           "source:videos"
         ]
@@ -3244,68 +3136,17 @@
         "prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
+          "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
         },
         "negative_prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
+          "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
         },
         "img_url": {
           "type": "string",
           "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
+          "description": "The URL or Base64-encoded data of the first frame image."
         }
       },
       "sourceMetadata": {
@@ -3502,68 +3343,17 @@
             "prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
             },
             "negative_prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
             },
             "img_url": {
               "type": "string",
               "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
+              "description": "The URL or Base64-encoded data of the first frame image."
             }
           },
           "name": "Wan2.1-I2V-Turbo",
@@ -3631,17 +3421,9 @@
           "input:text",
           "operation:image-to-video",
           "output:video",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
+          "param:img_url The URL or Base64-encoded data of the first frame image.",
+          "param:negative_prompt Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output.",
+          "param:prompt Text prompt. Used to describe the elements and visual features expected in the generated image.",
           "source:video-generation",
           "source:videos"
         ]
@@ -3733,68 +3515,17 @@
         "prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
+          "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
         },
         "negative_prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
+          "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
         },
         "img_url": {
           "type": "string",
           "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
+          "description": "The URL or Base64-encoded data of the first frame image."
         }
       },
       "sourceMetadata": {
@@ -4033,68 +3764,17 @@
             "prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
             },
             "negative_prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
             },
             "img_url": {
               "type": "string",
               "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
+              "description": "The URL or Base64-encoded data of the first frame image."
             }
           },
           "name": "Wan2.2-I2V-Flash",
@@ -4174,17 +3854,9 @@
           "input:text",
           "operation:image-to-video",
           "output:video",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
+          "param:img_url The URL or Base64-encoded data of the first frame image.",
+          "param:negative_prompt Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output.",
+          "param:prompt Text prompt. Used to describe the elements and visual features expected in the generated image.",
           "source:video-generation",
           "source:videos"
         ]
@@ -4276,68 +3948,17 @@
         "prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
+          "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
         },
         "negative_prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
+          "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
         },
         "img_url": {
           "type": "string",
           "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
+          "description": "The URL or Base64-encoded data of the first frame image."
         }
       },
       "sourceMetadata": {
@@ -4576,68 +4197,17 @@
             "prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
             },
             "negative_prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
             },
             "img_url": {
               "type": "string",
               "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
+              "description": "The URL or Base64-encoded data of the first frame image."
             }
           },
           "name": "Wan2.2-I2V-Plus",
@@ -4717,17 +4287,9 @@
           "input:text",
           "operation:image-to-video",
           "output:video",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
+          "param:img_url The URL or Base64-encoded data of the first frame image.",
+          "param:negative_prompt Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output.",
+          "param:prompt Text prompt. Used to describe the elements and visual features expected in the generated image.",
           "source:video-generation",
           "source:videos"
         ]
@@ -4845,68 +4407,17 @@
         "prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
+          "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
         },
         "negative_prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
+          "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
         },
         "img_url": {
           "type": "string",
           "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
+          "description": "The URL or Base64-encoded data of the first frame image."
         }
       },
       "sourceMetadata": {
@@ -5187,68 +4698,17 @@
             "prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
             },
             "negative_prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
             },
             "img_url": {
               "type": "string",
               "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
+              "description": "The URL or Base64-encoded data of the first frame image."
             }
           },
           "name": "Wan2.5-I2V-Preview",
@@ -5335,17 +4795,9 @@
           "input:text",
           "operation:image-to-video",
           "output:video",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
+          "param:img_url The URL or Base64-encoded data of the first frame image.",
+          "param:negative_prompt Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output.",
+          "param:prompt Text prompt. Used to describe the elements and visual features expected in the generated image.",
           "source:video-generation",
           "source:videos"
         ]
@@ -5489,68 +4941,17 @@
         "prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
+          "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
         },
         "negative_prompt": {
           "type": "string",
           "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
+          "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
         },
         "img_url": {
           "type": "string",
           "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
+          "description": "The URL or Base64-encoded data of the first frame image."
         }
       },
       "sourceMetadata": {
@@ -5871,68 +5272,17 @@
             "prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
             },
             "negative_prompt": {
               "type": "string",
               "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
             },
             "img_url": {
               "type": "string",
               "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
+              "description": "The URL or Base64-encoded data of the first frame image."
             }
           },
           "name": "wan2.6-I2V-flash",
@@ -6026,19 +5376,527 @@
           "input:text",
           "operation:image-to-video",
           "output:video",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
+          "param:img_url The URL or Base64-encoded data of the first frame image.",
+          "param:negative_prompt Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output.",
+          "param:prompt Text prompt. Used to describe the elements and visual features expected in the generated image.",
           "source:video-generation",
           "source:videos"
+        ]
+      }
+    },
+    {
+      "name": "Wan2.7-I2V",
+      "modelId": "Wan2.7-I2V",
+      "family": "alibaba",
+      "description": "Wan2.7 image to video, performance fully reimagined. Delivering nuanced and organic emotional depth in narrative arcs and visceral, bone-crunching impact in action sequences. Enhanced by rhythmic cinematic cuts for unparalleled storytelling power.",
+      "type": "video generation",
+      "modelType": "text-to-video",
+      "provider": "deepinfra",
+      "input": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "output": [
+        "video"
+      ],
+      "contextWindow": {
+        "inputTokens": null,
+        "outputTokens": null
+      },
+      "capabilities": {},
+      "pricing": {
+        "sections": [
+          {
+            "header": "Seconds",
+            "unit": "Per second",
+            "unitKey": "per_second_usd",
+            "entries": {
+              "second": 0.1
+            },
+            "source": {
+              "api": "https://api.deepinfra.com/models/list",
+              "pricingType": "output_length",
+              "raw": {
+                "short": "$0.10 / second",
+                "full": "$0.15 / second for 1080P, $0.10 / second for 720P",
+                "type": "output_length",
+                "cents_per_output_sec": 10
+              }
+            },
+            "default": true
+          }
+        ]
+      },
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": false,
+          "maxLength": 5000,
+          "description": "Text prompt describing the video content"
+        },
+        "negative_prompt": {
+          "type": "string",
+          "required": false,
+          "maxLength": 500,
+          "description": "Negative prompt describing content to exclude"
+        },
+        "first_frame": {
+          "type": "string",
+          "required": false,
+          "description": "First-frame image: URL or base64-encoded image data. Used for first-frame and first+last-frame video generation modes"
+        },
+        "last_frame": {
+          "type": "string",
+          "required": false,
+          "description": "Last-frame image: URL or base64-encoded image data. Used together with first_frame or first_clip"
+        },
+        "driving_audio": {
+          "type": "string",
+          "required": false,
+          "description": "URL of audio file used as a driving source for lip-sync and timing (WAV/MP3, 2-30s, max 15MB). Only valid with first_frame"
+        },
+        "first_clip": {
+          "type": "string",
+          "required": false,
+          "description": "URL of initial video clip for video continuation (MP4/MOV, 2-10s, max 100MB)"
+        },
+        "resolution": {
+          "type": "string",
+          "required": false,
+          "options": [
+            "720P",
+            "1080P"
+          ],
+          "description": "Resolution tier of the generated video (720P or 1080P). Default 1080P"
+        },
+        "duration": {
+          "type": "integer",
+          "required": false,
+          "minimum": 2,
+          "maximum": 15,
+          "description": "Duration of the generated video in seconds (2-15)"
+        },
+        "prompt_extend": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Whether to enable prompt rewriting for better quality. Default true"
+        },
+        "watermark": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether to add AI Generated watermark. Default false"
+        },
+        "seed": {
+          "type": "integer",
+          "required": false,
+          "minimum": 0,
+          "maximum": 2147483647,
+          "description": "Random seed for reproducibility"
+        }
+      },
+      "sourceMetadata": {
+        "deepinfra": {
+          "nativeApi": "https://api.deepinfra.com/models/list",
+          "openaiApi": "https://api.deepinfra.com/v1/openai/models",
+          "reportedType": "text-to-video",
+          "rawType": "text-to-video",
+          "quantization": null,
+          "isPartner": true,
+          "tags": [
+            "no-free-anon"
+          ],
+          "createTs": "2026-04-27T15:25:02+00:00",
+          "replacedBy": null,
+          "schemaVariant": {
+            "key": "default",
+            "url": "/models/Wan-AI/Wan2.7-I2V/schema/default"
+          }
+        }
+      },
+      "deprecated": false,
+      "upstreamModelId": "Wan-AI/Wan2.7-I2V",
+      "providerRoutes": [
+        {
+          "provider": "deepinfra",
+          "upstreamModelId": "Wan-AI/Wan2.7-I2V",
+          "pricing": {
+            "sections": [
+              {
+                "header": "Seconds",
+                "unit": "Per second",
+                "unitKey": "per_second_usd",
+                "entries": {
+                  "second": 0.1
+                },
+                "source": {
+                  "api": "https://api.deepinfra.com/models/list",
+                  "pricingType": "output_length",
+                  "raw": {
+                    "short": "$0.10 / second",
+                    "full": "$0.15 / second for 1080P, $0.10 / second for 720P",
+                    "type": "output_length",
+                    "cents_per_output_sec": 10
+                  }
+                },
+                "default": true
+              }
+            ]
+          },
+          "sourceMetadata": {
+            "deepinfra": {
+              "nativeApi": "https://api.deepinfra.com/models/list",
+              "openaiApi": "https://api.deepinfra.com/v1/openai/models",
+              "reportedType": "text-to-video",
+              "rawType": "text-to-video",
+              "quantization": null,
+              "isPartner": true,
+              "tags": [
+                "no-free-anon"
+              ],
+              "createTs": "2026-04-27T15:25:02+00:00",
+              "replacedBy": null,
+              "schemaVariant": {
+                "key": "default",
+                "url": "/models/Wan-AI/Wan2.7-I2V/schema/default"
+              }
+            }
+          },
+          "params": {
+            "prompt": {
+              "type": "string",
+              "required": false,
+              "maxLength": 5000,
+              "description": "Text prompt describing the video content"
+            },
+            "negative_prompt": {
+              "type": "string",
+              "required": false,
+              "maxLength": 500,
+              "description": "Negative prompt describing content to exclude"
+            },
+            "first_frame": {
+              "type": "string",
+              "required": false,
+              "description": "First-frame image: URL or base64-encoded image data. Used for first-frame and first+last-frame video generation modes"
+            },
+            "last_frame": {
+              "type": "string",
+              "required": false,
+              "description": "Last-frame image: URL or base64-encoded image data. Used together with first_frame or first_clip"
+            },
+            "driving_audio": {
+              "type": "string",
+              "required": false,
+              "description": "URL of audio file used as a driving source for lip-sync and timing (WAV/MP3, 2-30s, max 15MB). Only valid with first_frame"
+            },
+            "first_clip": {
+              "type": "string",
+              "required": false,
+              "description": "URL of initial video clip for video continuation (MP4/MOV, 2-10s, max 100MB)"
+            },
+            "resolution": {
+              "type": "string",
+              "required": false,
+              "options": [
+                "720P",
+                "1080P"
+              ],
+              "description": "Resolution tier of the generated video (720P or 1080P). Default 1080P"
+            },
+            "duration": {
+              "type": "integer",
+              "required": false,
+              "minimum": 2,
+              "maximum": 15,
+              "description": "Duration of the generated video in seconds (2-15)"
+            },
+            "prompt_extend": {
+              "type": "boolean",
+              "required": false,
+              "default": true,
+              "description": "Whether to enable prompt rewriting for better quality. Default true"
+            },
+            "watermark": {
+              "type": "boolean",
+              "required": false,
+              "description": "Whether to add AI Generated watermark. Default false"
+            },
+            "seed": {
+              "type": "integer",
+              "required": false,
+              "minimum": 0,
+              "maximum": 2147483647,
+              "description": "Random seed for reproducibility"
+            }
+          },
+          "name": "Wan2.7 I2V",
+          "description": "Generates video content from images while stably preserving details such as subject, style, and text elements. Ensures visual consistency and information fidelity throughout dynamic transitions.",
+          "capabilities": {}
+        },
+        {
+          "provider": "alibaba",
+          "upstreamModelId": "wan2.7-i2v",
+          "pricing": {
+            "sections": [
+              {
+                "header": "Default: Video Generation(720P)",
+                "unit": "Per second",
+                "unitKey": "per_second_usd",
+                "entries": {
+                  "second": 0.1
+                },
+                "source": {
+                  "api": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/api/v1/models",
+                  "range": "Default",
+                  "rows": [
+                    {
+                      "type": "video_ratio_720p",
+                      "priceName": "Video Generation(720P)",
+                      "rawUnit": "Per second",
+                      "rawPrice": "0.1",
+                      "timeBand": "standard"
+                    }
+                  ]
+                },
+                "selector": {
+                  "resolution": "720P"
+                },
+                "default": true
+              },
+              {
+                "header": "Default: Video Generation(1080P)",
+                "unit": "Per second",
+                "unitKey": "per_second_usd",
+                "entries": {
+                  "second": 0.15
+                },
+                "source": {
+                  "api": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/api/v1/models",
+                  "range": "Default",
+                  "rows": [
+                    {
+                      "type": "video_ratio_1080p",
+                      "priceName": "Video Generation(1080P)",
+                      "rawUnit": "Per second",
+                      "rawPrice": "0.15",
+                      "timeBand": "standard"
+                    }
+                  ]
+                },
+                "selector": {
+                  "resolution": "1080P"
+                }
+              }
+            ]
+          },
+          "sourceMetadata": {
+            "alibaba": {
+              "catalogApi": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/api/v1/models",
+              "compatibleModelsApi": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models",
+              "endpoint": {
+                "name": "ws-0m703x5pqjvst2q2.ap-southeast-1.maas",
+                "origin": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com",
+                "apiBase": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/api/v1",
+                "compatibleBase": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+                "compatibleApiBase": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/compatible-api/v1"
+              },
+              "openAICompatible": false,
+              "provider": "wan",
+              "inferenceProvider": "alibaba-cloud-modelstudio",
+              "features": [
+                "model-experience",
+                "fine-tuning"
+              ],
+              "capabilities": [
+                "VG"
+              ],
+              "inferenceMetadata": {
+                "response_modality": [
+                  "Video"
+                ],
+                "request_modality": [
+                  "Audio",
+                  "Image",
+                  "Text"
+                ]
+              },
+              "modelInfo": {
+                "context_window": null,
+                "max_input_tokens": null,
+                "max_output_tokens": null,
+                "max_reasoning_tokens": null,
+                "reasoning_max_input_tokens": null,
+                "reasoning_max_output_tokens": null
+              },
+              "publishedTime": "2026-04-03 11:21:36",
+              "equivalentSnapshot": null,
+              "pricingGroups": [
+                {
+                  "prices": [
+                    {
+                      "type": "video_ratio_720p",
+                      "price": "0.1",
+                      "price_unit": "Per second",
+                      "price_name": "Video Generation(720P)",
+                      "time_band": "standard"
+                    },
+                    {
+                      "type": "video_ratio_1080p",
+                      "price": "0.15",
+                      "price_unit": "Per second",
+                      "price_name": "Video Generation(1080P)",
+                      "time_band": "standard"
+                    }
+                  ],
+                  "range_name": "Default"
+                }
+              ],
+              "documentation": {
+                "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
+                "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+                "apiReferences": [
+                  "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+                  "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md"
+                ]
+              },
+              "requestContract": {
+                "origin": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com",
+                "path": "/api/v1/services/aigc/video-generation/video-synthesis",
+                "inputFields": [
+                  "prompt",
+                  "img_url",
+                  "audio_url",
+                  "negative_prompt"
+                ],
+                "parameterFields": [
+                  "resolution",
+                  "prompt_extend",
+                  "duration",
+                  "shot_type"
+                ],
+                "mediaTypes": []
+              }
+            }
+          },
+          "params": {
+            "prompt": {
+              "type": "string",
+              "required": false,
+              "description": "Text prompt. Used to describe the elements and visual features expected in the generated image."
+            },
+            "negative_prompt": {
+              "type": "string",
+              "required": false,
+              "description": "Negative prompt, used to describe content you do not want to see in the video, which can constrain the video output."
+            },
+            "img_url": {
+              "type": "string",
+              "required": true,
+              "description": "The URL or Base64-encoded data of the first frame image."
+            }
+          },
+          "name": "Wan2.7-I2V",
+          "description": "Wan2.7 image to video, performance fully reimagined. Delivering nuanced and organic emotional depth in narrative arcs and visceral, bone-crunching impact in action sequences. Enhanced by rhythmic cinematic cuts for unparalleled storytelling power.",
+          "capabilities": {
+            "video_generation": true,
+            "model_experience": true,
+            "alibabaCapabilityCodes": [
+              "VG"
+            ],
+            "alibabaFeatures": [
+              "model-experience",
+              "fine-tuning"
+            ]
+          }
+        }
+      ],
+      "availableFrom": [
+        "deepinfra",
+        "alibaba"
+      ],
+      "semantics": {
+        "family": "alibaba",
+        "capabilities": [
+          {
+            "operation": "text-to-video",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "operation": "image-to-video",
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_second",
+                "unit": "Per second",
+                "valueKeys": [
+                  "second"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "deepinfra.createTs: 2026-04-27T15:25:02+00:00",
+          "deepinfra.isPartner: true",
+          "deepinfra.nativeApi: https://api.deepinfra.com/models/list",
+          "deepinfra.openaiApi: https://api.deepinfra.com/v1/openai/models",
+          "deepinfra.rawType: text-to-video",
+          "deepinfra.reportedType: text-to-video",
+          "deepinfra.schemaVariant.key: default",
+          "deepinfra.schemaVariant.url: /models/Wan-AI/Wan2.7-I2V/schema/default",
+          "deepinfra.tags: no-free-anon",
+          "input:image",
+          "input:text",
+          "operation:image-to-video",
+          "operation:text-to-video",
+          "output:video",
+          "param:driving_audio URL of audio file used as a driving source for lip-sync and timing (WAV/MP3, 2-30s, max 15MB). Only valid with first_frame",
+          "param:duration Duration of the generated video in seconds (2-15)",
+          "param:first_clip URL of initial video clip for video continuation (MP4/MOV, 2-10s, max 100MB)",
+          "param:first_frame First-frame image: URL or base64-encoded image data. Used for first-frame and first+last-frame video generation modes",
+          "param:last_frame Last-frame image: URL or base64-encoded image data. Used together with first_frame or first_clip",
+          "param:negative_prompt Negative prompt describing content to exclude",
+          "param:prompt Text prompt describing the video content",
+          "param:prompt_extend Whether to enable prompt rewriting for better quality. Default true",
+          "param:resolution Resolution tier of the generated video (720P or 1080P). Default 1080P",
+          "param:seed Random seed for reproducibility",
+          "param:watermark Whether to add AI Generated watermark. Default false",
+          "source:text-to-video",
+          "source:video-generation"
         ]
       }
     },
@@ -6131,15 +5989,15 @@
         "notes": "Gemini Omni 1.1 Flash. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "instances": {
-          "type": "array",
-          "required": false,
-          "description": "Required. The instances that are the input to the prediction call."
-        },
         "labels": {
           "type": "object",
           "required": false,
           "description": "Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can only contain lowercase letters, numeric"
+        },
+        "instances": {
+          "type": "array",
+          "required": false,
+          "description": "Required. The instances that are the input to the prediction call."
         }
       },
       "deprecated": false,
@@ -6200,15 +6058,15 @@
             "notes": "Gemini Omni 1.1 Flash. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "instances": {
-              "type": "array",
-              "required": false,
-              "description": "Required. The instances that are the input to the prediction call."
-            },
             "labels": {
               "type": "object",
               "required": false,
               "description": "Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can only contain lowercase letters, numeric"
+            },
+            "instances": {
+              "type": "array",
+              "required": false,
+              "description": "Required. The instances that are the input to the prediction call."
             }
           },
           "name": "Gemini Omni 1.1 Flash",
@@ -6430,15 +6288,15 @@
         "notes": "Gemini Omni 1.2 Flash. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "instances": {
-          "type": "array",
-          "required": false,
-          "description": "Required. The instances that are the input to the prediction call."
-        },
         "labels": {
           "type": "object",
           "required": false,
           "description": "Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can only contain lowercase letters, numeric"
+        },
+        "instances": {
+          "type": "array",
+          "required": false,
+          "description": "Required. The instances that are the input to the prediction call."
         }
       },
       "deprecated": false,
@@ -6499,15 +6357,15 @@
             "notes": "Gemini Omni 1.2 Flash. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "instances": {
-              "type": "array",
-              "required": false,
-              "description": "Required. The instances that are the input to the prediction call."
-            },
             "labels": {
               "type": "object",
               "required": false,
               "description": "Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can only contain lowercase letters, numeric"
+            },
+            "instances": {
+              "type": "array",
+              "required": false,
+              "description": "Required. The instances that are the input to the prediction call."
             }
           },
           "name": "Gemini Omni 1.2 Flash",
@@ -6630,6 +6488,340 @@
           "input:video",
           "operation:text-to-video",
           "operation:video-edit",
+          "output:video",
+          "param:instances Required. The instances that are the input to the prediction call.",
+          "param:labels Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can",
+          "source:text-to-video",
+          "source:video-generation"
+        ]
+      }
+    },
+    {
+      "name": "Genie 4",
+      "modelId": "genie-4",
+      "description": "Real-time audio-video generation model",
+      "type": "video generation",
+      "modelType": "text-to-video",
+      "provider": "gemini",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "video",
+        "audio"
+      ],
+      "contextWindow": {
+        "inputTokens": 1048576,
+        "outputTokens": 65536
+      },
+      "capabilities": {
+        "audioGeneration": false,
+        "batchApi": false,
+        "caching": false,
+        "codeExecution": null,
+        "fileSearch": false,
+        "functionCalling": false,
+        "groundingGoogleMaps": false,
+        "imageGeneration": false,
+        "liveApi": false,
+        "searchGrounding": null,
+        "structuredOutputs": null,
+        "thinking": null,
+        "urlContext": false,
+        "computerUse": null
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "text tokens",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 1.5,
+              "output": 9
+            },
+            "source": {
+              "url": "https://ai.google.dev/gemini-api/docs/pricing",
+              "section": "Genie 4",
+              "row": "Genie 4",
+              "raw": "{\"input\":1.5,\"output\":9}"
+            },
+            "default": true
+          },
+          {
+            "header": "image tokens",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 1.5
+            },
+            "source": {
+              "url": "https://ai.google.dev/gemini-api/docs/pricing",
+              "section": "Genie 4",
+              "row": "Genie 4",
+              "raw": "{\"input\":1.5}"
+            },
+            "default": true
+          },
+          {
+            "header": "video tokens",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "output": 17.5
+            },
+            "source": {
+              "url": "https://ai.google.dev/gemini-api/docs/pricing",
+              "section": "Genie 4",
+              "row": "Genie 4",
+              "raw": "{\"output\":17.5}"
+            },
+            "default": true
+          },
+          {
+            "header": "audio tokens",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "output": 17.5
+            },
+            "source": {
+              "url": "https://ai.google.dev/gemini-api/docs/pricing",
+              "section": "Genie 4",
+              "row": "Genie 4",
+              "raw": "{\"output\":17.5}"
+            },
+            "default": true
+          }
+        ],
+        "notes": "Genie 4. Source: https://ai.google.dev/gemini-api/docs/pricing"
+      },
+      "params": {
+        "labels": {
+          "type": "object",
+          "required": false,
+          "description": "Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can only contain lowercase letters, numeric"
+        },
+        "instances": {
+          "type": "array",
+          "required": false,
+          "description": "Required. The instances that are the input to the prediction call."
+        }
+      },
+      "deprecated": false,
+      "providerRoutes": [
+        {
+          "provider": "gemini",
+          "upstreamModelId": "genie-4",
+          "pricing": {
+            "sections": [
+              {
+                "header": "text tokens",
+                "unit": "Per 1M tokens",
+                "unitKey": "per_1m_tokens_usd",
+                "entries": {
+                  "input": 1.5,
+                  "output": 9
+                },
+                "source": {
+                  "url": "https://ai.google.dev/gemini-api/docs/pricing",
+                  "section": "Genie 4",
+                  "row": "Genie 4",
+                  "raw": "{\"input\":1.5,\"output\":9}"
+                },
+                "default": true
+              },
+              {
+                "header": "image tokens",
+                "unit": "Per 1M tokens",
+                "unitKey": "per_1m_tokens_usd",
+                "entries": {
+                  "input": 1.5
+                },
+                "source": {
+                  "url": "https://ai.google.dev/gemini-api/docs/pricing",
+                  "section": "Genie 4",
+                  "row": "Genie 4",
+                  "raw": "{\"input\":1.5}"
+                },
+                "default": true
+              },
+              {
+                "header": "video tokens",
+                "unit": "Per 1M tokens",
+                "unitKey": "per_1m_tokens_usd",
+                "entries": {
+                  "output": 17.5
+                },
+                "source": {
+                  "url": "https://ai.google.dev/gemini-api/docs/pricing",
+                  "section": "Genie 4",
+                  "row": "Genie 4",
+                  "raw": "{\"output\":17.5}"
+                },
+                "default": true
+              },
+              {
+                "header": "audio tokens",
+                "unit": "Per 1M tokens",
+                "unitKey": "per_1m_tokens_usd",
+                "entries": {
+                  "output": 17.5
+                },
+                "source": {
+                  "url": "https://ai.google.dev/gemini-api/docs/pricing",
+                  "section": "Genie 4",
+                  "row": "Genie 4",
+                  "raw": "{\"output\":17.5}"
+                },
+                "default": true
+              }
+            ],
+            "notes": "Genie 4. Source: https://ai.google.dev/gemini-api/docs/pricing"
+          },
+          "params": {
+            "labels": {
+              "type": "object",
+              "required": false,
+              "description": "Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can only contain lowercase letters, numeric"
+            },
+            "instances": {
+              "type": "array",
+              "required": false,
+              "description": "Required. The instances that are the input to the prediction call."
+            }
+          },
+          "name": "Genie 4",
+          "description": "Real-time audio-video generation model",
+          "capabilities": {
+            "audioGeneration": false,
+            "batchApi": false,
+            "caching": false,
+            "codeExecution": null,
+            "fileSearch": false,
+            "functionCalling": false,
+            "groundingGoogleMaps": false,
+            "imageGeneration": false,
+            "liveApi": false,
+            "searchGrounding": null,
+            "structuredOutputs": null,
+            "thinking": null,
+            "urlContext": false,
+            "computerUse": null
+          }
+        }
+      ],
+      "availableFrom": [
+        "gemini"
+      ],
+      "semantics": {
+        "capabilities": [
+          {
+            "operation": "text-to-video",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "output"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "operation": "image-to-video",
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "video"
+            ],
+            "sourceTypes": [
+              "video-generation",
+              "text-to-video"
+            ],
+            "streamable": false,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "output"
+                ],
+                "default": true
+              },
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "input:image",
+          "input:text",
+          "operation:image-to-video",
+          "operation:text-to-video",
           "output:video",
           "param:instances Required. The instances that are the input to the prediction call.",
           "param:labels Optional. Labels with user-defined metadata for the request. Optional. Labels must follow standard unified Cloud label requirements: - Label keys must start with a letter. - Label keys and values can be no longer than 63 characters (Unicode codepoints) and can",
@@ -9054,247 +9246,6 @@
           "param:return_last_frame whether to return the last frame image of the generated video",
           "param:seed random seed for reproducible output",
           "param:watermark whether to add a watermark to the output video",
-          "source:text-to-video",
-          "source:video-generation"
-        ]
-      }
-    },
-    {
-      "name": "FastWan QAD FP8 1.3B",
-      "modelId": "FastWan-QAD-FP8-1.3B",
-      "family": "fastvideo",
-      "description": "A fast, compact 480p text-to-video model — 5-second clips (landscape or portrait) from a text prompt. A 3-step, FP8 quantization-aware distillation of Wan2.1-T2V-1.3B by FastVideo (Hao AI Lab).",
-      "type": "video generation",
-      "modelType": "text-to-video",
-      "provider": "deepinfra",
-      "input": [
-        "text"
-      ],
-      "output": [
-        "video"
-      ],
-      "contextWindow": {
-        "inputTokens": null,
-        "outputTokens": null
-      },
-      "capabilities": {},
-      "pricing": {
-        "sections": [
-          {
-            "header": "Seconds",
-            "unit": "Per second",
-            "unitKey": "per_second_usd",
-            "entries": {
-              "second": 0.0025
-            },
-            "source": {
-              "api": "https://api.deepinfra.com/models/list",
-              "pricingType": "output_length",
-              "raw": {
-                "short": "$0.0025 / second (480p)",
-                "type": "output_length",
-                "cents_per_output_sec": 0.25
-              }
-            },
-            "default": true
-          }
-        ]
-      },
-      "params": {
-        "prompt": {
-          "type": "string",
-          "required": true,
-          "description": "text prompt describing the video content"
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "specify a seed for reproducible output"
-        },
-        "seconds": {
-          "type": "integer",
-          "required": true,
-          "default": 5,
-          "options": [
-            5
-          ],
-          "description": "Clip duration: always 5 seconds (fixed/required for this model)."
-        },
-        "resolution": {
-          "type": "string",
-          "required": true,
-          "default": "480p",
-          "options": [
-            "480p"
-          ],
-          "description": "Output resolution: always 480p (fixed/required for this model)."
-        },
-        "orientation": {
-          "type": "string",
-          "required": true,
-          "default": "landscape",
-          "options": [
-            "landscape",
-            "portrait"
-          ],
-          "description": "Output orientation: landscape (832x480) or portrait (480x832)."
-        }
-      },
-      "sourceMetadata": {
-        "deepinfra": {
-          "nativeApi": "https://api.deepinfra.com/models/list",
-          "openaiApi": "https://api.deepinfra.com/v1/openai/models",
-          "reportedType": "text-to-video",
-          "rawType": "text-to-video",
-          "quantization": null,
-          "isPartner": false,
-          "tags": [],
-          "createTs": "2026-06-27T00:57:01+00:00",
-          "replacedBy": null,
-          "schemaVariant": {
-            "key": "default",
-            "url": "/models/FastVideo/FastWan-QAD-FP8-1.3B/schema/default"
-          }
-        }
-      },
-      "deprecated": false,
-      "upstreamModelId": "FastVideo/FastWan-QAD-FP8-1.3B",
-      "providerRoutes": [
-        {
-          "provider": "deepinfra",
-          "upstreamModelId": "FastVideo/FastWan-QAD-FP8-1.3B",
-          "pricing": {
-            "sections": [
-              {
-                "header": "Seconds",
-                "unit": "Per second",
-                "unitKey": "per_second_usd",
-                "entries": {
-                  "second": 0.0025
-                },
-                "source": {
-                  "api": "https://api.deepinfra.com/models/list",
-                  "pricingType": "output_length",
-                  "raw": {
-                    "short": "$0.0025 / second (480p)",
-                    "type": "output_length",
-                    "cents_per_output_sec": 0.25
-                  }
-                },
-                "default": true
-              }
-            ]
-          },
-          "sourceMetadata": {
-            "deepinfra": {
-              "nativeApi": "https://api.deepinfra.com/models/list",
-              "openaiApi": "https://api.deepinfra.com/v1/openai/models",
-              "reportedType": "text-to-video",
-              "rawType": "text-to-video",
-              "quantization": null,
-              "isPartner": false,
-              "tags": [],
-              "createTs": "2026-06-27T00:57:01+00:00",
-              "replacedBy": null,
-              "schemaVariant": {
-                "key": "default",
-                "url": "/models/FastVideo/FastWan-QAD-FP8-1.3B/schema/default"
-              }
-            }
-          },
-          "params": {
-            "prompt": {
-              "type": "string",
-              "required": true,
-              "description": "text prompt describing the video content"
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "specify a seed for reproducible output"
-            },
-            "seconds": {
-              "type": "integer",
-              "required": true,
-              "default": 5,
-              "options": [
-                5
-              ],
-              "description": "Clip duration: always 5 seconds (fixed/required for this model)."
-            },
-            "resolution": {
-              "type": "string",
-              "required": true,
-              "default": "480p",
-              "options": [
-                "480p"
-              ],
-              "description": "Output resolution: always 480p (fixed/required for this model)."
-            },
-            "orientation": {
-              "type": "string",
-              "required": true,
-              "default": "landscape",
-              "options": [
-                "landscape",
-                "portrait"
-              ],
-              "description": "Output orientation: landscape (832x480) or portrait (480x832)."
-            }
-          },
-          "name": "FastWan QAD FP8 1.3B",
-          "description": "A fast, compact 480p text-to-video model — 5-second clips (landscape or portrait) from a text prompt. A 3-step, FP8 quantization-aware distillation of Wan2.1-T2V-1.3B by FastVideo (Hao AI Lab).",
-          "capabilities": {}
-        }
-      ],
-      "availableFrom": [
-        "deepinfra"
-      ],
-      "semantics": {
-        "family": "fastvideo",
-        "capabilities": [
-          {
-            "operation": "text-to-video",
-            "input": [
-              "text"
-            ],
-            "output": [
-              "video"
-            ],
-            "sourceTypes": [
-              "video-generation",
-              "text-to-video"
-            ],
-            "streamable": false,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_second",
-                "unit": "Per second",
-                "valueKeys": [
-                  "second"
-                ],
-                "default": true
-              }
-            ]
-          }
-        ],
-        "characteristics": [
-          "deepinfra.createTs: 2026-06-27T00:57:01+00:00",
-          "deepinfra.isPartner: false",
-          "deepinfra.nativeApi: https://api.deepinfra.com/models/list",
-          "deepinfra.openaiApi: https://api.deepinfra.com/v1/openai/models",
-          "deepinfra.rawType: text-to-video",
-          "deepinfra.reportedType: text-to-video",
-          "deepinfra.schemaVariant.key: default",
-          "deepinfra.schemaVariant.url: /models/FastVideo/FastWan-QAD-FP8-1.3B/schema/default",
-          "input:text",
-          "operation:text-to-video",
-          "output:video",
-          "param:orientation Output orientation: landscape (832x480) or portrait (480x832).",
-          "param:prompt text prompt describing the video content",
-          "param:resolution Output resolution: always 480p (fixed/required for this model).",
-          "param:seconds Clip duration: always 5 seconds (fixed/required for this model).",
-          "param:seed specify a seed for reproducible output",
           "source:text-to-video",
           "source:video-generation"
         ]
@@ -15649,345 +15600,6 @@
           "param:shot_type Shot type: single continuous shot or multi-switching shots. Only effective when prompt_extend=true",
           "param:size Resolution of the generated video in width*height format. Default is 1920*1080",
           "param:watermark Whether to add AI Generated watermark. Default is false",
-          "source:text-to-video",
-          "source:video-generation"
-        ]
-      }
-    },
-    {
-      "name": "Wan2.7 I2V",
-      "modelId": "Wan2.7-I2V",
-      "family": "alibaba",
-      "description": "Generates video content from images while stably preserving details such as subject, style, and text elements. Ensures visual consistency and information fidelity throughout dynamic transitions.",
-      "type": "video generation",
-      "modelType": "text-to-video",
-      "provider": "deepinfra",
-      "input": [
-        "text",
-        "image",
-        "audio"
-      ],
-      "output": [
-        "video"
-      ],
-      "contextWindow": {
-        "inputTokens": null,
-        "outputTokens": null
-      },
-      "capabilities": {},
-      "pricing": {
-        "sections": [
-          {
-            "header": "Seconds",
-            "unit": "Per second",
-            "unitKey": "per_second_usd",
-            "entries": {
-              "second": 0.1
-            },
-            "source": {
-              "api": "https://api.deepinfra.com/models/list",
-              "pricingType": "output_length",
-              "raw": {
-                "short": "$0.10 / second",
-                "full": "$0.15 / second for 1080P, $0.10 / second for 720P",
-                "type": "output_length",
-                "cents_per_output_sec": 10
-              }
-            },
-            "default": true
-          }
-        ]
-      },
-      "params": {
-        "prompt": {
-          "type": "string",
-          "required": false,
-          "maxLength": 5000,
-          "description": "Text prompt describing the video content"
-        },
-        "negative_prompt": {
-          "type": "string",
-          "required": false,
-          "maxLength": 500,
-          "description": "Negative prompt describing content to exclude"
-        },
-        "first_frame": {
-          "type": "string",
-          "required": false,
-          "description": "First-frame image: URL or base64-encoded image data. Used for first-frame and first+last-frame video generation modes"
-        },
-        "last_frame": {
-          "type": "string",
-          "required": false,
-          "description": "Last-frame image: URL or base64-encoded image data. Used together with first_frame or first_clip"
-        },
-        "driving_audio": {
-          "type": "string",
-          "required": false,
-          "description": "URL of audio file used as a driving source for lip-sync and timing (WAV/MP3, 2-30s, max 15MB). Only valid with first_frame"
-        },
-        "first_clip": {
-          "type": "string",
-          "required": false,
-          "description": "URL of initial video clip for video continuation (MP4/MOV, 2-10s, max 100MB)"
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "options": [
-            "720P",
-            "1080P"
-          ],
-          "description": "Resolution tier of the generated video (720P or 1080P). Default 1080P"
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "minimum": 2,
-          "maximum": 15,
-          "description": "Duration of the generated video in seconds (2-15)"
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "default": true,
-          "description": "Whether to enable prompt rewriting for better quality. Default true"
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to add AI Generated watermark. Default false"
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "minimum": 0,
-          "maximum": 2147483647,
-          "description": "Random seed for reproducibility"
-        }
-      },
-      "sourceMetadata": {
-        "deepinfra": {
-          "nativeApi": "https://api.deepinfra.com/models/list",
-          "openaiApi": "https://api.deepinfra.com/v1/openai/models",
-          "reportedType": "text-to-video",
-          "rawType": "text-to-video",
-          "quantization": null,
-          "isPartner": true,
-          "tags": [
-            "no-free-anon"
-          ],
-          "createTs": "2026-04-27T15:25:02+00:00",
-          "replacedBy": null,
-          "schemaVariant": {
-            "key": "default",
-            "url": "/models/Wan-AI/Wan2.7-I2V/schema/default"
-          }
-        }
-      },
-      "deprecated": false,
-      "upstreamModelId": "Wan-AI/Wan2.7-I2V",
-      "providerRoutes": [
-        {
-          "provider": "deepinfra",
-          "upstreamModelId": "Wan-AI/Wan2.7-I2V",
-          "pricing": {
-            "sections": [
-              {
-                "header": "Seconds",
-                "unit": "Per second",
-                "unitKey": "per_second_usd",
-                "entries": {
-                  "second": 0.1
-                },
-                "source": {
-                  "api": "https://api.deepinfra.com/models/list",
-                  "pricingType": "output_length",
-                  "raw": {
-                    "short": "$0.10 / second",
-                    "full": "$0.15 / second for 1080P, $0.10 / second for 720P",
-                    "type": "output_length",
-                    "cents_per_output_sec": 10
-                  }
-                },
-                "default": true
-              }
-            ]
-          },
-          "sourceMetadata": {
-            "deepinfra": {
-              "nativeApi": "https://api.deepinfra.com/models/list",
-              "openaiApi": "https://api.deepinfra.com/v1/openai/models",
-              "reportedType": "text-to-video",
-              "rawType": "text-to-video",
-              "quantization": null,
-              "isPartner": true,
-              "tags": [
-                "no-free-anon"
-              ],
-              "createTs": "2026-04-27T15:25:02+00:00",
-              "replacedBy": null,
-              "schemaVariant": {
-                "key": "default",
-                "url": "/models/Wan-AI/Wan2.7-I2V/schema/default"
-              }
-            }
-          },
-          "params": {
-            "prompt": {
-              "type": "string",
-              "required": false,
-              "maxLength": 5000,
-              "description": "Text prompt describing the video content"
-            },
-            "negative_prompt": {
-              "type": "string",
-              "required": false,
-              "maxLength": 500,
-              "description": "Negative prompt describing content to exclude"
-            },
-            "first_frame": {
-              "type": "string",
-              "required": false,
-              "description": "First-frame image: URL or base64-encoded image data. Used for first-frame and first+last-frame video generation modes"
-            },
-            "last_frame": {
-              "type": "string",
-              "required": false,
-              "description": "Last-frame image: URL or base64-encoded image data. Used together with first_frame or first_clip"
-            },
-            "driving_audio": {
-              "type": "string",
-              "required": false,
-              "description": "URL of audio file used as a driving source for lip-sync and timing (WAV/MP3, 2-30s, max 15MB). Only valid with first_frame"
-            },
-            "first_clip": {
-              "type": "string",
-              "required": false,
-              "description": "URL of initial video clip for video continuation (MP4/MOV, 2-10s, max 100MB)"
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "options": [
-                "720P",
-                "1080P"
-              ],
-              "description": "Resolution tier of the generated video (720P or 1080P). Default 1080P"
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "minimum": 2,
-              "maximum": 15,
-              "description": "Duration of the generated video in seconds (2-15)"
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "default": true,
-              "description": "Whether to enable prompt rewriting for better quality. Default true"
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to add AI Generated watermark. Default false"
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "minimum": 0,
-              "maximum": 2147483647,
-              "description": "Random seed for reproducibility"
-            }
-          },
-          "name": "Wan2.7 I2V",
-          "description": "Generates video content from images while stably preserving details such as subject, style, and text elements. Ensures visual consistency and information fidelity throughout dynamic transitions.",
-          "capabilities": {}
-        }
-      ],
-      "availableFrom": [
-        "deepinfra"
-      ],
-      "semantics": {
-        "family": "alibaba",
-        "capabilities": [
-          {
-            "operation": "text-to-video",
-            "input": [
-              "text"
-            ],
-            "output": [
-              "video"
-            ],
-            "sourceTypes": [
-              "video-generation",
-              "text-to-video"
-            ],
-            "streamable": false,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_second",
-                "unit": "Per second",
-                "valueKeys": [
-                  "second"
-                ],
-                "default": true
-              }
-            ]
-          },
-          {
-            "operation": "image-to-video",
-            "input": [
-              "image",
-              "text"
-            ],
-            "output": [
-              "video"
-            ],
-            "sourceTypes": [
-              "video-generation",
-              "text-to-video"
-            ],
-            "streamable": false,
-            "pricingUnits": [
-              {
-                "unitKey": "usd_per_second",
-                "unit": "Per second",
-                "valueKeys": [
-                  "second"
-                ],
-                "default": true
-              }
-            ]
-          }
-        ],
-        "characteristics": [
-          "deepinfra.createTs: 2026-04-27T15:25:02+00:00",
-          "deepinfra.isPartner: true",
-          "deepinfra.nativeApi: https://api.deepinfra.com/models/list",
-          "deepinfra.openaiApi: https://api.deepinfra.com/v1/openai/models",
-          "deepinfra.rawType: text-to-video",
-          "deepinfra.reportedType: text-to-video",
-          "deepinfra.schemaVariant.key: default",
-          "deepinfra.schemaVariant.url: /models/Wan-AI/Wan2.7-I2V/schema/default",
-          "deepinfra.tags: no-free-anon",
-          "input:image",
-          "input:text",
-          "operation:image-to-video",
-          "operation:text-to-video",
-          "output:video",
-          "param:driving_audio URL of audio file used as a driving source for lip-sync and timing (WAV/MP3, 2-30s, max 15MB). Only valid with first_frame",
-          "param:duration Duration of the generated video in seconds (2-15)",
-          "param:first_clip URL of initial video clip for video continuation (MP4/MOV, 2-10s, max 100MB)",
-          "param:first_frame First-frame image: URL or base64-encoded image data. Used for first-frame and first+last-frame video generation modes",
-          "param:last_frame Last-frame image: URL or base64-encoded image data. Used together with first_frame or first_clip",
-          "param:negative_prompt Negative prompt describing content to exclude",
-          "param:prompt Text prompt describing the video content",
-          "param:prompt_extend Whether to enable prompt rewriting for better quality. Default true",
-          "param:resolution Resolution tier of the generated video (720P or 1080P). Default 1080P",
-          "param:seed Random seed for reproducibility",
-          "param:watermark Whether to add AI Generated watermark. Default false",
           "source:text-to-video",
           "source:video-generation"
         ]

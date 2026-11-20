@@ -1,16 +1,16 @@
 {
-  "lastUpdated": "2026-11-16T07:53:48.199Z",
-  "totalModels": 79,
+  "lastUpdated": "2026-11-20T19:57:35.395Z",
+  "totalModels": 81,
   "byProvider": {
     "openai": 4,
-    "azure": 7,
+    "azure": 9,
     "alibaba": 22,
     "deepinfra": 38,
     "gemini": 6,
     "cloudflare": 2
   },
   "byType": {
-    "image generation": 79
+    "image generation": 81
   },
   "models": [
     {
@@ -48,7 +48,7 @@
               "cached_input": 1.25
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Text tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -118,7 +118,7 @@
               "output": 30
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Image tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -305,9 +305,9 @@
       "sourceMetadata": {
         "openai": {
           "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
-          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "wireModelId": "gpt-image-2.5-flare",
           "createdTimestamp": 1788563147,
@@ -579,7 +579,7 @@
                   "cached_input": 1.25
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Text tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -649,7 +649,7 @@
                   "output": 30
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Image tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -716,9 +716,9 @@
           "sourceMetadata": {
             "openai": {
               "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
-              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
               "wireModelId": "gpt-image-2.5-flare",
               "createdTimestamp": 1788563147,
@@ -1187,7 +1187,7 @@
           "capability:vision",
           "input:image",
           "input:text",
-          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.createdTimestamp: 1788563147",
           "openai.defaultSnapshot: gpt-image-2.5-flare-2026-09-08",
           "openai.docUrl: https://developers.openai.com/api/docs/models/gpt-image-2.5-flare",
@@ -1204,8 +1204,8 @@
           "openai.modelDefinition.type: other",
           "openai.openApiSpecUrl: https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "openai.ownedBy: system",
-          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.resolvedSnapshot: gpt-image-2.5-flare-2026-09-08",
           "openai.snapshotDefinition.latency: 5",
           "openai.snapshotDefinition.name: gpt-image-2.5-flare-2026-09-08",
@@ -1270,7 +1270,7 @@
               "cached_input": 1.25
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Text tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -1340,7 +1340,7 @@
               "output": 30
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Image tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -1527,9 +1527,9 @@
       "sourceMetadata": {
         "openai": {
           "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
-          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "wireModelId": "gpt-image-2.5-sunburst",
           "createdTimestamp": 1788563162,
@@ -1801,7 +1801,7 @@
                   "cached_input": 1.25
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Text tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -1871,7 +1871,7 @@
                   "output": 30
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Image tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -1938,9 +1938,9 @@
           "sourceMetadata": {
             "openai": {
               "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
-              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
               "wireModelId": "gpt-image-2.5-sunburst",
               "createdTimestamp": 1788563162,
@@ -2409,7 +2409,7 @@
           "capability:vision",
           "input:image",
           "input:text",
-          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.createdTimestamp: 1788563162",
           "openai.defaultSnapshot: gpt-image-2.5-sunburst-2026-09-08",
           "openai.docUrl: https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst",
@@ -2426,8 +2426,8 @@
           "openai.modelDefinition.type: other",
           "openai.openApiSpecUrl: https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "openai.ownedBy: system",
-          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.resolvedSnapshot: gpt-image-2.5-sunburst-2026-09-08",
           "openai.snapshotDefinition.latency: 3",
           "openai.snapshotDefinition.name: gpt-image-2.5-sunburst-2026-09-08",
@@ -2491,7 +2491,7 @@
               "cached_input": 1.25
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Text tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -2557,7 +2557,7 @@
               "output": 30
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Image tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -2739,9 +2739,9 @@
       "sourceMetadata": {
         "openai": {
           "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.6-flare",
-          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "wireModelId": "gpt-image-2.6-flare",
           "createdTimestamp": 1793222647,
@@ -2980,7 +2980,7 @@
                   "cached_input": 1.25
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Text tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -3046,7 +3046,7 @@
                   "output": 30
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Image tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -3108,9 +3108,9 @@
           "sourceMetadata": {
             "openai": {
               "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.6-flare",
-              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
               "wireModelId": "gpt-image-2.6-flare",
               "createdTimestamp": 1793222647,
@@ -3544,7 +3544,7 @@
           "capability:vision",
           "input:image",
           "input:text",
-          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.createdTimestamp: 1793222647",
           "openai.defaultSnapshot: gpt-image-2.6-flare",
           "openai.docUrl: https://developers.openai.com/api/docs/models/gpt-image-2.6-flare",
@@ -3556,8 +3556,8 @@
           "openai.modelDefinition.type: other",
           "openai.openApiSpecUrl: https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "openai.ownedBy: system",
-          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.resolvedSnapshot: gpt-image-2.6-flare",
           "openai.snapshotDefinition.name: gpt-image-2.6-flare",
           "openai.snapshots: gpt-image-2.6-flare",
@@ -3618,7 +3618,7 @@
               "cached_input": 1.25
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Text tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -3684,7 +3684,7 @@
               "output": 30
             },
             "source": {
-              "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "pricingType": "Image tokens",
               "publisherUnit": "1M tokens",
               "currency": null,
@@ -3866,9 +3866,9 @@
       "sourceMetadata": {
         "openai": {
           "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst",
-          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "wireModelId": "gpt-image-2.6-sunburst",
           "createdTimestamp": 1793222670,
@@ -4107,7 +4107,7 @@
                   "cached_input": 1.25
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Text tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -4173,7 +4173,7 @@
                   "output": 30
                 },
                 "source": {
-                  "api": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+                  "api": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
                   "pricingType": "Image tokens",
                   "publisherUnit": "1M tokens",
                   "currency": null,
@@ -4235,9 +4235,9 @@
           "sourceMetadata": {
             "openai": {
               "docUrl": "https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst",
-              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+              "componentModuleUrl": "https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "registryModuleUrl": "https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+              "pricingModuleUrl": "https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
               "openApiSpecUrl": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
               "wireModelId": "gpt-image-2.6-sunburst",
               "createdTimestamp": 1793222670,
@@ -4671,7 +4671,7 @@
           "capability:vision",
           "input:image",
           "input:text",
-          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.6RiKy1vz.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.componentModuleUrl: https://developers.openai.com/_astro/AllModels.react.DqrGZ2bG.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.createdTimestamp: 1793222670",
           "openai.defaultSnapshot: gpt-image-2.6-sunburst",
           "openai.docUrl: https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst",
@@ -4683,8 +4683,8 @@
           "openai.modelDefinition.type: other",
           "openai.openApiSpecUrl: https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.json",
           "openai.ownedBy: system",
-          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.ZNsqLzbc.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
-          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.OXdPJ-Hw.js?dpl=dpl_6je8tzxebGr6248xCDkMmML8eg9m",
+          "openai.pricingModuleUrl: https://developers.openai.com/_astro/pricing.Dw5s-aya.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
+          "openai.registryModuleUrl: https://developers.openai.com/_astro/models-page-data.react.BPocgkOw.js?dpl=dpl_7XuZQuiHxdAsmaA94WP1mSqDAJav",
           "openai.resolvedSnapshot: gpt-image-2.6-sunburst",
           "openai.snapshotDefinition.name: gpt-image-2.6-sunburst",
           "openai.snapshots: gpt-image-2.6-sunburst",
@@ -6415,7 +6415,6 @@
         "outputTokens": 0
       },
       "capabilities": {
-        "convo2im": true,
         "image_edits": true,
         "image_generation": true,
         "image_generations": true,
@@ -6518,7 +6517,6 @@
           "name": "GPT-image-2",
           "description": "An efficient AI solution for diverse text and image tasks, including high quality, and editing scenarios",
           "capabilities": {
-            "convo2im": true,
             "image_edits": true,
             "image_generation": true,
             "image_generations": true,
@@ -6602,7 +6600,6 @@
           "azureDeployment.resource: Mov00xvh",
           "azureDeployment.sku.capacity: 10",
           "azureDeployment.sku.name: GlobalStandard",
-          "capability:convo2im",
           "capability:image_edits",
           "capability:image_generation",
           "capability:image_generations",
@@ -6621,7 +6618,7 @@
       }
     },
     {
-      "name": "MAI-Image-2.5",
+      "name": "MAI-Image-2.6",
       "modelId": "MAI-Image-2.5",
       "family": "microsoft",
       "description": "Built for creatives, delivering enhanced photorealism at scale.",
@@ -6636,7 +6633,7 @@
         "image"
       ],
       "contextWindow": {
-        "inputTokens": 131072,
+        "inputTokens": 32000,
         "outputTokens": 4096
       },
       "capabilities": {
@@ -6671,8 +6668,8 @@
         "azureDeployment": {
           "resource": "Microsoft",
           "deploymentName": "MAI-Image-2.5",
-          "modelName": "MAI-Image-2.5",
-          "modelVersion": "2026-06-02",
+          "modelName": "MAI-Image-2.6",
+          "modelVersion": "2026-07-31",
           "modelFormat": "Microsoft",
           "provisioningState": "Succeeded",
           "sku": {
@@ -6681,12 +6678,15 @@
           }
         },
         "azureDataPlaneModelIds": [
-          "MAI-Image-2.5-2026-06-02",
-          "MAI-Image-2.5-2026-06-02",
-          "MAI-Image-2.5-2026-06-02",
+          "MAI-Image-2.6-2026-07-31",
+          "MAI-Image-2.6-2026-07-31",
+          "MAI-Image-2.6-2026-07-31",
           "MAI-Image-2.5",
           "MAI-Image-2.5",
-          "MAI-Image-2.5"
+          "MAI-Image-2.5",
+          "MAI-Image-2.6",
+          "MAI-Image-2.6",
+          "MAI-Image-2.6"
         ],
         "pricingLinks": [
           "https://aka.ms/MAIModelPricing"
@@ -6724,8 +6724,8 @@
             "azureDeployment": {
               "resource": "Microsoft",
               "deploymentName": "MAI-Image-2.5",
-              "modelName": "MAI-Image-2.5",
-              "modelVersion": "2026-06-02",
+              "modelName": "MAI-Image-2.6",
+              "modelVersion": "2026-07-31",
               "modelFormat": "Microsoft",
               "provisioningState": "Succeeded",
               "sku": {
@@ -6734,12 +6734,15 @@
               }
             },
             "azureDataPlaneModelIds": [
-              "MAI-Image-2.5-2026-06-02",
-              "MAI-Image-2.5-2026-06-02",
-              "MAI-Image-2.5-2026-06-02",
+              "MAI-Image-2.6-2026-07-31",
+              "MAI-Image-2.6-2026-07-31",
+              "MAI-Image-2.6-2026-07-31",
               "MAI-Image-2.5",
               "MAI-Image-2.5",
-              "MAI-Image-2.5"
+              "MAI-Image-2.5",
+              "MAI-Image-2.6",
+              "MAI-Image-2.6",
+              "MAI-Image-2.6"
             ],
             "pricingLinks": [
               "https://aka.ms/MAIModelPricing"
@@ -6748,7 +6751,7 @@
               "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
             ]
           },
-          "name": "MAI-Image-2.5",
+          "name": "MAI-Image-2.6",
           "description": "Built for creatives, delivering enhanced photorealism at scale.",
           "capabilities": {
             "image_edits": true,
@@ -6822,11 +6825,12 @@
           "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
           "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
           "azureDataPlaneModelIds: MAI-Image-2.5",
-          "azureDataPlaneModelIds: MAI-Image-2.5-2026-06-02",
+          "azureDataPlaneModelIds: MAI-Image-2.6",
+          "azureDataPlaneModelIds: MAI-Image-2.6-2026-07-31",
           "azureDeployment.deploymentName: MAI-Image-2.5",
           "azureDeployment.modelFormat: Microsoft",
-          "azureDeployment.modelName: MAI-Image-2.5",
-          "azureDeployment.modelVersion: 2026-06-02",
+          "azureDeployment.modelName: MAI-Image-2.6",
+          "azureDeployment.modelVersion: 2026-07-31",
           "azureDeployment.provisioningState: Succeeded",
           "azureDeployment.resource: Microsoft",
           "azureDeployment.sku.capacity: 12",
@@ -6850,7 +6854,7 @@
       }
     },
     {
-      "name": "MAI-Image-2.5-Flash",
+      "name": "MAI-Image-2.6-Flash",
       "modelId": "MAI-Image-2.5-Flash",
       "family": "microsoft",
       "description": "Built for creatives, delivering enhanced photorealism at scale.",
@@ -6865,7 +6869,7 @@
         "image"
       ],
       "contextWindow": {
-        "inputTokens": 131072,
+        "inputTokens": 32000,
         "outputTokens": 4096
       },
       "capabilities": {
@@ -6900,8 +6904,8 @@
         "azureDeployment": {
           "resource": "Microsoft",
           "deploymentName": "MAI-Image-2.5-Flash",
-          "modelName": "MAI-Image-2.5-Flash",
-          "modelVersion": "2026-06-02",
+          "modelName": "MAI-Image-2.6-Flash",
+          "modelVersion": "2026-07-31",
           "modelFormat": "Microsoft",
           "provisioningState": "Succeeded",
           "sku": {
@@ -6910,12 +6914,15 @@
           }
         },
         "azureDataPlaneModelIds": [
-          "MAI-Image-2.5-Flash-2026-06-02",
-          "MAI-Image-2.5-Flash-2026-06-02",
-          "MAI-Image-2.5-Flash-2026-06-02",
+          "MAI-Image-2.6-Flash-2026-07-31",
+          "MAI-Image-2.6-Flash-2026-07-31",
+          "MAI-Image-2.6-Flash-2026-07-31",
           "MAI-Image-2.5-Flash",
           "MAI-Image-2.5-Flash",
-          "MAI-Image-2.5-Flash"
+          "MAI-Image-2.5-Flash",
+          "MAI-Image-2.6-Flash",
+          "MAI-Image-2.6-Flash",
+          "MAI-Image-2.6-Flash"
         ],
         "pricingLinks": [
           "https://aka.ms/MAIModelPricing"
@@ -6953,8 +6960,8 @@
             "azureDeployment": {
               "resource": "Microsoft",
               "deploymentName": "MAI-Image-2.5-Flash",
-              "modelName": "MAI-Image-2.5-Flash",
-              "modelVersion": "2026-06-02",
+              "modelName": "MAI-Image-2.6-Flash",
+              "modelVersion": "2026-07-31",
               "modelFormat": "Microsoft",
               "provisioningState": "Succeeded",
               "sku": {
@@ -6963,12 +6970,15 @@
               }
             },
             "azureDataPlaneModelIds": [
-              "MAI-Image-2.5-Flash-2026-06-02",
-              "MAI-Image-2.5-Flash-2026-06-02",
-              "MAI-Image-2.5-Flash-2026-06-02",
+              "MAI-Image-2.6-Flash-2026-07-31",
+              "MAI-Image-2.6-Flash-2026-07-31",
+              "MAI-Image-2.6-Flash-2026-07-31",
               "MAI-Image-2.5-Flash",
               "MAI-Image-2.5-Flash",
-              "MAI-Image-2.5-Flash"
+              "MAI-Image-2.5-Flash",
+              "MAI-Image-2.6-Flash",
+              "MAI-Image-2.6-Flash",
+              "MAI-Image-2.6-Flash"
             ],
             "pricingLinks": [
               "https://aka.ms/MAIModelPricing"
@@ -6977,7 +6987,7 @@
               "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
             ]
           },
-          "name": "MAI-Image-2.5-Flash",
+          "name": "MAI-Image-2.6-Flash",
           "description": "Built for creatives, delivering enhanced photorealism at scale.",
           "capabilities": {
             "image_edits": true,
@@ -7051,14 +7061,473 @@
           "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
           "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
           "azureDataPlaneModelIds: MAI-Image-2.5-Flash",
-          "azureDataPlaneModelIds: MAI-Image-2.5-Flash-2026-06-02",
+          "azureDataPlaneModelIds: MAI-Image-2.6-Flash",
+          "azureDataPlaneModelIds: MAI-Image-2.6-Flash-2026-07-31",
           "azureDeployment.deploymentName: MAI-Image-2.5-Flash",
           "azureDeployment.modelFormat: Microsoft",
-          "azureDeployment.modelName: MAI-Image-2.5-Flash",
-          "azureDeployment.modelVersion: 2026-06-02",
+          "azureDeployment.modelName: MAI-Image-2.6-Flash",
+          "azureDeployment.modelVersion: 2026-07-31",
           "azureDeployment.provisioningState: Succeeded",
           "azureDeployment.resource: Microsoft",
           "azureDeployment.sku.capacity: 12",
+          "azureDeployment.sku.name: GlobalStandard",
+          "capability:image_edits",
+          "capability:image_generation",
+          "capability:image_generations",
+          "capability:image_to_image",
+          "capability:text_to_image",
+          "capability:vision",
+          "input:image",
+          "input:text",
+          "operation:image-to-image",
+          "operation:text-to-image",
+          "output:image",
+          "pricingLinks: https://aka.ms/MAIModelPricing",
+          "pricingPages: https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b",
+          "source:image-generation",
+          "source:image-to-image"
+        ]
+      }
+    },
+    {
+      "name": "MAI-Image-2.7",
+      "modelId": "MAI-Image-2.7",
+      "family": "microsoft",
+      "description": "A high-quality image generation and editing model built for precise, controllable edits, strong visual consistency, improved text rendering, and photorealistic outputs across creative and production workflows.",
+      "type": "image generation",
+      "modelType": "image-to-image",
+      "provider": "azure",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "image"
+      ],
+      "contextWindow": {
+        "inputTokens": 32000,
+        "outputTokens": 4096
+      },
+      "capabilities": {
+        "image_edits": true,
+        "image_generation": true,
+        "image_generations": true,
+        "image_to_image": true,
+        "text_to_image": true,
+        "vision": true
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "MAI-Image-2 Global",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 5,
+              "output": 33
+            },
+            "source": {
+              "url": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+              "row": "MAI-Image-2 Global"
+            },
+            "default": true
+          }
+        ]
+      },
+      "sourceMetadata": {
+        "accountModelsApi": "Microsoft.CognitiveServices/accounts/models",
+        "assetGalleryApi": "https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+        "azureDeployment": {
+          "resource": "Microsoft",
+          "deploymentName": "MAI-Image-2.7",
+          "modelName": "MAI-Image-2.7",
+          "modelVersion": "2026-11-02",
+          "modelFormat": "Microsoft",
+          "provisioningState": "Succeeded",
+          "sku": {
+            "name": "GlobalStandard",
+            "capacity": 36
+          }
+        },
+        "azureDataPlaneModelIds": [
+          "MAI-Image-2.7-2026-11-02",
+          "MAI-Image-2.7-2026-11-02",
+          "MAI-Image-2.7-2026-11-02",
+          "MAI-Image-2.7",
+          "MAI-Image-2.7",
+          "MAI-Image-2.7"
+        ],
+        "pricingLinks": [
+          "https://aka.ms/MAIModelPricing"
+        ],
+        "pricingPages": [
+          "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+        ]
+      },
+      "deprecated": false,
+      "providerRoutes": [
+        {
+          "provider": "azure",
+          "upstreamModelId": "MAI-Image-2.7",
+          "pricing": {
+            "sections": [
+              {
+                "header": "MAI-Image-2 Global",
+                "unit": "Per 1M tokens",
+                "unitKey": "per_1m_tokens_usd",
+                "entries": {
+                  "input": 5,
+                  "output": 33
+                },
+                "source": {
+                  "url": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+                  "row": "MAI-Image-2 Global"
+                },
+                "default": true
+              }
+            ]
+          },
+          "sourceMetadata": {
+            "accountModelsApi": "Microsoft.CognitiveServices/accounts/models",
+            "assetGalleryApi": "https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+            "azureDeployment": {
+              "resource": "Microsoft",
+              "deploymentName": "MAI-Image-2.7",
+              "modelName": "MAI-Image-2.7",
+              "modelVersion": "2026-11-02",
+              "modelFormat": "Microsoft",
+              "provisioningState": "Succeeded",
+              "sku": {
+                "name": "GlobalStandard",
+                "capacity": 36
+              }
+            },
+            "azureDataPlaneModelIds": [
+              "MAI-Image-2.7-2026-11-02",
+              "MAI-Image-2.7-2026-11-02",
+              "MAI-Image-2.7-2026-11-02",
+              "MAI-Image-2.7",
+              "MAI-Image-2.7",
+              "MAI-Image-2.7"
+            ],
+            "pricingLinks": [
+              "https://aka.ms/MAIModelPricing"
+            ],
+            "pricingPages": [
+              "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+            ]
+          },
+          "name": "MAI-Image-2.7",
+          "description": "A high-quality image generation and editing model built for precise, controllable edits, strong visual consistency, improved text rendering, and photorealistic outputs across creative and production workflows.",
+          "capabilities": {
+            "image_edits": true,
+            "image_generation": true,
+            "image_generations": true,
+            "image_to_image": true,
+            "text_to_image": true,
+            "vision": true
+          }
+        }
+      ],
+      "availableFrom": [
+        "azure"
+      ],
+      "semantics": {
+        "family": "microsoft",
+        "capabilities": [
+          {
+            "operation": "image-to-image",
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation",
+              "image-to-image"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "operation": "text-to-image",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation",
+              "image-to-image"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
+          "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+          "azureDataPlaneModelIds: MAI-Image-2.7",
+          "azureDataPlaneModelIds: MAI-Image-2.7-2026-11-02",
+          "azureDeployment.deploymentName: MAI-Image-2.7",
+          "azureDeployment.modelFormat: Microsoft",
+          "azureDeployment.modelName: MAI-Image-2.7",
+          "azureDeployment.modelVersion: 2026-11-02",
+          "azureDeployment.provisioningState: Succeeded",
+          "azureDeployment.resource: Microsoft",
+          "azureDeployment.sku.capacity: 36",
+          "azureDeployment.sku.name: GlobalStandard",
+          "capability:image_edits",
+          "capability:image_generation",
+          "capability:image_generations",
+          "capability:image_to_image",
+          "capability:text_to_image",
+          "capability:vision",
+          "input:image",
+          "input:text",
+          "operation:image-to-image",
+          "operation:text-to-image",
+          "output:image",
+          "pricingLinks: https://aka.ms/MAIModelPricing",
+          "pricingPages: https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b",
+          "source:image-generation",
+          "source:image-to-image"
+        ]
+      }
+    },
+    {
+      "name": "MAI-Image-2.7-Flash",
+      "modelId": "MAI-Image-2.7-Flash",
+      "family": "microsoft",
+      "description": "Fast, efficient image generation optimized for low-latency creation and rapid iteration.",
+      "type": "image generation",
+      "modelType": "image-to-image",
+      "provider": "azure",
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "image"
+      ],
+      "contextWindow": {
+        "inputTokens": 32000,
+        "outputTokens": 4096
+      },
+      "capabilities": {
+        "image_edits": true,
+        "image_generation": true,
+        "image_generations": true,
+        "image_to_image": true,
+        "text_to_image": true,
+        "vision": true
+      },
+      "pricing": {
+        "sections": [
+          {
+            "header": "MAI-Image-2 Global",
+            "unit": "Per 1M tokens",
+            "unitKey": "per_1m_tokens_usd",
+            "entries": {
+              "input": 5,
+              "output": 33
+            },
+            "source": {
+              "url": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+              "row": "MAI-Image-2 Global"
+            },
+            "default": true
+          }
+        ]
+      },
+      "sourceMetadata": {
+        "accountModelsApi": "Microsoft.CognitiveServices/accounts/models",
+        "assetGalleryApi": "https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+        "azureDeployment": {
+          "resource": "Microsoft",
+          "deploymentName": "MAI-Image-2.7-Flash",
+          "modelName": "MAI-Image-2.7-Flash",
+          "modelVersion": "2026-11-02",
+          "modelFormat": "Microsoft",
+          "provisioningState": "Succeeded",
+          "sku": {
+            "name": "GlobalStandard",
+            "capacity": 36
+          }
+        },
+        "azureDataPlaneModelIds": [
+          "MAI-Image-2.7-Flash-2026-11-02",
+          "MAI-Image-2.7-Flash-2026-11-02",
+          "MAI-Image-2.7-Flash-2026-11-02",
+          "MAI-Image-2.7-Flash",
+          "MAI-Image-2.7-Flash",
+          "MAI-Image-2.7-Flash"
+        ],
+        "pricingLinks": [
+          "https://aka.ms/MAIModelPricing"
+        ],
+        "pricingPages": [
+          "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+        ]
+      },
+      "deprecated": false,
+      "providerRoutes": [
+        {
+          "provider": "azure",
+          "upstreamModelId": "MAI-Image-2.7-Flash",
+          "pricing": {
+            "sections": [
+              {
+                "header": "MAI-Image-2 Global",
+                "unit": "Per 1M tokens",
+                "unitKey": "per_1m_tokens_usd",
+                "entries": {
+                  "input": 5,
+                  "output": 33
+                },
+                "source": {
+                  "url": "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/",
+                  "row": "MAI-Image-2 Global"
+                },
+                "default": true
+              }
+            ]
+          },
+          "sourceMetadata": {
+            "accountModelsApi": "Microsoft.CognitiveServices/accounts/models",
+            "assetGalleryApi": "https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+            "azureDeployment": {
+              "resource": "Microsoft",
+              "deploymentName": "MAI-Image-2.7-Flash",
+              "modelName": "MAI-Image-2.7-Flash",
+              "modelVersion": "2026-11-02",
+              "modelFormat": "Microsoft",
+              "provisioningState": "Succeeded",
+              "sku": {
+                "name": "GlobalStandard",
+                "capacity": 36
+              }
+            },
+            "azureDataPlaneModelIds": [
+              "MAI-Image-2.7-Flash-2026-11-02",
+              "MAI-Image-2.7-Flash-2026-11-02",
+              "MAI-Image-2.7-Flash-2026-11-02",
+              "MAI-Image-2.7-Flash",
+              "MAI-Image-2.7-Flash",
+              "MAI-Image-2.7-Flash"
+            ],
+            "pricingLinks": [
+              "https://aka.ms/MAIModelPricing"
+            ],
+            "pricingPages": [
+              "https://azure.microsoft.com/en-us/pricing/details/ai-foundry-models/microsoft/?msockid=0776b2552619695b35c3bd3027c5689b"
+            ]
+          },
+          "name": "MAI-Image-2.7-Flash",
+          "description": "Fast, efficient image generation optimized for low-latency creation and rapid iteration.",
+          "capabilities": {
+            "image_edits": true,
+            "image_generation": true,
+            "image_generations": true,
+            "image_to_image": true,
+            "text_to_image": true,
+            "vision": true
+          }
+        }
+      ],
+      "availableFrom": [
+        "azure"
+      ],
+      "semantics": {
+        "family": "microsoft",
+        "capabilities": [
+          {
+            "operation": "image-to-image",
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation",
+              "image-to-image"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          },
+          {
+            "operation": "text-to-image",
+            "input": [
+              "text"
+            ],
+            "output": [
+              "image"
+            ],
+            "sourceTypes": [
+              "image-generation",
+              "image-to-image"
+            ],
+            "streamable": true,
+            "pricingUnits": [
+              {
+                "unitKey": "usd_per_1m_tokens",
+                "unit": "Per 1M tokens",
+                "valueKeys": [
+                  "input",
+                  "output"
+                ],
+                "default": true
+              }
+            ]
+          }
+        ],
+        "characteristics": [
+          "accountModelsApi: Microsoft.CognitiveServices/accounts/models",
+          "assetGalleryApi: https://ai.azure.com/api/switzerlandwest/asset-gallery/v1.0/models",
+          "azureDataPlaneModelIds: MAI-Image-2.7-Flash",
+          "azureDataPlaneModelIds: MAI-Image-2.7-Flash-2026-11-02",
+          "azureDeployment.deploymentName: MAI-Image-2.7-Flash",
+          "azureDeployment.modelFormat: Microsoft",
+          "azureDeployment.modelName: MAI-Image-2.7-Flash",
+          "azureDeployment.modelVersion: 2026-11-02",
+          "azureDeployment.provisioningState: Succeeded",
+          "azureDeployment.resource: Microsoft",
+          "azureDeployment.sku.capacity: 36",
           "azureDeployment.sku.name: GlobalStandard",
           "capability:image_edits",
           "capability:image_generation",
@@ -13550,74 +14019,6 @@
           }
         ]
       },
-      "params": {
-        "prompt": {
-          "type": "string",
-          "required": false,
-          "description": "Describes the desired visual elements and characteristics of the generated video."
-        },
-        "negative_prompt": {
-          "type": "string",
-          "required": false,
-          "description": "Describes what to exclude from the video, constraining the output."
-        },
-        "img_url": {
-          "type": "string",
-          "required": true,
-          "description": "The URL or Base64-encoded data of the initial image."
-        },
-        "audio_url": {
-          "type": "string",
-          "required": false,
-          "description": "The URL of the audio file. The model generates the video using this audio."
-        },
-        "resolution": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-        },
-        "duration": {
-          "type": "integer",
-          "required": false,
-          "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "default": 5
-        },
-        "prompt_extend": {
-          "type": "boolean",
-          "required": false,
-          "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-        },
-        "shot_type": {
-          "type": "string",
-          "required": false,
-          "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "options": [
-            "single",
-            "multi"
-          ],
-          "default": "single"
-        },
-        "audio": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to generate a video with sound.",
-          "options": [
-            "true",
-            "false"
-          ],
-          "default": true
-        },
-        "watermark": {
-          "type": "boolean",
-          "required": false,
-          "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-        },
-        "seed": {
-          "type": "integer",
-          "required": false,
-          "description": "The random number seed. Value range: `[0, 2147483647]`."
-        }
-      },
       "sourceMetadata": {
         "alibaba": {
           "catalogApi": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com/api/v1/models",
@@ -13675,27 +14076,7 @@
           "documentation": {
             "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
             "modelDocs": "https://www.alibabacloud.com/help/en/model-studio/models",
-            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
-            "apiReferences": [
-              "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md"
-            ]
-          },
-          "requestContract": {
-            "origin": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com",
-            "path": "/api/v1/services/aigc/video-generation/video-synthesis",
-            "inputFields": [
-              "prompt",
-              "img_url",
-              "audio_url",
-              "negative_prompt"
-            ],
-            "parameterFields": [
-              "resolution",
-              "prompt_extend",
-              "duration",
-              "shot_type"
-            ],
-            "mediaTypes": []
+            "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
           }
         }
       },
@@ -13787,96 +14168,8 @@
               "documentation": {
                 "endpointDocs": "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
                 "modelDocs": "https://www.alibabacloud.com/help/en/model-studio/models",
-                "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
-                "apiReferences": [
-                  "https://www.alibabacloud.com/help/en/model-studio/legacy-image-to-video-api-reference.md"
-                ]
-              },
-              "requestContract": {
-                "origin": "https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com",
-                "path": "/api/v1/services/aigc/video-generation/video-synthesis",
-                "inputFields": [
-                  "prompt",
-                  "img_url",
-                  "audio_url",
-                  "negative_prompt"
-                ],
-                "parameterFields": [
-                  "resolution",
-                  "prompt_extend",
-                  "duration",
-                  "shot_type"
-                ],
-                "mediaTypes": []
+                "pricingDocs": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
               }
-            }
-          },
-          "params": {
-            "prompt": {
-              "type": "string",
-              "required": false,
-              "description": "Describes the desired visual elements and characteristics of the generated video."
-            },
-            "negative_prompt": {
-              "type": "string",
-              "required": false,
-              "description": "Describes what to exclude from the video, constraining the output."
-            },
-            "img_url": {
-              "type": "string",
-              "required": true,
-              "description": "The URL or Base64-encoded data of the initial image."
-            },
-            "audio_url": {
-              "type": "string",
-              "required": false,
-              "description": "The URL of the audio file. The model generates the video using this audio."
-            },
-            "resolution": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier."
-            },
-            "duration": {
-              "type": "integer",
-              "required": false,
-              "description": "The output video duration, in seconds. Valid values depend on the `model` parameter:",
-              "default": 5
-            },
-            "prompt_extend": {
-              "type": "boolean",
-              "required": false,
-              "description": "Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time."
-            },
-            "shot_type": {
-              "type": "string",
-              "required": false,
-              "description": "Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-              "options": [
-                "single",
-                "multi"
-              ],
-              "default": "single"
-            },
-            "audio": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to generate a video with sound.",
-              "options": [
-                "true",
-                "false"
-              ],
-              "default": true
-            },
-            "watermark": {
-              "type": "boolean",
-              "required": false,
-              "description": "Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video."
-            },
-            "seed": {
-              "type": "integer",
-              "required": false,
-              "description": "The random number seed. Value range: `[0, 2147483647]`."
             }
           },
           "name": "Wan2.7-Image",
@@ -13966,8 +14259,6 @@
           "alibaba.openAICompatible: true",
           "alibaba.provider: wan",
           "alibaba.publishedTime: 2026-04-01 10:53:17",
-          "alibaba.requestContract.origin: https://ws-0m703x5pqjvst2q2.ap-southeast-1.maas.aliyuncs.com",
-          "alibaba.requestContract.path: /api/v1/services/aigc/video-generation/video-synthesis",
           "capability:image_generation",
           "capability:model_experience",
           "input:image",
@@ -13975,17 +14266,6 @@
           "operation:image-to-image",
           "operation:text-to-image",
           "output:image",
-          "param:audio Specifies whether to generate a video with sound.",
-          "param:audio_url The URL of the audio file. The model generates the video using this audio.",
-          "param:duration The output video duration, in seconds. Valid values depend on the `model` parameter:",
-          "param:img_url The URL or Base64-encoded data of the initial image.",
-          "param:negative_prompt Describes what to exclude from the video, constraining the output.",
-          "param:prompt Describes the desired visual elements and characteristics of the generated video.",
-          "param:prompt_extend Whether to enable prompt rewriting. When enabled, an LLM rewrites the input prompt. This improves generation quality for shorter prompts but increases processing time.",
-          "param:resolution Specifies the output video resolution tier. The model scales the output to a similar total pixel count based on the selected tier.",
-          "param:seed The random number seed. Value range: `[0, 2147483647]`.",
-          "param:shot_type Specifies the shot type of the generated video: a single continuous shot or a sequence of multiple shots.",
-          "param:watermark Specifies whether to add an \"AI Generated\" watermark in the lower-right corner of the video.",
           "source:image-generation"
         ]
       }
@@ -14707,15 +14987,15 @@
         "notes": "Gemini 2.5 Flash Image (Nano Banana) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "aspectRatio": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-        },
         "imageSize": {
           "type": "string",
           "required": false,
           "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
         }
       },
       "deprecated": false,
@@ -14761,15 +15041,15 @@
             "notes": "Gemini 2.5 Flash Image (Nano Banana) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "aspectRatio": {
-              "type": "string",
-              "required": false,
-              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-            },
             "imageSize": {
               "type": "string",
               "required": false,
               "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "required": false,
+              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
             }
           },
           "name": "Nano Banana",
@@ -14953,15 +15233,15 @@
         "notes": "Gemini 3 Pro Image (Nano Banana Pro) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "aspectRatio": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-        },
         "imageSize": {
           "type": "string",
           "required": false,
           "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
         }
       },
       "deprecated": false,
@@ -15007,15 +15287,15 @@
             "notes": "Gemini 3 Pro Image (Nano Banana Pro) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "aspectRatio": {
-              "type": "string",
-              "required": false,
-              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-            },
             "imageSize": {
               "type": "string",
               "required": false,
               "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "required": false,
+              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
             }
           },
           "name": "Nano Banana Pro",
@@ -15297,15 +15577,15 @@
         "notes": "Priced from Google-listed gemini-3-pro-image. Gemini 3 Pro Image (Nano Banana Pro) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "aspectRatio": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-        },
         "imageSize": {
           "type": "string",
           "required": false,
           "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
         }
       },
       "deprecated": false,
@@ -15351,15 +15631,15 @@
             "notes": "Priced from Google-listed gemini-3-pro-image. Gemini 3 Pro Image (Nano Banana Pro) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "aspectRatio": {
-              "type": "string",
-              "required": false,
-              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-            },
             "imageSize": {
               "type": "string",
               "required": false,
               "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "required": false,
+              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
             }
           },
           "name": "Nano Banana Pro",
@@ -15550,15 +15830,15 @@
         "notes": "Gemini 3.1 Flash Image (Nano Banana 2) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "aspectRatio": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-        },
         "imageSize": {
           "type": "string",
           "required": false,
           "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
         }
       },
       "deprecated": false,
@@ -15604,15 +15884,15 @@
             "notes": "Gemini 3.1 Flash Image (Nano Banana 2) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "aspectRatio": {
-              "type": "string",
-              "required": false,
-              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-            },
             "imageSize": {
               "type": "string",
               "required": false,
               "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "required": false,
+              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
             }
           },
           "name": "Nano Banana 2",
@@ -15818,15 +16098,15 @@
         "notes": "Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "aspectRatio": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-        },
         "imageSize": {
           "type": "string",
           "required": false,
           "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
         }
       },
       "deprecated": false,
@@ -15887,15 +16167,15 @@
             "notes": "Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite) 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "aspectRatio": {
-              "type": "string",
-              "required": false,
-              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-            },
             "imageSize": {
               "type": "string",
               "required": false,
               "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "required": false,
+              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
             }
           },
           "name": "Nano Banana 2 Lite",
@@ -16116,15 +16396,15 @@
         "notes": "Gemini Nano Banana 2.1 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
-        "aspectRatio": {
-          "type": "string",
-          "required": false,
-          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-        },
         "imageSize": {
           "type": "string",
           "required": false,
           "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "required": false,
+          "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
         }
       },
       "deprecated": false,
@@ -16185,15 +16465,15 @@
             "notes": "Gemini Nano Banana 2.1 🍌. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
-            "aspectRatio": {
-              "type": "string",
-              "required": false,
-              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
-            },
             "imageSize": {
               "type": "string",
               "required": false,
               "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "required": false,
+              "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
             }
           },
           "name": "Nano Banana 2.1",
@@ -22538,7 +22818,7 @@
       "name": "Remove Background",
       "modelId": "remove_background",
       "family": "bria",
-      "description": "Bria RMBG 2.0 enables seamless removal of backgrounds from images, ideal for professional editing tasks. Trained exclusively on licensed data for safe and risk-free commercial use.",
+      "description": "Bria RMBG 3.0 enables seamless removal of backgrounds from images, ideal for professional editing tasks. Trained exclusively on licensed data for safe and risk-free commercial use.  The cleanest cutout, from any image.",
       "type": "image generation",
       "modelType": "image-to-image",
       "provider": "deepinfra",
@@ -22735,7 +23015,7 @@
             }
           },
           "name": "Remove Background",
-          "description": "Bria RMBG 2.0 enables seamless removal of backgrounds from images, ideal for professional editing tasks. Trained exclusively on licensed data for safe and risk-free commercial use.",
+          "description": "Bria RMBG 3.0 enables seamless removal of backgrounds from images, ideal for professional editing tasks. Trained exclusively on licensed data for safe and risk-free commercial use.  The cleanest cutout, from any image.",
           "capabilities": {
             "streaming": true,
             "requires_image_input": true

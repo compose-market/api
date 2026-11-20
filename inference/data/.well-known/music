@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-11-16T07:53:48.213Z",
+  "lastUpdated": "2026-11-20T19:57:35.402Z",
   "totalModels": 7,
   "byProvider": {
     "gemini": 3,
@@ -55,10 +55,40 @@
         "notes": "Lyria 3. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
+        "candidateCount": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+        },
+        "logprobs": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+        },
+        "responseLogprobs": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, export the logprobs results in response."
+        },
         "stopSequences": {
           "type": "array",
           "required": false,
           "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+        },
+        "topP": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
+          "default": 0.95,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "topK": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
+          "default": 64,
+          "minimum": 1
         },
         "seed": {
           "type": "integer",
@@ -73,50 +103,20 @@
           "minimum": 0,
           "maximum": 2
         },
-        "frequencyPenalty": {
-          "type": "number",
-          "required": false,
-          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
-        },
-        "enableEnhancedCivicAnswers": {
-          "type": "boolean",
-          "required": false,
-          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
-        },
-        "logprobs": {
-          "type": "integer",
-          "required": false,
-          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
-        },
-        "enableAffectiveDialog": {
-          "type": "boolean",
-          "required": false,
-          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
-        },
-        "topP": {
-          "type": "number",
-          "required": false,
-          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
-          "default": 0.95,
-          "minimum": 0,
-          "maximum": 1
-        },
         "responseMimeType": {
           "type": "string",
           "required": false,
           "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/"
         },
-        "responseModalities": {
-          "type": "array",
+        "frequencyPenalty": {
+          "type": "number",
           "required": false,
-          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
         },
-        "topK": {
-          "type": "integer",
+        "enableAffectiveDialog": {
+          "type": "boolean",
           "required": false,
-          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
-          "default": 64,
-          "minimum": 1
+          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
         },
         "mediaResolution": {
           "type": "string",
@@ -128,10 +128,15 @@
           ],
           "description": "Optional. If specified, the media resolution specified will be used."
         },
-        "presencePenalty": {
-          "type": "number",
+        "responseModalities": {
+          "type": "array",
           "required": false,
-          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+        },
+        "enableEnhancedCivicAnswers": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
         },
         "maxOutputTokens": {
           "type": "integer",
@@ -140,15 +145,10 @@
           "minimum": 1,
           "maximum": 65536
         },
-        "responseLogprobs": {
-          "type": "boolean",
+        "presencePenalty": {
+          "type": "number",
           "required": false,
-          "description": "Optional. If true, export the logprobs results in response."
-        },
-        "candidateCount": {
-          "type": "integer",
-          "required": false,
-          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
         }
       },
       "deprecated": false,
@@ -165,10 +165,40 @@
             "notes": "Lyria 3. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
+            "candidateCount": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+            },
+            "logprobs": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+            },
+            "responseLogprobs": {
+              "type": "boolean",
+              "required": false,
+              "description": "Optional. If true, export the logprobs results in response."
+            },
             "stopSequences": {
               "type": "array",
               "required": false,
               "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+            },
+            "topP": {
+              "type": "number",
+              "required": false,
+              "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
+              "default": 0.95,
+              "minimum": 0,
+              "maximum": 1
+            },
+            "topK": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
+              "default": 64,
+              "minimum": 1
             },
             "seed": {
               "type": "integer",
@@ -183,50 +213,20 @@
               "minimum": 0,
               "maximum": 2
             },
-            "frequencyPenalty": {
-              "type": "number",
-              "required": false,
-              "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
-            },
-            "enableEnhancedCivicAnswers": {
-              "type": "boolean",
-              "required": false,
-              "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
-            },
-            "logprobs": {
-              "type": "integer",
-              "required": false,
-              "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
-            },
-            "enableAffectiveDialog": {
-              "type": "boolean",
-              "required": false,
-              "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
-            },
-            "topP": {
-              "type": "number",
-              "required": false,
-              "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
-              "default": 0.95,
-              "minimum": 0,
-              "maximum": 1
-            },
             "responseMimeType": {
               "type": "string",
               "required": false,
               "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/"
             },
-            "responseModalities": {
-              "type": "array",
+            "frequencyPenalty": {
+              "type": "number",
               "required": false,
-              "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+              "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
             },
-            "topK": {
-              "type": "integer",
+            "enableAffectiveDialog": {
+              "type": "boolean",
               "required": false,
-              "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
-              "default": 64,
-              "minimum": 1
+              "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
             },
             "mediaResolution": {
               "type": "string",
@@ -238,10 +238,15 @@
               ],
               "description": "Optional. If specified, the media resolution specified will be used."
             },
-            "presencePenalty": {
-              "type": "number",
+            "responseModalities": {
+              "type": "array",
               "required": false,
-              "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+              "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+            },
+            "enableEnhancedCivicAnswers": {
+              "type": "boolean",
+              "required": false,
+              "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
             },
             "maxOutputTokens": {
               "type": "integer",
@@ -250,15 +255,10 @@
               "minimum": 1,
               "maximum": 65536
             },
-            "responseLogprobs": {
-              "type": "boolean",
+            "presencePenalty": {
+              "type": "number",
               "required": false,
-              "description": "Optional. If true, export the logprobs results in response."
-            },
-            "candidateCount": {
-              "type": "integer",
-              "required": false,
-              "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+              "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
             }
           },
           "name": "Lyria 3 Clip Preview",
@@ -380,10 +380,40 @@
         "notes": "Lyria 3. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
+        "candidateCount": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+        },
+        "logprobs": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+        },
+        "responseLogprobs": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, export the logprobs results in response."
+        },
         "stopSequences": {
           "type": "array",
           "required": false,
           "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+        },
+        "topP": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
+          "default": 0.95,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "topK": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
+          "default": 64,
+          "minimum": 1
         },
         "seed": {
           "type": "integer",
@@ -398,50 +428,20 @@
           "minimum": 0,
           "maximum": 2
         },
-        "frequencyPenalty": {
-          "type": "number",
-          "required": false,
-          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
-        },
-        "enableEnhancedCivicAnswers": {
-          "type": "boolean",
-          "required": false,
-          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
-        },
-        "logprobs": {
-          "type": "integer",
-          "required": false,
-          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
-        },
-        "enableAffectiveDialog": {
-          "type": "boolean",
-          "required": false,
-          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
-        },
-        "topP": {
-          "type": "number",
-          "required": false,
-          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
-          "default": 0.95,
-          "minimum": 0,
-          "maximum": 1
-        },
         "responseMimeType": {
           "type": "string",
           "required": false,
           "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/"
         },
-        "responseModalities": {
-          "type": "array",
+        "frequencyPenalty": {
+          "type": "number",
           "required": false,
-          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
         },
-        "topK": {
-          "type": "integer",
+        "enableAffectiveDialog": {
+          "type": "boolean",
           "required": false,
-          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
-          "default": 64,
-          "minimum": 1
+          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
         },
         "mediaResolution": {
           "type": "string",
@@ -453,10 +453,15 @@
           ],
           "description": "Optional. If specified, the media resolution specified will be used."
         },
-        "presencePenalty": {
-          "type": "number",
+        "responseModalities": {
+          "type": "array",
           "required": false,
-          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+        },
+        "enableEnhancedCivicAnswers": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
         },
         "maxOutputTokens": {
           "type": "integer",
@@ -465,15 +470,10 @@
           "minimum": 1,
           "maximum": 65536
         },
-        "responseLogprobs": {
-          "type": "boolean",
+        "presencePenalty": {
+          "type": "number",
           "required": false,
-          "description": "Optional. If true, export the logprobs results in response."
-        },
-        "candidateCount": {
-          "type": "integer",
-          "required": false,
-          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
         }
       },
       "deprecated": false,
@@ -490,10 +490,40 @@
             "notes": "Lyria 3. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
+            "candidateCount": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+            },
+            "logprobs": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+            },
+            "responseLogprobs": {
+              "type": "boolean",
+              "required": false,
+              "description": "Optional. If true, export the logprobs results in response."
+            },
             "stopSequences": {
               "type": "array",
               "required": false,
               "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+            },
+            "topP": {
+              "type": "number",
+              "required": false,
+              "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
+              "default": 0.95,
+              "minimum": 0,
+              "maximum": 1
+            },
+            "topK": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
+              "default": 64,
+              "minimum": 1
             },
             "seed": {
               "type": "integer",
@@ -508,50 +538,20 @@
               "minimum": 0,
               "maximum": 2
             },
-            "frequencyPenalty": {
-              "type": "number",
-              "required": false,
-              "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
-            },
-            "enableEnhancedCivicAnswers": {
-              "type": "boolean",
-              "required": false,
-              "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
-            },
-            "logprobs": {
-              "type": "integer",
-              "required": false,
-              "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
-            },
-            "enableAffectiveDialog": {
-              "type": "boolean",
-              "required": false,
-              "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
-            },
-            "topP": {
-              "type": "number",
-              "required": false,
-              "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
-              "default": 0.95,
-              "minimum": 0,
-              "maximum": 1
-            },
             "responseMimeType": {
               "type": "string",
               "required": false,
               "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/"
             },
-            "responseModalities": {
-              "type": "array",
+            "frequencyPenalty": {
+              "type": "number",
               "required": false,
-              "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+              "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
             },
-            "topK": {
-              "type": "integer",
+            "enableAffectiveDialog": {
+              "type": "boolean",
               "required": false,
-              "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
-              "default": 64,
-              "minimum": 1
+              "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
             },
             "mediaResolution": {
               "type": "string",
@@ -563,10 +563,15 @@
               ],
               "description": "Optional. If specified, the media resolution specified will be used."
             },
-            "presencePenalty": {
-              "type": "number",
+            "responseModalities": {
+              "type": "array",
               "required": false,
-              "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+              "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+            },
+            "enableEnhancedCivicAnswers": {
+              "type": "boolean",
+              "required": false,
+              "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
             },
             "maxOutputTokens": {
               "type": "integer",
@@ -575,15 +580,10 @@
               "minimum": 1,
               "maximum": 65536
             },
-            "responseLogprobs": {
-              "type": "boolean",
+            "presencePenalty": {
+              "type": "number",
               "required": false,
-              "description": "Optional. If true, export the logprobs results in response."
-            },
-            "candidateCount": {
-              "type": "integer",
-              "required": false,
-              "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+              "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
             }
           },
           "name": "Lyria 3 Pro Preview",
@@ -705,10 +705,40 @@
         "notes": "Lyria 3.5. Source: https://ai.google.dev/gemini-api/docs/pricing"
       },
       "params": {
+        "candidateCount": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+        },
+        "logprobs": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+        },
+        "responseLogprobs": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. If true, export the logprobs results in response."
+        },
         "stopSequences": {
           "type": "array",
           "required": false,
           "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+        },
+        "topP": {
+          "type": "number",
+          "required": false,
+          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
+          "default": 0.95,
+          "minimum": 0,
+          "maximum": 1
+        },
+        "topK": {
+          "type": "integer",
+          "required": false,
+          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
+          "default": 64,
+          "minimum": 1
         },
         "seed": {
           "type": "integer",
@@ -723,50 +753,20 @@
           "minimum": 0,
           "maximum": 2
         },
-        "frequencyPenalty": {
-          "type": "number",
-          "required": false,
-          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
-        },
-        "enableEnhancedCivicAnswers": {
-          "type": "boolean",
-          "required": false,
-          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
-        },
-        "logprobs": {
-          "type": "integer",
-          "required": false,
-          "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
-        },
-        "enableAffectiveDialog": {
-          "type": "boolean",
-          "required": false,
-          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
-        },
-        "topP": {
-          "type": "number",
-          "required": false,
-          "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
-          "default": 0.95,
-          "minimum": 0,
-          "maximum": 1
-        },
         "responseMimeType": {
           "type": "string",
           "required": false,
           "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/"
         },
-        "responseModalities": {
-          "type": "array",
+        "frequencyPenalty": {
+          "type": "number",
           "required": false,
-          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+          "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
         },
-        "topK": {
-          "type": "integer",
+        "enableAffectiveDialog": {
+          "type": "boolean",
           "required": false,
-          "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
-          "default": 64,
-          "minimum": 1
+          "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
         },
         "mediaResolution": {
           "type": "string",
@@ -778,10 +778,15 @@
           ],
           "description": "Optional. If specified, the media resolution specified will be used."
         },
-        "presencePenalty": {
-          "type": "number",
+        "responseModalities": {
+          "type": "array",
           "required": false,
-          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+          "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+        },
+        "enableEnhancedCivicAnswers": {
+          "type": "boolean",
+          "required": false,
+          "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
         },
         "maxOutputTokens": {
           "type": "integer",
@@ -790,15 +795,10 @@
           "minimum": 1,
           "maximum": 65536
         },
-        "responseLogprobs": {
-          "type": "boolean",
+        "presencePenalty": {
+          "type": "number",
           "required": false,
-          "description": "Optional. If true, export the logprobs results in response."
-        },
-        "candidateCount": {
-          "type": "integer",
-          "required": false,
-          "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+          "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
         }
       },
       "deprecated": false,
@@ -815,10 +815,40 @@
             "notes": "Lyria 3.5. Source: https://ai.google.dev/gemini-api/docs/pricing"
           },
           "params": {
+            "candidateCount": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+            },
+            "logprobs": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
+            },
+            "responseLogprobs": {
+              "type": "boolean",
+              "required": false,
+              "description": "Optional. If true, export the logprobs results in response."
+            },
             "stopSequences": {
               "type": "array",
               "required": false,
               "description": "Optional. The set of character sequences (up to 5) that will stop output generation. If specified, the API will stop at the first appearance of a `stop_sequence`. The stop sequence will not be included as part of the response."
+            },
+            "topP": {
+              "type": "number",
+              "required": false,
+              "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
+              "default": 0.95,
+              "minimum": 0,
+              "maximum": 1
+            },
+            "topK": {
+              "type": "integer",
+              "required": false,
+              "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
+              "default": 64,
+              "minimum": 1
             },
             "seed": {
               "type": "integer",
@@ -833,50 +863,20 @@
               "minimum": 0,
               "maximum": 2
             },
-            "frequencyPenalty": {
-              "type": "number",
-              "required": false,
-              "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
-            },
-            "enableEnhancedCivicAnswers": {
-              "type": "boolean",
-              "required": false,
-              "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
-            },
-            "logprobs": {
-              "type": "integer",
-              "required": false,
-              "description": "Optional. Only valid if response_logprobs=True. This sets the number of top logprobs, including the chosen candidate, to return at each decoding step in the Candidate.logprobs_result. The number must be in the range of [0, 20]."
-            },
-            "enableAffectiveDialog": {
-              "type": "boolean",
-              "required": false,
-              "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
-            },
-            "topP": {
-              "type": "number",
-              "required": false,
-              "description": "Optional. The maximum cumulative probability of tokens to consider when sampling. The model uses combined Top-k and Top-p (nucleus) sampling. Tokens are sorted based on their assigned probabilities so that only the most likely tokens are considered. Top-k sampling directly limits the maximum number ",
-              "default": 0.95,
-              "minimum": 0,
-              "maximum": 1
-            },
             "responseMimeType": {
               "type": "string",
               "required": false,
               "description": "Optional. MIME type of the generated candidate text. Supported MIME types are: `text/plain`: (default) Text output. `application/json`: JSON response in the response candidates. `text/x.enum`: ENUM as a string response in the response candidates. Refer to the [docs](https://aistudio.google.com/docs/"
             },
-            "responseModalities": {
-              "type": "array",
+            "frequencyPenalty": {
+              "type": "number",
               "required": false,
-              "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+              "description": "Optional. Frequency penalty applied to the next token's logprobs, multiplied by the number of times each token has been seen in the respponse so far. A positive penalty will discourage the use of tokens that have already been used, proportional to the number of times the token has been used: The mor"
             },
-            "topK": {
-              "type": "integer",
+            "enableAffectiveDialog": {
+              "type": "boolean",
               "required": false,
-              "description": "Optional. The maximum number of tokens to consider when sampling. Gemini models use Top-p (nucleus) sampling or a combination of Top-k and nucleus sampling. Top-k sampling considers the set of `top_k` most probable tokens. Models running with nucleus sampling don't allow top_k setting. Note: The def",
-              "default": 64,
-              "minimum": 1
+              "description": "Optional. If enabled, the model will detect emotions and adapt its responses accordingly."
             },
             "mediaResolution": {
               "type": "string",
@@ -888,10 +888,15 @@
               ],
               "description": "Optional. If specified, the media resolution specified will be used."
             },
-            "presencePenalty": {
-              "type": "number",
+            "responseModalities": {
+              "type": "array",
               "required": false,
-              "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
+              "description": "Optional. The requested modalities of the response. Represents the set of modalities that the model can return, and should be expected in the response. This is an exact match to the modalities of the response. A model may have multiple combinations of supported modalities. If the requested modalitie"
+            },
+            "enableEnhancedCivicAnswers": {
+              "type": "boolean",
+              "required": false,
+              "description": "Optional. Enables enhanced civic answers. It may not be available for all models."
             },
             "maxOutputTokens": {
               "type": "integer",
@@ -900,15 +905,10 @@
               "minimum": 1,
               "maximum": 65536
             },
-            "responseLogprobs": {
-              "type": "boolean",
+            "presencePenalty": {
+              "type": "number",
               "required": false,
-              "description": "Optional. If true, export the logprobs results in response."
-            },
-            "candidateCount": {
-              "type": "integer",
-              "required": false,
-              "description": "Optional. Number of generated responses to return. If unset, this will default to 1. Please note that this doesn't work for previous generation models (Gemini 1.0 family)"
+              "description": "Optional. Presence penalty applied to the next token's logprobs if the token has already been seen in the response. This penalty is binary on/off and not dependant on the number of times the token is used (after the first). Use frequency_penalty for a penalty that increases with each use. A positive"
             }
           },
           "name": "Lyria 3.5",
