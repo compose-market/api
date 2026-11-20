@@ -2312,7 +2312,7 @@ function quantityAliasesForPrimaryKey(primaryKey: string): string[] {
   if (primaryKey === "tile") return ["tile"];
   if (primaryKey === "compute_second") return ["compute_second", "second", "duration"];
   if (primaryKey === "audio_second") return ["audio_second", "second", "duration"];
-  if (primaryKey === "audio_minute") return ["audio_minute", "minute", "duration"];
+  if (primaryKey === "audio_minute") return ["audio_minute", "minute"];
   if (primaryKey === "audio_hour") return ["audio_hour", "hour"];
   if (primaryKey === "generated_audio_minute") return ["generated_audio_minute"];
   if (primaryKey === "infill_character") return ["infill_character", "character"];
