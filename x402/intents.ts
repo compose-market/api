@@ -911,7 +911,7 @@ export async function projectCanonicalPaymentIntentAnalytics(
     const completeProjection = () => complete({
         projectionKey: PROJECTION_INTENTS_KEY,
         intentKey: paymentIntentKey(intent.paymentIntentId),
-        idempotencyKey: idempotencyValkeyKey(intent),
+        idempotencyKey: storedIdempotencyValkeyKey(intent),
         intentId: intent.paymentIntentId,
         terminalTtlSeconds: paymentIntentTerminalTtlSeconds(intent, (dependencies.now ?? Date.now)()),
     });
