@@ -1995,9 +1995,9 @@ end
 redis.call("HSET", KEYS[1],
   "settlementAttemptOwnerToken", ARGV[1],
   "settlementAttemptOwnerExpiresAt", ARGV[3])
+redis.call("PERSIST", KEYS[1])
 redis.call("SADD", KEYS[2], ARGV[4])
-redis.call("EXPIRE", KEYS[1], ARGV[5])
-redis.call("EXPIRE", KEYS[2], ARGV[5])
+redis.call("PERSIST", KEYS[2])
 return 4
 `;
 
@@ -2021,7 +2021,7 @@ redis.call("HDEL", KEYS[1],
   "settlementAttemptReceiptsReconciledCount",
   "settlementAttemptEvidenceReconciledAt",
   "settlementAttemptEvidenceReconciledCount")
-redis.call("EXPIRE", KEYS[1], ARGV[7])
+redis.call("PERSIST", KEYS[1])
 return 1
 `;
 
@@ -2038,7 +2038,7 @@ if ARGV[4] == "" then
 else
   redis.call("HSET", KEYS[1], "settlementAttemptError", ARGV[4])
 end
-redis.call("EXPIRE", KEYS[1], ARGV[5])
+redis.call("PERSIST", KEYS[1])
 return 1
 `;
 
@@ -2049,15 +2049,16 @@ redis.call("HSET", KEYS[1],
   "settlementAttemptLastCheckedAt", ARGV[3],
   "settlementAttemptError", ARGV[4])
 redis.call("HDEL", KEYS[1], "settlementAttemptOwnerToken", "settlementAttemptOwnerExpiresAt")
+redis.call("PERSIST", KEYS[1])
 redis.call("SADD", KEYS[2], ARGV[5])
-redis.call("EXPIRE", KEYS[1], ARGV[6])
-redis.call("EXPIRE", KEYS[2], ARGV[6])
+redis.call("PERSIST", KEYS[2])
 return 1
 `;
 
 const ABANDON_SVM_BATCH_PREPARATION_SCRIPT = `
 if redis.call("HGET", KEYS[1], "settlementAttemptOwnerToken") ~= ARGV[1] then return 0 end
-if redis.call("HGET", KEYS[1], "settlementAttemptStatus") ~= "preparing" then return 0 end
+local status = redis.call("HGET", KEYS[1], "settlementAttemptStatus")
+if status ~= "preparing" and status ~= "prepared" then return 0 end
 redis.call("HSET", KEYS[1],
   "settlementLastError", ARGV[2],
   "settlementLastCheckedAt", ARGV[3])
@@ -2080,9 +2081,9 @@ redis.call("HDEL", KEYS[1],
   "settlementAttemptEvidenceReconciledCount",
   "settlementAttemptOwnerToken",
   "settlementAttemptOwnerExpiresAt")
+redis.call("PERSIST", KEYS[1])
 redis.call("SADD", KEYS[2], ARGV[4])
-redis.call("EXPIRE", KEYS[1], ARGV[5])
-redis.call("EXPIRE", KEYS[2], ARGV[5])
+redis.call("PERSIST", KEYS[2])
 return 1
 `;
 
@@ -2100,7 +2101,7 @@ elseif ARGV[2] == "evidence" then
 else
   return -1
 end
-redis.call("EXPIRE", KEYS[1], ARGV[5])
+redis.call("PERSIST", KEYS[1])
 return 1
 `;
 
@@ -2114,9 +2115,9 @@ redis.call("HSET", KEYS[1],
   "settlementAttemptLastCheckedAt", ARGV[3],
   "settlementAttemptError", ARGV[4])
 redis.call("HDEL", KEYS[1], "settlementAttemptOwnerToken", "settlementAttemptOwnerExpiresAt")
+redis.call("PERSIST", KEYS[1])
 redis.call("SADD", KEYS[2], ARGV[5])
-redis.call("EXPIRE", KEYS[1], ARGV[6])
-redis.call("EXPIRE", KEYS[2], ARGV[6])
+redis.call("PERSIST", KEYS[2])
 return 1
 `;
 
@@ -2169,12 +2170,13 @@ redis.call("HDEL", KEYS[1],
   "settlementAttemptEvidenceReconciledCount",
   "settlementAttemptOwnerToken",
   "settlementAttemptOwnerExpiresAt")
-redis.call("EXPIRE", KEYS[1], ARGV[5])
 if compare(charged, claimed) > 0 then
+  redis.call("PERSIST", KEYS[1])
   redis.call("SADD", KEYS[2], ARGV[4])
-  redis.call("EXPIRE", KEYS[2], ARGV[5])
+  redis.call("PERSIST", KEYS[2])
   return 2
 end
+redis.call("EXPIRE", KEYS[1], ARGV[5])
 redis.call("SREM", KEYS[2], ARGV[4])
 return 1
 `;
@@ -2447,17 +2449,31 @@ async function runInjectedSvmBatchSettlement(
                 continue;
             }
 
-            if (broadcast.status !== "submitted" || broadcast.txHash !== prepared.txHash) {
+            if (
+                (broadcast.status !== "submitted" && broadcast.status !== "confirmed")
+                || broadcast.txHash !== prepared.txHash
+            ) {
                 const error = broadcast.txHash && broadcast.txHash !== prepared.txHash
                     ? `Broadcast returned transaction identity ${broadcast.txHash} for prepared identity ${prepared.txHash}`
                     : broadcast.error || "Prepared SVM batch transaction broadcast is not durably submitted";
-                await dependencies.store.releaseAttemptClaim({
-                    channelId,
-                    ownerToken,
-                    expectedStatus: "prepared",
-                    checkedAt: dependencies.now(),
-                    error,
-                });
+                const isStaleOrTerminal = broadcast.terminal === true
+                    || /blockhash not found|expired|already been processed|invalid nonce/i.test(error);
+                if (isStaleOrTerminal) {
+                    await dependencies.store.abandonPreparation({
+                        channelId,
+                        ownerToken,
+                        error,
+                        abandonedAt: dependencies.now(),
+                    });
+                } else {
+                    await dependencies.store.releaseAttemptClaim({
+                        channelId,
+                        ownerToken,
+                        expectedStatus: "prepared",
+                        checkedAt: dependencies.now(),
+                        error,
+                    });
+                }
                 channels.push(svmBatchResult(work, { txHash: prepared.txHash, error }));
                 continue;
             }
