@@ -2893,6 +2893,9 @@ export async function verifyNearDetachedSignature(input: {
         const keyList = await provider.viewAccessKeyList(input.payer, { finality: "final" });
         const hintedKeyStr = hintedKey?.toString();
         for (const entry of keyList.keys ?? []) {
+            if (entry.access_key?.permission !== "FullAccess") {
+                continue;
+            }
             if (hintedKeyStr && entry.public_key !== hintedKeyStr) {
                 continue;
             }
