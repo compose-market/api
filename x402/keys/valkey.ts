@@ -315,7 +315,12 @@ while #selected < limit do
     scan_limit = math.min(scan_limit * 2, scan_limit + 100)
 end
 
-if #stale > 0 then redis.call("ZREM", due_key, unpack(stale)) end
+if #stale > 0 then
+    for i = 1, #stale, 500 do
+        local last = math.min(i + 499, #stale)
+        redis.call("ZREM", due_key, unpack(stale, i, last))
+    end
+end
 return selected`,
         3,
         input.dueKey,
