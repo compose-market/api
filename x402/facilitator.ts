@@ -1108,7 +1108,10 @@ let facilitatorPromise: Promise<x402Facilitator> | null = null;
 
 export async function getFacilitator(): Promise<x402Facilitator> {
     if (!facilitatorSingleton) {
-        facilitatorPromise ??= createFacilitator();
+        facilitatorPromise ??= createFacilitator().catch((err) => {
+            facilitatorPromise = null;
+            throw err;
+        });
         facilitatorSingleton = await facilitatorPromise;
     }
     return facilitatorSingleton;
