@@ -520,9 +520,9 @@ export async function commitRawBatchCheckpointTransition(input: {
       redis.call("HSET", KEYS[2],
         "chargedCumulativeAmount", nextCharged,
         "lastRequestTimestamp", ARGV[3])
+      redis.call("PERSIST", KEYS[2])
       redis.call("SADD", KEYS[3], ARGV[6])
-      redis.call("EXPIRE", KEYS[2], ARGV[4])
-      redis.call("EXPIRE", KEYS[3], ARGV[4])
+      redis.call("PERSIST", KEYS[3])
     end
     redis.call("HSET", KEYS[1], "usedWei", nextUsed, "updatedAt", ARGV[3])
     redis.call("EXPIRE", KEYS[1], ARGV[4])
