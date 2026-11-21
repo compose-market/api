@@ -7,7 +7,7 @@
  * @module shared/keys/jwt
  */
 
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 import type { KeyPayload } from "./types.js";
 
 // =============================================================================
@@ -109,9 +109,11 @@ export function verifyKey(token: string): KeyPayload | null {
     try {
         const secret = getSecret();
 
-        // Verify signature
+        // Verify signature in constant time
         const expectedSig = sign(`${headerB64}.${payloadB64}`, secret);
-        if (signature !== expectedSig) {
+        const sigBuf = Buffer.from(signature, "utf8");
+        const expBuf = Buffer.from(expectedSig, "utf8");
+        if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
             console.log("[keys/jwt] Signature mismatch");
             return null;
         }
