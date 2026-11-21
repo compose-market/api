@@ -6,15 +6,11 @@
  */
 
 import type { Request, Response } from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { PaymentRequired, VerifyResponse } from "@x402/core/types";
 import { publicResourceUrl } from "../http/public-origin.js";
-import {
-    paymentAsset,
-    merchantWalletAddress,
-    serverWalletAddress,
-} from "./wallets.js";
-import { getDefaultNetwork, isEvmNetwork, isNetworkId, isServiceBlockedNetwork, type NetworkId } from "./configs/chains.js";
+import { merchantWalletAddress } from "./wallets.js";
+import { isEvmNetwork, isNetworkId, isServiceBlockedNetwork, type NetworkId } from "./configs/chains.js";
 import {
     createPaymentRequired,
     createPaymentRequirement,
@@ -380,13 +376,15 @@ export function createPaymentRequired402Response(params: {
     errorMessage?: string;
     amountWei: number;
     resourceUrl?: string;
-    network?: NetworkId;
+    network: NetworkId;
 }): PaymentRequired {
-    const network = params.network || getDefaultNetwork();
+    if (!params.network || !isNetworkId(params.network)) {
+        throw new Error("Explicit CAIP-2 network is required to build a 402 PaymentRequired response");
+    }
 
     return createPaymentRequired({
         amountWei: params.amountWei,
-        network,
+        network: params.network,
         resourceUrl: params.resourceUrl || "",
         description: "Compose.Market AI Agent Inference",
         mimeType: "application/json",
@@ -931,6 +929,26 @@ async function prepareRawInferenceX402Payment(
                 // covered by the root envelope budget and settle continuously
                 // against it.
                 const isNestedExecution = executionRunId !== runId || Boolean(parentExecutionRunId);
+                if (isNestedExecution) {
+                    const expectedInternal = (process.env.BACKPACK_INTERNAL_TOKEN || "").trim();
+                    const rawPresented = req.get?.("x-backpack-internal-token")
+                        || req.headers["x-backpack-internal-token"];
+                    const presentedInternal = (Array.isArray(rawPresented) ? rawPresented[0] : rawPresented || "").trim();
+                    const a = Buffer.from(presentedInternal, "utf8");
+                    const b = Buffer.from(expectedInternal, "utf8");
+                    const internalValid = Boolean(expectedInternal)
+                        && a.length === b.length
+                        && timingSafeEqual(a, b);
+                    if (!internalValid) {
+                        const paymentRequired = buildPaymentRequired(
+                            requiredNetwork,
+                            "Nested x402 envelope inheritance requires valid internal runtime authentication",
+                        );
+                        res.setHeader("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired));
+                        res.status(402).json(paymentRequired);
+                        return null;
+                    }
+                }
                 if (inherited.resource !== resourceUrl && !isNestedExecution) {
                     const paymentRequired = buildPaymentRequired(
                         requiredNetwork,
@@ -1385,11 +1403,18 @@ export async function prepareInferencePayment(
         idempotencyKey,
     });
 
+    let settleLane: Promise<void> = Promise.resolve();
+    const enqueueSettle = <T>(fn: () => Promise<T>): Promise<T> => {
+        const next = settleLane.then(fn, fn);
+        settleLane = next.then(() => undefined, () => undefined);
+        return next;
+    };
+
     return {
         maxAmountWei,
         settlementMode: "continuous",
         runtimeHeaders: resolvedRuntimeHeaders,
-        settle: async (settlementInput) => {
+        settle: (settlementInput) => enqueueSettle(async () => {
             const {
                 finalAmountWei,
                 providerAmountWei,
@@ -1548,15 +1573,16 @@ export async function prepareInferencePayment(
                     ? { settledAt: intentSettlement.body.confirmedAt }
                     : {}),
             };
-        },
-        abort: async (reason?: string) => {
+        }),
+        abort: (reason?: string) => enqueueSettle(async () => {
             if (paymentIntentId && !paymentFinalized) {
                 await abortPaymentIntent({
                     paymentIntentId,
                     reason: reason || "Inference failed before settlement",
                 });
+                paymentFinalized = true;
             }
-        },
+        }),
         applyHeaders: (response, settlement) => {
             if (response.headersSent) {
                 return;
@@ -1678,8 +1704,4 @@ export async function settlePreparedInferencePayment(
 }
 
 // Re-export config for convenience
-export {
-    paymentAsset,
-    merchantWalletAddress,
-    serverWalletAddress,
-};
+export { merchantWalletAddress };
