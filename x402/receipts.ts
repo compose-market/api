@@ -50,12 +50,17 @@ function receiptKey(receiptId: string): string {
   return `${RECEIPT_KEY_PREFIX}:${receiptId}`;
 }
 
+export function normalizeReceiptUserAddress(userAddress: string, network: NetworkId): string {
+  const trimmed = userAddress.trim();
+  return isEvmNetwork(network) ? trimmed.toLowerCase() : trimmed;
+}
+
 function userReceiptsKey(userAddress: string, network: NetworkId): string {
-  return `${RECEIPT_KEY_PREFIX}:user:${network}:${userAddress}`;
+  return `${RECEIPT_KEY_PREFIX}:user:${network}:${normalizeReceiptUserAddress(userAddress, network)}`;
 }
 
 function userAggregateKey(userAddress: string, network: NetworkId): string {
-  return `${RECEIPT_KEY_PREFIX}:aggregate:${network}:${userAddress}`;
+  return `${RECEIPT_KEY_PREFIX}:aggregate:${network}:${normalizeReceiptUserAddress(userAddress, network)}`;
 }
 
 function batchChannelIdentity(channelId: string, network: NetworkId): string {
