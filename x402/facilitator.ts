@@ -867,7 +867,11 @@ export class UptoNearFacilitator implements SchemeNetworkFacilitator {
         if (BigInt(requirements.amount) > BigInt(payload.accepted.amount)) {
             return { isValid: false, invalidReason: "amount_exceeds_accepted", payer };
         }
-        const deadline = BigInt(String(authorization.deadline));
+        const rawDeadline = String(authorization.deadline ?? "").trim();
+        if (!/^\d+$/u.test(rawDeadline)) {
+            return { isValid: false, invalidReason: "invalid_deadline", payer };
+        }
+        const deadline = BigInt(rawDeadline);
         if (deadline < BigInt(Math.floor(Date.now() / 1000))) {
             return { isValid: false, invalidReason: "authorization_expired", payer };
         }
