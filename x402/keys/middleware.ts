@@ -10,6 +10,8 @@
 import { verifyKey } from "./jwt.js";
 import { getKeyRecord, isKeyRevoked } from "./storage.js";
 import type { KeyValidationResult, KeyPayload } from "./types.js";
+import type { NetworkId } from "../configs/chains.js";
+import { getWalletPair } from "../../data/user/store.js";
 
 // =============================================================================
 // Constants
@@ -88,8 +90,8 @@ export async function validateKey(
         return { valid: false, error: "Key has expired" };
     }
 
-    // Step 5: Check budget
-    const remaining = record.budgetLimit - record.budgetUsed;
+    // Step 5: Check budget (including in-flight reserved budget)
+    const remaining = record.budgetLimit - record.budgetUsed - (record.budgetReserved ?? 0);
     if (remaining < requiredBudget) {
         return {
             valid: false,
