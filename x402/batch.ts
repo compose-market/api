@@ -1666,8 +1666,75 @@ async function readSvmBatchChannel(channelId: string): Promise<SvmBatchChannel |
     return parseSvmBatchChannel(await valkeyHGetAll(svmBatchChannelKey(channelId)));
 }
 
+const ATOMIC_BATCH_CHARGE_LUA = `
+local function normalize(value)
+    if not value or not string.match(value, "^%d+$") then return nil end
+    value = string.gsub(value, "^0+", "")
+    if value == "" then return "0" end
+    return value
+end
+local function compare(left, right)
+    if string.len(left) ~= string.len(right) then
+        return string.len(left) < string.len(right) and -1 or 1
+    end
+    if left == right then return 0 end
+    return left < right and -1 or 1
+end
+local function add_decimal(left, right)
+    left = normalize(left)
+    right = normalize(right)
+    if not left or not right then return nil end
+    local i = string.len(left)
+    local j = string.len(right)
+    local carry = 0
+    local parts = {}
+    while i > 0 or j > 0 or carry > 0 do
+        local a = i > 0 and (string.byte(left, i) - 48) or 0
+        local b = j > 0 and (string.byte(right, j) - 48) or 0
+        local sum = a + b + carry
+        table.insert(parts, 1, tostring(sum % 10))
+        carry = math.floor(sum / 10)
+        i = i - 1
+        j = j - 1
+    end
+    return normalize(table.concat(parts))
+end
+
+local key = KEYS[1]
+local pending_key = KEYS[2]
+local channel_id = ARGV[1]
+local amount = normalize(ARGV[2])
+local max_claimable = normalize(ARGV[3])
+local now_ms = ARGV[4]
+
+if not amount or not max_claimable then
+    return { -2, "invalid decimal amount" }
+end
+if redis.call("EXISTS", key) == 0 then
+    return { -1, "batch-settlement channel not found" }
+end
+
+local current = normalize(redis.call("HGET", key, "chargedCumulativeAmount") or "0") or "0"
+local balance = normalize(redis.call("HGET", key, "balance") or ARGV[3]) or max_claimable
+local next_amount = add_decimal(current, amount)
+if not next_amount or compare(next_amount, max_claimable) > 0 or compare(next_amount, balance) > 0 then
+    return { 0, "batch-settlement channel budget exhausted" }
+end
+
+redis.call("HSET", key,
+    "signedMaxClaimable", max_claimable,
+    "chargedCumulativeAmount", next_amount,
+    "lastRequestTimestamp", now_ms
+)
+redis.call("PERSIST", key)
+redis.call("SADD", pending_key, channel_id)
+redis.call("PERSIST", pending_key)
+return { 1, next_amount }
+`;
+
 async function writeSvmBatchChannel(channel: SvmBatchChannel): Promise<void> {
-    await valkeyHSet(svmBatchChannelKey(channel.channelId), {
+    const key = svmBatchChannelKey(channel.channelId);
+    await valkeyHSet(key, {
         channelId: channel.channelId,
         payer: channel.payer,
         network: channel.network,
@@ -1685,9 +1752,14 @@ async function writeSvmBatchChannel(channel: SvmBatchChannel): Promise<void> {
         lastRequestTimestamp: String(channel.lastRequestTimestamp),
         lastTxHash: channel.lastTxHash || "",
     });
-    await valkeyExpire(svmBatchChannelKey(channel.channelId), SVM_BATCH_TTL_SECONDS);
-    await valkeySAdd(SVM_BATCH_PENDING_KEY, channel.channelId);
-    await valkeyExpire(SVM_BATCH_PENDING_KEY, SVM_BATCH_TTL_SECONDS);
+    const unsettled = BigInt(channel.chargedCumulativeAmount || "0") > BigInt(channel.settledCumulativeAmount || "0");
+    if (unsettled) {
+        const client = await getValkeyClient();
+        await client.persist(key);
+        await valkeySAdd(SVM_BATCH_PENDING_KEY, channel.channelId);
+    } else {
+        await valkeyExpire(key, SVM_BATCH_TTL_SECONDS);
+    }
 }
 
 export async function validateSvmBatchPayment(
