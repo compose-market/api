@@ -1190,6 +1190,7 @@ export async function authorizePaymentIntent(
                 sequence: String(sequence),
                 runId: toOptionalString(normalizedInput.runId || rootRunId),
                 idempotencyKey: toOptionalString(explicitIdempotencyKey || ""),
+                idempotencyValkeyKey: idemKey,
                 useBudgetCap: authorizationAmount.useBudgetCap ? "true" : "false",
                 reservedAmountWei: "0",
                 attemptCount: "0",
