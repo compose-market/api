@@ -128,6 +128,22 @@ function stableReceiptId(receipt: Receipt): string {
   return canonical;
 }
 
+function normalizeBill(bill: Bill): Bill {
+  const children = Array.isArray(bill.children)
+    ? bill.children.map(normalizeBill)
+    : undefined;
+  const tools = Array.isArray(bill.tools) && bill.tools.length > 0 ? bill.tools : undefined;
+  const normalized: Bill = {
+    ...bill,
+    lineItems: Array.isArray(bill.lineItems) ? bill.lineItems : [],
+  };
+  if (tools) normalized.tools = tools;
+  else delete normalized.tools;
+  if (children && children.length > 0) normalized.children = children;
+  else delete normalized.children;
+  return normalized;
+}
+
 const UPSERT_BATCH_RECONCILIATION_LUA = `
   local function text(value)
     if value == nil or value == cjson.null then return "" end
