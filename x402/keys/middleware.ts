@@ -136,6 +136,64 @@ function sameWalletAddress(left: string, right: string): boolean {
     return a === b;
 }
 
+export async function authorizeCallerForUser(input: {
+    authHeader?: string;
+    internalTokenHeader?: string;
+    userAddress?: string;
+}): Promise<
+    | { ok: true; userAddress?: string; internal: boolean; network?: NetworkId }
+    | { ok: false; status: 401 | 403; error: string }
+> {
+    if (hasInternalToken(input.internalTokenHeader, input.authHeader)) {
+        return {
+            ok: true,
+            userAddress: input.userAddress?.trim() || undefined,
+            internal: true,
+        };
+    }
+
+    const token = extractKeyFromHeader(input.authHeader);
+    if (!token) {
+        return {
+            ok: false,
+            status: 401,
+            error: "Authorization: Bearer compose-<jwt> required",
+        };
+    }
+
+    const validation = await validateKey(token, 0);
+    if (!validation.valid || !validation.payload) {
+        return {
+            ok: false,
+            status: 401,
+            error: validation.error || "Invalid or expired Compose key",
+        };
+    }
+
+    const tokenOwner = validation.payload.sub;
+    const requested = input.userAddress?.trim();
+    if (requested && !sameWalletAddress(tokenOwner, requested)) {
+        const pair = await getWalletPair(tokenOwner).catch(() => null);
+        const matchesPair = Boolean(
+            pair && (sameWalletAddress(pair.evmAddress, requested) || sameWalletAddress(pair.svmAddress, requested)),
+        );
+        if (!matchesPair) {
+            return {
+                ok: false,
+                status: 403,
+                error: "Authorization token does not belong to the requested user",
+            };
+        }
+    }
+
+    return {
+        ok: true,
+        userAddress: requested || tokenOwner,
+        internal: false,
+        network: validation.payload.network,
+    };
+}
+
 /**
  * Get key budget info for response headers
  */
