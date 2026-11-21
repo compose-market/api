@@ -1220,10 +1220,19 @@ const svmBase58Encoder = getBase58Encoder();
 function valkey() {
     return {
         get: async (key: string) => (await getValkeyClient()).get(key),
-        set: async (key: string, value: string, options?: { NX?: true; PX?: number }) =>
-            options?.NX
-                ? (await getValkeyClient()).set(key, value, "PX", options.PX ?? 0, "NX") as Promise<string | null>
-                : (await getValkeyClient()).set(key, value) as Promise<string | null>,
+        set: async (key: string, value: string, options?: { NX?: true; PX?: number }) => {
+            const client = await getValkeyClient();
+            if (options?.NX && typeof options.PX === "number" && options.PX > 0) {
+                return client.set(key, value, "PX", options.PX, "NX") as Promise<string | null>;
+            }
+            if (options?.NX) {
+                return client.set(key, value, "NX") as Promise<string | null>;
+            }
+            if (typeof options?.PX === "number" && options.PX > 0) {
+                return client.set(key, value, "PX", options.PX) as Promise<string | null>;
+            }
+            return client.set(key, value) as Promise<string | null>;
+        },
         del: async (key: string) => (await getValkeyClient()).del(key),
         eval: async (script: string, options: { keys: string[]; arguments: string[] }) =>
             (await getValkeyClient()).eval(script, options.keys.length, ...options.keys, ...options.arguments),
