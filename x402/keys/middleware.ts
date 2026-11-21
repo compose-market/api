@@ -126,6 +126,16 @@ export function hasInternalToken(
     return false;
 }
 
+function sameWalletAddress(left: string, right: string): boolean {
+    const a = left.trim();
+    const b = right.trim();
+    if (!a || !b) return false;
+    if (/^0x[a-fA-F0-9]{40}$/u.test(a) && /^0x[a-fA-F0-9]{40}$/u.test(b)) {
+        return a.toLowerCase() === b.toLowerCase();
+    }
+    return a === b;
+}
+
 /**
  * Get key budget info for response headers
  */
