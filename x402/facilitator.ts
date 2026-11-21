@@ -45,7 +45,7 @@ import {
 } from "@solana/kit";
 import { base58 } from "@scure/base";
 import { createPublicClient, createWalletClient, http, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { nonceManager, privateKeyToAccount } from "viem/accounts";
 
 import {
     type EvmNetworkId,
@@ -171,7 +171,7 @@ function getFacilitatorAccount() {
         throw new Error("FACILITATOR_KEY environment variable is required for the Compose facilitator");
     }
 
-    return privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
+    return privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex, { nonceManager });
 }
 
 function getReceiverAuthorizer() {
