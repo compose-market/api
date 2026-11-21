@@ -109,8 +109,13 @@ async function connect(): Promise<ValkeyClientType> {
         stopKeepAlive();
     });
 
-    await instance.connect();
-    await instance.ping();
+    try {
+        await instance.connect();
+        await instance.ping();
+    } catch (error) {
+        try { instance.disconnect(); } catch { /* ignore */ }
+        throw error;
+    }
     client = instance;
     connectionPromise = null;
     startKeepAlive(instance);
