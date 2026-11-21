@@ -2961,7 +2961,8 @@ async function readNearBatchChannel(channelId: string): Promise<NearBatchChannel
 }
 
 async function writeNearBatchChannel(channel: NearBatchChannel): Promise<void> {
-    await valkeyHSet(nearBatchChannelKey(channel.channelId), {
+    const key = nearBatchChannelKey(channel.channelId);
+    await valkeyHSet(key, {
         channelId: channel.channelId,
         payer: channel.payer,
         network: channel.network,
@@ -2979,9 +2980,14 @@ async function writeNearBatchChannel(channel: NearBatchChannel): Promise<void> {
         lastRequestTimestamp: String(channel.lastRequestTimestamp),
         lastTxHash: channel.lastTxHash || "",
     });
-    await valkeyExpire(nearBatchChannelKey(channel.channelId), NEAR_BATCH_TTL_SECONDS);
-    await valkeySAdd(NEAR_BATCH_PENDING_KEY, channel.channelId);
-    await valkeyExpire(NEAR_BATCH_PENDING_KEY, NEAR_BATCH_TTL_SECONDS);
+    const unsettled = BigInt(channel.chargedCumulativeAmount || "0") > BigInt(channel.settledCumulativeAmount || "0");
+    if (unsettled) {
+        const client = await getValkeyClient();
+        await client.persist(key);
+        await valkeySAdd(NEAR_BATCH_PENDING_KEY, channel.channelId);
+    } else {
+        await valkeyExpire(key, NEAR_BATCH_TTL_SECONDS);
+    }
 }
 
 export async function validateNearBatchPayment(
