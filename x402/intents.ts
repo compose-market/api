@@ -810,6 +810,7 @@ async function readPaymentIntent(paymentIntentId: string): Promise<PaymentIntent
         sequence: Number.parseInt(data.sequence || "0", 10),
         runId: data.runId || undefined,
         idempotencyKey: data.idempotencyKey || undefined,
+        idempotencyValkeyKey: data.idempotencyValkeyKey || undefined,
         meterSubject: data.meterSubject || undefined,
         meterLineItems: parseMeterLineItems(data.meterLineItems),
         providerAmountWei: data.providerAmountWei || undefined,
