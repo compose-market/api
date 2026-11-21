@@ -118,6 +118,9 @@ export interface SettlePaymentIntentInput {
     finalAmountWei?: string;
     providerAmountWei?: string;
     platformFeeWei?: string;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
     royalties?: {
         creator?: string;
         treasury?: string;
@@ -153,6 +156,7 @@ export interface PaymentIntentRecord {
     sequence: number;
     runId?: string;
     idempotencyKey?: string;
+    idempotencyValkeyKey?: string;
     meterSubject?: string;
     meterLineItems?: MeteredQuotedLineItem[];
     providerAmountWei?: string;
@@ -275,6 +279,10 @@ function idempotencyValkeyKey(input: {
         parts.push(encodeURIComponent(explicitIdempotencyKey));
     }
     return parts.join(":");
+}
+
+function storedIdempotencyValkeyKey(intent: PaymentIntentRecord): string {
+    return intent.idempotencyValkeyKey || idempotencyValkeyKey(intent);
 }
 
 function stableJson(value: unknown): string {
