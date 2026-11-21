@@ -1361,13 +1361,16 @@ export async function settlePaymentIntent(
                     finalAmountWei: finalAmountStr,
                 };
 
+            const settledRootRunId = toOptionalString(input.rootRunId || "");
+            const settledExecutionRunId = toOptionalString(input.executionRunId || "");
+            const settledParentExecutionRunId = toOptionalString(input.parentExecutionRunId || "");
             const reservation = await valkeyReserveAndQueuePaymentIntent({
                 budgetKey: keyRecordKey(intent.keyId),
                 intentKey: paymentIntentKey(intent.paymentIntentId),
                 queueKey: QUEUED_INTENTS_KEY,
                 dueKey: DUE_INTENTS_KEY,
                 keyIntentsKey: keyPaymentIntentsKey(intent.keyId),
-                idempotencyKey: idempotencyValkeyKey(intent),
+                idempotencyKey: storedIdempotencyValkeyKey(intent),
                 intentId: intent.paymentIntentId,
                 amount: finalAmount,
                 now: updatedAt,
@@ -1377,6 +1380,9 @@ export async function settlePaymentIntent(
                     updatedAt: String(updatedAt),
                     finalAmountWei: finalAmountStr,
                     settlementFingerprint,
+                    ...(settledRootRunId ? { rootRunId: settledRootRunId } : {}),
+                    ...(settledExecutionRunId ? { executionRunId: settledExecutionRunId } : {}),
+                    ...(settledParentExecutionRunId ? { parentExecutionRunId: settledParentExecutionRunId } : {}),
                     ...meteringValkeyFields(effectiveMetering),
                     royalties: effectiveRoyalties ? JSON.stringify(effectiveRoyalties) : "",
                 },
