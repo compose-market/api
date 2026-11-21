@@ -3426,13 +3426,24 @@ async function runInjectedNearBatchSettlement(
                 const error = broadcast.txHash && broadcast.txHash !== prepared.txHash
                     ? `Broadcast returned transaction identity ${broadcast.txHash} for prepared identity ${prepared.txHash}`
                     : broadcast.error || "Prepared NEAR batch transaction broadcast is not durably submitted";
-                await dependencies.store.releaseAttemptClaim({
-                    channelId,
-                    ownerToken,
-                    expectedStatus: "prepared",
-                    checkedAt: dependencies.now(),
-                    error,
-                });
+                const isStaleOrTerminal = broadcast.terminal === true
+                    || /expired|invalid nonce|already/i.test(error);
+                if (isStaleOrTerminal) {
+                    await dependencies.store.abandonPreparation({
+                        channelId,
+                        ownerToken,
+                        error,
+                        abandonedAt: dependencies.now(),
+                    });
+                } else {
+                    await dependencies.store.releaseAttemptClaim({
+                        channelId,
+                        ownerToken,
+                        expectedStatus: "prepared",
+                        checkedAt: dependencies.now(),
+                        error,
+                    });
+                }
                 channels.push(nearBatchResult(work, { txHash: prepared.txHash, error }));
                 continue;
             }
