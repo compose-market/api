@@ -2206,7 +2206,7 @@ export async function abortPaymentIntent(
                 queuedKey: QUEUED_INTENTS_KEY,
                 submittedKey: SUBMITTED_INTENTS_KEY,
                 keyIntentsKey: keyPaymentIntentsKey(intent.keyId),
-                idempotencyKey: idempotencyValkeyKey(intent),
+                idempotencyKey: storedIdempotencyValkeyKey(intent),
                 projectionKey: PROJECTION_INTENTS_KEY,
                 dueKey: DUE_INTENTS_KEY,
                 intentId: intent.paymentIntentId,
