@@ -8,9 +8,9 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { getBatchAsset, getBatchChannelStorage } from "./batch.js";
 import {
-  NETWORK_IDS,
   getNetwork,
   getNetworkRpcUrl,
+  getSupportedNetworks,
   getViemChain,
   isEvmNetwork,
   isNetworkId,
@@ -253,15 +253,11 @@ function configuredNetworks(): EvmNetworkId[] {
 
   if (configured.length > 0) return configured;
 
-  const defaults: EvmNetworkId[] = [NETWORK_IDS.arc];
-
-  /** 
-  if (process.env[getNetwork(NETWORK_IDS.botchain).rpcEnvVar]) {
-    defaults.push(NETWORK_IDS.botchain);
-  }
-  */
-
-  return defaults;
+  return getSupportedNetworks()
+    .filter((definition): definition is typeof definition & { id: EvmNetworkId } => (
+      isEvmNetwork(definition.id) && Boolean(process.env[definition.rpcEnvVar]?.trim())
+    ))
+    .map((definition) => definition.id);
 }
 
 function initialOperationState(): NativeEvmOperationState {
