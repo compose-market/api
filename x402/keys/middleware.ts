@@ -113,6 +113,19 @@ export function hasKeyAuth(authHeader: string | undefined): boolean {
     return extractKeyFromHeader(authHeader) !== null;
 }
 
+export function hasInternalToken(
+    internalHeader: string | undefined,
+    authHeader?: string | undefined,
+): boolean {
+    const expected = process.env.BACKPACK_INTERNAL_TOKEN?.trim();
+    if (!expected) return false;
+    if (internalHeader?.trim() === expected) return true;
+    if (authHeader?.startsWith(BEARER_PREFIX) && authHeader.slice(BEARER_PREFIX.length).trim() === expected) {
+        return true;
+    }
+    return false;
+}
+
 /**
  * Get key budget info for response headers
  */
