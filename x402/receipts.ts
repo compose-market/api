@@ -144,6 +144,19 @@ function normalizeBill(bill: Bill): Bill {
   return normalized;
 }
 
+function normalizeReceipt(receipt: Receipt): Receipt {
+  const normalized: Receipt = { ...receipt };
+  if (!Array.isArray(normalized.lineItems) || normalized.lineItems.length === 0) {
+    delete normalized.lineItems;
+  }
+  if (Array.isArray(normalized.bills) && normalized.bills.length > 0) {
+    normalized.bills = normalized.bills.map(normalizeBill);
+  } else {
+    delete normalized.bills;
+  }
+  return normalized;
+}
+
 const UPSERT_BATCH_RECONCILIATION_LUA = `
   local function text(value)
     if value == nil or value == cjson.null then return "" end
