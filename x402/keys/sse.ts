@@ -284,12 +284,18 @@ async function handleSessionEvents(
         }
     };
 
+    const MAX_TIMEOUT_MS = 2_147_483_647;
     const scheduleExpiryCheck = (expiresAt: number) => {
         if (expiryTimer) {
             clearTimeout(expiryTimer);
         }
-        const delayMs = Math.max(0, expiresAt - Date.now()) + 25;
+        const remainingMs = Math.max(0, expiresAt - Date.now()) + 25;
+        const delayMs = Math.min(remainingMs, MAX_TIMEOUT_MS);
         expiryTimer = setTimeout(() => {
+            if (Date.now() < expiresAt) {
+                scheduleExpiryCheck(expiresAt);
+                return;
+            }
             void syncSession();
         }, delayMs);
     };
