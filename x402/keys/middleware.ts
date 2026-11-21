@@ -208,6 +208,6 @@ export async function getKeyBudgetInfo(keyId: string): Promise<{
     return {
         budgetLimit: record.budgetLimit,
         budgetUsed: record.budgetUsed,
-        budgetRemaining: Math.max(0, record.budgetLimit - record.budgetUsed),
+        budgetRemaining: Math.max(0, record.budgetLimit - record.budgetUsed - (record.budgetReserved ?? 0)),
     };
 }
