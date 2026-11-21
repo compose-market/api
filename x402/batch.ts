@@ -1896,26 +1896,27 @@ export async function commitSvmBatchCharge(
 
     await rememberSvmBatchChannel(paymentPayload, requirements);
     const { channelId, maxClaimableAmount } = svmBatchVoucherFields(raw);
-    const existing = await readSvmBatchChannel(channelId);
-    if (!existing) {
-        throw new Error("batch-settlement channel not found");
-    }
-    const current = BigInt(existing.chargedCumulativeAmount || "0");
     const amount = BigInt(amountWei);
-    const next = amount === 0n ? current : current + amount;
-    const balance = BigInt(existing.balance || maxClaimableAmount);
-    if (next > BigInt(maxClaimableAmount) || next > balance) {
-        throw new Error("batch-settlement channel budget exhausted");
+    if (amount < 0n) {
+        throw new Error("batch-settlement charge amount must be non-negative");
     }
-    await writeSvmBatchChannel({
-        ...existing,
-        signedMaxClaimable: maxClaimableAmount,
-        chargedCumulativeAmount: next.toString(),
-        lastRequestTimestamp: Date.now(),
-    });
+    const client = await getValkeyClient();
+    const res = await client.eval(
+        ATOMIC_BATCH_CHARGE_LUA,
+        2,
+        svmBatchChannelKey(channelId),
+        SVM_BATCH_PENDING_KEY,
+        channelId,
+        amount.toString(),
+        maxClaimableAmount,
+        String(Date.now()),
+    ) as [number, string];
+    if (!Array.isArray(res) || res[0] !== 1) {
+        throw new Error(String(res?.[1] || "batch-settlement channel budget exhausted"));
+    }
     return {
         channelId,
-        cumulativeAmountWei: next.toString(),
+        cumulativeAmountWei: String(res[1]),
     };
 }
 
