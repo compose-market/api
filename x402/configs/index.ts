@@ -2,7 +2,6 @@ export {
     NETWORK_IDS,
     NETWORKS,
     evmChainId,
-    getDefaultNetwork,
     getNetwork,
     getNetworkRpcUrl,
     getSupportedNetworks,
@@ -24,6 +23,5 @@ export {
 
 export {
     merchantWalletAddress,
-    serverWalletAddress,
     treasuryWalletAddress,
 } from "../wallets.js";

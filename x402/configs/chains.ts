@@ -256,20 +256,6 @@ export function getExplorerUrl(id: NetworkId, type: ExplorerItemType, value: str
     return definition.explorerQuery ? `${path}?${definition.explorerQuery}` : path;
 }
 
-export function getDefaultNetwork(): NetworkId {
-    const value = process.env.DEFAULT_NETWORK || NETWORK_IDS.arc;
-    if (!isNetworkId(value)) throw new Error(`Unsupported DEFAULT_NETWORK value: ${value}`);
-    return value;
-}
-
-// const botchain = defineChain({
-//     id: 677,
-//     name: "Botchain",
-//     nativeCurrency: { name: "BOT", symbol: "BOT", decimals: 18 },
-//     rpcUrls: { default: { http: ["https://rpc.botchain.ai"] } },
-//     blockExplorers: { default: { name: "Botchain Explorer", url: "https://scan.botchain.ai" } },
-// });
-
 const VIEM_CHAIN_MAP: Record<EvmNetworkId, ViemChain> = {
     [NETWORK_IDS.avalancheFuji]: avalancheFuji,
     [NETWORK_IDS.avalanche]: avalanche,
