@@ -1420,7 +1420,7 @@ export async function listReceipts(input: {
   rootRunId?: string;
   executionRunId?: string;
 }): Promise<ReceiptListResult> {
-  const userAddress = input.userAddress;
+  const userAddress = normalizeReceiptUserAddress(input.userAddress, input.network);
   const cumulative = await cumulativeFor(userAddress, input.network);
   const valkey = await getValkeyClient();
   const encoded = await valkey.eval(
@@ -1434,7 +1434,7 @@ export async function listReceipts(input: {
   const rootFilter = input.rootRunId?.trim();
   const execFilter = input.executionRunId?.trim();
   const receipts = encoded
-    .map((raw) => JSON.parse(String(raw)) as Receipt)
+    .map((raw) => normalizeReceipt(JSON.parse(String(raw)) as Receipt))
     .filter((receipt) => {
       if (rootFilter && receipt.rootRunId !== rootFilter) return false;
       if (execFilter && receipt.executionRunId !== execFilter) return false;
