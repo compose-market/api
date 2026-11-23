@@ -126,6 +126,23 @@ const ERC20_TRANSFER_FROM_ABI = [
         outputs: [{ name: "", type: "bool" }],
         stateMutability: "nonpayable",
     },
+    {
+        name: "balanceOf",
+        type: "function",
+        inputs: [{ name: "account", type: "address" }],
+        outputs: [{ name: "", type: "uint256" }],
+        stateMutability: "view",
+    },
+    {
+        name: "allowance",
+        type: "function",
+        inputs: [
+            { name: "owner", type: "address" },
+            { name: "spender", type: "address" },
+        ],
+        outputs: [{ name: "", type: "uint256" }],
+        stateMutability: "view",
+    },
 ] as const;
 
 const ASSOCIATED_TOKEN_PROGRAM_ADDRESS = solanaAddress("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
@@ -1094,6 +1111,28 @@ async function prepareEvmKeyPayment(
         console.log(`[settlement]   Network: ${network}`);
 
         if (creatorAmount > 0n && treasuryAmount > 0n) {
+            const combinedAmount = creatorAmount + treasuryAmount;
+            const [payerBalance, payerAllowance] = await Promise.all([
+                publicClient.readContract({
+                    address: usdcAddress,
+                    abi: ERC20_TRANSFER_FROM_ABI,
+                    functionName: "balanceOf",
+                    args: [userAddress as `0x${string}`],
+                }),
+                publicClient.readContract({
+                    address: usdcAddress,
+                    abi: ERC20_TRANSFER_FROM_ABI,
+                    functionName: "allowance",
+                    args: [userAddress as `0x${string}`, treasuryAccount.address],
+                }),
+            ]);
+            if (payerBalance < combinedAmount) {
+                throw new Error(`ERC20InsufficientBalance: required ${combinedAmount.toString()}, available ${payerBalance.toString()}`);
+            }
+            if (payerAllowance < combinedAmount) {
+                throw new Error(`ERC20InsufficientAllowance: required ${combinedAmount.toString()}, available ${payerAllowance.toString()}`);
+            }
+
             const startNonce = nonce !== undefined ? Number(nonce) : await publicClient.getTransactionCount({
                 address: treasuryAccount.address,
                 blockTag: "pending",
