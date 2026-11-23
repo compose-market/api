@@ -42,6 +42,7 @@ import { resolveWalletScopes } from "./data/user/scopes.js";
 import { callChainGptChat, CHAINGPT_MODELS } from "./chaingpt.js";
 
 import {
+    authorizeCallerForUser,
     extractKeyFromHeader,
     validateKey,
 } from "./x402/keys/middleware.js";
@@ -49,7 +50,6 @@ import {
 import {
     getSessionFundingReadiness,
 } from "./x402/session/allowance.js";
-import { recordSession } from "./data/metrics/sessions.js";
 import { handleLocalNetworkRoute } from "./local/network.js";
 import { handleLocalStorageProvisionRoute } from "./local/paymaster.js";
 import { handlePublicRoute, registerUtilityRoutes } from "./routes.js";
@@ -69,7 +69,7 @@ import {
 import { encodeReceiptHeader, RECEIPT_HEADER } from "./http/request-context.js";
 import { finalizeReceipt } from "./x402/receipts.js";
 import { kickBatchSettlement } from "./x402/index.js";
-import { getDefaultNetwork, getNetwork, getNetworkRpcUrl, isEvmNetwork, isNetworkId, isServiceBlockedNetwork, validateNearAddress, type EvmNetworkId, type NetworkId } from "./x402/configs/chains.js";
+import { getNetwork, getNetworkRpcUrl, isEvmNetwork, isNetworkId, isServiceBlockedNetwork, validateNearAddress, type EvmNetworkId, type NetworkId } from "./x402/configs/chains.js";
 import { validateSvmAddress } from "@x402/svm";
 import {
     getFacilitatorSupported,
@@ -80,6 +80,7 @@ import {
     settlePayment,
     verifyPayment,
 } from "./x402/facilitator.js";
+import { cached } from "./cache.js";
 // import { createBotchainAccount, prepareBotchainSessionApproval, submitBotchainSessionApproval } from "./botchain.js"; 
 import { recordConfirmedPayment, triggerConfirmedPayment } from "./data/metrics/payments.js";
 
@@ -87,7 +88,7 @@ import { recordConfirmedPayment, triggerConfirmedPayment } from "./data/metrics/
 const loadPermissions = () => import("./permissions/index.js");
 
 // Model Registry
-const loadRegistry = () => import("./inference/catalog/registry.js");
+const loadRegistry = () => import("./inference/adapters/registry.js");
 
 // =============================================================================
 // Configuration
@@ -224,8 +225,8 @@ async function generateDecorativeImage(prompt: string, size: string): Promise<st
     const modelId = "FLUX-2-klein-9b";
     const [{ normalizeResponsesRequest }, { generateWithTools }, { getModelById }] = await Promise.all([
         import("./inference/core.js"),
-        import("./inference/catalog/adapter.js"),
-        import("./inference/catalog/registry.js"),
+        import("./inference/adapters/adapter.js"),
+        import("./inference/adapters/registry.js"),
     ]);
 
     const card = getModelById(modelId);
