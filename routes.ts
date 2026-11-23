@@ -318,30 +318,38 @@ export function registerUtilityRoutes(app: Application): void {
     void proxyPinataPin(req, res, "/pinning/pinJSONToIPFS");
   });
   app.delete("/api/ipfs/unpin/:cid", (req, res) => {
-    const jwt = pinataJwt();
-    if (!jwt) {
-      res.status(503).json({ error: "IPFS pinning is not configured" });
-      return;
-    }
-    const cid = req.params.cid || "";
-    if (!/^[A-Za-z0-9]{20,128}$/.test(cid)) {
-      res.status(400).json({ error: "Invalid CID" });
-      return;
-    }
-    void fetch(`${PINATA_PIN_API_URL}/pinning/unpin/${cid}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${jwt}` },
-      signal: AbortSignal.timeout(30_000),
-    })
-      .then(async (response) => {
-        if (response.ok) {
-          res.json({ ok: true, cid });
-          return;
-        }
-        const text = await response.text().catch(() => "");
-        res.status(response.status).json({ error: `Unpin failed (${response.status})`, detail: text.slice(0, 300) });
-      })
-      .catch(() => res.status(502).json({ error: "IPFS unpin failed" }));
+    void (async () => {
+      const auth = await authorizeCallerForUser({
+        authHeader: getHeader(req, "authorization"),
+        internalTokenHeader: getHeader(req, "x-backpack-internal-token"),
+        userAddress: getHeader(req, "x-session-user-address"),
+      });
+      if (!auth.ok) {
+        res.status(auth.status).json({ error: auth.error });
+        return;
+      }
+      const jwt = pinataJwt();
+      if (!jwt) {
+        res.status(503).json({ error: "IPFS pinning is not configured" });
+        return;
+      }
+      const cid = req.params.cid || "";
+      if (!/^[A-Za-z0-9]{20,128}$/.test(cid)) {
+        res.status(400).json({ error: "Invalid CID" });
+        return;
+      }
+      const response = await fetch(`${PINATA_PIN_API_URL}/pinning/unpin/${cid}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (response.ok) {
+        res.json({ ok: true, cid });
+        return;
+      }
+      const text = await response.text().catch(() => "");
+      res.status(response.status).json({ error: `Unpin failed (${response.status})`, detail: text.slice(0, 300) });
+    })().catch(() => res.status(502).json({ error: "IPFS unpin failed" }));
   });
 
   app.get("/frameworks", (_req, res) => {
