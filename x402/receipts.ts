@@ -1321,14 +1321,15 @@ export async function storeReceipt(receipt: Receipt): Promise<Receipt> {
     return receipt;
   }
 
-  const userAddress = receipt.userAddress;
   const network = receipt.network as NetworkId;
-  let full: Receipt = {
+  const userAddress = normalizeReceiptUserAddress(receipt.userAddress, network);
+  const computedBills = Array.isArray(receipt.bills) && receipt.bills.length > 0 ? receipt.bills : buildBills(receipt);
+  let full: Receipt = normalizeReceipt({
     ...receipt,
     id,
     userAddress,
-    bills: receipt.bills && receipt.bills.length > 0 ? receipt.bills : buildBills(receipt),
-  };
+    bills: computedBills.length > 0 ? computedBills : undefined,
+  });
   if (full.paymentChannelId) {
     if (!full.paymentCumulativeAmountWei) {
       throw new Error("Batch receipt cumulative amount is required");
