@@ -966,6 +966,9 @@ type PaymentIntentSettleBody = {
     executeImmediately?: boolean;
     providerAmountWei?: string;
     platformFeeWei?: string;
+    rootRunId?: string;
+    executionRunId?: string;
+    parentExecutionRunId?: string;
     meterSubject?: string;
     lineItems?: Array<{
         key?: string;
@@ -1008,6 +1011,9 @@ async function handleSettlePaymentIntent(event: APIGatewayProxyEventV2): Promise
         executeImmediately: body.executeImmediately,
         providerAmountWei: body.providerAmountWei,
         platformFeeWei: body.platformFeeWei,
+        rootRunId: body.rootRunId,
+        executionRunId: body.executionRunId,
+        parentExecutionRunId: body.parentExecutionRunId,
         meterSubject: body.meterSubject,
         lineItems: explicitLineItems,
         royalties: body.royalties,
