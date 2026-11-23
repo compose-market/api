@@ -86,6 +86,9 @@ const API_PORT = 3000;
 
 const app = express();
 const httpServer = createServer(app);
+// Match Cloud Run's 1800s request deadline so Node's default 300s requestTimeout
+// never truncates long-running streaming inference (e.g., extended reasoning).
+httpServer.requestTimeout = 0;
 
 // Canonical CORS policy — single source of truth, allow-list based, explicit
 // Expose-Headers, preflight-aware. Must run BEFORE request-id so OPTIONS fast
@@ -109,6 +112,38 @@ export function log(message: string, source = "express") {
   });
 
   console.log(`${formattedTime} [${source}] ${message}`);
+}
+
+const SENSITIVE_LOG_KEYS = new Set([
+  "token",
+  "jwt",
+  "secret",
+  "authorization",
+  "apikey",
+  "api_key",
+  "privatekey",
+  "private_key",
+  "sessiontoken",
+  "access_token",
+  "refresh_token",
+]);
+
+function redactLogValue(value: unknown, depth = 0): unknown {
+  if (depth > 5 || value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactLogValue(item, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_LOG_KEYS.has(k.toLowerCase())) {
+      out[k] = "[REDACTED]";
+    } else {
+      out[k] = redactLogValue(v, depth + 1);
+    }
+  }
+  return out;
 }
 
 app.use((req, res, next) => {
