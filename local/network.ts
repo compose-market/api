@@ -216,20 +216,23 @@ function errorStatusCode(error: unknown, fallback = 400): number {
 async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, network: NetworkId) {
   const keyToken = extractKeyFromHeader(getHeader(event, "authorization"));
   if (!keyToken) {
-    throw new Error("Authorization header with Compose Key token is required");
+    throw authError("Authorization header with Compose Key token is required");
   }
 
   const payload = verifyKey(keyToken);
   if (!payload) {
-    throw new Error("Invalid or expired Compose Key token");
+    throw authError("Invalid or expired Compose Key token");
   }
   if (payload.sub.toLowerCase() !== userAddress) {
-    throw new Error("Compose Key token user does not match x-session-user-address");
+    throw authError("Compose Key token user does not match x-session-user-address");
+  }
+  if (payload.network && payload.network !== network) {
+    throw authError("Compose Key token network does not match requested network");
   }
 
   const activeSession = (await getActiveSessionStatus(userAddress, network)).session;
   if (!activeSession || activeSession.keyId !== payload.keyId) {
-    throw new Error("Compose Key token does not match the active session");
+    throw authError("Compose Key token does not match the active session");
   }
 
   return {
