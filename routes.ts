@@ -209,19 +209,22 @@ async function receiptIdentity(
 
 function receiptsRoute() {
   return (req: Request, res: ExpressResponse, next: NextFunction) => {
-    const identity = receiptIdentity(req);
-    if ("error" in identity) {
-      res.status(identity.status).json({ error: identity.error });
-      return;
-    }
+    void (async () => {
+      const identity = await receiptIdentity(req);
+      if ("error" in identity) {
+        res.status(identity.status).json({ error: identity.error });
+        return;
+      }
 
-    void listReceipts({
-      userAddress: identity.userAddress,
-      network: identity.network,
-      limit: receiptLimit(req),
-      rootRunId: queryValue(req.query.rootRunId),
-      executionRunId: queryValue(req.query.executionRunId),
-    }).then((result) => res.status(200).json(result)).catch(next);
+      const result = await listReceipts({
+        userAddress: identity.userAddress,
+        network: identity.network,
+        limit: receiptLimit(req),
+        rootRunId: queryValue(req.query.rootRunId),
+        executionRunId: queryValue(req.query.executionRunId),
+      });
+      res.status(200).json(result);
+    })().catch(next);
   };
 }
 
