@@ -1311,7 +1311,7 @@ async function transitionNonBatchReceipt(
   const encoded = String(result?.[1] || "");
   return {
     changed: Number(result?.[0]) === 1,
-    receipt: encoded ? JSON.parse(encoded) as Receipt : null,
+    receipt: encoded ? normalizeReceipt(JSON.parse(encoded) as Receipt) : null,
   };
 }
 
