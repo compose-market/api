@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import type { Application, NextFunction, Request, Response as ExpressResponse } from "express";
 
+import { cached } from "./cache.js";
 import { isNetworkId, isServiceBlockedNetwork, type NetworkId } from "./x402/configs/chains.js";
 import {
   buildModelsPaymentRequired,
@@ -10,8 +12,9 @@ import {
   MODELS_CATALOG,
 } from "./x402/discovery.js";
 import { encodePaymentRequiredHeader } from "./x402/facilitator.js";
+import { authorizeCallerForUser } from "./x402/keys/middleware.js";
 import { publicOriginFromHost } from "./http/public-origin.js";
-import { listReceipts } from "./x402/receipts.js";
+import { listReceipts, normalizeReceiptUserAddress } from "./x402/receipts.js";
 import { searchAgents as searchAgentverseAgents } from "./agentverse.js";
 
 interface PublicRouteEvent {
@@ -92,11 +95,19 @@ export async function handlePublicRoute(
 
   try {
     if (method === "GET" && path === "/openapi.json") {
-      return jsonResult(200, corsHeaders, await buildOpenApiDocument(publicOrigin));
+      return jsonResult(
+        200,
+        corsHeaders,
+        await cached(`discovery:openapi:${publicOrigin}`, 300, 60_000, () => buildOpenApiDocument(publicOrigin)),
+      );
     }
 
     if (method === "GET" && path === "/.well-known/x402") {
-      return jsonResult(200, corsHeaders, await buildWellKnownX402(publicOrigin));
+      return jsonResult(
+        200,
+        corsHeaders,
+        await cached(`discovery:wellknown:${publicOrigin}`, 300, 60_000, () => buildWellKnownX402(publicOrigin)),
+      );
     }
 
     if (method === "GET" && path === MODELS_CATALOG) {
@@ -129,15 +140,17 @@ export async function handlePublicRoute(
 
     if (method === "GET" && path === "/api/agentverse/agents") {
       const q = event.queryStringParameters || {};
-      const result = await searchAgentverseAgents({
+      const input = {
         search: q.search ?? q.q ?? undefined,
         category: q.category ?? undefined,
         tags: q.tags ? q.tags.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
         limit: q.limit ? Math.max(1, Math.min(100, Number.parseInt(q.limit, 10) || 30)) : undefined,
         offset: q.offset ? Math.max(0, Number.parseInt(q.offset, 10) || 0) : undefined,
         sort: q.sort as "relevancy" | "created-at" | "last-modified" | "interactions" | undefined,
-        direction: q.direction === "asc" ? "asc" : "desc",
-      });
+        direction: q.direction === "asc" ? "asc" as const : "desc" as const,
+      };
+      const key = `agentverse:${createHash("sha256").update(JSON.stringify(input)).digest("hex").slice(0, 24)}`;
+      const result = await cached(key, 120, 30_000, () => searchAgentverseAgents(input));
       return jsonResult(200, corsHeaders, result);
     }
 
