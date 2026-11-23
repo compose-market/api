@@ -184,14 +184,26 @@ function receiptLimit(req: Request): number {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : 50;
 }
 
-function receiptIdentity(req: Request): { userAddress: string; network: NetworkId } | { error: string; status: number } {
+async function receiptIdentity(
+  req: Request,
+): Promise<{ userAddress: string; network: NetworkId } | { error: string; status: number }> {
   const raw = getHeader(req, "x-session-user-address");
-  if (!raw) {
+  const auth = await authorizeCallerForUser({
+    authHeader: getHeader(req, "authorization"),
+    internalTokenHeader: getHeader(req, "x-backpack-internal-token"),
+    userAddress: raw,
+  });
+  if (!auth.ok) {
+    return { error: auth.error, status: auth.status };
+  }
+  const effectiveRaw = auth.userAddress;
+  if (!effectiveRaw) {
     return { error: "x-session-user-address header required", status: 401 };
   }
-  const userAddress = raw.trim();
-  const network = receiptNetwork(req);
-  if (!userAddress || !network) return { error: "Valid x-network-id header required", status: 401 };
+  const network = receiptNetwork(req) ?? auth.network ?? null;
+  if (!network) return { error: "Valid x-network-id header required", status: 401 };
+  const userAddress = normalizeReceiptUserAddress(effectiveRaw, network);
+  if (!userAddress) return { error: "x-session-user-address header required", status: 401 };
   return { userAddress, network };
 }
 
