@@ -1320,13 +1320,33 @@ export async function broadcastPreparedKeyPaymentForNetwork(
                 throw new Error(`RPC returned transaction hash ${returnedHash} for prepared identity ${prepared.txHash}`);
             }
             if (prepared.secondaryPayload) {
-                try {
-                    await publicClient.sendRawTransaction({
-                        serializedTransaction: prepared.secondaryPayload as Hex,
-                    });
-                    console.log(`[settlement] Broadcasted secondary split transaction: ${prepared.secondaryTxHash}`);
-                } catch (secErr) {
-                    console.warn("[settlement] Secondary split transaction broadcast:", secErr);
+                let secErrLast: unknown = null;
+                for (let attempt = 0; attempt < 2; attempt += 1) {
+                    try {
+                        await publicClient.sendRawTransaction({
+                            serializedTransaction: prepared.secondaryPayload as Hex,
+                        });
+                        console.log(`[settlement] Broadcasted secondary split transaction: ${prepared.secondaryTxHash}`);
+                        secErrLast = null;
+                        break;
+                    } catch (secErr) {
+                        secErrLast = secErr;
+                        const msg = secErr instanceof Error ? secErr.message : String(secErr);
+                        if (/already known|already imported|nonce too low/i.test(msg)) {
+                            secErrLast = null;
+                            break;
+                        }
+                    }
+                }
+                if (secErrLast) {
+                    const secMsg = secErrLast instanceof Error ? secErrLast.message : String(secErrLast);
+                    console.error("[settlement] Secondary split transaction broadcast failed (nonce N+1 risk):", secMsg);
+                    return {
+                        success: false,
+                        status: "submitted",
+                        txHash: prepared.txHash,
+                        error: `Secondary split transaction broadcast failed: ${secMsg}`,
+                    };
                 }
             }
             return { success: false, status: "submitted", txHash: prepared.txHash };
