@@ -613,10 +613,11 @@ async function handleListLocalNetworkPeers(
     }
     const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
     if (!headerUserAddress || headerUserAddress !== userAddress) {
-      throw new Error("x-session-user-address must match userAddress");
+      throw authError("x-session-user-address must match userAddress");
     }
     const networkRaw = event.queryStringParameters?.network;
     const network = parseNetwork(networkRaw);
+    await authorizeKeySession(event, userAddress, network);
     const filterWallet = normalizeWallet(event.queryStringParameters?.agentWallet || null);
     const setKey = peerSetKey(userAddress, network);
     const valkey = await getValkeyClient();
@@ -663,7 +664,7 @@ async function handleListLocalNetworkPeers(
       })),
     }, corsHeaders);
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 }
 
