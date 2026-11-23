@@ -322,24 +322,18 @@ async function validateLocalAuthorization(
     throw new Error("x-session-user-address must match userAddress");
   }
 
-  if (extractKeyFromHeader(getHeader(event, "authorization"))) {
-    await authorizeKeySession(event, userAddress, network);
-  }
-
-  const activeSession = (await getActiveSessionStatus(userAddress, network)).session;
+  const { activeSession } = await authorizeKeySession(event, userAddress, network);
   return {
     userAddress,
     agentWallet,
     network,
-    activeSession: activeSession
-      ? {
-        keyId: activeSession.keyId,
-        expiresAt: activeSession.expiresAt,
-        budgetLimit: activeSession.budgetLimit,
-        budgetUsed: activeSession.budgetUsed,
-        network: activeSession.network ?? network,
-      }
-      : null,
+    activeSession: {
+      keyId: activeSession.keyId,
+      expiresAt: activeSession.expiresAt,
+      budgetLimit: activeSession.budgetLimit,
+      budgetUsed: activeSession.budgetUsed,
+      network: activeSession.network ?? network,
+    },
   };
 }
 
