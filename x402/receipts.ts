@@ -1356,15 +1356,21 @@ export async function finalizeReceipt(
     return null;
   }
 
+  const network = (context.network ?? receipt.network) as NetworkId | undefined;
+  const rawUserAddress = context.userAddress ?? receipt.userAddress;
+  const userAddress = rawUserAddress && network
+    ? normalizeReceiptUserAddress(rawUserAddress, network)
+    : rawUserAddress?.trim();
   const full: Receipt = {
     ...receipt,
     service: context.service ?? receipt.service,
     action: context.action ?? receipt.action,
     resource: context.resource ?? receipt.resource,
-    userAddress: context.userAddress ?? receipt.userAddress,
+    userAddress,
   };
-  full.bills = full.bills && full.bills.length > 0 ? full.bills : buildBills(full);
-  return storeReceipt(full);
+  const computedBills = Array.isArray(full.bills) && full.bills.length > 0 ? full.bills : buildBills(full);
+  full.bills = computedBills.length > 0 ? computedBills : undefined;
+  return storeReceipt(normalizeReceipt(full));
 }
 
 const LIST_RECEIPTS_LUA = `
