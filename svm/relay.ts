@@ -507,6 +507,45 @@ async function confirmSvmSignature(
     throw new Error("SVM relay transaction confirmation timeout");
 }
 
+function isFacilitatorSafeInInstruction(
+    programAddress: string,
+    accountAddresses: readonly string[],
+    data: Readonly<Uint8Array> | undefined,
+    facilitatorAddress: string,
+): string | null {
+    const indexes: number[] = [];
+    for (let i = 0; i < accountAddresses.length; i += 1) {
+        if (accountAddresses[i] === facilitatorAddress) {
+            indexes.push(i);
+        }
+    }
+    if (indexes.length === 0) {
+        return null;
+    }
+    if (programAddress === SYSTEM_PROGRAM) {
+        // Only allow facilitator as recipient (index 1) of a SystemProgram.Transfer (u32 opcode = 2).
+        const isTransfer = Boolean(data && data.length >= 4 && readU32(data, 0) === SYSTEM_TRANSFER);
+        if (isTransfer && indexes.every((idx) => idx === 1)) {
+            return null;
+        }
+        return "Relay refuses SystemProgram instructions that debit or authorize the facilitator fee payer";
+    }
+    if (programAddress === TOKEN_PROGRAM || programAddress === TOKEN_2022_PROGRAM) {
+        // Allow facilitator only as delegate: index 1 for SPL Approve (4), index 2 for ApproveChecked (13; index 1 is mint).
+        const opcode = data?.[0];
+        const allowedDelegateIndex = opcode === SPL_APPROVE_DISCRIMINATOR
+            ? 1
+            : opcode === SPL_APPROVE_CHECKED_DISCRIMINATOR
+                ? 2
+                : -1;
+        if (allowedDelegateIndex >= 0 && indexes.every((idx) => idx === allowedDelegateIndex)) {
+            return null;
+        }
+        return "Relay refuses SPL Token instructions that debit or authorize the facilitator fee payer";
+    }
+    return `Relay refuses ${programAddress} instructions referencing the facilitator fee payer`;
+}
+
 export function registerSvmRoutes(app: Application): void {
     app.get("/api/svm/fee-payer", async (_req, res) => {
         try {
