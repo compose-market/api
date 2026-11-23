@@ -6,7 +6,7 @@ import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import {
     getCompiledModels,
     type ModelCard,
-} from "../inference/catalog/registry.js";
+} from "../inference/adapters/registry.js";
 import {
     createPaymentExtensions,
     createPaymentRequirement,
@@ -464,7 +464,7 @@ export async function buildOpenApiDocument(origin = SELLER_ORIGIN): Promise<Reco
                     required: false,
                     schema: { type: "integer", minimum: 1, maximum: MAX_LIMIT, default: DEFAULT_LIMIT },
                 },
-            Offset: {
+                Offset: {
                     name: "offset",
                     in: "query",
                     required: false,
