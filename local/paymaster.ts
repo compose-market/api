@@ -5,7 +5,7 @@ import * as SessionKey from "@filoz/synapse-core/session-key";
 import { METADATA_KEYS, Synapse, calibration, mainnet, type FilecoinChain } from "@filoz/synapse-sdk";
 import { depositUSDFC } from "filecoin-pin/core/payments";
 import { z } from "zod";
-import { evmChainId, isEvmNetwork, isNetworkId, type EvmNetworkId } from "../x402/configs/chains.js";
+import { isEvmNetwork, isNetworkId, type EvmNetworkId } from "../x402/configs/chains.js";
 import { getActiveSessionStatus } from "../x402/keys/index.js";
 import { verifyKey } from "../x402/keys/jwt.js";
 import { extractKeyFromHeader } from "../x402/keys/middleware.js";
@@ -29,6 +29,7 @@ const paymasterNonceManager = createNonceManager({ source: jsonRpc() });
 const COMPOSE_STORAGE_SOURCE = "compose";
 const DEFAULT_FILECOIN_PIN_COPIES = 2;
 const LEARNING_DATASET_SCHEMA = "compose.mesh.learning.v1";
+const MAX_PAYMASTER_DEPOSIT_ATOMIC = 100n * 10n ** 18n;
 
 const EnvSchema = z.object({
   SYNAPSE_NETWORK: z.enum(["calibration", "mainnet"]).default("calibration"),
@@ -160,7 +161,11 @@ function parseDepositAmount(value: unknown): bigint {
   if (!/^\d+$/.test(normalized)) {
     throw new Error("depositAmount must be a non-negative integer string");
   }
-  return BigInt(normalized);
+  const parsed = BigInt(normalized);
+  if (parsed > MAX_PAYMASTER_DEPOSIT_ATOMIC) {
+    throw new Error(`depositAmount exceeds maximum allowed paymaster deposit (${MAX_PAYMASTER_DEPOSIT_ATOMIC.toString()})`);
+  }
+  return parsed;
 }
 
 function parseOptionalCopies(value: unknown): number {
