@@ -536,7 +536,7 @@ async function handleUpsertLocalNetworkPeers(
   try {
     body = parseJsonBody<LocalPeerUpsertRequest>(event);
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 
   try {
@@ -547,8 +547,9 @@ async function handleUpsertLocalNetworkPeers(
     const network = parseNetwork(body.network);
     const headerUserAddress = normalizeWallet(getHeader(event, "x-session-user-address"));
     if (!headerUserAddress || headerUserAddress !== userAddress) {
-      throw new Error("x-session-user-address must match userAddress");
+      throw authError("x-session-user-address must match userAddress");
     }
+    await authorizeKeySession(event, userAddress, network);
 
     await enforcePeerUpsertRateLimit(userAddress, network);
 
@@ -596,7 +597,7 @@ async function handleUpsertLocalNetworkPeers(
       network,
     }, corsHeaders);
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 }
 
