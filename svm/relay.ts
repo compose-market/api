@@ -50,7 +50,31 @@ const SVM_MAX_TX_BYTES = 1232;
 const SWIG_PROGRAM = "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const IDENTITY_PROGRAM = (process.env.SOLANA_IDENTITY_PROGRAM_ID || "AoaWgzq4tRrTbmWKmnC5VhpszqjFqEYuEeLQSGx8K6DY").trim();
+const REPUTATION_PROGRAM = (process.env.SOLANA_REPUTATION_PROGRAM_ID || "35UrJCxmsyqPLcFNVHqsM8UZZjx6UQYNBS5ChrvUfLPR").trim();
+const VALIDATION_PROGRAM = (process.env.SOLANA_VALIDATION_PROGRAM_ID || "GQHB7DDt2558Tncx3hHtw8w9fi2xZhvXQ5nGmgyGaL2H").trim();
+const MARKET_PROGRAM = (process.env.SOLANA_MARKET_PROGRAM_ID || "7B3dAgwdmWK3YnobSPYP5fPYNp7x8btNs5GMCD498uo8").trim();
+const TOKEN_METADATA_PROGRAM = (process.env.SOLANA_TOKEN_METADATA_PROGRAM_ID || "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s").trim();
+const MAX_RELAY_COMPUTE_UNITS = 1_400_000;
+const MAX_RELAY_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1_000_000n;
+const SPL_APPROVE_DISCRIMINATOR = 4;
+const SPL_APPROVE_CHECKED_DISCRIMINATOR = 13;
+const RELAY_ALLOWED_PROGRAMS = new Set<string>([
+    SWIG_PROGRAM,
+    SYSTEM_PROGRAM,
+    TOKEN_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    ASSOCIATED_TOKEN_PROGRAM,
+    "ComputeBudget111111111111111111111111111111",
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+    IDENTITY_PROGRAM,
+    REPUTATION_PROGRAM,
+    VALIDATION_PROGRAM,
+    MARKET_PROGRAM,
+    TOKEN_METADATA_PROGRAM,
+].filter(Boolean));
 const SWIG_CREATE_V1 = 0;
 const SWIG_SIGN_V2 = 11;
 const SECP256K1_AUTHORITY = 3;
@@ -453,6 +477,13 @@ export async function validateSelfFundedSwigActivation(
     return null;
 }
 
+class SvmTransactionFailedError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "SvmTransactionFailedError";
+    }
+}
+
 async function confirmSvmSignature(
     rpc: ReturnType<typeof createSvmRpc>,
     signature: string,
@@ -463,7 +494,7 @@ async function confirmSvmSignature(
         }).send();
         const current = status.value[0];
         if (current?.err) {
-            throw new Error(`SVM relay transaction failed: ${JSON.stringify(current.err)}`);
+            throw new SvmTransactionFailedError(`SVM relay transaction failed: ${JSON.stringify(current.err)}`);
         }
         if (
             current?.confirmationStatus === "confirmed"
