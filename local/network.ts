@@ -394,7 +394,7 @@ async function handleCreateLocalLinkToken(
     );
   } catch (error) {
     return json(
-      400,
+      errorStatusCode(error),
       {
         error: error instanceof Error ? error.message : "Invalid request",
       },
