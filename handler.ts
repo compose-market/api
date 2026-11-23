@@ -1633,12 +1633,22 @@ function query(event: APIGatewayProxyEventV2): Record<string, string | undefined
 async function handlePermissionsRoutes(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
     const permissions = await loadPermissions();
     const method = event.requestContext.http.method;
+    const authHeader = getHeader(event, "authorization");
+    const internalTokenHeader = getHeader(event, "x-backpack-internal-token");
 
     try {
         if (method === "GET") {
             const params = query(event);
             if (!params.userAddress || !params.agentWallet) {
                 return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress and agentWallet required" }) };
+            }
+            const auth = await authorizeCallerForUser({
+                authHeader,
+                internalTokenHeader,
+                userAddress: params.userAddress,
+            });
+            if (!auth.ok) {
+                return { statusCode: auth.status, headers: corsHeaders, body: JSON.stringify({ error: auth.error }) };
             }
             return {
                 statusCode: 200,
@@ -1654,6 +1664,14 @@ async function handlePermissionsRoutes(event: APIGatewayProxyEventV2): Promise<A
             if (!data.userAddress || !data.agentWallet || !data.consentType) {
                 return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and consentType required" }) };
             }
+            const auth = await authorizeCallerForUser({
+                authHeader,
+                internalTokenHeader,
+                userAddress: data.userAddress,
+            });
+            if (!auth.ok) {
+                return { statusCode: auth.status, headers: corsHeaders, body: JSON.stringify({ error: auth.error }) };
+            }
             const permission = await permissions.grantPermission({
                 userAddress: data.userAddress,
                 agentWallet: data.agentWallet,
@@ -1667,6 +1685,14 @@ async function handlePermissionsRoutes(event: APIGatewayProxyEventV2): Promise<A
             const data = { ...query(event), ...body(event) };
             if (!data.userAddress || !data.agentWallet || !data.consentType) {
                 return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "userAddress, agentWallet and consentType required" }) };
+            }
+            const auth = await authorizeCallerForUser({
+                authHeader,
+                internalTokenHeader,
+                userAddress: data.userAddress,
+            });
+            if (!auth.ok) {
+                return { statusCode: auth.status, headers: corsHeaders, body: JSON.stringify({ error: auth.error }) };
             }
             await permissions.revokePermission(data.userAddress, data.agentWallet, data.consentType);
             return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
