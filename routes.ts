@@ -262,6 +262,15 @@ function readCappedBody(req: Request): Promise<Buffer> {
 }
 
 async function proxyPinataPin(req: Request, res: ExpressResponse, pinataPath: string): Promise<void> {
+  const auth = await authorizeCallerForUser({
+    authHeader: getHeader(req, "authorization"),
+    internalTokenHeader: getHeader(req, "x-backpack-internal-token"),
+    userAddress: getHeader(req, "x-session-user-address"),
+  });
+  if (!auth.ok) {
+    res.status(auth.status).json({ error: auth.error });
+    return;
+  }
   const jwt = pinataJwt();
   if (!jwt) {
     res.status(503).json({ error: "IPFS pinning is not configured" });
