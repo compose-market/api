@@ -950,18 +950,6 @@ async function handlePreparePaymentIntent(event: APIGatewayProxyEventV2): Promis
         idempotencyKey: body.idempotencyKey,
     });
 
-    if (result.ok && typeof result.body.paymentIntentId === "string" && result.headers["x-session-budget-limit"]) {
-        void recordSession({
-            keyId: result.body.paymentIntentId,
-            network,
-            createdAt: new Date(),
-        }).catch((error) => {
-            console.error("[metrics] session record failed", {
-                error: error instanceof Error ? error.message : String(error),
-            });
-        });
-    }
-
     return {
         statusCode: result.status,
         headers: {
