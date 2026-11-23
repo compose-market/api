@@ -411,7 +411,7 @@ async function handleRedeemLocalLinkToken(
   try {
     requestBody = parseJsonBody<LocalRedeemRequest>(event);
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 
   let token: string | null = null;
@@ -428,7 +428,7 @@ async function handleRedeemLocalLinkToken(
       ? parseRequiredString(requestBody.token, "token")
       : null;
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 
   if (!token) {
