@@ -202,6 +202,17 @@ function normalizeDeviceId(value: unknown): string | null {
   return DEVICE_ID_REGEX.test(normalized) ? normalized : null;
 }
 
+function authError(message: string): Error & { statusCode: number } {
+  return Object.assign(new Error(message), { statusCode: 401 });
+}
+
+function errorStatusCode(error: unknown, fallback = 400): number {
+  if (error && typeof error === "object" && typeof (error as { statusCode?: unknown }).statusCode === "number") {
+    return (error as { statusCode: number }).statusCode;
+  }
+  return fallback;
+}
+
 async function authorizeKeySession(event: LocalRouteEvent, userAddress: string, network: NetworkId) {
   const keyToken = extractKeyFromHeader(getHeader(event, "authorization"));
   if (!keyToken) {
