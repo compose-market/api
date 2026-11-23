@@ -447,7 +447,7 @@ async function handleEnsureLocalFilecoinPinSession(
     await authorizeSessionKey({
       walletClient: clients.walletClient,
       accountAddress: clients.account.address,
-      network: validated.network,
+      chainId: clients.chain.id,
       sessionKeyAddress,
       expiresAt,
     });
