@@ -693,6 +693,32 @@ export function registerSvmRoutes(app: Application): void {
                 return;
             }
 
+            // For non-activation transactions, enforce strict program allowlist and
+            // forbid instructions that debit or authorize the facilitator fee payer.
+            const decodedMsg = unsignedTx.messageBytes
+                ? getCompiledTransactionMessageDecoder().decode(unsignedTx.messageBytes as never)
+                : null;
+            const decompiledCheck = decodedMsg
+                ? await decompileTransactionMessageFetchingLookupTables(decodedMsg, rpc as any)
+                : null;
+            const isSwigCreate = Boolean(decompiledCheck?.instructions?.some((ix: any) =>
+                ix.programAddress === SWIG_PROGRAM
+                && ix.data
+                && ix.data.length >= 2
+                && readU16(ix.data, 0) === SWIG_CREATE_V1
+            ));
+            if (!isSwigCreate) {
+                const instructionValidationError = await validateRelayInstructions(
+                    unsignedTx,
+                    signer.address,
+                    rpc,
+                );
+                if (instructionValidationError) {
+                    res.status(400).json(buildError("validation_error", instructionValidationError));
+                    return;
+                }
+            }
+
             const signedTx = await partiallySignTransaction([signer.keyPair], unsignedTx);
             const missingSignatures = getMissingRelaySignatures(signedTx);
             if (missingSignatures.length > 0) {
@@ -718,6 +744,15 @@ export function registerSvmRoutes(app: Application): void {
                 console.log(`[svm/relay] Transaction confirmed: ${signatureStr}`);
             } catch (confirmError) {
                 const message = confirmError instanceof Error ? confirmError.message : String(confirmError);
+                if (confirmError instanceof SvmTransactionFailedError) {
+                    console.error(`[svm/relay] Transaction failed on-chain ${signatureStr}: ${message}`);
+                    res.status(422).json({
+                        ...buildError("upstream_error", message),
+                        signature: signatureStr,
+                        confirmed: false,
+                    });
+                    return;
+                }
                 console.error(`[svm/relay] Confirmation timeout for ${signatureStr}: ${message}`);
                 res.status(202).json({ signature: signatureStr, confirmed: false });
                 return;
