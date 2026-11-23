@@ -703,7 +703,7 @@ async function storeBatchReceiptAtomically(receipt: Receipt): Promise<Receipt> {
   if (typeof result !== "string") {
     throw new Error("Batch receipt persistence returned an invalid result");
   }
-  return JSON.parse(result) as Receipt;
+  return normalizeReceipt(JSON.parse(result) as Receipt);
 }
 
 const RECONCILE_BATCH_RECEIPT_LUA = `
