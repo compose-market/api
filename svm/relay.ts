@@ -546,6 +546,100 @@ function isFacilitatorSafeInInstruction(
     return `Relay refuses ${programAddress} instructions referencing the facilitator fee payer`;
 }
 
+/**
+ * Validate non-activation transactions so the facilitator fee payer can never
+ * be abused to execute arbitrary Solana programs or debit facilitator funds.
+ */
+export async function validateRelayInstructions(
+    transaction: DecodedRelayTransaction,
+    facilitatorAddress: string,
+    rpc: ReturnType<typeof createSvmRpc>,
+): Promise<string | null> {
+    if (!transaction.messageBytes) {
+        return "Relay transaction is missing messageBytes";
+    }
+    const message = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes as never);
+    const decompiled = await decompileTransactionMessageFetchingLookupTables(message, rpc as any);
+    const instructions = decompiled.instructions as unknown as readonly RelayInstruction[];
+    if (instructions.length === 0) {
+        return "Relay transaction must contain at least one instruction";
+    }
+
+    for (const instruction of instructions) {
+        const program = instruction.programAddress;
+        if (!RELAY_ALLOWED_PROGRAMS.has(program)) {
+            return `Relay does not allow program ${program}`;
+        }
+
+        if (program === COMPUTE_BUDGET_PROGRAM) {
+            if ((instruction.accounts?.length ?? 0) > 0) {
+                return "ComputeBudget instruction cannot reference accounts";
+            }
+            const data = instruction.data;
+            if (!data || data.length === 0) {
+                return "Invalid ComputeBudget instruction data";
+            }
+            if (data[0] === 2) {
+                if (data.length !== 5 || readU32(data, 1) > MAX_RELAY_COMPUTE_UNITS) {
+                    return "ComputeBudget unit limit exceeds relay maximum";
+                }
+            } else if (data[0] === 3) {
+                if (data.length !== 9 || readU64(data, 1) > MAX_RELAY_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
+                    return "ComputeBudget unit price exceeds relay maximum";
+                }
+            } else if (data[0] === 1 || data[0] === 4) {
+                // RequestHeapFrame / SetLoadedAccountsDataSizeLimit: safe read-only compute settings
+            } else {
+                return "Unsupported ComputeBudget instruction";
+            }
+            continue;
+        }
+
+        const accounts = (instruction.accounts ?? []).map((acc) => acc.address);
+        if (program === SWIG_PROGRAM) {
+            // If facilitator is passed into a Swig SignV2 instruction, verify every
+            // inner compact instruction respects facilitator safety rules.
+            const hasFacilitator = accounts.includes(facilitatorAddress);
+            if (!hasFacilitator) {
+                continue;
+            }
+            const data = instruction.data;
+            if (!data || data.length < 8) {
+                return "Invalid Swig instruction data";
+            }
+            const swigOp = readU16(data, 0);
+            if (swigOp !== SWIG_SIGN_V2) {
+                return "Relay refuses non-SignV2 Swig instructions referencing facilitator";
+            }
+            const payloadLen = readU16(data, 2);
+            const compactBytes = data.slice(8, 8 + payloadLen);
+            const inner = decodeCompactInstructions(compactBytes);
+            if (!inner || inner.length === 0) {
+                return "Relay could not decode inner Swig SignV2 instructions";
+            }
+            for (const item of inner) {
+                const innerProgram = accounts[item.programIdIndex] ?? "";
+                if (!RELAY_ALLOWED_PROGRAMS.has(innerProgram) && innerProgram !== JUPITER_PROGRAM) {
+                    return `Relay refuses inner Swig program ${innerProgram}`;
+                }
+                const innerAccounts = item.accountIndexes.map((idx) => accounts[idx] ?? "");
+                const innerErr = isFacilitatorSafeInInstruction(innerProgram, innerAccounts, item.data, facilitatorAddress);
+                if (innerErr) {
+                    return innerErr;
+                }
+            }
+            continue;
+        }
+
+        const accountErr = isFacilitatorSafeInInstruction(program, accounts, instruction.data, facilitatorAddress);
+        if (accountErr) {
+            return accountErr;
+        }
+    }
+
+    return null;
+}
+
 export function registerSvmRoutes(app: Application): void {
     app.get("/api/svm/fee-payer", async (_req, res) => {
         try {
