@@ -676,7 +676,7 @@ async function handleRegisterLocalDeployment(
   try {
     body = parseJsonBody<LocalDeploymentRegisterRequest>(event);
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 
   try {
@@ -749,7 +749,7 @@ async function handleRegisterLocalDeployment(
       deployment: record,
     }, corsHeaders);
   } catch (error) {
-    return json(400, { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
+    return json(errorStatusCode(error), { error: error instanceof Error ? error.message : "Invalid request" }, corsHeaders);
   }
 }
 
