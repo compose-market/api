@@ -1536,30 +1536,33 @@ async function handleFacilitatorSupported(): Promise<APIGatewayProxyResultV2> {
 }
 
 async function handleFacilitatorChains(): Promise<APIGatewayProxyResultV2> {
-    const chains = (await getFacilitatorChainMetadata()).map((entry) => {
-        const definition = getNetwork(entry.network);
-        return {
-            name: entry.name,
-            network: entry.network,
-            namespace: definition.namespace,
-            shortName: definition.shortName,
-            isTestnet: definition.environment === "testnet",
-            explorer: definition.explorer,
-            explorerQuery: definition.explorerQuery,
-            rpcUrl: getNetworkRpcUrl(entry.network),
-            assetAddress: definition.asset.address,
-            schemes: definition.schemes,
-            asset: definition.asset.symbol,
-            decimals: definition.asset.decimals,
-        };
+    const payload = await cached("facilitator:chains", 300, 60_000, async () => {
+        const chains = (await getFacilitatorChainMetadata()).map((entry) => {
+            const definition = getNetwork(entry.network);
+            return {
+                name: entry.name,
+                network: entry.network,
+                namespace: definition.namespace,
+                shortName: definition.shortName,
+                isTestnet: definition.environment === "testnet",
+                explorer: definition.explorer,
+                explorerQuery: definition.explorerQuery,
+                rpcUrl: getNetworkRpcUrl(entry.network),
+                assetAddress: definition.asset.address,
+                schemes: definition.schemes,
+                asset: definition.asset.symbol,
+                decimals: definition.asset.decimals,
+            };
+        });
+        return { chains };
     });
     return {
         statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({
-            chains,
-            defaultNetwork: getDefaultNetwork(),
-        }),
+        headers: {
+            ...corsHeaders,
+            "Cache-Control": "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400",
+        },
+        body: JSON.stringify(payload),
     };
 }
 
