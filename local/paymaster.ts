@@ -346,13 +346,13 @@ function createPaymasterClients(config: SynapseRouteConfig): PaymasterClients {
 async function authorizeSessionKey(input: {
   walletClient: Parameters<typeof SessionKey.loginSync>[0];
   accountAddress: `0x${string}`;
-  network: EvmNetworkId;
+  chainId: number;
   sessionKeyAddress: `0x${string}`;
   expiresAt: number;
 }): Promise<void> {
   await runPaymasterWrite({
     accountAddress: input.accountAddress,
-    chainId: evmChainId(input.network),
+    chainId: input.chainId,
     task: async () => SessionKey.loginSync(input.walletClient, {
       address: input.sessionKeyAddress,
       expiresAt: BigInt(Math.floor(input.expiresAt / 1000)),
