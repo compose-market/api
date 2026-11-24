@@ -3369,8 +3369,8 @@ test("isOpenAIImageStreamingUnsupportedError detects stream rejection payloads",
 });
 
 test("OpenAI image streaming capability follows endpoint and partial-images schema", async () => {
-  const { supportsOpenAINativeImageStreaming } = await import("../inference/catalog/modalities/image.js");
-  const { getModelById } = await import("../inference/catalog/registry.js");
+  const { supportsOpenAINativeImageStreaming } = await import("../inference/adapters/modalities/image.js");
+  const { getModelById } = await import("../inference/adapters/registry.js");
   assert.equal(supportsOpenAINativeImageStreaming(getModelById("openai/gpt-image-2", "openai")), true);
   assert.equal(supportsOpenAINativeImageStreaming(getModelById("gpt-4.1", "openai")), false);
 });
