@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { aggregateCanonicalFamily } from "../inference/catalog/families/index.js";
+import { aggregateCanonicalFamily } from "../inference/adapters/families/index.js";
 import { cloudflareInputSchemasToParams } from "../inference/scripts/sync-cf.js";
 import { schemaVariantKey, transformDeepInfraSchema } from "../inference/scripts/sync-deepinfra.js";
 import { buildGeminiGenParamsFromDiscovery } from "../inference/scripts/sync-gemini.js";
