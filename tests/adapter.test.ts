@@ -3602,3 +3602,62 @@ test("Anthropic createStreamParser surfaces SSE error events and flags incomplet
   assert.equal(fin?.complete, false);
   assert.equal(fin?.usage?.completionTokens, 0);
 });
+
+test("streamWithTools emits error on Anthropic empty premature EOF and OpenAI in-band SSE error", async () => {
+  const { streamWithTools } = await import("../inference/adapters/adapter.js");
+  const { streamChat } = await import("../inference/adapters/families/openai.js");
+
+  const makeStream = (chunks: string[]) => new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+
+  globalThis.fetch = (async () => new Response(
+    makeStream([
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":50}}}\n\n',
+    ]),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  )) as FetchImpl;
+
+  const anthEvents: any[] = [];
+  const anthStream = streamWithTools({
+    mode: "responses",
+    model: "claude-opus-5-5",
+    stream: true,
+    modality: "text",
+    operation: "chat",
+    responseId: "resp_anth_eof",
+    messages: [{ role: "user", content: "hello" }],
+  }, {
+    modelId: "claude-opus-5-5",
+    provider: "deepinfra",
+    family: "anthropic",
+  });
+  for await (const ev of anthStream) anthEvents.push(ev);
+  assert.equal(anthEvents.length, 1);
+  assert.equal(anthEvents[0].type, "error");
+  assert.equal(anthEvents[0].error?.code, "incomplete_provider_stream");
+
+  globalThis.fetch = (async () => new Response(
+    makeStream([
+      'data: {"error":{"code":"upstream_overloaded","message":"DeepInfra overloaded"}}\n\n',
+    ]),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  )) as FetchImpl;
+
+  const openaiEvents: any[] = [];
+  for await (const ev of streamChat(
+    { baseURL: "https://api.deepinfra.com/v1/openai", apiKey: "test-key" },
+    "gpt-4o",
+    [{ role: "user", content: "hello" }],
+  )) {
+    openaiEvents.push(ev);
+  }
+  assert.equal(openaiEvents.length, 1);
+  assert.equal(openaiEvents[0].type, "error");
+  assert.equal(openaiEvents[0].error?.code, "upstream_overloaded");
+  assert.equal(openaiEvents[0].error?.message, "DeepInfra overloaded");
+});
