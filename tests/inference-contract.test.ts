@@ -541,3 +541,58 @@ test("image preview sequence is separate from stable output identity", () => {
   });
   assert.equal(completed.output_index, 0);
 });
+
+test("streaming adapters emit reasoning_content before content on transition chunks", async () => {
+  const deepseek = await import("../inference/adapters/families/deepseek.js");
+  const xai = await import("../inference/adapters/families/xai.js");
+  const zai = await import("../inference/adapters/families/zai.js");
+  const cohere = await import("../inference/adapters/families/cohere.js");
+  const openai = await import("../inference/adapters/families/openai.js");
+
+  const transition = {
+    choices: [{
+      index: 0,
+      delta: { reasoning_content: " needed.", content: "I’m" },
+      finish_reason: null,
+    }],
+  };
+
+  for (const [name, events] of [
+    ["deepseek", deepseek.createStreamParser().feed(transition)],
+    ["xai", xai.createStreamParser().feed(transition)],
+    ["zai", zai.createStreamParser().feed(transition)],
+    ["cohere", cohere.createStreamParser().feed({
+      type: "content-delta",
+      delta: { message: { content: { thinking: " needed.", text: "I’m" } } },
+    })],
+  ] as const) {
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ["reasoning-delta", "text-delta"],
+      `${name} must emit reasoning-delta before text-delta`,
+    );
+  }
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    const body = [
+      `data: ${JSON.stringify(transition)}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const out: string[] = [];
+    for await (const ev of openai.streamChat(
+      { baseURL: "https://api.deepinfra.com/v1/openai", apiKey: "test", authStyle: "bearer" },
+      "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      out.push(ev.type);
+    }
+    assert.deepEqual(out.slice(0, 2), ["thinking", "text-delta"]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
