@@ -3546,3 +3546,36 @@ test("generateWithTools keeps DeepInfra speech models on the OpenAI-compatible T
   assert.equal(ttsBody.input, "Hello there");
   assert.equal(result.output.modality, "audio");
 });
+
+test("mapMessagesForOpenAIWire and mapMessagesForZai coalesce consecutive leading system messages into one system message", async () => {
+  const { mapMessagesForOpenAIWire } = await import("../inference/adapters/families/openai.js");
+  const { mapMessagesForZai } = await import("../inference/adapters/families/zai.js");
+
+  const input = [
+    { role: "system" as const, content: "Static agent instructions and tool surface." },
+    { role: "system" as const, content: "Current date: 2026-11-25\nActive Backpack: notion" },
+    { role: "user" as const, content: "Generate a poster" },
+  ];
+
+  const openaiWire = mapMessagesForOpenAIWire(input);
+  assert.equal(openaiWire.length, 2);
+  assert.deepEqual(openaiWire[0], {
+    role: "system",
+    content: "Static agent instructions and tool surface.\n\nCurrent date: 2026-11-25\nActive Backpack: notion",
+  });
+  assert.deepEqual(openaiWire[1], {
+    role: "user",
+    content: "Generate a poster",
+  });
+
+  const zaiWire = mapMessagesForZai(input);
+  assert.equal(zaiWire.length, 2);
+  assert.deepEqual(zaiWire[0], {
+    role: "system",
+    content: "Static agent instructions and tool surface.\n\nCurrent date: 2026-11-25\nActive Backpack: notion",
+  });
+  assert.deepEqual(zaiWire[1], {
+    role: "user",
+    content: "Generate a poster",
+  });
+});
