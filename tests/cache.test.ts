@@ -177,3 +177,20 @@ test("cacheVersion and bumpCacheVersion invalidate namespaces in O(1)", async ()
   assert.equal(await cacheVersion("inference-analytics:0xabc"), "1");
   assert.equal(await bumpCacheVersion("inference-analytics:0xabc"), "2");
 });
+
+test("L2 outages degrade non-fatally and L1 continues serving", async () => {
+  const failingStore: Store = {
+    async get() { throw new Error("valkey down"); },
+    async mget() { throw new Error("valkey down"); },
+    async set() { throw new Error("valkey down"); },
+    async del() { throw new Error("valkey down"); },
+    async incr() { throw new Error("valkey down"); },
+    async expire() { throw new Error("valkey down"); },
+  };
+  setCacheStore(failingStore);
+
+  await cacheSet("resilient", { ok: true }, 60, 30_000);
+  assert.deepEqual(await cacheGet("resilient"), { ok: true });
+  await cacheDel("resilient");
+  assert.equal(await cacheGet("resilient"), undefined);
+});
