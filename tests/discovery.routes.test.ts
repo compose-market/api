@@ -188,7 +188,7 @@ test("untrusted hosts and forwarded hosts cannot alter public resource identity"
 
 test("/models/ is a paid entrypoint and /models/list is the separate compiled catalog", async () => {
   const { handler } = await import("../handler.js");
-  const { getCompiledModels } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels } = await import("../inference/adapters/registry.js");
   const { getFacilitatorSupported } = await import("../x402/facilitator.js");
 
   const entrypointGet = await handler(createEvent("GET", "/models/", undefined, { limit: "2" }), {});
