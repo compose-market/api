@@ -312,7 +312,7 @@ test("OpenAI adapter accepts response.completed followed by EOF without DONE", a
   }) as typeof fetch;
 
   try {
-    const { streamWithTools } = await import("../inference/catalog/adapter.js");
+    const { streamWithTools } = await import("../inference/adapters/adapter.js");
     const request = normalizeChatRequest({
       model: "openai/gpt-5.5",
       stream: true,
