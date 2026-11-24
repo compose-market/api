@@ -124,3 +124,42 @@ test("L1 + L2 cacheSet, cacheGet, cacheMGet, and cacheDel stay coherent", async 
   assert.equal(l1Get("metrics:snapshot"), undefined);
   assert.equal(store.data.has("metrics:snapshot"), false);
 });
+
+test("cached + singleFlight coalesce concurrent cold requests into one upstream call", async () => {
+  const store = createMockStore();
+  setCacheStore(store);
+
+  let executions = 0;
+  const load = async () => {
+    executions += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return { models: 120 };
+  };
+
+  const results = await Promise.all([
+    cached("benchmarks:index", 300, 60_000, load),
+    cached("benchmarks:index", 300, 60_000, load),
+    cached("benchmarks:index", 300, 60_000, load),
+  ]);
+
+  assert.equal(executions, 1);
+  for (const result of results) {
+    assert.deepEqual(result, { models: 120 });
+  }
+
+  // Separate singleFlight helper also deduplicates concurrent work
+  let sfCount = 0;
+  const sfResults = await Promise.all([
+    singleFlight("work", async () => {
+      sfCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return "done";
+    }),
+    singleFlight("work", async () => {
+      sfCount += 1;
+      return "done";
+    }),
+  ]);
+  assert.equal(sfCount, 1);
+  assert.deepEqual(sfResults, ["done", "done"]);
+});
