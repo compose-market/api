@@ -25,7 +25,7 @@ let generateDeepInfraImage: (
   modelId: string,
   prompt: string,
   options?: { catalogModelId?: string; operation?: string; size?: string; imageUrl?: string; imageUrls?: string[]; maskUrl?: string; customParams?: Record<string, unknown> },
-  ) => Promise<{ buffer: Buffer; mimeType: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown> } }>;
+) => Promise<{ buffer: Buffer; mimeType: string; usage?: { promptTokens: number; completionTokens: number; totalTokens: number; billingMetrics?: Record<string, unknown> } }>;
 let generateAlibabaSpeech: (
   modelId: string,
   text: string,
@@ -84,13 +84,13 @@ before(async () => {
   process.env.VERTEX_LOCATION = "us-central1";
 
   originalFetch = globalThis.fetch;
-  ({ generateWithTools, streamWithTools, retrieveJob, downloadGoogleFileDataUrl, normalizeUsage } = await import("../inference/catalog/adapter.js"));
-  ({ isOpenAIImageStreamingUnsupportedError, openaiGenerateImage } = await import("../inference/catalog/families/openai.js"));
-  ({ generateElevenLabsMusic } = await import("../inference/catalog/families/elevenlabs.js"));
-  ({ imageApi: googleImageApi } = await import("../inference/catalog/families/google.js"));
-  ({ mapDeepgramSpeakFormat } = await import("../inference/catalog/families/deepgram.js"));
-  ({ generateAlibabaImage, generateAlibabaSpeech, transcribeAlibabaAudio, submitAlibabaVideo } = await import("../inference/catalog/vendors/alibaba.js"));
-  ({ generateDeepInfraImage } = await import("../inference/catalog/vendors/deepinfra.js"));
+  ({ generateWithTools, streamWithTools, retrieveJob, downloadGoogleFileDataUrl, normalizeUsage } = await import("../inference/adapters/adapter.js"));
+  ({ isOpenAIImageStreamingUnsupportedError, openaiGenerateImage } = await import("../inference/adapters/families/openai.js"));
+  ({ generateElevenLabsMusic } = await import("../inference/adapters/families/elevenlabs.js"));
+  ({ imageApi: googleImageApi } = await import("../inference/adapters/families/google.js"));
+  ({ mapDeepgramSpeakFormat } = await import("../inference/adapters/families/deepgram.js"));
+  ({ generateAlibabaImage, generateAlibabaSpeech, transcribeAlibabaAudio, submitAlibabaVideo } = await import("../inference/adapters/vendors/alibaba.js"));
+  ({ generateDeepInfraImage } = await import("../inference/adapters/vendors/deepinfra.js"));
 });
 
 afterEach(() => {
@@ -2997,9 +2997,13 @@ test("generateWithTools carries request-derived TTS input text tokens for token-
 });
 
 test("generateWithTools preserves Gemini TTS usage metadata for settlement", async () => {
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url.startsWith("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=test-google")) {
+    const headers = new Headers(init?.headers);
+    if (
+      url === "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+      && headers.get("x-goog-api-key") === "test-google"
+    ) {
       return Response.json({
         candidates: [
           {
