@@ -91,3 +91,36 @@ test("L1 serves cached entries until TTL expires and respects deletion", async (
     delete process.env.TEST_CACHE_ENABLED;
   }
 });
+
+test("L1 + L2 cacheSet, cacheGet, cacheMGet, and cacheDel stay coherent", async () => {
+  const store = createMockStore();
+  setCacheStore(store);
+
+  await cacheSet("metrics:snapshot", { total: 42 }, 120, 30_000);
+  assert.deepEqual(store.sets, ["metrics:snapshot"]);
+
+  // L1 hit avoids L2 round-trip
+  assert.deepEqual(await cacheGet("metrics:snapshot"), { total: 42 });
+  assert.equal(store.gets.length, 0);
+
+  // Clear L1 -> hydrates from L2 and repopulates L1
+  l1Clear();
+  assert.deepEqual(await cacheGet("metrics:snapshot"), { total: 42 });
+  assert.deepEqual(store.gets, ["metrics:snapshot"]);
+  assert.deepEqual(l1Get("metrics:snapshot"), { total: 42 });
+
+  // Multi-get splits L1 hits and L2 misses
+  await cacheSet("metrics:volume", { total: "1.5" }, 120, 30_000);
+  l1Del("metrics:volume");
+  store.gets.length = 0;
+  const multi = await cacheMGet<{ total: unknown }>(["metrics:snapshot", "metrics:volume", "metrics:missing"]);
+  assert.deepEqual(store.gets, ["metrics:volume", "metrics:missing"]);
+  assert.deepEqual(multi.get("metrics:snapshot"), { total: 42 });
+  assert.deepEqual(multi.get("metrics:volume"), { total: "1.5" });
+  assert.equal(multi.has("metrics:missing"), false);
+
+  // Delete removes from both L1 and L2
+  await cacheDel("metrics:snapshot");
+  assert.equal(l1Get("metrics:snapshot"), undefined);
+  assert.equal(store.data.has("metrics:snapshot"), false);
+});
