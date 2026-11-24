@@ -9,7 +9,7 @@ import {
   familyOf,
   getFamilyCatalog,
   normalizeFamily,
-} from "../inference/catalog/families/index.js";
+} from "../inference/adapters/families/index.js";
 
 function card(parts: Partial<ModelCard> & { modelId: string; family?: string }): ModelCard {
   return {
@@ -92,23 +92,23 @@ test("compiled catalog reads model family from the canonical aggregator", () => 
       : []),
   ]));
 
-    const cases = [
-        ["qwen-max", "alibaba"],
-        ["cosyvoice-v3-flash", "alibaba"],
-        ["wan2.1-t2i-plus", "alibaba"],
-        ["DeepSeek-V3.2", "deepseek"],
-        ["Cohere-rerank-v4.0-fast", "cohere"],
-        ["gpt-5.4", "openai"],
-        ["chat-latest", "openai"],
-        ["omni-moderation-latest", "openai"],
-        ["gemini-3.1-flash-lite", "google"],
-        ["@cf/deepgram/flux", "deepgram"],
-        ["@cf/baai/bge-base-en-v1.5", "baai"],
-        ["@cf/black-forest-labs/flux-1-schnell", "blackforestlabs"],
-        ["sonic-3.5-2026-05-04", "cartesia"],
-        ["roboflow/doctr/ocr", "roboflow"],
-        ["thinkingmachines/Inkling", "thinkingmachines"],
-    ] as const;
+  const cases = [
+    ["qwen-max", "alibaba"],
+    ["cosyvoice-v3-flash", "alibaba"],
+    ["wan2.1-t2i-plus", "alibaba"],
+    ["DeepSeek-V3.2", "deepseek"],
+    ["Cohere-rerank-v4.0-fast", "cohere"],
+    ["gpt-5.4", "openai"],
+    ["chat-latest", "openai"],
+    ["omni-moderation-latest", "openai"],
+    ["gemini-3.1-flash-lite", "google"],
+    ["@cf/deepgram/flux", "deepgram"],
+    ["@cf/baai/bge-base-en-v1.5", "baai"],
+    ["@cf/black-forest-labs/flux-1-schnell", "blackforestlabs"],
+    ["sonic-3.5-2026-05-04", "cartesia"],
+    ["roboflow/doctr/ocr", "roboflow"],
+    ["thinkingmachines/Inkling", "thinkingmachines"],
+  ] as const;
 
   for (const [modelId, expected] of cases) {
     const model = byId.get(modelId);
