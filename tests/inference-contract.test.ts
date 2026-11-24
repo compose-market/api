@@ -15,10 +15,10 @@ import {
   buildBodyResponses,
   mapMessagesForResponsesWire,
   mapMessagesForOpenAIWire,
-} from "../inference/catalog/families/openai.js";
-import { buildChatBody as buildAlibabaChatBody } from "../inference/catalog/families/alibaba.js";
-import { mapMessagesForAnthropic } from "../inference/catalog/families/anthropic.js";
-import { buildChatBody as buildMoonshotChatBody } from "../inference/catalog/families/moonshot.js";
+} from "../inference/adapters/families/openai.js";
+import { buildChatBody as buildAlibabaChatBody } from "../inference/adapters/families/alibaba.js";
+import { mapMessagesForAnthropic } from "../inference/adapters/families/anthropic.js";
+import { buildChatBody as buildMoonshotChatBody } from "../inference/adapters/families/moonshot.js";
 
 test("chat normalization accepts the runtime model bridge wire shape", () => {
   const body = {
@@ -258,7 +258,7 @@ test("OpenAI adapter routes chat tools with reasoning through Responses", async 
   }) as typeof fetch;
 
   try {
-    const { generateWithTools } = await import("../inference/catalog/adapter.js");
+    const { generateWithTools } = await import("../inference/adapters/adapter.js");
     const request = normalizeChatRequest({
       model: "openai/gpt-5.5",
       messages: [{ role: "user", content: "Deploy." }],
