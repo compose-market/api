@@ -559,6 +559,9 @@ const METRICS_BASE_SECRETS = [
     "METRICS_DATABASE_URL",
     "VALKEY_KEYS_SERVICE_URI",
     "VALKEY_KEYS_PASSWORD",
+    "VALKEY_CACHE_SERVICE_URI",
+    "VALKEY_CACHE_HOST",
+    "VALKEY_CACHE_PASSWORD",
     "VALKEY_TLS",
 ];
 
@@ -648,6 +651,9 @@ async function deployJobs(image: string) {
                 "METRICS_DATABASE_URL",
                 "VALKEY_TLS",
                 "VALKEY_KEYS_SERVICE_URI",
+                "VALKEY_CACHE_SERVICE_URI",
+                "VALKEY_CACHE_HOST",
+                "VALKEY_CACHE_PASSWORD",
                 "SERVER_WALLET_KEY",
                 "FACILITATOR_KEY",
                 "SVM_FACILITATOR_KEY",
@@ -694,6 +700,10 @@ async function deployJobs(image: string) {
             secretNames: [
                 "BENCHMARKS_DATABASE_URL",
                 "ARTIFICIAL_ANALYSIS_API_KEY",
+                "VALKEY_CACHE_SERVICE_URI",
+                "VALKEY_CACHE_HOST",
+                "VALKEY_CACHE_PASSWORD",
+                "VALKEY_TLS",
             ],
         },
     ];
