@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chat, streamChat } from "../inference/catalog/families/google.js";
+import { chat, streamChat } from "../inference/adapters/families/google.js";
 
 test("Google chat round-trips tool-call thought signatures on the wire", async () => {
   const originalFetch = globalThis.fetch;
