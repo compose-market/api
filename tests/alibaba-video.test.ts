@@ -1,8 +1,8 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildWanVideoSubmission, parseAsyncJobStatus } from "../inference/catalog/families/alibaba.js";
-import { retrieveAlibabaVideo } from "../inference/catalog/vendors/alibaba.js";
+import { buildWanVideoSubmission, parseAsyncJobStatus } from "../inference/adapters/families/alibaba.js";
+import { retrieveAlibabaVideo } from "../inference/adapters/vendors/alibaba.js";
 
 const originalFetch = globalThis.fetch;
 process.env.ALIBABA_CLOUD_API_KEY = "test-alibaba";
