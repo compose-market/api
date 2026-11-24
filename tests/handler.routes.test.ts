@@ -236,11 +236,12 @@ test("handler does not expose the synchronous Compose-key settlement bypass", as
 
 test("handler persists Backpack cloud permissions via dedicated permission routes", async () => {
   const { handler } = await import("../handler.js");
+  const { createKey, revokeKey } = await import("../x402/keys/index.js");
   const userAddress = "0x1111111111111111111111111111111111111111";
   const agentWallet = "0x2222222222222222222222222222222222222222";
   const otherAgentWallet = "0x3333333333333333333333333333333333333333";
 
-  const grantResult = await handler(
+  const unauthResult = await handler(
     createEvent("POST", "/permissions", {
       userAddress,
       agentWallet,
@@ -248,68 +249,90 @@ test("handler persists Backpack cloud permissions via dedicated permission route
     }),
     {},
   );
-  assert.equal(grantResult.statusCode, 200);
+  assert.equal(unauthResult.statusCode, 401);
 
-  const listAfterGrant = await handler({
-    rawPath: "/permissions",
-    requestContext: { http: { method: "GET" } },
-    headers: {},
-    queryStringParameters: {
-      userAddress,
-      agentWallet,
-    },
-  }, {});
-  assert.equal(listAfterGrant.statusCode, 200);
-  const grantedBody = JSON.parse(listAfterGrant.body) as {
-    permissions: Array<{ consentType: string; granted: boolean }>;
-  };
-  assert.equal(
-    grantedBody.permissions.some((permission) => permission.consentType === "camera" && permission.granted),
-    true,
-  );
+  const created = await createKey(userAddress, {
+    budgetLimit: 1_000_000,
+    expiresAt: Date.now() + 60_000,
+    purpose: "session",
+    network: "eip155:43114",
+  });
+  const authHeaders = { authorization: `Bearer ${created.token}` };
 
-  const isolatedAgentList = await handler({
-    rawPath: "/permissions",
-    requestContext: { http: { method: "GET" } },
-    headers: {},
-    queryStringParameters: {
-      userAddress,
-      agentWallet: otherAgentWallet,
-    },
-  }, {});
-  assert.equal(isolatedAgentList.statusCode, 200);
-  const isolatedBody = JSON.parse(isolatedAgentList.body) as {
-    permissions: Array<{ consentType: string; granted: boolean }>;
-  };
-  assert.equal(isolatedBody.permissions.length, 0);
+  try {
+    const grantResult = await handler({
+      ...createEvent("POST", "/permissions", {
+        userAddress,
+        agentWallet,
+        consentType: "camera",
+      }),
+      headers: authHeaders,
+    }, {});
+    assert.equal(grantResult.statusCode, 200);
 
-  const revokeResult = await handler(
-    createEvent("DELETE", "/permissions", {
-      userAddress,
-      agentWallet,
-      consentType: "camera",
-    }),
-    {},
-  );
-  assert.equal(revokeResult.statusCode, 200);
+    const listAfterGrant = await handler({
+      rawPath: "/permissions",
+      requestContext: { http: { method: "GET" } },
+      headers: authHeaders,
+      queryStringParameters: {
+        userAddress,
+        agentWallet,
+      },
+    }, {});
+    assert.equal(listAfterGrant.statusCode, 200);
+    const grantedBody = JSON.parse(listAfterGrant.body) as {
+      permissions: Array<{ consentType: string; granted: boolean }>;
+    };
+    assert.equal(
+      grantedBody.permissions.some((permission) => permission.consentType === "camera" && permission.granted),
+      true,
+    );
 
-  const listAfterRevoke = await handler({
-    rawPath: "/permissions",
-    requestContext: { http: { method: "GET" } },
-    headers: {},
-    queryStringParameters: {
-      userAddress,
-      agentWallet,
-    },
-  }, {});
-  assert.equal(listAfterRevoke.statusCode, 200);
-  const revokedBody = JSON.parse(listAfterRevoke.body) as {
-    permissions: Array<{ consentType: string; granted: boolean }>;
-  };
-  assert.equal(
-    revokedBody.permissions.some((permission) => permission.consentType === "camera" && permission.granted),
-    false,
-  );
+    const isolatedAgentList = await handler({
+      rawPath: "/permissions",
+      requestContext: { http: { method: "GET" } },
+      headers: authHeaders,
+      queryStringParameters: {
+        userAddress,
+        agentWallet: otherAgentWallet,
+      },
+    }, {});
+    assert.equal(isolatedAgentList.statusCode, 200);
+    const isolatedBody = JSON.parse(isolatedAgentList.body) as {
+      permissions: Array<{ consentType: string; granted: boolean }>;
+    };
+    assert.equal(isolatedBody.permissions.length, 0);
+
+    const revokeResult = await handler({
+      ...createEvent("DELETE", "/permissions", {
+        userAddress,
+        agentWallet,
+        consentType: "camera",
+      }),
+      headers: authHeaders,
+    }, {});
+    assert.equal(revokeResult.statusCode, 200);
+
+    const listAfterRevoke = await handler({
+      rawPath: "/permissions",
+      requestContext: { http: { method: "GET" } },
+      headers: authHeaders,
+      queryStringParameters: {
+        userAddress,
+        agentWallet,
+      },
+    }, {});
+    assert.equal(listAfterRevoke.statusCode, 200);
+    const revokedBody = JSON.parse(listAfterRevoke.body) as {
+      permissions: Array<{ consentType: string; granted: boolean }>;
+    };
+    assert.equal(
+      revokedBody.permissions.some((permission) => permission.consentType === "camera" && permission.granted),
+      false,
+    );
+  } finally {
+    await revokeKey(created.keyId, userAddress);
+  }
 });
 
 test("registerHandlerRoutes does not expose legacy /api/backpack, /accounts, /gated, or /backpack/status routes", async () => {
