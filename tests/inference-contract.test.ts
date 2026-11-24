@@ -410,7 +410,7 @@ test("OpenAI Responses adapter canonicalizes OpenCode text aliases before upstre
   }) as typeof fetch;
 
   try {
-    const { generateWithTools } = await import("../inference/catalog/adapter.js");
+    const { generateWithTools } = await import("../inference/adapters/adapter.js");
     const request = normalizeResponsesRequest({
       model: "openai/gpt-4.1",
       input: [
