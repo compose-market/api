@@ -596,3 +596,44 @@ test("streaming adapters emit reasoning_content before content on transition chu
     globalThis.fetch = original;
   }
 });
+
+test("Anthropic buildChatBody strips non-Anthropic OpenAI defaults and omits max_tokens unless caller sets it", async () => {
+  const anthropic = await import("../inference/adapters/families/anthropic.js");
+  const body = anthropic.buildChatBody(
+    "anthropic/claude-opus-5-5",
+    [{ role: "user", content: "Write a long story." }],
+    {
+      temperature: 0.7,
+      topP: 1,
+      topK: 0,
+      customParams: {
+        fail_fast: false,
+        n: 1,
+        min_p: 0,
+        presence_penalty: 0,
+        frequency_penalty: 0,
+        repetition_penalty: 1,
+        prompt_cache_key: "agent:test",
+        temperature: 1,
+        top_p: 1,
+        top_k: 0,
+      },
+    },
+    true,
+  );
+  assert.equal("max_tokens" in body, false);
+  assert.equal(body.temperature, 0.7);
+  assert.equal("top_p" in body, false);
+  assert.equal("top_k" in body, false);
+  for (const forbidden of ["fail_fast", "n", "min_p", "presence_penalty", "frequency_penalty", "repetition_penalty", "prompt_cache_key"]) {
+    assert.equal(forbidden in body, false, `unexpected non-Anthropic key ${forbidden}`);
+  }
+
+  const explicit = anthropic.buildChatBody(
+    "anthropic/claude-opus-5-5",
+    [{ role: "user", content: "Write a long story." }],
+    { maxTokens: 65536 },
+    true,
+  );
+  assert.equal(explicit.max_tokens, 65536);
+});
