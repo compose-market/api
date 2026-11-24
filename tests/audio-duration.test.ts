@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { audioDurationSeconds } from "../inference/catalog/modalities/audio.js";
+import { audioDurationSeconds } from "../inference/adapters/modalities/audio.js";
 
 function wav(seconds: number, sampleRate = 16_000): Buffer {
   const byteRate = sampleRate * 2; // mono, 16-bit
