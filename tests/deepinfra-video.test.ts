@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach, before } from "node:test";
 
-type GenerateVideo = typeof import("../inference/catalog/vendors/deepinfra.js").generateDeepInfraVideo;
+type GenerateVideo = typeof import("../inference/adapters/vendors/deepinfra.js").generateDeepInfraVideo;
 type FetchImpl = typeof fetch;
 
 let generateDeepInfraVideo: GenerateVideo;
@@ -10,7 +10,7 @@ let originalFetch: FetchImpl;
 before(async () => {
   process.env.DEEPINFRA_API_KEY = "test-deepinfra";
   originalFetch = globalThis.fetch;
-  ({ generateDeepInfraVideo } = await import("../inference/catalog/vendors/deepinfra.js"));
+  ({ generateDeepInfraVideo } = await import("../inference/adapters/vendors/deepinfra.js"));
 });
 
 afterEach(() => {
