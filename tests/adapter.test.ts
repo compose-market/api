@@ -3579,3 +3579,26 @@ test("mapMessagesForOpenAIWire and mapMessagesForZai coalesce consecutive leadin
     content: "Generate a poster",
   });
 });
+
+test("Anthropic createStreamParser surfaces SSE error events and flags incomplete EOF", async () => {
+  const { createStreamParser } = await import("../inference/adapters/families/anthropic.js");
+  const parser = createStreamParser();
+
+  const errorEvents = parser.feed({
+    type: "error",
+    error: { type: "overloaded_error", message: "Anthropic upstream overloaded" },
+  });
+  assert.deepEqual(errorEvents, [{
+    type: "error",
+    code: "overloaded_error",
+    message: "Anthropic upstream overloaded",
+  }]);
+  assert.equal(parser.finalize(), null);
+
+  const incomplete = createStreamParser();
+  assert.deepEqual(incomplete.feed({ type: "message_start", message: { usage: { input_tokens: 120 } } }), []);
+  const fin = incomplete.finalize();
+  assert.equal(fin?.type, "message-stop");
+  assert.equal(fin?.complete, false);
+  assert.equal(fin?.usage?.completionTokens, 0);
+});
