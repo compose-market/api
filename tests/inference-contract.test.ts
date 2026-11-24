@@ -367,7 +367,7 @@ test("OpenAI Responses adapter sends exact native continuation items", async () 
   }) as typeof fetch;
 
   try {
-    const { generateWithTools } = await import("../inference/catalog/adapter.js");
+    const { generateWithTools } = await import("../inference/adapters/adapter.js");
     const input = [
       {
         id: "rs_1",
