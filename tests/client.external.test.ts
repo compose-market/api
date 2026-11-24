@@ -265,7 +265,7 @@ test("external chat completions require Key bearer auth instead of raw x402 chal
 test("external chat completions parse OpenCode-sized payloads before Key auth", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
-  const { getCompiledModels } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels } = await import("../inference/adapters/registry.js");
   const sample = getCompiledModels().models[0];
   const model = sample ? id(sample) : "";
   assert.ok(model);
