@@ -16,8 +16,8 @@ import {
   toResponsesStreamEvent,
 } from "../inference/core.js";
 import { resolve as resolveInferenceRequest } from "../inference/engine.js";
-import { getModelById, searchModels } from "../inference/catalog/registry.js";
-import { getModelCapabilities } from "../inference/catalog/modalities/index.js";
+import { getModelById, searchModels } from "../inference/adapters/registry.js";
+import { getModelCapabilities } from "../inference/adapters/modalities/index.js";
 import {
   registerFamilyModalityDefaultResolver,
   resolveModelParams,
