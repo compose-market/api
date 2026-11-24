@@ -163,3 +163,17 @@ test("cached + singleFlight coalesce concurrent cold requests into one upstream 
   assert.equal(sfCount, 1);
   assert.deepEqual(sfResults, ["done", "done"]);
 });
+
+test("cacheVersion and bumpCacheVersion invalidate namespaces in O(1)", async () => {
+  const store = createMockStore();
+  setCacheStore(store);
+
+  assert.equal(await cacheVersion("inference-analytics:0xabc"), "0");
+  const v1 = await bumpCacheVersion("inference-analytics:0xabc");
+  assert.equal(v1, "1");
+  assert.equal(await cacheVersion("inference-analytics:0xabc"), "1");
+
+  l1Clear();
+  assert.equal(await cacheVersion("inference-analytics:0xabc"), "1");
+  assert.equal(await bumpCacheVersion("inference-analytics:0xabc"), "2");
+});
