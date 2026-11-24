@@ -193,7 +193,7 @@ app.use((req, res, next) => {
           + ` settlementRows=${analyticsResponseStats.settlementRows}`
           + ` responseBytes=${analyticsResponseStats.responseBytes}`;
       } else if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        logLine += ` :: ${JSON.stringify(redactLogValue(capturedJsonResponse))}`;
       }
 
       log(logLine);
@@ -271,6 +271,13 @@ function tryListen(port: number, maxAttempts = 10): Promise<number> {
 
   const preferredPort = parseInt(process.env.PORT || String(API_PORT), 10);
   const actualPort = await tryListen(preferredPort);
+
+  // Warm the Backpack/Permissions Valkey connection eagerly so the first
+  // user request never pays a cold TLS + PING handshake.
+  const isTest = process.execArgv.includes("--test") || Boolean(process.env.NODE_TEST_CONTEXT);
+  if (!isTest) {
+    void import("./permissions/storage.js").then((mod) => mod.warm()).catch(() => undefined);
+  }
 
   console.log(`\n  ➜  API Server listening on port ${actualPort}`);
   console.log(`  ➜  Endpoints:`);
