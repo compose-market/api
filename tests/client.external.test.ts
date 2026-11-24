@@ -234,7 +234,7 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
 test("external chat completions require Key bearer auth instead of raw x402 challenge", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
-  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/adapters/registry.js");
   const sample = getCompiledModels().models[0];
   const model = sample ? id(sample) : "";
   assert.ok(model);
