@@ -8,7 +8,7 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 const ROUTES = readFileSync(resolve(DIR, "../routes.ts"), "utf8");
 const GATEWAY = readFileSync(resolve(DIR, "../inference/gateway.ts"), "utf8");
 const ENGINE = readFileSync(resolve(DIR, "../inference/engine.ts"), "utf8");
-const ADAPTER = readFileSync(resolve(DIR, "../inference/catalog/adapter.ts"), "utf8");
+const ADAPTER = readFileSync(resolve(DIR, "../inference/adapters/adapter.ts"), "utf8");
 
 test("api routes do not proxy runtime streams", () => {
   assert.doesNotMatch(ROUTES, /callRuntime|payableStreamRoute|RUNTIME_URL/);
