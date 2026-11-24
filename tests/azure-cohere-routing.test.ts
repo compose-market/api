@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 
 import { normalizeResponsesRequest } from "../inference/core.js";
-import { streamWithTools } from "../inference/catalog/adapter.js";
-import { generateAzureChat } from "../inference/catalog/vendors/azure.js";
+import { streamWithTools } from "../inference/adapters/adapter.js";
+import { generateAzureChat } from "../inference/adapters/vendors/azure.js";
 
 const env = {
   AZURE_MICROSOFT_FOUNDRY_ENDPOINT: process.env.AZURE_MICROSOFT_FOUNDRY_ENDPOINT,
