@@ -503,7 +503,7 @@ test("external response shaping sanitizes upstream content-filter errors", async
 test("external OpenCode config is generated from the catalog", async () => {
   const { json, errors } = await import("../http/body.js");
   const { register } = await import("../inference/external.js");
-  const { getModalityModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
+  const { getModalityModels, getModelProtocolProfile } = await import("../inference/adapters/registry.js");
   const app = express();
   app.use(json());
   register(app);
