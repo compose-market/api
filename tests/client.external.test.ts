@@ -182,7 +182,7 @@ test("external models endpoint returns OpenAI-shaped catalog without changing ru
   const { json, errors } = await import("../http/body.js");
   const { register: external } = await import("../inference/external.js");
   const { registerInferenceRoutes } = await import("../inference/gateway.js");
-  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/catalog/registry.js");
+  const { getCompiledModels, getModelProtocolProfile } = await import("../inference/adapters/registry.js");
   const compiled = getCompiledModels().models;
   assert.ok(compiled.length > 0);
   const sample = compiled[0];
