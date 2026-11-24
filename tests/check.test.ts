@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { registerInferenceRoutes } from "../inference/gateway.js";
-import { resolveModel } from "../inference/catalog/registry.js";
+import { resolveModel } from "../inference/adapters/registry.js";
 
 if (process.env.RUN_RUNTIME_CHECKS !== "1") {
   console.log("[check] SKIP: set RUN_RUNTIME_CHECKS=1 to run live inference runtime checks.");
