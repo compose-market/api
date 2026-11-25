@@ -748,6 +748,30 @@ test("rejects a sole estimated cost without an explicit publisher metric unit", 
   );
 });
 
+test("does not heuristically strip display markup from decorated model labels in pricing markdown", async () => {
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    pricingMarkdown: defaultTierPricingMarkdown(
+      "Standard",
+      ["Model", "Input", "Output"],
+      [["[direct-model](/api/docs/models/direct-model)", "$2.00", "$8.00"]],
+    ),
+    pricingMarkdownUrl: PRICING_MD_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: duplicateTokenPricing([
+        { values: { main: { input: 1, output: 4 } } },
+        { values: { main: { input: 2, output: 8 } } },
+      ]),
+    }),
+  });
+
+  assert.throws(
+    () => priceSectionsForModel(source, "direct-model"),
+    /ambiguous duplicate|matched 0/i,
+  );
+});
+
 test("rejects decorated tier labels instead of recovering an id from display markup", async () => {
   await assert.rejects(
     loadOpenAiStructuredSource({
