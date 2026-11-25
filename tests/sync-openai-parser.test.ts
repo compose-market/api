@@ -976,6 +976,49 @@ export { endpointConfig as e };
   assert.equal(source.serviceTierEvidence?.defaultTier, "standard");
 });
 
+test("disambiguates default tier across short/long context split pricing markdown tables and promo sections", async () => {
+  const pricingMarkdown = [
+    "### Standard pricing data",
+    "",
+    "| Model | Short context input | Short context output | Short context cached input | Long context input | Long context output |",
+    "| --- | --- | --- | --- | --- | --- |",
+    "| direct-model | $2.00 | $8.00 | $0.20 | $4.00 | $12.00 |",
+    "",
+    "### Flex pricing data",
+    "",
+    "| Model | Short context input | Short context output | Short context cached input | Long context input | Long context output |",
+    "| --- | --- | --- | --- | --- | --- |",
+    "| direct-model | $1.00 | $4.00 | $0.10 | $2.00 | $6.00 |",
+    "",
+    "### Ultrafast promotion pricing data",
+    "",
+    "| Model | Short context input | Short context output |",
+    "| --- | --- | --- |",
+    "| direct-model | $6.00 | $24.00 |",
+  ].join("\n");
+
+  const source = await loadOpenAiStructuredSource({
+    allModelsHtml: ALL_MODELS_HTML,
+    pageUrl: PAGE_URL,
+    pricingMarkdown,
+    pricingMarkdownUrl: PRICING_MD_URL,
+    loadModule: fixtureLoader({
+      [PRICING_URL]: duplicateTokenPricing([
+        { values: { main: { input: 2, output: 8 } } },
+        { values: { main: { input: 1, output: 4 } } },
+      ]),
+    }),
+  });
+
+  const sections = priceSectionsForModel(source, "direct-model");
+  assert.equal(sections.length, 1);
+  assert.deepEqual(sections[0]!.entries, { input: 2, output: 8 });
+
+  const parsed = parsePricingMarkdownTiers(pricingMarkdown, PRICING_MD_URL);
+  assert.equal(parsed?.defaultTier, "standard");
+  assert.equal(parsed?.rowsByModelId.get("direct-model")?.length, 3);
+});
+
 test("loads split AllModels island when endpoints live in the imported registry module and standalone pricing tables exist", async () => {
   const splitAllModelsHtml = `<!doctype html>
 <html>
