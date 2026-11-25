@@ -1224,3 +1224,41 @@ test("buildSettlementMeterFromOutput still fails closed on mixed-modality input 
     /authoritative token usage breakdown is required/i,
   );
 });
+
+test("buildSettlementMeterFromOutput settles text-only gemini-2.5-flash and text-to-image gemini-3-pro-image without provider details", () => {
+  const flash = buildSettlementMeterFromOutput({
+    resolved: resolveBillingModel("gemini-2.5-flash"),
+    request: {
+      mode: "responses",
+      model: "gemini-2.5-flash",
+      stream: false,
+      modality: "text",
+      messages: [{ role: "user", content: "Hello" }],
+      responseId: "resp_flash",
+    },
+    output: {
+      modality: "text",
+      content: "Hi there",
+      usage: { promptTokens: 12, completionTokens: 24, totalTokens: 36 },
+    },
+  });
+  assert.ok(BigInt(flash.finalAmountWei) > 0n);
+
+  const proImage = buildSettlementMeterFromOutput({
+    resolved: resolveBillingModel("gemini-3-pro-image"),
+    request: {
+      mode: "responses",
+      model: "gemini-3-pro-image",
+      stream: false,
+      modality: "image",
+      messages: [{ role: "user", content: "Render a ceramic cup" }],
+      responseId: "resp_pro_img",
+    },
+    output: {
+      modality: "image",
+      media: { mimeType: "image/png", generatedUnits: 1 },
+      usage: { promptTokens: 18, completionTokens: 1120, totalTokens: 1138 },
+    },
+  });
+  assert.ok(BigInt(proImage.finalAmountWei) > 0n);
+});
