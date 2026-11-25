@@ -21,7 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { buildAuthoritativeBilling } from "../inference/telemetry.js";
-import { getModelCapabilities, type CanonicalModality } from "../inference/catalog/modalities/index.js";
+import { getModelCapabilities, type CanonicalModality } from "../inference/adapters/modalities/index.js";
 import { resolveOptionalModelParamValues } from "../inference/params-handler.js";
 import type { ModelCard } from "../inference/types.js";
 
