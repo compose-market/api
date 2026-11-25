@@ -1019,6 +1019,32 @@ test("disambiguates default tier across short/long context split pricing markdow
   assert.equal(parsed?.rowsByModelId.get("direct-model")?.length, 3);
 });
 
+test("rejects ambiguous pages where multiple Astro islands import a static model/snapshot registry", async () => {
+  const duplicateRegistryHtml = `<!doctype html>
+<html>
+  <body>
+    <astro-island component-url="/_astro/CatalogA.js" props="{}">
+      <a href="/api/docs/models/direct-model">Direct model</a>
+    </astro-island>
+    <astro-island component-url="/_astro/CatalogB.js" props="{}">
+      <a href="/api/docs/models/direct-model">Direct model</a>
+    </astro-island>
+  </body>
+</html>`;
+
+  await assert.rejects(
+    loadOpenAiStructuredSource({
+      allModelsHtml: duplicateRegistryHtml,
+      pageUrl: PAGE_URL,
+      loadModule: fixtureLoader({
+        "https://docs.example.test/_astro/CatalogA.js": ENTRY_MODULE,
+        "https://docs.example.test/_astro/CatalogB.js": ENTRY_MODULE,
+      }),
+    }),
+    /ambiguous all-models page/i,
+  );
+});
+
 test("loads split AllModels island when endpoints live in the imported registry module and standalone pricing tables exist", async () => {
   const splitAllModelsHtml = `<!doctype html>
 <html>
