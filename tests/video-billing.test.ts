@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { videoBillingMetricsFromOutput } from "../inference/catalog/modalities/video.js";
+import { videoBillingMetricsFromOutput } from "../inference/adapters/modalities/video.js";
 import { buildAuthoritativeBilling, buildRequestBilling } from "../inference/telemetry.js";
 
 function box(type: string, payload: Buffer): Buffer {
