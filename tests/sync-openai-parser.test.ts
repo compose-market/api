@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   extractOpenApiParamsByEndpoint,
+  isModelDeprecatedOrShutDown,
   loadOpenAiStructuredSource,
+  parsePricingMarkdownTiers,
   priceSectionsForModel,
 } from "../inference/scripts/sync-openai.js";
 
@@ -12,6 +14,7 @@ const ENTRY_URL = "https://docs.example.test/_astro/catalog-entry.A7f9Qx.js";
 const MANIFEST_URL = "https://docs.example.test/_astro/catalog-data.k2Lm8N.js";
 const SECOND_MANIFEST_URL = "https://docs.example.test/_astro/catalog-data.second.R4p6.js";
 const PRICING_URL = "https://docs.example.test/_astro/rates.Z9v3Bc.js";
+const PRICING_MD_URL = "https://docs.example.test/api/docs/pricing.md";
 const PRICING_PAGE_URL = "https://docs.example.test/api/pricing";
 
 const ALL_MODELS_HTML = `<!doctype html>
@@ -189,6 +192,22 @@ function scalarStrings(value: unknown): string[] {
 
 function staticPricingModule(catalog: unknown): string {
   return `const catalog=JSON.parse(${JSON.stringify(JSON.stringify(catalog))});export{catalog as arbitraryExport};`;
+}
+
+function defaultTierPricingMarkdown(
+  tier: string,
+  headers: string[],
+  rows: string[][],
+): string {
+  const separator = headers.map(() => "---");
+  return [
+    `### ${tier} pricing data`,
+    "",
+    `| ${headers.join(" | ")} |`,
+    `| ${separator.join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+    "",
+  ].join("\n");
 }
 
 function encodeAstroValue(value: unknown): unknown {
@@ -608,8 +627,12 @@ test("selects a duplicate pricing record only from an exact publisher default-ti
   const source = await loadOpenAiStructuredSource({
     allModelsHtml: ALL_MODELS_HTML,
     pageUrl: PAGE_URL,
-    pricingPageHtml: defaultTierPricingPage("publisher-default", [["direct-model", 2, 8]]),
-    pricingPageUrl: PRICING_PAGE_URL,
+    pricingMarkdown: defaultTierPricingMarkdown(
+      "Standard",
+      ["Model", "Output", "Input"],
+      [["direct-model", "$8.00", "$2.00"]],
+    ),
+    pricingMarkdownUrl: PRICING_MD_URL,
     loadModule: fixtureLoader({
       [PRICING_URL]: duplicateTokenPricing([
         { values: { main: { input: 1, output: 4 } } },
