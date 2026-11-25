@@ -8,7 +8,7 @@ import express from "express";
 import {
   getModelProtocolProfile,
   resolveModel,
-} from "../inference/catalog/registry.js";
+} from "../inference/adapters/registry.js";
 import {
   normalizeResponsesRequest,
   toResponsesOutputItems,
