@@ -670,8 +670,12 @@ test("rejects duplicate pricing when a default-tier row matches more than one re
   const source = await loadOpenAiStructuredSource({
     allModelsHtml: ALL_MODELS_HTML,
     pageUrl: PAGE_URL,
-    pricingPageHtml: defaultTierPricingPage("publisher-default", [["direct-model", 2, 8]]),
-    pricingPageUrl: PRICING_PAGE_URL,
+    pricingMarkdown: defaultTierPricingMarkdown(
+      "Standard",
+      ["Model", "Input", "Output"],
+      [["direct-model", "$2.00", "$8.00"]],
+    ),
+    pricingMarkdownUrl: PRICING_MD_URL,
     loadModule: fixtureLoader({
       [PRICING_URL]: duplicateTokenPricing([
         { values: { main: { input: 2, output: 8 } } },
