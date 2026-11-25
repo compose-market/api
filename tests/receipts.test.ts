@@ -1963,6 +1963,13 @@ test("receipt listing requires x-session-user-address header", async () => {
 
 test("receipt listing returns authorized receipts", async () => {
   const userAddress = wallet();
+  const { createKey, revokeKey } = await import("../x402/keys/index.js");
+  const created = await createKey(userAddress, {
+    budgetLimit: 1_000_000,
+    expiresAt: Date.now() + 60_000,
+    purpose: "session",
+    network: "eip155:43114",
+  });
 
   const app = express();
   registerUtilityRoutes(app);
@@ -1972,13 +1979,23 @@ test("receipt listing returns authorized receipts", async () => {
   try {
     const { port } = server.address() as AddressInfo;
 
-    const authorized = await fetch(`http://127.0.0.1:${port}/api/receipts?network=eip155%3A43114`, {
+    const missingAuth = await fetch(`http://127.0.0.1:${port}/api/receipts?network=eip155%3A43114`, {
       headers: { "x-session-user-address": userAddress, "x-network-id": "eip155:43114" },
+    });
+    assert.equal(missingAuth.status, 401);
+
+    const authorized = await fetch(`http://127.0.0.1:${port}/api/receipts?network=eip155%3A43114`, {
+      headers: {
+        authorization: `Bearer ${created.token}`,
+        "x-session-user-address": userAddress,
+        "x-network-id": "eip155:43114",
+      },
     });
     assert.equal(authorized.status, 200);
     const body = await authorized.json() as { userAddress?: string };
     assert.equal(body.userAddress, userAddress);
   } finally {
+    await revokeKey(created.keyId, userAddress);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await closeValkey();
   }
