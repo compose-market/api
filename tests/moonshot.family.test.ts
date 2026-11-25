@@ -7,10 +7,10 @@ import {
   mapMessages,
   parseChatResponse,
   protocolCapabilities,
-} from "../inference/catalog/families/moonshot.js";
+} from "../inference/adapters/families/moonshot.js";
 import { normalizeResponsesRequest } from "../inference/core.js";
-import { getModelProtocolProfile, resolveModel } from "../inference/catalog/registry.js";
-import { streamWithTools } from "../inference/catalog/adapter.js";
+import { getModelProtocolProfile, resolveModel } from "../inference/adapters/registry.js";
+import { streamWithTools } from "../inference/adapters/adapter.js";
 
 test("Moonshot family preserves reasoning and tool history", () => {
   const messages = mapMessages([{
