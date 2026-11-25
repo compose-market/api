@@ -228,3 +228,27 @@ test("Gemini schema lowering drops dangling required entries whose properties ar
   const sortItems = props.sorts.items as Record<string, unknown>;
   assert.deepEqual(sortItems.required, ["direction"]);
 });
+
+test("OpenAI-wire message mapping flattens multimodal arrays to plain strings for text-only models", () => {
+  const multimodalMessages: Message[] = [
+    { role: "system", content: "You are a coordinator." },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Save the story with cover https://cdn.example.com/cover.jpg" },
+        { type: "image_url", image_url: { url: "https://cdn.example.com/cover.jpg" } },
+        { type: "input_audio", input_audio: { url: "https://cdn.example.com/note.wav" } },
+      ],
+    },
+  ];
+
+  const textOnlyWire = mapMessagesForOpenAIWire(multimodalMessages, true);
+  assert.equal(typeof textOnlyWire[1].content, "string");
+  assert.match(String(textOnlyWire[1].content), /Save the story with cover https:\/\/cdn\.example\.com\/cover\.jpg/);
+  assert.match(String(textOnlyWire[1].content), /\[audio: https:\/\/cdn\.example\.com\/note\.wav\]/);
+  // Already-referenced cover URL must not be duplicated
+  assert.equal(String(textOnlyWire[1].content).includes("[image:"), false);
+
+  const multimodalWire = mapMessagesForOpenAIWire(multimodalMessages, false);
+  assert.ok(Array.isArray(multimodalWire[1].content));
+});
