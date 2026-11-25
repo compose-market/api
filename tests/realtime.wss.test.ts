@@ -5,9 +5,9 @@ import test from "node:test";
 import { WebSocketServer } from "ws";
 
 import type { Request } from "../inference/core.js";
-import { getCompiledModels, resolveModel } from "../inference/catalog/registry.js";
-import { getModelCapabilities } from "../inference/catalog/modalities/index.js";
-import { open, target } from "../inference/catalog/vendors/wss.js";
+import { getCompiledModels, resolveModel } from "../inference/adapters/registry.js";
+import { getModelCapabilities } from "../inference/adapters/modalities/index.js";
+import { open, target } from "../inference/adapters/vendors/wss.js";
 
 function request(model: string, operation: string): Request {
   return {
