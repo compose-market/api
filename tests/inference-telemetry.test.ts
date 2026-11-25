@@ -8,6 +8,10 @@ import {
   normalizeBillingPrice,
   type BillingPrice,
 } from "../inference/telemetry.js";
+import {
+  buildSettlementMeterFromOutput,
+  resolveBillingModel,
+} from "../inference/billing-adapter.js";
 import { quoteMeteredSettlement } from "../x402/metering.js";
 
 test("normalizeBillingPrice accepts raw compiled token sections", () => {
@@ -1117,4 +1121,37 @@ test("extractAuthoritativeUsage hard-fails when no authoritative usage payload i
     () => extractAuthoritativeUsage({ usage: {} }),
     /authoritative usage is required/i,
   );
+});
+
+test("buildSettlementMeterFromOutput settles single-modality gpt-image-2.5-flare and gpt-image-2.5-sunburst without provider token details", () => {
+  for (const modelId of ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]) {
+    const resolved = resolveBillingModel(modelId);
+    const quote = buildSettlementMeterFromOutput({
+      resolved,
+      request: {
+        mode: "responses",
+        model: modelId,
+        stream: true,
+        modality: "image",
+        operation: "text-to-image",
+        messages: [{ role: "user", content: "Generate a neon synthwave skyline" }],
+        responseId: `resp_${modelId}`,
+      },
+      output: {
+        modality: "image",
+        media: { mimeType: "image/png", generatedUnits: 1 },
+        usage: {
+          promptTokens: 32,
+          completionTokens: 1056,
+          totalTokens: 1088,
+        },
+      },
+    });
+
+    assert.equal(quote.modelId, modelId);
+    assert.ok(BigInt(quote.finalAmountWei) > 0n);
+    const keys = quote.meter.lineItems.map((item) => item.key);
+    assert.ok(keys.includes("text_input_tokens"), `expected text_input_tokens for ${modelId}`);
+    assert.ok(keys.includes("image_output_tokens"), `expected image_output_tokens for ${modelId}`);
+  }
 });
