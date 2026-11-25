@@ -141,6 +141,13 @@ function rawRequest(headers: Record<string, string>): Request {
   const normalized = Object.fromEntries(
     Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
   );
+  if (
+    (normalized["x-execution-run-id"] || normalized["x-parent-run-id"])
+    && !("x-backpack-internal-token" in normalized)
+    && process.env.BACKPACK_INTERNAL_TOKEN
+  ) {
+    normalized["x-backpack-internal-token"] = process.env.BACKPACK_INTERNAL_TOKEN;
+  }
   return {
     headers: normalized,
     method: "POST",
