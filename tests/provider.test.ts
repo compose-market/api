@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getCompiledModels, getModelById, resolveModel, searchModels } from "../inference/catalog/registry.js";
+import { getCompiledModels, getModelById, resolveModel, searchModels } from "../inference/adapters/registry.js";
 import { isProvider, PROVIDERS } from "../inference/types.js";
 
 test("provider registry covers every compiled catalog provider", () => {
