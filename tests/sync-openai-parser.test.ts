@@ -15,7 +15,6 @@ const MANIFEST_URL = "https://docs.example.test/_astro/catalog-data.k2Lm8N.js";
 const SECOND_MANIFEST_URL = "https://docs.example.test/_astro/catalog-data.second.R4p6.js";
 const PRICING_URL = "https://docs.example.test/_astro/rates.Z9v3Bc.js";
 const PRICING_MD_URL = "https://docs.example.test/api/docs/pricing.md";
-const PRICING_PAGE_URL = "https://docs.example.test/api/pricing";
 
 const ALL_MODELS_HTML = `<!doctype html>
 <html>
@@ -208,24 +207,6 @@ function defaultTierPricingMarkdown(
     ...rows.map((row) => `| ${row.join(" | ")} |`),
     "",
   ].join("\n");
-}
-
-function encodeAstroValue(value: unknown): unknown {
-  if (Array.isArray(value)) return [1, value.map(encodeAstroValue)];
-  return [0, value];
-}
-
-function pricingTableIsland(props: Record<string, unknown>): string {
-  const encoded = Object.fromEntries(Object.entries(props).map(([key, value]) => [key, encodeAstroValue(value)]));
-  return `<astro-island props='${JSON.stringify(encoded)}'></astro-island>`;
-}
-
-function defaultTierPricingPage(tier: string, rows: unknown[][]): string {
-  return `<div data-content-switcher-root data-content-switcher-initial="${tier}">
-    <div data-content-switcher-pane data-value="${tier}">
-      ${pricingTableIsland({ tier, rows })}
-    </div>
-  </div>`;
 }
 
 function duplicateTokenPricing(records: Array<{ values: Record<string, unknown> }>): string {
@@ -772,21 +753,6 @@ test("does not heuristically strip display markup from decorated model labels in
   );
 });
 
-test("rejects decorated tier labels instead of recovering an id from display markup", async () => {
-  await assert.rejects(
-    loadOpenAiStructuredSource({
-      allModelsHtml: ALL_MODELS_HTML,
-      pageUrl: PAGE_URL,
-      pricingPageHtml: defaultTierPricingPage("publisher-default", [
-        [{ __pricingHtml: "direct-model" }, 2, 8],
-      ]),
-      pricingPageUrl: PRICING_PAGE_URL,
-      loadModule: fixtureLoader(),
-    }),
-    /invalid structured row/i,
-  );
-});
-
 test("rejects unsupported JavaScript syntax instead of evaluating or ignoring it", async () => {
   const invalidRegistry = `
 import{p as z}from"./rates.Z9v3Bc.js";
@@ -1045,107 +1011,13 @@ test("rejects ambiguous pages where multiple Astro islands import a static model
   );
 });
 
-test("loads split AllModels island when endpoints live in the imported registry module and standalone pricing tables exist", async () => {
-  const splitAllModelsHtml = `<!doctype html>
-<html>
-  <body>
-    <astro-island
-      component-url="/_astro/NavbarMenu.react.js"
-      component-export="NavbarMenu"
-      props="{}"
-    >
-      <a href="/api/docs">Docs</a>
-    </astro-island>
-    <astro-island
-      component-url="/_astro/AllModels.react.js"
-      component-export="AllModels"
-      props="{}"
-    >
-      <a href="/api/docs/models/direct-model">Direct model</a>
-      <a href="/api/docs/models/snapshot-priced-model">Snapshot-priced model</a>
-      <a href="/api/docs/models/direct">Exact-match sentinel</a>
-      <a href="/api/docs/models/duration-model">Duration model</a>
-    </astro-island>
-  </body>
-</html>`;
-
-  const thinEntryModule = `
-import { b as q } from "./catalog-data.k2Lm8N.js";
-export function AllModels() { return q; }
-`;
-
-  const registryWithEndpoints = `${registryModule()}
-const endpointConfig = {
-  endpoints: [
-    { name: "responses", label: "Responses", icon: "chat", route: "v1/responses" },
-    { name: "speech_generation", label: "Speech generation", icon: "speech", route: "v1/audio/speech" }
-  ]
-};
-export { endpointConfig as e };
-`;
-
-  const pricingPageWithStandaloneGroup = `${defaultTierPricingPage("standard", [["direct-model", 2, 8]])}
-  ${pricingTableIsland({ tier: "standard", modelGroup: "cyber", rows: [["direct-model-pro", 20, 80]] })}`;
-
-  const source = await loadOpenAiStructuredSource({
-    allModelsHtml: splitAllModelsHtml,
-    pageUrl: PAGE_URL,
-    pricingPageHtml: pricingPageWithStandaloneGroup,
-    pricingPageUrl: PRICING_PAGE_URL,
-    loadModule: fixtureLoader({
-      "https://docs.example.test/_astro/AllModels.react.js": thinEntryModule,
-      [MANIFEST_URL]: registryWithEndpoints,
-    }),
-  });
-
-  assert.equal(source.models.has("direct-model"), true);
-  assert.equal(source.endpoints instanceof Map ? source.endpoints.has("responses") : false, true);
-  assert.equal(source.serviceTierEvidence?.defaultTier, "standard");
-});
-
-test("accepts publisher deprecated-model row descriptors in tier tables while disambiguating default tier", async () => {
-  const pricingPageHtml = `<div data-content-switcher-root data-content-switcher-initial="standard">
-    <div data-content-switcher-pane data-value="standard">
-      ${pricingTableIsland({
-        tier: "standard",
-        rows: [
-          ["direct-model", 2, 8],
-          [{ label: "legacy-nano-model", deprecated: true }, 0.2, 0.02, 1.25],
-        ],
-      })}
-    </div>
-    <div data-content-switcher-pane data-value="batch">
-      ${pricingTableIsland({
-        tier: "batch",
-        rows: [
-          ["direct-model", 1, 4],
-          [{ label: "legacy-nano-model", deprecated: true }, 0.1, 0.01, 0.625],
-        ],
-        alternateRows: [
-          ["direct-model", 1, 4],
-          [{ label: "legacy-nano-model", deprecated: true }, 0.1, 0.01, 0.625],
-        ],
-      })}
-    </div>
-  </div>`;
-
-  const source = await loadOpenAiStructuredSource({
-    allModelsHtml: ALL_MODELS_HTML,
-    pageUrl: PAGE_URL,
-    pricingPageHtml,
-    pricingPageUrl: PRICING_PAGE_URL,
-    loadModule: fixtureLoader({
-      [PRICING_URL]: duplicateTokenPricing([
-        { values: { main: { input: 2, output: 8 } } },
-        { values: { main: { input: 1, output: 4 } } },
-      ]),
-    }),
-  });
-
-  const sections = priceSectionsForModel(source, "direct-model");
-  assert.equal(sections.length, 1);
-  assert.deepEqual(sections[0]!.entries, { input: 2, output: 8 });
-  assert.equal(source.serviceTierEvidence?.rowsByModelId.get("legacy-nano-model")?.length, 2);
+test("classifies model deprecation using model flag, snapshot flag, and shutdown date", () => {
+  assert.equal(isModelDeprecatedOrShutDown({ deprecated: true }, undefined, "2026-11-19"), true);
+  assert.equal(isModelDeprecatedOrShutDown({}, { deprecated: true, shutdown_date: "2026-12-11" }, "2026-11-19"), true);
+  assert.equal(isModelDeprecatedOrShutDown({ shutdown_date: "2026-11-19" }, {}, "2026-11-19"), true);
+  assert.equal(isModelDeprecatedOrShutDown({}, { shutdown_date: "2026-10-23" }, "2026-11-19"), true);
+  assert.equal(isModelDeprecatedOrShutDown({ shutdown_date: "2027-02-26" }, { shutdown_date: "2027-02-26" }, "2026-11-19"), false);
+  assert.equal(isModelDeprecatedOrShutDown({}, {}, "2026-11-19"), false);
 });
 
 test("extracts OpenAPI parameter schemas structurally by endpoint route without hardcoded schema names", () => {
