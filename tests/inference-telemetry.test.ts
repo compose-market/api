@@ -1155,3 +1155,43 @@ test("buildSettlementMeterFromOutput settles single-modality gpt-image-2.5-flare
     assert.ok(keys.includes("image_output_tokens"), `expected image_output_tokens for ${modelId}`);
   }
 });
+
+test("buildSettlementMeterFromOutput settles mixed-modality image edit when provider supplies input_tokens_details without output_tokens_details", () => {
+  const resolved = resolveBillingModel("gpt-image-2.5-flare");
+  const quote = buildSettlementMeterFromOutput({
+    resolved,
+    request: {
+      mode: "responses",
+      model: "gpt-image-2.5-flare",
+      stream: false,
+      modality: "image",
+      operation: "image-to-image",
+      messages: [{ role: "user", content: "Change the sky to twilight" }],
+      imageOptions: { imageUrl: "https://example.com/source.png" },
+      responseId: "resp_edit_details",
+    },
+    output: {
+      modality: "image",
+      media: { mimeType: "image/png", generatedUnits: 1 },
+      usage: {
+        promptTokens: 220,
+        completionTokens: 1056,
+        totalTokens: 1276,
+        raw: {
+          input_tokens: 220,
+          output_tokens: 1056,
+          total_tokens: 1276,
+          input_tokens_details: {
+            text_tokens: 20,
+            image_tokens: 200,
+          },
+        },
+      },
+    },
+  });
+
+  const byKey = new Map(quote.meter.lineItems.map((item) => [item.key, item.quantity]));
+  assert.equal(byKey.get("text_input_tokens"), 20);
+  assert.equal(byKey.get("image_input_tokens"), 200);
+  assert.equal(byKey.get("image_output_tokens"), 1056);
+});
