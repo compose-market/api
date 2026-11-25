@@ -288,7 +288,7 @@ test("video modality derives billable quantities from generated media metadata",
 });
 
 test("image modality derives billable quantities from generated WebP media metadata", async () => {
-  const { imageBillingMetricsFromOutput } = await import("../inference/catalog/modalities/image.js");
+  const { imageBillingMetricsFromOutput } = await import("../inference/adapters/modalities/image.js");
   const webp = Buffer.alloc(30);
   webp.write("RIFF", 0, "ascii");
   webp.writeUInt32LE(22, 4);
