@@ -1195,3 +1195,32 @@ test("buildSettlementMeterFromOutput settles mixed-modality image edit when prov
   assert.equal(byKey.get("image_input_tokens"), 200);
   assert.equal(byKey.get("image_output_tokens"), 1056);
 });
+
+test("buildSettlementMeterFromOutput still fails closed on mixed-modality input without provider input token breakdown", () => {
+  const resolved = resolveBillingModel("gpt-image-2.5-flare");
+  assert.throws(
+    () => buildSettlementMeterFromOutput({
+      resolved,
+      request: {
+        mode: "responses",
+        model: "gpt-image-2.5-flare",
+        stream: false,
+        modality: "image",
+        operation: "image-to-image",
+        messages: [{ role: "user", content: "Edit this image" }],
+        imageOptions: { imageUrl: "https://example.com/source.png" },
+        responseId: "resp_edit_ambiguous",
+      },
+      output: {
+        modality: "image",
+        media: { mimeType: "image/png", generatedUnits: 1 },
+        usage: {
+          promptTokens: 220,
+          completionTokens: 1056,
+          totalTokens: 1276,
+        },
+      },
+    }),
+    /authoritative token usage breakdown is required/i,
+  );
+});
