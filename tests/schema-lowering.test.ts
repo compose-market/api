@@ -3,14 +3,15 @@ import assert from "node:assert/strict";
 
 import type { Message, Schema, Tool } from "../inference/core.js";
 import { normalizeChatRequest } from "../inference/core.js";
-import { google, object } from "../inference/catalog/shared/schema.js";
-import * as alibaba from "../inference/catalog/families/alibaba.js";
-import * as anthropic from "../inference/catalog/families/anthropic.js";
-import * as cohere from "../inference/catalog/families/cohere.js";
-import * as deepseek from "../inference/catalog/families/deepseek.js";
-import * as mistral from "../inference/catalog/families/mistral.js";
-import * as xai from "../inference/catalog/families/xai.js";
-import * as zai from "../inference/catalog/families/zai.js";
+import { google, object } from "../inference/adapters/shared/schema.js";
+import * as alibaba from "../inference/adapters/families/alibaba.js";
+import * as anthropic from "../inference/adapters/families/anthropic.js";
+import * as cohere from "../inference/adapters/families/cohere.js";
+import * as deepseek from "../inference/adapters/families/deepseek.js";
+import * as mistral from "../inference/adapters/families/mistral.js";
+import * as xai from "../inference/adapters/families/xai.js";
+import * as zai from "../inference/adapters/families/zai.js";
+import { mapMessagesForOpenAIWire } from "../inference/adapters/families/openai.js";
 
 const schema: Schema = {
   type: "object",
@@ -124,4 +125,59 @@ test("OpenAI-compatible and Anthropic family wires keep rich schema through shar
     assert.ok(Array.isArray(properties.choice.anyOf), name);
     assert.deepEqual(properties.meta.additionalProperties, { type: "string" }, name);
   }
+});
+
+test("Gemini schema lowering merges object oneOf unions without dropping alternate variant fields", () => {
+  const unionSchema: Schema = {
+    type: "object",
+    properties: {
+      uses: {
+        type: "array",
+        items: {
+          oneOf: [
+            {
+              type: "object",
+              properties: {
+                agentRef: { type: "string", pattern: "^(self|agent:.+)$" },
+                purpose: { type: "string" },
+              },
+              required: ["agentRef"],
+            },
+            {
+              type: "object",
+              properties: {
+                modelRef: { type: "string", pattern: "^model:.+$" },
+                purpose: { type: "string" },
+              },
+              required: ["modelRef"],
+            },
+            {
+              type: "object",
+              properties: {
+                connectorRef: { type: "string", pattern: "^connector:.+$" },
+                action: { type: "string" },
+                purpose: { type: "string" },
+              },
+              required: ["connectorRef"],
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  const lowered = google(object(unionSchema));
+  const uses = (lowered.properties as Record<string, Record<string, unknown>>).uses;
+  const item = uses.items as Record<string, unknown>;
+  const itemProps = item.properties as Record<string, Record<string, unknown>>;
+
+  assert.equal(item.type, "object");
+  assert.equal(item.oneOf, undefined);
+  assert.equal(itemProps.agentRef?.type, "string");
+  assert.equal(itemProps.modelRef?.type, "string");
+  assert.equal(itemProps.connectorRef?.type, "string");
+  assert.equal(itemProps.action?.type, "string");
+  assert.equal(itemProps.purpose?.type, "string");
+  assert.equal(item.required, undefined);
+  assert.match(String(item.description ?? ""), /agentRef.*modelRef.*connectorRef/);
 });
