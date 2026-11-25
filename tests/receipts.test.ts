@@ -12,6 +12,7 @@ import express from "express";
 
 import { registerUtilityRoutes } from "../routes.js";
 import {
+  finalizeReceipt,
   listReceipts,
   markBatchReceiptsSettled,
   markIntentReceiptsFailed,
@@ -31,7 +32,11 @@ import {
   valkeySAdd,
   valkeySMembers,
 } from "../x402/keys/valkey.js";
-import type { Receipt } from "../http/request-context.js";
+import {
+  decodeReceiptHeader,
+  encodeReceiptHeader,
+  type Receipt,
+} from "../http/request-context.js";
 
 function wallet(): `0x${string}` {
   return `0x${randomUUID().replace(/-/g, "").padEnd(40, "0").slice(0, 40)}` as `0x${string}`;
@@ -1885,6 +1890,59 @@ test("receipt JSON never emits the removed Session-budget intent alias", () => {
 
   assert.equal(body?.payment_intent_id, "intent-3");
   assert.equal("session_budget_intent_id" in (body || {}), false);
+});
+
+test("non-inference finalized receipts omit empty bills across Valkey Lua cjson and X-Receipt headers", async () => {
+  const userAddress = wallet();
+  const network = "eip155:84532" as const;
+  const intentId = `pi_${randomUUID()}`;
+
+  try {
+    const finalized = await finalizeReceipt({
+      finalAmountWei: "3355",
+      providerAmountWei: "2684",
+      platformFeeWei: "671",
+      network,
+      settledAt: 1_700_000_000_000,
+      userAddress,
+      subject: "rawchunks",
+      settlementStatus: "settled",
+      txHash: `0x${"ab".repeat(32)}`,
+      paymentIntentId: intentId,
+      checkpointSequence: 0,
+    }, {
+      service: "rawchunks",
+      action: "stream",
+      resource: "https://api.rawchunks.space/api/songs/sng-test/stream",
+      userAddress,
+      network,
+    });
+
+    assert.ok(finalized);
+    assert.equal(finalized.bills, undefined);
+    assert.equal("bills" in finalized, false);
+    assert.equal(finalized.lineItems, undefined);
+
+    const headerDecoded = decodeReceiptHeader(encodeReceiptHeader(finalized));
+    assert.equal(headerDecoded.bills, undefined);
+    assert.equal("bills" in headerDecoded, false);
+
+    // Simulate a legacy Valkey entry whose empty Lua table serialized as `{}`
+    const valkey = await getValkeyClient();
+    const rawKey = `x402:receipt:${finalized.id}`;
+    const currentRaw = await valkeyGet(rawKey);
+    assert.ok(currentRaw);
+    const poisoned = { ...JSON.parse(currentRaw), bills: {}, lineItems: {} };
+    await valkey.set(rawKey, JSON.stringify(poisoned));
+
+    const listed = await listReceipts({ userAddress, network });
+    assert.equal(listed.receipts.length, 1);
+    assert.equal(listed.receipts[0]?.bills, undefined);
+    assert.equal("bills" in (listed.receipts[0] || {}), false);
+    assert.equal(listed.receipts[0]?.lineItems, undefined);
+  } finally {
+    await cleanupReceiptState(userAddress, network, intentId);
+  }
 });
 
 test("receipt listing requires x-session-user-address header", async () => {
