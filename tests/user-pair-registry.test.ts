@@ -174,7 +174,10 @@ test("pair lookup is indexed by either exact member and storage failures become 
 test("enabled wallet scopes are zipped once with the correct address family", async () => {
   const pair = { evmAddress: NORMALIZED_EVM, svmAddress: SVM };
   const scopes = buildWalletScopes(pair);
-  const supported = getSupportedNetworks().map((network) => network.id).sort();
+  const supported = getSupportedNetworks()
+    .map((network) => network.id)
+    .filter((id) => id.startsWith("eip155:") || id.startsWith("solana:"))
+    .sort();
 
   assert.deepEqual(scopes.map((scope) => scope.network), supported);
   assert.equal(new Set(scopes.map((scope) => scope.network)).size, supported.length);
@@ -188,6 +191,10 @@ test("enabled wallet scopes are zipped once with the correct address family", as
   const byEvm = await resolveWalletScopes(EVM, undefined, async () => pair);
   const bySvm = await resolveWalletScopes(SVM, undefined, async () => pair);
   assert.deepEqual(byEvm, bySvm);
+
+  const nearScopes = await resolveWalletScopes("alice.near");
+  assert.ok(nearScopes.length > 0);
+  assert.equal(nearScopes.every((scope) => scope.network.startsWith("near:") && scope.address === "alice.near"), true);
 });
 
 async function withUserServer(
