@@ -7,17 +7,16 @@ import {
   getModelCapabilities,
   getModalityOperations,
   isStreamableModality,
-} from "../inference/catalog/modalities/index.js";
-import { selectImageTaskForInput } from "../inference/catalog/modalities/image.js";
+} from "../inference/adapters/modalities/index.js";
+import { selectImageTaskForInput } from "../inference/adapters/modalities/image.js";
 import {
-  buildAIMLVideoSubmissionBody,
   buildGoogleVideoGenerationRequest,
   buildOpenAIVideoSubmissionBody,
   selectVideoTaskForInput,
   videoBillingMetricsFromOutput,
-} from "../inference/catalog/modalities/video.js";
-import { normalizeFeatureExtractionEmbeddings } from "../inference/catalog/modalities/embeddings.js";
-import { getCompiledModels } from "../inference/catalog/registry.js";
+} from "../inference/adapters/modalities/video.js";
+import { normalizeFeatureExtractionEmbeddings } from "../inference/adapters/modalities/embeddings.js";
+import { getCompiledModels } from "../inference/adapters/registry.js";
 
 function modelCard(overrides: Partial<ModelCard>): ModelCard {
   return {
@@ -215,17 +214,6 @@ test("video modality shapes provider payloads without leaking shared params", ()
     size: "1280x720",
     seconds: "4",
     input_reference: { image_url: "https://example.com/frame.png" },
-  });
-
-  assert.deepEqual(buildAIMLVideoSubmissionBody("provider/video", "camera pan", options), {
-    model: "provider/video",
-    prompt: "camera pan",
-    duration: "4",
-    resolution: "720p",
-    aspect_ratio: "16:9",
-    size: "1280x720",
-    seed: 123,
-    image_url: "https://example.com/frame.png",
   });
 
   assert.deepEqual(buildGoogleVideoGenerationRequest("veo-3.1-fast-generate-preview", "camera pan", options), {
