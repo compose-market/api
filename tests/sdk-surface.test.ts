@@ -452,7 +452,7 @@ test("GET /api/x402/facilitator/chains returns CAIP-2 network ids + USDC address
     if (result.statusCode === 200) {
         const body = JSON.parse(result.body) as {
             chains: Array<{ network: string; assetAddress: string; schemes: string[]; decimals: number }>;
-            defaultNetwork: string;
+            defaultNetwork?: string;
         };
         assert.ok(Array.isArray(body.chains));
         assert.ok(body.chains.length > 0);
@@ -462,7 +462,7 @@ test("GET /api/x402/facilitator/chains returns CAIP-2 network ids + USDC address
             assert.deepEqual(chain.schemes, ["exact", "upto", "batch-settlement"]);
             assert.equal(chain.decimals, 6);
         }
-        assert.match(body.defaultNetwork, /^(eip155|solana|near):.+$/);
+        assert.equal("defaultNetwork" in body, false);
     }
 });
 
