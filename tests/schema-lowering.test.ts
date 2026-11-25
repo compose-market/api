@@ -181,3 +181,50 @@ test("Gemini schema lowering merges object oneOf unions without dropping alterna
   assert.equal(item.required, undefined);
   assert.match(String(item.description ?? ""), /agentRef.*modelRef.*connectorRef/);
 });
+
+test("Gemini schema lowering drops dangling required entries whose properties are undefined", () => {
+  const notionTableSchema: Schema = {
+    type: "object",
+    properties: {
+      tables: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            rows: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {},
+                required: ["cells"],
+              },
+            },
+          },
+          required: ["rows"],
+        },
+      },
+      sorts: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            direction: { type: "string" },
+          },
+          required: ["direction", "missing_field"],
+        },
+      },
+    },
+    required: ["tables", "non_existent"],
+  };
+
+  const lowered = google(object(notionTableSchema));
+  assert.deepEqual(lowered.required, ["tables"]);
+  const props = lowered.properties as Record<string, Record<string, unknown>>;
+  const tableItems = props.tables.items as Record<string, unknown>;
+  const tableProps = tableItems.properties as Record<string, Record<string, unknown>>;
+  const rowItems = tableProps.rows.items as Record<string, unknown>;
+  assert.equal(rowItems.required, undefined);
+
+  const sortItems = props.sorts.items as Record<string, unknown>;
+  assert.deepEqual(sortItems.required, ["direction"]);
+});
